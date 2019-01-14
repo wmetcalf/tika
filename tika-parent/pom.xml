@@ -332,7 +332,7 @@
          javax.activation dependency in tika-server -->
     <jaxb.version>2.3.1</jaxb.version>
     <cli.version>1.4</cli.version>
-    <lucene.version>7.5.0</lucene.version>
+    <lucene.version>7.6.0</lucene.version>
     <mockito.version>2.23.4</mockito.version>
   </properties>
 
@@ -357,6 +357,20 @@
         <configuration>
           <generateBackupPoms>false</generateBackupPoms>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.sonatype.ossindex.maven</groupId>
+        <artifactId>ossindex-maven-plugin</artifactId>
+        <version>3.0.2</version>
+        <executions>
+          <execution>
+            <id>audit-dependencies</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>audit</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>de.thetaphi</groupId>
