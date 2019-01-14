@@ -1,0 +1,19 @@
+[Unit]
+Description=A Jailed Resourced Constrained Tika Instance
+After=syslog.target network-online.target
+
+[Service]
+Type=simple
+MemoryMax=16G
+MemorySwapMax=0B
+#CPUShares=342
+Nice=13
+ExecStart=/usr/bin/firejail java -Dsun.java2d.cmm=sun.java2d.cmm.kcms.KcmsServiceProvider -Dorg.apache.pdfbox.rendering.UsePureJavaCMYKConversion=true -jar /tika-server.jar -h 0.0.0.0 
+#ExecStart=/usr/bin/java -Dsun.java2d.cmm=sun.java2d.cmm.kcms.KcmsServiceProvider -Dorg.apache.pdfbox.rendering.UsePureJavaCMYKConversion=true -jar /tika-server.jar -h 0.0.0.0 
+ExecStop=/bin/kill $MAINPID
+User=tika
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
