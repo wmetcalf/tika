@@ -30,10 +30,12 @@ import java.util.Map;
 
 import org.apache.commons.io.input.ProxyReader;
 import org.apache.commons.lang3.mutable.MutableInt;
+import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 
 class CSVSniffer {
     private static final int DEFAULT_MARK_LIMIT = 10000;
+    private static final double DEFAULT_MIN_CONFIDENCE = 0.50;
     private static final int PUSH_BACK = 2;
     static final int EOF = -1;
     static final int NEW_LINE = '\n';
@@ -42,14 +44,16 @@ class CSVSniffer {
 
     private final char[] delimiters;
     private final int markLimit;
+    private final double minConfidence;
 
     CSVSniffer(char[] delimiters) {
-        this(DEFAULT_MARK_LIMIT, delimiters);
+        this(DEFAULT_MARK_LIMIT, delimiters, DEFAULT_MIN_CONFIDENCE);
     }
 
-    CSVSniffer(int markLimit, char[] delimiters) {
+    CSVSniffer(int markLimit, char[] delimiters, double minConfidence) {
         this.markLimit = markLimit;
         this.delimiters = delimiters;
+        this.minConfidence = minConfidence;
     }
 
     List<CSVResult> sniff(Reader reader) throws IOException {
@@ -70,25 +74,25 @@ class CSVSniffer {
         return ret;
     }
 
-    //gets the best result with confidence > 0
-    //otherwise, returns CSVResult
-
     /**
-     *
      * @param reader
-     * @return the best result with confidence > 0; if none exist, it returns {@link CSVResult#TEXT}
+     * @param metadata
+     * @return the best result given the detection results or {@link CSVResult#TEXT}
+     *         if the confidence is not above a threshold.
      * @throws IOException
      */
-    CSVResult getBest(Reader reader) throws IOException {
+    CSVResult getBest(Reader reader, Metadata metadata) throws IOException {
+        //TODO: take into consideration the filename.  Perhaps require
+        //a higher confidence if detection contradicts filename?
         List<CSVResult> results = sniff(reader);
-
-        if (results.size() > 0) {
-            CSVResult result = results.get(0);
-            if (result.getConfidence() > 0.0) {
-                return result;
-            }
+        if (results == null || results.size() == 0) {
+            return CSVResult.TEXT;
         }
-        return CSVResult.TEXT;
+        CSVResult bestResult = results.get(0);
+        if (bestResult.getConfidence() < minConfidence) {
+            return CSVResult.TEXT;
+        }
+        return bestResult;
     }
 
 

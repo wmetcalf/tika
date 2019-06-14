@@ -665,6 +665,49 @@
             group by mime_id_a, mime_id_b
             );
         </sql>
+        <sql>
+            drop table if exists parse_time_compared;
+        </sql>
+        <sql>
+            create table parse_time_compared (
+            mime_id_a integer,
+            mime_id_b integer,
+            total_a bigint,
+            total_b bigint,
+            prcnt_increase double
+            );
+        </sql>
+            <sql>
+                insert into parse_time_compared (mime_id_a, mime_id_b,
+                total_a, total_b, prcnt_increase)
+                select ma.mime_id, mb.mime_id,0,0,0.0
+                from profiles_a a
+                join profiles_b b on a.id=b.id
+                join mimes ma on ma.mime_id=a.mime_id
+                join mimes mb on mb.mime_id=b.mime_id
+                group by ma.mime_id, mb.mime_id
+            </sql>
+        <sql>
+            update parse_time_compared ptc set total_a=(
+            select sum(pa.elapsed_time_millis) as total_a from profiles_a pa
+            join profiles_b pb on pa.id=pb.id
+            where pa.mime_id= ptc.mime_id_a
+            and pb.mime_id=ptc.mime_id_b
+            group by mime_id_a, mime_id_b)
+        </sql>
+        <sql>
+            update parse_time_compared ptc set total_b=(
+            select sum(pb.elapsed_time_millis) as total_b from profiles_b pb
+            join profiles_a pa on pa.id=pb.id
+            where pa.mime_id= ptc.mime_id_a
+            and pb.mime_id=ptc.mime_id_b
+            group by mime_id_a, mime_id_b)
+        </sql>
+        <sql>
+            update parse_time_compared ptc set prcnt_increase=(
+            cast(total_b as decimal)/cast(total_a as decimal))
+            where total_a > 0;
+        </sql>
     </before>
 
     <!-- MIMES -->
@@ -1317,7 +1360,8 @@
             where pa.num_pages is not null
             and pb.num_pages is not null
             and pa.num_pages &lt;&gt; pb.num_pages
-            order by DIFF_NUM_PAGES_IN_B asc;
+            order by DIFF_NUM_PAGES_IN_B asc
+            limit 10000;
         </sql>
     </report>
 
@@ -1423,7 +1467,7 @@
             eb.parse_exception_id is null
             and pa.num_attachments &lt;&gt; pb.num_attachments
             order by ma.mime_string, pb.num_attachments-pa.num_attachments
-            limit 10000;
+            limit 100000;
         </sql>
     </report>
 
@@ -1454,10 +1498,100 @@
             where pa.is_embedded=false
             and pa.num_attachments &lt;&gt; pb.num_attachments
             order by ma.mime_string, pb.num_attachments-pa.num_attachments
-            limit 10000;
+            limit 100000;
         </sql>
     </report>
 
+    <report reportName="Files missing in B by Mime"
+            reportFilename="attachments/all_files_missing_in_B_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_a pa
+            left join profiles_b pb on pa.id=pb.id
+            join mimes m on pa.mime_id=m.mime_id
+            where pb.id is null
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
+    <report reportName="Container files missing in B by Mime"
+            reportFilename="attachments/container_files_missing_in_B_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_a pa
+            left join profiles_b pb on pa.id=pb.id
+            join mimes m on pa.mime_id=m.mime_id
+            where pb.id is null and pa.is_embedded=false
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
+    <report reportName="Embedded files missing in B by Mime"
+            reportFilename="attachments/embedded_files_missing_in_B_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_a pa
+            left join profiles_b pb on pa.id=pb.id
+            join mimes m on pa.mime_id=m.mime_id
+            where pb.id is null and pa.is_embedded=true
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
+    <report reportName="All files missing in A by Mime"
+            reportFilename="attachments/all_files_missing_in_A_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_b pb
+            left join profiles_a pa on pb.id=pa.id
+            join mimes m on pb.mime_id=m.mime_id
+            where pa.id is null
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
+    <report reportName="Container files missing in A by Mime"
+            reportFilename="attachments/container_files_missing_in_A_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_b pb
+            left join profiles_a pa on pb.id=pa.id
+            join mimes m on pb.mime_id=m.mime_id
+            where pa.id is null and pb.is_embedded=false
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
+    <report reportName="Embedded files missing in A by Mime"
+            reportFilename="attachments/embedded_files_missing_in_A_by_mime.xlsx"
+            format="xlsx"
+            includeSql="true">
+
+        <sql>
+            select mime_string, count(1) as cnt
+            from profiles_b pb
+            left join profiles_a pa on pb.id=pa.id
+            join mimes m on pb.mime_id=m.mime_id
+            where pa.id is null and pb.is_embedded=true
+            group by mime_string
+            order by cnt desc
+        </sql>
+    </report>
     <!-- metadata values -->
     <report reportName="Metadata Value Diffs"
             reportFilename="metadata/metadata_value_count_diffs.xlsx"
@@ -1485,6 +1619,7 @@
             and pa.num_metadata_values &lt;&gt; pb.num_metadata_values
             order by ma.mime_string,
             pb.num_metadata_values-pa.num_metadata_values
+            limit 100000
         </sql>
     </report>
     <report reportName="Tag Count Diffs By Mime"
@@ -1524,6 +1659,7 @@
             tags_by_mime tbm
             join mimes ma on tbm.mime_id_a=ma.mime_id
             join mimes mb on tbm.mime_id_b=mb.mime_id
+            limit 100000
         </sql>
 
     </report>
@@ -1572,7 +1708,44 @@
             order by m.mime_string
             limit 20000
         </sql>
-    </report>    <after>
+    </report>
+
+    <report reportName="Parse Time (Millis) Compared"
+            reportFilename="parse_times/parse_time_millis_by_mime_compared.xlsx"
+            format="xlsx"
+            includeSql="true">
+        <sql>
+            select ma.mime_string as MIME_STRING_A,
+            mb.mime_string as MIME_STRING_B,
+            total_a as TOTAL_MILLIS_A, total_b as TOTAL_MILLIS_B,
+            prcnt_increase as PERCENT_INCREASE
+            from parse_time_compared ptc
+            join mimes ma on ptc.mime_id_a=ma.mime_id
+            join mimes mb on ptc.mime_id_b=mb.mime_id
+            order by prcnt_increase desc
+        </sql>
+    </report>
+    <report reportName="Parse Time (Millis) Details"
+            reportFilename="parse_times/parse_time_millis_details.xlsx"
+            format="xlsx"
+            includeSql="true">
+        <sql>
+            select file_path, c.length as CONTAINTER_LENGTH,
+            ma.mime_string as MIME_STRING_A,
+            mb.mime_string as MIME_STRING_B,
+            pa.elapsed_time_millis as TOTAL_MILLIS_A,
+            pb.elapsed_time_millis as TOTAL_MILLIS_B,
+            (pb.elapsed_time_millis-pa.elapsed_time_millis) as DIFF_MILLIS
+            from profiles_a pa
+            join profiles_b pb on pa.id=pb.id
+            join mimes ma on ma.mime_id=pa.mime_id
+            join mimes mb on mb.mime_id=pb.mime_id
+            join containers c on pa.container_id=c.container_id
+            order by DIFF_MILLIS desc
+            limit 20000;
+        </sql>
+    </report>
+    <after>
         <sql>drop table if exists md5_multiples_tmp_a</sql>
         <sql>drop table if exists md5_multiples_tmp_b</sql>
     </after>

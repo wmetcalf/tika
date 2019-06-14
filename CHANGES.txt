@@ -5,8 +5,24 @@ Release 2.0.0 - ???
 
    Other changes
 
+Release 1.22 - ???
 
-Release 1.21 - ????
+   * Improve StreamingZipContainerDetector for xltx, xltm and
+     several other file formats (TIKA-2886).
+
+Release 1.21 - 05/14/2019
+
+   * Add optional AUTO mode to OCR'ing of PDFs.  If tesseract is installed
+     and on the path, and this option is selected programmatically
+     or via TikaConfig(), the PDFParser will use heuristics to decide
+     whether or not to run OCR per page on PDFs. (TIKA-2749)
+
+   * The ZipContainerDetector's default behavior was changed to run
+     streaming detection up to its markLimit.  Users can get the
+     legacy behavior (spool-to-file/rely-on-underlying-file-in-TikaInputStream)
+     by setting markLimit=-1. The POIFSContainerDetector requires an underlying file;
+     it will try to spool the file to disk; if the file's length is > markLimit,
+     it will not attempt detection; set markLimit to -1 for legacy behavior (TIKA-2849).
 
    * Upgrade PDFBox to 2.0.14 (TIKA-2834).
 
@@ -17,7 +33,9 @@ Release 1.21 - ????
    * Add a CSVParser.  CSV detection is currently based solely on filename
      and/or information conveyed via Metadata (TIKA-2826).
 
-   * General upgrades: h2, jackcess, opennlp, httpcomponents, zstd-jni, cxf, Lucene (TIKA-2824)
+   * General upgrades: asm, bouncycastle, commons-codec, commons-lang3, cxf,
+     guava, h2, httpcomponents, jackcess, junrar, Lucene, mime4j, opennlp, parso,
+     sqlite-jdbc (provided), zstd-jni (provided) (TIKA-2824)
 
    * Bundle xerces2 with tika-parsers (TIKA-2802).
 

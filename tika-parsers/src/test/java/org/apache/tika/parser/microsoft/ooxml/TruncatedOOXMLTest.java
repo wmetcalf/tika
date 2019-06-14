@@ -38,6 +38,7 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.Random;
 
+import static junit.framework.TestCase.assertTrue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
@@ -97,25 +98,6 @@ public class TruncatedOOXMLTest extends TikaTest {
         } catch (EOFException e) {
 
         }
-    }
-
-    private InputStream truncate(String fileName, int length) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        int bufferSize = 4096;
-        byte[] buffer = new byte[bufferSize];
-        int bytesRead = 0;
-        int toRead = length;
-        try (InputStream is = getResourceAsStream("/test-documents/"+fileName)) {
-            while (toRead > 0) {
-                int justRead = is.read(buffer, 0, Math.min(bufferSize, toRead));
-                if (justRead == -1) {
-                    throw new EOFException("eof reached");
-                }
-                bos.write(buffer, 0, justRead);
-                toRead -= justRead;
-            }
-        }
-        return new ByteArrayInputStream(bos.toByteArray());
     }
 
     @Test

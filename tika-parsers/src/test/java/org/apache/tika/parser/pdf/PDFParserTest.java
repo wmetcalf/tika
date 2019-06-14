@@ -24,6 +24,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.File;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -1386,6 +1387,36 @@ public class PDFParserTest extends TikaTest {
         assertContains("transport mined materials", xml);
     }
 
+    @Test
+    public void testFileInAnnotationExtractedIfNoContents() throws Exception {
+        //TIKA-2845
+        List<Metadata> contents = getRecursiveMetadata("testPDFFileEmbInAnnotation_noContents.pdf");
+        assertEquals(2, contents.size());
+        assertContains("This is a Excel", contents.get(1).get(RecursiveParserWrapperHandler.TIKA_CONTENT));
+    }
+
+    @Test
+    public void testUnmappedUnicodeStats() throws Exception {
+        List<Metadata> metadataList = getRecursiveMetadata("testPDF_bad_page_303226.pdf", true);
+        Metadata m = metadataList.get(0);
+        int[] totalChars = m.getIntValues(PDF.CHARACTERS_PER_PAGE);
+        int[] unmappedUnicodeChars = m.getIntValues(PDF.UNMAPPED_UNICODE_CHARS_PER_PAGE);
+        assertEquals(3805, totalChars[15]);
+        assertEquals(120, unmappedUnicodeChars[15]);
+
+        //confirm all works with angles
+        PDFParserConfig pdfParserConfig = new PDFParserConfig();
+        pdfParserConfig.setDetectAngles(true);
+        ParseContext parseContext = new ParseContext();
+        parseContext.set(PDFParserConfig.class, pdfParserConfig);
+        metadataList = getRecursiveMetadata("testPDF_bad_page_303226.pdf", parseContext,true);
+        m = metadataList.get(0);
+        totalChars = m.getIntValues(PDF.CHARACTERS_PER_PAGE);
+        unmappedUnicodeChars = m.getIntValues(PDF.UNMAPPED_UNICODE_CHARS_PER_PAGE);
+        assertEquals(3805, totalChars[15]);
+        assertEquals(120, unmappedUnicodeChars[15]);
+
+    }
     /**
      * Simple class to count end of document events.  If functionality is useful,
      * move to org.apache.tika in src/test

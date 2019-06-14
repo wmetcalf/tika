@@ -13,23 +13,20 @@
 #  specific language governing permissions and limitations
 #  under the License.
 
-FROM centos 
+FROM ubuntu:xenial
 MAINTAINER Apache Tika Team
 
-RUN yum -y update; yum clean all
-RUN yum -y install wget curl
-RUN wget http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-RUN rpm --import http://repos.azulsystems.com/RPM-GPG-KEY-azulsystems
-RUN curl -o /etc/yum.repos.d/zulu.repo http://repos.azulsystems.com/rhel/zulu.repo
-RUN rpm -ivh epel-release-latest-7.noarch.rpm
-RUN yum -y update; yum clean all; yum -y install zulu-8 tesseract systemd; (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == systemd-tmpfiles-setup.service ] || rm -f $i; done); rm -f /lib/systemd/system/multi-user.target.wants/*; rm -f /etc/systemd/system/*.wants/*; rm -f /lib/systemd/system/local-fs.target.wants/*; rm -f /lib/systemd/system/sockets.target.wants/*udev*; rm -f /lib/systemd/system/sockets.target.wants/*initctl*; rm -f /lib/systemd/system/basic.target.wants/*; rm -f /lib/systemd/system/anaconda.target.wants/*;
+RUN	apt-get update \
+	&& apt-get install openjdk-8-jre-headless curl gdal-bin tesseract-ocr \
+	   tesseract-ocr-eng tesseract-ocr-ita tesseract-ocr-fra tesseract-ocr-spa tesseract-ocr-deu -y \
+	&& apt-get clean -y && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ENV JAVA_HOME /usr/lib/jvm/java-8-openjdk-amd64
+RUN export JAVA_HOME
+
 ARG JAR_FILE
-RUN useradd -ms /bin/bash tika 
-ADD target/tika-server-2.0.0-SNAPSHOT.jar /tika-server.jar
-ADD extra/firejail-0.9.56-1.x86_64.rpm /firejail-0.9.56-1.x86_64.rpm
-RUN rpm -ivh firejail-0.9.56-1.x86_64.rpm 
-ADD extra/jailed-tika /etc/systemd/system/jailed_tika.service
-VOLUME ["/sys/fs/cgroup"]
+ADD target/${JAR_FILE} /tika-server.jar
+
 EXPOSE 9998
-RUN systemctl enable jailed_tika
-CMD ["/usr/sbin/init"]
+ENTRYPOINT java -jar /tika-server.jar -h 0.0.0.0
+

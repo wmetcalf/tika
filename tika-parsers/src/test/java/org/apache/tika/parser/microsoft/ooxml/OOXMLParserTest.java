@@ -599,18 +599,18 @@ public class OOXMLParserTest extends TikaTest {
         assertContains("<b>Bold</b>", xml);
         assertContains("<i>italic</i>", xml);
         assertContains("<u>underline</u>", xml);
-        assertContains("<strike>strikethrough</strike>", xml);
+        assertContains("<s>strikethrough</s>", xml);
     }
 
     @Test
     public void testTextDecorationNested() throws Exception {
         String xml = getXML("testWORD_various.docx").xml;
 
-        assertContains("<i>ita<strike>li</strike>c</i>", xml);
-        assertContains("<i>ita<strike>l<u>i</u></strike>c</i>", xml);
-        assertContains("<i><u>unde</u><strike><u>r</u></strike><u>line</i></u>", xml);
+        assertContains("<i>ita<s>li</s>c</i>", xml);
+        assertContains("<i>ita<s>l<u>i</u></s>c</i>", xml);
+        assertContains("<i><u>unde<s>r</s>line</u></i>", xml);
 
-        //confirm that spaces aren't added for <strike/> and </u>
+        //confirm that spaces aren't added for </s> and </u>
         ContentHandler contentHandler = new BodyContentHandler();
         try (InputStream is = getResourceAsStream("/test-documents/testWORD_various.docx")){
             new AutoDetectParser().parse(is, contentHandler, new Metadata(), new ParseContext());
@@ -1204,12 +1204,18 @@ public class OOXMLParserTest extends TikaTest {
     @Test
     public void testEncrypted() throws Exception {
         Map<String, String> tests = new HashMap<String, String>();
+        //the first three contain javax.crypto.CipherInputStream
         tests.put("testWORD_protected_passtika.docx",
                 "This is an encrypted Word 2007 File");
         tests.put("testPPT_protected_passtika.pptx",
                 "This is an encrypted PowerPoint 2007 slide.");
         tests.put("testEXCEL_protected_passtika.xlsx",
                 "This is an Encrypted Excel spreadsheet.");
+        //TIKA-2873 this one contains a ChunkedCipherInputStream
+        //that is buggy at the POI level...can unwrap TikaInputStream in OfficeParser
+        //once https://bz.apache.org/bugzilla/show_bug.cgi?id=63431 is fixed.
+        tests.put("testEXCEL_protected_passtika_2.xlsx",
+                "This is an Encrypted Excel spreadsheet with a ChunkedCipherInputStream.");
 
         Parser parser = new AutoDetectParser();
         Metadata m = new Metadata();
