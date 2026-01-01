@@ -58,7 +58,7 @@ public class PDFParserConfig implements Serializable {
     private boolean enableAutoSpace = true;
 
     // True if we let PDFBox remove duplicate overlapping text:
-    private boolean suppressDuplicateOverlappingText = false;
+    private boolean suppressDuplicateOverlappingText = true;
 
     // True if we let PDFBox ignore spaces in the content stream and rely purely on the algorithm:
     private boolean ignoreContentStreamSpaceGlyphs = false;
@@ -69,7 +69,7 @@ public class PDFParserConfig implements Serializable {
 
     // True if we should sort text tokens by position
     // (necessary for some PDFs, but messes up other PDFs):
-    private boolean sortByPosition = false;
+    private boolean sortByPosition = true;
 
     //True if acroform content should be extracted
     private boolean extractAcroFormContent = true;
@@ -78,7 +78,7 @@ public class PDFParserConfig implements Serializable {
     private boolean extractBookmarksText = true;
 
     //True if inline PDXImage objects should be extracted
-    private boolean extractInlineImages = false;
+    private boolean extractInlineImages = true;
 
     //True if inline images should only have their metadata
     //extracted.
@@ -122,7 +122,7 @@ public class PDFParserConfig implements Serializable {
 
     private OCR_RENDERING_STRATEGY ocrRenderingStrategy = OCR_RENDERING_STRATEGY.ALL;
 
-    private int ocrDPI = 300;
+    private int ocrDPI = 600;
     private TikaImageType ocrImageType = TikaImageType.GRAY;
     private String ocrImageFormatName = "png";
     private float ocrImageQuality = 1.0f;

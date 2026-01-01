@@ -44,6 +44,7 @@ import org.apache.pdfbox.io.RandomAccessRead;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
 import org.apache.pdfbox.io.RandomAccessStreamCache;
+import org.apache.pdfbox.multipdf.PageExtractor;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -179,6 +180,8 @@ public class PDFParser implements Parser, RenderingParser, Initializable {
         context.set(IncrementalUpdateRecord.class, null);
         initRenderer(localConfig, context);
         PDDocument pdfDocument = null;
+        PDDocument slicedPdf = null;
+        int originalPageCount = -1;
 
         String password = "";
         PDFRenderingState incomingRenderingState = context.get(PDFRenderingState.class);
@@ -215,6 +218,24 @@ public class PDFParser implements Parser, RenderingParser, Initializable {
             pdfDocument = getPDDocument(stream, tstream, password,
                     memoryUsageSetting.streamCache, metadata, context);
 
+            //WAM 06/17/20 limit pdf text extraction to the first 2 pages...
+            originalPageCount = pdfDocument.getNumberOfPages();
+            try {
+                if (originalPageCount > 5) {
+                    PageExtractor slicer = new PageExtractor(pdfDocument, 1, 2);
+                    slicedPdf = slicer.extract();
+                    if (slicedPdf != null) {
+                        // Use sliced PDF for all subsequent operations
+                        pdfDocument.close();
+                        pdfDocument = slicedPdf;
+                        slicedPdf = null; // Transfer ownership
+                    }
+                }
+            } catch (Exception e) {
+                metadata.add("PDF-SLICE-FAILED", "true");
+                metadata.add("PDF-SLICED-ERROR", e.toString());
+                slicedPdf = null;
+            }
 
             boolean hasCollection = hasCollection(pdfDocument, metadata);
 
@@ -244,6 +265,11 @@ public class PDFParser implements Parser, RenderingParser, Initializable {
                             localConfig);
                 }
             }
+
+            // WAM: Restore original page count if we sliced the PDF
+            if (originalPageCount > 5) {
+                metadata.set(PagedText.N_PAGES, originalPageCount);
+            }
         } catch (InvalidPasswordException e) {
             metadata.set(PDF.IS_ENCRYPTED, "true");
             throw new EncryptedDocumentException(e);
@@ -259,6 +285,9 @@ public class PDFParser implements Parser, RenderingParser, Initializable {
                 }
                 if (pdfDocument != null) {
                     pdfDocument.close();
+                }
+                if (slicedPdf != null) {
+                    slicedPdf.close();
                 }
             } finally {
                 //replace the one that was here
