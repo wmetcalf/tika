@@ -120,7 +120,15 @@ public abstract class AbstractImageParser implements Parser {
         return normalized.length() == 0 ? null : normalized;
     }
 
-    private Path getBarcodePath(TikaInputStream tis, ParseContext context) throws IOException {
+    void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {
+        ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
+        if (config == null || !config.isEnabled()) {
+            return;
+        }
+        tis.enableRewind();
+    }
+
+    Path getBarcodePath(TikaInputStream tis, ParseContext context) throws IOException {
         ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
         if (config == null || !config.isEnabled()) {
             return null;
@@ -140,8 +148,9 @@ public abstract class AbstractImageParser implements Parser {
         Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
         if (ocrMediaType == null ||
                 ocrParser == null || !ocrParser.getSupportedTypes(context).contains(ocrMediaType)) {
-            Path barcodePath = getBarcodePath(tis, context);
+            prepareBarcodePathLookup(tis, context);
             extractMetadata(tis, handler, metadata, context);
+            Path barcodePath = getBarcodePath(tis, context);
             addBarcodeMetadata(barcodePath, metadata, context);
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();

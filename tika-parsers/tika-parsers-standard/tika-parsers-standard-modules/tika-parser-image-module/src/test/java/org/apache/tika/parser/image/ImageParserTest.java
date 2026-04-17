@@ -286,6 +286,24 @@ public class ImageParserTest extends TikaTest {
         assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
     }
 
+    @Test
+    public void testBarcodePathResolvedAfterMetadataExtractionInNonOCRBranch() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        OrderingBarcodeParser parser = new OrderingBarcodeParser();
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(1, parser.metadataExtractions);
+        assertEquals(1, parser.pathLookupsAfterExtraction);
+    }
+
     private static class StubBarcodeParser extends AbstractImageParser {
 
         private static final long serialVersionUID = 1L;
@@ -313,6 +331,32 @@ public class ImageParserTest extends TikaTest {
                 return Collections.emptyList();
             }
             return results == null ? Collections.<ZXingCPPScanner.Result>emptyList() : results;
+        }
+    }
+
+    private static class OrderingBarcodeParser extends StubBarcodeParser {
+
+        private int metadataExtractions = 0;
+        private int pathLookupsAfterExtraction = 0;
+
+        private OrderingBarcodeParser() {
+            super(Collections.<ZXingCPPScanner.Result>emptyList());
+        }
+
+        @Override
+        void extractMetadata(InputStream is, ContentHandler contentHandler, Metadata metadata,
+                             ParseContext parseContext)
+                throws IOException, SAXException, TikaException {
+            metadataExtractions++;
+            is.read();
+        }
+
+        @Override
+        Path getBarcodePath(TikaInputStream tis, ParseContext context) throws IOException {
+            if (metadataExtractions > 0) {
+                pathLookupsAfterExtraction++;
+            }
+            return super.getBarcodePath(tis, context);
         }
     }
 }
