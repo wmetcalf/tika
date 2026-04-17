@@ -216,6 +216,16 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void explicitNullStringFieldIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":null," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        assertTrue(exception.getMessage().contains("FilePath"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void bareTokenStringValueIsRejectedAsProtocolFailure() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +

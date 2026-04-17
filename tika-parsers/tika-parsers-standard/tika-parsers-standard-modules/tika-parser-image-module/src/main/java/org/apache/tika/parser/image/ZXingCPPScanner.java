@@ -104,6 +104,7 @@ public class ZXingCPPScanner {
                 continue;
             }
             Map<String, String> json = parseJsonLine(line.trim());
+            rejectExplicitNullFields(json);
             String format = normalizeFormat(requireField(json, "Format"));
             if (StringUtils.isBlank(format)) {
                 throw new IllegalArgumentException("Expected non-blank Format in ZXingReader -json " +
@@ -216,6 +217,15 @@ public class ZXingCPPScanner {
                     "-json output: " + line);
         }
         return values;
+    }
+
+    private static void rejectExplicitNullFields(Map<String, String> json) {
+        for (Map.Entry<String, String> entry : json.entrySet()) {
+            if (entry.getValue() == null) {
+                throw new IllegalArgumentException("Expected non-null field '" + entry.getKey() +
+                        "' in ZXingReader -json line-delimited output");
+            }
+        }
     }
 
     private static String parseJsonValue(String line, int[] index, String fieldName) {
