@@ -84,7 +84,7 @@ public class ZXingCPPScanner {
             command.add("-formats");
             command.add(config.getFormats());
         }
-        command.add(imagePath.toAbsolutePath().toString());
+        command.add(ProcessUtils.escapeCommandLine(imagePath.toAbsolutePath().toString()));
         return command;
     }
 
