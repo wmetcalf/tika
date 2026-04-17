@@ -290,6 +290,11 @@ public class TestMetadata extends TikaTest {
         assertEquals(null, meta.getInt(TikaCoreProperties.CREATED));
     }
 
+    @Test
+    public void testBarcodeMetadataKeys() {
+        assertEquals("barcode:value", Barcode.BARCODE_VALUE.getName());
+    }
+
     /**
      * Tests for getting and setting date
      * based properties
