@@ -26,5 +26,5 @@ public interface Barcode {
     Property BARCODE_POSITION = Property.internalTextBag("barcode:position");
     Property BARCODE_ERROR_CORRECTION_LEVEL =
             Property.internalTextBag("barcode:error-correction-level");
-    Property BARCODE_IS_MIRRORED = Property.internalBoolean("barcode:is-mirrored");
+    Property BARCODE_IS_MIRRORED = Property.internalTextBag("barcode:is-mirrored");
 }

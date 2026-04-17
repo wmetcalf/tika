@@ -299,6 +299,8 @@ public class TestMetadata extends TikaTest {
         assertEquals("barcode:error-correction-level",
                 Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName());
         assertEquals("barcode:is-mirrored", Barcode.BARCODE_IS_MIRRORED.getName());
+        assertTrue(Barcode.BARCODE_IS_MIRRORED.isMultiValuePermitted());
+        assertEquals(Property.PropertyType.BAG, Barcode.BARCODE_IS_MIRRORED.getPropertyType());
     }
 
     /**
