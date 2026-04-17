@@ -17,8 +17,7 @@
 package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-
-import java.io.File;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.apache.commons.io.FilenameUtils;
 import org.junit.jupiter.api.Test;
@@ -26,12 +25,22 @@ import org.junit.jupiter.api.Test;
 public class ZXingCPPConfigTest {
 
     @Test
-    public void normalizesBinaryPathWithTrailingSeparator() throws Exception {
+    public void normalizesFullExecutablePath() throws Exception {
         ZXingCPPConfig config = new ZXingCPPConfig();
-        String input = "target/zxing-cpp/bin" + File.separator;
+        String input = "target/zxing-cpp/bin/ZXingReader";
         config.setZxingPath(input);
 
-        assertEquals(FilenameUtils.normalize("target/zxing-cpp/bin") + File.separator,
+        assertEquals(FilenameUtils.normalize(input),
                 config.getZxingPath());
+    }
+
+    @Test
+    public void rejectsNonPositiveTimeoutSeconds() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> config.setTimeoutSeconds(0));
+
+        assertEquals("timeoutSeconds must be > 0", exception.getMessage());
     }
 }

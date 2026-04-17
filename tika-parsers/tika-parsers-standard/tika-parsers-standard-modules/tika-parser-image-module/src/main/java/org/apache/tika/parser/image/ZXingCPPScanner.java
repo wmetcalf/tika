@@ -18,9 +18,7 @@ package org.apache.tika.parser.image;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -117,16 +115,14 @@ public class ZXingCPPScanner {
     }
 
     private static String getExecutable(ZXingCPPConfig config) {
-        return config.getZxingPath() + getZXingCPPProgram();
+        if (!StringUtils.isBlank(config.getZxingPath())) {
+            return config.getZxingPath();
+        }
+        return getZXingCPPProgram();
     }
 
     private static boolean hasZXingCPP(ZXingCPPConfig config) {
-        String executable = getExecutable(config);
-        if (!StringUtils.isBlank(config.getZxingPath()) &&
-                !Files.isDirectory(Paths.get(config.getZxingPath()))) {
-            return false;
-        }
-        return ProcessUtils.checkCommand(new String[]{executable, "-version"});
+        return ProcessUtils.checkCommand(new String[]{getExecutable(config), "-version"});
     }
 
     private static String getZXingCPPProgram() {

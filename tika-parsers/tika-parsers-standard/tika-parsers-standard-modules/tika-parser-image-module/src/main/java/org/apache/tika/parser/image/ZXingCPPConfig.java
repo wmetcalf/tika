@@ -16,7 +16,6 @@
  */
 package org.apache.tika.parser.image;
 
-import java.io.File;
 import java.io.Serializable;
 
 import org.apache.commons.io.FilenameUtils;
@@ -47,9 +46,6 @@ public class ZXingCPPConfig implements Serializable {
         if (zxingPath == null) {
             zxingPath = "";
         }
-        if (!zxingPath.isEmpty() && !zxingPath.endsWith(File.separator)) {
-            zxingPath += File.separator;
-        }
         this.zxingPath = zxingPath;
     }
 
@@ -58,6 +54,9 @@ public class ZXingCPPConfig implements Serializable {
     }
 
     public void setTimeoutSeconds(int timeoutSeconds) {
+        if (timeoutSeconds <= 0) {
+            throw new IllegalArgumentException("timeoutSeconds must be > 0");
+        }
         this.timeoutSeconds = timeoutSeconds;
     }
 
