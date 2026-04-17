@@ -120,7 +120,15 @@ public class ZXingCPPScanner {
     }
 
     private boolean hasZXingCPP(ZXingCPPConfig config) {
-        return ProcessUtils.checkCommand(new String[]{getExecutable(config), "-version"});
+        return checkCommand(buildProbeCommand(config));
+    }
+
+    String[] buildProbeCommand(ZXingCPPConfig config) {
+        return new String[]{getExecutable(config), "-version"};
+    }
+
+    boolean checkCommand(String[] command) {
+        return ProcessUtils.checkCommand(command);
     }
 
     FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis) throws IOException {

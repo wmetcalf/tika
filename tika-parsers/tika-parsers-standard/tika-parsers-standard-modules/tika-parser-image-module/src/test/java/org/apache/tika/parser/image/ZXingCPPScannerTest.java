@@ -99,6 +99,17 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void hasZXingCPPUsesEscapedConfiguredExecutablePathWhenItContainsSpaces() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setZxingPath("C:\\Program Files\\ZXing\\ZXingReader.exe");
+        ProbeScanner scanner = new ProbeScanner(config, true, true);
+
+        assertTrue(scanner.hasZXingCPP());
+        assertEquals("\"" + config.getZxingPath() + "\"", scanner.lastProbeCommand[0]);
+        assertEquals("-version", scanner.lastProbeCommand[1]);
+    }
+
+    @Test
     public void scanUsesEscapedImagePathWhenItContainsSpaces() {
         ZXingCPPConfig config = new ZXingCPPConfig();
         config.setEnabled(true);
@@ -408,6 +419,29 @@ public class ZXingCPPScannerTest {
                 throw exception;
             }
             return result;
+        }
+
+        @Override
+        boolean isWindows() {
+            return windows;
+        }
+    }
+
+    private static class ProbeScanner extends ZXingCPPScanner {
+        private final boolean available;
+        private final boolean windows;
+        private String[] lastProbeCommand;
+
+        private ProbeScanner(ZXingCPPConfig config, boolean available, boolean windows) {
+            super(config);
+            this.available = available;
+            this.windows = windows;
+        }
+
+        @Override
+        boolean checkCommand(String[] command) {
+            this.lastProbeCommand = command;
+            return available;
         }
 
         @Override
