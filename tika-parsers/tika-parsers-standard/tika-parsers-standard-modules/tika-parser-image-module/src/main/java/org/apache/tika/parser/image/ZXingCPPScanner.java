@@ -245,10 +245,18 @@ public class ZXingCPPScanner {
         }
 
         if (startsWithLiteral(line, index[0], "true")) {
+            if (!"IsMirrored".equals(fieldName)) {
+                throw new IllegalArgumentException("Expected JSON string for field '" +
+                        fieldName + "' in ZXingReader -json output");
+            }
             index[0] += 4;
             return "true";
         }
         if (startsWithLiteral(line, index[0], "false")) {
+            if (!"IsMirrored".equals(fieldName)) {
+                throw new IllegalArgumentException("Expected JSON string for field '" +
+                        fieldName + "' in ZXingReader -json output");
+            }
             index[0] += 5;
             return "false";
         }

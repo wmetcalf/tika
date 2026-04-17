@@ -241,6 +241,26 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void booleanLiteralInFormatIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":true}\n"));
+
+        assertTrue(exception.getMessage().contains("Format"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void booleanLiteralInTextIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":false,\"Format\":\"QR Code\"}\n"));
+
+        assertTrue(exception.getMessage().contains("Text"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void explicitNullBooleanIsRejectedAsProtocolFailure() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
