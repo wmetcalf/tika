@@ -45,7 +45,11 @@ public class ZXingCPPScanner {
     }
 
     public boolean hasZXingCPP() {
-        return hasZXingCPP(defaultConfig);
+        return hasZXingCPPInternal(defaultConfig);
+    }
+
+    boolean hasZXingCPP(ZXingCPPConfig config) {
+        return hasZXingCPPInternal(config == null ? defaultConfig : config);
     }
 
     public List<Result> scan(Path imagePath, ZXingCPPConfig config, ParseContext context) {
@@ -119,7 +123,7 @@ public class ZXingCPPScanner {
         return getZXingCPPProgram();
     }
 
-    private boolean hasZXingCPP(ZXingCPPConfig config) {
+    private boolean hasZXingCPPInternal(ZXingCPPConfig config) {
         return checkCommand(buildProbeCommand(config));
     }
 

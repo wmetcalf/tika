@@ -270,6 +270,28 @@ public class ImageParserTest extends TikaTest {
     }
 
     @Test
+    public void testBarcodeMetadataUsesConfigSpecificExecutablePathProbe() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        config.setZxingPath("/opt/zxing/ZXingReader");
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new ScannerBackedBarcodeParser(
+                new ConfigAwareAvailabilityScanner(Collections.singletonList(
+                        new ZXingCPPScanner.Result("/tmp/code.png", "hello-qr", "QR Code",
+                                null, null, null, false))));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals("hello-qr", metadata.getValues(Barcode.BARCODE_VALUE)[0]);
+        assertEquals("qr_code", metadata.getValues(Barcode.BARCODE_FORMAT)[0]);
+    }
+
+    @Test
     public void testNoBarcodeMetadataWhenScanningDisabled() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/png");
@@ -284,6 +306,39 @@ public class ImageParserTest extends TikaTest {
 
         assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
         assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+    }
+
+    @Test
+    public void testBarcodeMetadataPreservesAlignedOptionalFieldsAcrossResults() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new StubBarcodeParser(Arrays.asList(
+                new ZXingCPPScanner.Result("/tmp/code1.png", "hello-qr", "QR Code",
+                        "68656c6c6f", "10x10 20x10 20x20 10x20", "M", false),
+                new ZXingCPPScanner.Result("/tmp/code2.png", "alpha", "Code 128",
+                        null, null, null, true)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(2, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals("hello-qr", metadata.getValues(Barcode.BARCODE_VALUE)[0]);
+        assertEquals("alpha", metadata.getValues(Barcode.BARCODE_VALUE)[1]);
+        assertEquals("qr_code", metadata.getValues(Barcode.BARCODE_FORMAT)[0]);
+        assertEquals("code_128", metadata.getValues(Barcode.BARCODE_FORMAT)[1]);
+        assertEquals("68656c6c6f", metadata.getValues(Barcode.BARCODE_RAW_BYTES)[0]);
+        assertEquals("", metadata.getValues(Barcode.BARCODE_RAW_BYTES)[1]);
+        assertEquals("10x10 20x10 20x20 10x20", metadata.getValues(Barcode.BARCODE_POSITION)[0]);
+        assertEquals("", metadata.getValues(Barcode.BARCODE_POSITION)[1]);
+        assertEquals("M", metadata.getValues(Barcode.BARCODE_ERROR_CORRECTION_LEVEL)[0]);
+        assertEquals("", metadata.getValues(Barcode.BARCODE_ERROR_CORRECTION_LEVEL)[1]);
+        assertEquals("false", metadata.getValues(Barcode.BARCODE_IS_MIRRORED)[0]);
+        assertEquals("true", metadata.getValues(Barcode.BARCODE_IS_MIRRORED)[1]);
     }
 
     @Test
@@ -353,6 +408,32 @@ public class ImageParserTest extends TikaTest {
         }
     }
 
+    private static class ScannerBackedBarcodeParser extends AbstractImageParser {
+
+        private static final long serialVersionUID = 1L;
+        private final ZXingCPPScanner scanner;
+
+        private ScannerBackedBarcodeParser(ZXingCPPScanner scanner) {
+            this.scanner = scanner;
+        }
+
+        @Override
+        void extractMetadata(InputStream is, ContentHandler contentHandler, Metadata metadata,
+                             ParseContext parseContext)
+                throws IOException, SAXException, TikaException {
+        }
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Collections.singleton(MediaType.image("png"));
+        }
+
+        @Override
+        ZXingCPPScanner getBarcodeScanner() {
+            return scanner;
+        }
+    }
+
     private static class OrderingBarcodeParser extends StubBarcodeParser {
 
         private int metadataExtractions = 0;
@@ -376,6 +457,27 @@ public class ImageParserTest extends TikaTest {
                 pathLookupsAfterExtraction++;
             }
             return super.getBarcodePath(tis, context);
+        }
+    }
+
+    private static class ConfigAwareAvailabilityScanner extends ZXingCPPScanner {
+
+        private final List<ZXingCPPScanner.Result> results;
+
+        private ConfigAwareAvailabilityScanner(List<ZXingCPPScanner.Result> results) {
+            this.results = results;
+        }
+
+        @Override
+        boolean checkCommand(String[] command) {
+            return command != null && command.length > 0 &&
+                    "/opt/zxing/ZXingReader".equals(command[0]);
+        }
+
+        @Override
+        public List<ZXingCPPScanner.Result> scan(Path imagePath, ZXingCPPConfig config,
+                                                 ParseContext context) {
+            return results;
         }
     }
 

@@ -75,7 +75,7 @@ public abstract class AbstractImageParser implements Parser {
             return Collections.emptyList();
         }
         ZXingCPPScanner scanner = getBarcodeScanner();
-        if (!scanner.hasZXingCPP()) {
+        if (!scanner.hasZXingCPP(config)) {
             return Collections.emptyList();
         }
         return scanner.scan(imagePath, config, context);
@@ -91,21 +91,12 @@ public abstract class AbstractImageParser implements Parser {
         }
         try {
             for (ZXingCPPScanner.Result result : scanBarcodes(imagePath, context)) {
-                metadata.add(Barcode.BARCODE_VALUE, result.getText());
-                String normalizedFormat = normalizeBarcodeFormat(result.getFormat());
-                if (normalizedFormat != null) {
-                    metadata.add(Barcode.BARCODE_FORMAT, normalizedFormat);
-                }
-                if (result.getRawBytes() != null) {
-                    metadata.add(Barcode.BARCODE_RAW_BYTES, result.getRawBytes());
-                }
-                if (result.getPosition() != null) {
-                    metadata.add(Barcode.BARCODE_POSITION, result.getPosition());
-                }
-                if (result.getErrorCorrectionLevel() != null) {
-                    metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
-                            result.getErrorCorrectionLevel());
-                }
+                metadata.add(Barcode.BARCODE_VALUE, safe(result.getText()));
+                metadata.add(Barcode.BARCODE_FORMAT, safe(normalizeBarcodeFormat(result.getFormat())));
+                metadata.add(Barcode.BARCODE_RAW_BYTES, safe(result.getRawBytes()));
+                metadata.add(Barcode.BARCODE_POSITION, safe(result.getPosition()));
+                metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
+                        safe(result.getErrorCorrectionLevel()));
                 metadata.add(Barcode.BARCODE_IS_MIRRORED,
                         Boolean.toString(result.isMirrored()));
             }
@@ -121,6 +112,10 @@ public abstract class AbstractImageParser implements Parser {
         String normalized = format.trim().toLowerCase().replaceAll("[^a-z0-9]+", "_")
                 .replaceAll("^_+|_+$", "");
         return normalized.length() == 0 ? null : normalized;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
     }
 
     void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {
