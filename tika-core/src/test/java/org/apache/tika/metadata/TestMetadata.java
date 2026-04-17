@@ -293,6 +293,12 @@ public class TestMetadata extends TikaTest {
     @Test
     public void testBarcodeMetadataKeys() {
         assertEquals("barcode:value", Barcode.BARCODE_VALUE.getName());
+        assertEquals("barcode:format", Barcode.BARCODE_FORMAT.getName());
+        assertEquals("barcode:raw-bytes", Barcode.BARCODE_RAW_BYTES.getName());
+        assertEquals("barcode:position", Barcode.BARCODE_POSITION.getName());
+        assertEquals("barcode:error-correction-level",
+                Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName());
+        assertEquals("barcode:is-mirrored", Barcode.BARCODE_IS_MIRRORED.getName());
     }
 
     /**
