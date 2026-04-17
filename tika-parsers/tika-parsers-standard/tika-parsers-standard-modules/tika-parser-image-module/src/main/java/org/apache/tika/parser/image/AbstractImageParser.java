@@ -86,6 +86,9 @@ public abstract class AbstractImageParser implements Parser {
     }
 
     private void addBarcodeMetadata(Path imagePath, Metadata metadata, ParseContext context) {
+        if (imagePath == null) {
+            return;
+        }
         try {
             for (ZXingCPPScanner.Result result : scanBarcodes(imagePath, context)) {
                 metadata.add(Barcode.BARCODE_VALUE, result.getText());

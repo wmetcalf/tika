@@ -304,6 +304,25 @@ public class ImageParserTest extends TikaTest {
         assertEquals(1, parser.pathLookupsAfterExtraction);
     }
 
+    @Test
+    public void testNoBarcodeMetadataWhenEnabledButNoPathAvailable() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new NullPathBarcodeParser(Arrays.asList(new ZXingCPPScanner.Result(
+                "/tmp/code.png", "hello-qr", "QR Code", null, null, null, false)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+    }
+
     private static class StubBarcodeParser extends AbstractImageParser {
 
         private static final long serialVersionUID = 1L;
@@ -357,6 +376,18 @@ public class ImageParserTest extends TikaTest {
                 pathLookupsAfterExtraction++;
             }
             return super.getBarcodePath(tis, context);
+        }
+    }
+
+    private static class NullPathBarcodeParser extends StubBarcodeParser {
+
+        private NullPathBarcodeParser(List<ZXingCPPScanner.Result> results) {
+            super(results);
+        }
+
+        @Override
+        Path getBarcodePath(TikaInputStream tis, ParseContext context) {
+            return null;
         }
     }
 }
