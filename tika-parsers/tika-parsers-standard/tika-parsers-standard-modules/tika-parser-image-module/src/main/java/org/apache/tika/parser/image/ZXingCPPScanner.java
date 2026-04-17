@@ -118,7 +118,7 @@ public class ZXingCPPScanner {
 
     private static String getExecutable(ZXingCPPConfig config) {
         if (!StringUtils.isBlank(config.getZxingPath())) {
-            return config.getZxingPath();
+            return ProcessUtils.escapeCommandLine(config.getZxingPath());
         }
         return getZXingCPPProgram();
     }

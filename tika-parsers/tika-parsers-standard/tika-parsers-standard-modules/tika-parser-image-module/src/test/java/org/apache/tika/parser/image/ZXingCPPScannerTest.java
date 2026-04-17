@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
+import org.apache.tika.utils.ProcessUtils;
 
 public class ZXingCPPScannerTest {
 
@@ -81,6 +82,22 @@ public class ZXingCPPScannerTest {
         assertEquals("-formats", scanner.lastCommand.get(2));
         assertEquals("QRCode", scanner.lastCommand.get(3));
         assertEquals(imagePath.toAbsolutePath().toString(), scanner.lastCommand.get(4));
+    }
+
+    @Test
+    public void scanUsesEscapedConfiguredExecutablePathWhenItContainsSpaces() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        config.setZxingPath("C:\\Program Files\\ZXing\\ZXingReader.exe");
+        Path imagePath = Paths.get("target/test-data/code.png");
+
+        StubScanner scanner = new StubScanner(successResult(
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        scanner.scan(imagePath, config, new ParseContext());
+
+        assertEquals(ProcessUtils.escapeCommandLine(config.getZxingPath()),
+                scanner.lastCommand.get(0));
     }
 
     @Test
