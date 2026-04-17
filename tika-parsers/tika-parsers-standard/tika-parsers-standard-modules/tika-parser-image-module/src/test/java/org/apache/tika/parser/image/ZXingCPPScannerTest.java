@@ -30,8 +30,6 @@ import org.junit.jupiter.api.Test;
 
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
-import org.apache.tika.utils.ProcessUtils;
-
 public class ZXingCPPScannerTest {
 
     @Test
@@ -92,12 +90,12 @@ public class ZXingCPPScannerTest {
         Path imagePath = Paths.get("target/test-data/code.png");
 
         StubScanner scanner = new StubScanner(successResult(
-                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"),
+                true);
 
         scanner.scan(imagePath, config, new ParseContext());
 
-        assertEquals(ProcessUtils.escapeCommandLine(config.getZxingPath()),
-                scanner.lastCommand.get(0));
+        assertEquals("\"" + config.getZxingPath() + "\"", scanner.lastCommand.get(0));
     }
 
     @Test
@@ -107,11 +105,12 @@ public class ZXingCPPScannerTest {
         Path imagePath = Paths.get("target/test data/code image.png");
 
         StubScanner scanner = new StubScanner(successResult(
-                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"),
+                true);
 
         scanner.scan(imagePath, config, new ParseContext());
 
-        assertEquals(ProcessUtils.escapeCommandLine(imagePath.toAbsolutePath().toString()),
+        assertEquals("\"" + imagePath.toAbsolutePath().toString() + "\"",
                 scanner.lastCommand.get(scanner.lastCommand.size() - 1));
     }
 
@@ -127,7 +126,7 @@ public class ZXingCPPScannerTest {
         assertEquals(1, results.size());
         assertEquals("/tmp/code.png", results.get(0).getFilePath());
         assertEquals("hello world", results.get(0).getText());
-        assertEquals("qr_code", results.get(0).getFormat());
+        assertEquals("QR Code", results.get(0).getFormat());
         assertEquals("68656c6c6f20776f726c64", results.get(0).getRawBytes());
         assertEquals("M", results.get(0).getErrorCorrectionLevel());
         assertFalse(results.get(0).isMirrored());
@@ -145,10 +144,10 @@ public class ZXingCPPScannerTest {
         assertEquals(2, results.size());
         assertEquals("/tmp/qr.png", results.get(0).getFilePath());
         assertEquals("alpha", results.get(0).getText());
-        assertEquals("qr_code", results.get(0).getFormat());
+        assertEquals("QR Code", results.get(0).getFormat());
         assertEquals("/tmp/code128.png", results.get(1).getFilePath());
         assertEquals("1234567890", results.get(1).getText());
-        assertEquals("code_128", results.get(1).getFormat());
+        assertEquals("Code 128", results.get(1).getFormat());
         assertTrue(results.get(1).isMirrored());
     }
 
@@ -208,6 +207,16 @@ public class ZXingCPPScannerTest {
 
         assertTrue(missingComma.getMessage().contains("ZXingReader -json"));
         assertTrue(repeatedComma.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void duplicateJsonKeysAreRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Format\":\"QR Code\",\"Format\":\"Data Matrix\"}\n"));
+
+        assertTrue(exception.getMessage().contains("Format"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
     }
 
     @Test
@@ -372,16 +381,23 @@ public class ZXingCPPScannerTest {
     private static class StubScanner extends ZXingCPPScanner {
         private final FileProcessResult result;
         private final IOException exception;
+        private final boolean windows;
         private List<String> lastCommand;
 
         private StubScanner(FileProcessResult result) {
+            this(result, false);
+        }
+
+        private StubScanner(FileProcessResult result, boolean windows) {
             this.result = result;
             this.exception = null;
+            this.windows = windows;
         }
 
         private StubScanner(IOException exception) {
             this.result = null;
             this.exception = exception;
+            this.windows = false;
         }
 
         @Override
@@ -392,6 +408,11 @@ public class ZXingCPPScannerTest {
                 throw exception;
             }
             return result;
+        }
+
+        @Override
+        boolean isWindows() {
+            return windows;
         }
     }
 }

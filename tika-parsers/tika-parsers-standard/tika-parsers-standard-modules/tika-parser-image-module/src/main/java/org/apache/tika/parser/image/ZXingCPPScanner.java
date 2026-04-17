@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import org.apache.tika.parser.ParseContext;
@@ -84,7 +83,7 @@ public class ZXingCPPScanner {
             command.add("-formats");
             command.add(config.getFormats());
         }
-        command.add(ProcessUtils.escapeCommandLine(imagePath.toAbsolutePath().toString()));
+        command.add(escapeCommandLine(imagePath.toAbsolutePath().toString()));
         return command;
     }
 
@@ -105,11 +104,7 @@ public class ZXingCPPScanner {
             }
             Map<String, String> json = parseJsonLine(line.trim());
             rejectExplicitNullFields(json);
-            String format = normalizeFormat(requireField(json, "Format"));
-            if (StringUtils.isBlank(format)) {
-                throw new IllegalArgumentException("Expected non-blank Format in ZXingReader -json " +
-                        "output line: " + line.trim());
-            }
+            String format = requireField(json, "Format");
             results.add(new Result(json.get("FilePath"), json.get("Text"), format,
                     json.get("Bytes"), json.get("Position"), json.get("ECLevel"),
                     parseBooleanField(json, "IsMirrored")));
@@ -117,14 +112,14 @@ public class ZXingCPPScanner {
         return results;
     }
 
-    private static String getExecutable(ZXingCPPConfig config) {
+    private String getExecutable(ZXingCPPConfig config) {
         if (!StringUtils.isBlank(config.getZxingPath())) {
-            return ProcessUtils.escapeCommandLine(config.getZxingPath());
+            return escapeCommandLine(config.getZxingPath());
         }
         return getZXingCPPProgram();
     }
 
-    private static boolean hasZXingCPP(ZXingCPPConfig config) {
+    private boolean hasZXingCPP(ZXingCPPConfig config) {
         return ProcessUtils.checkCommand(new String[]{getExecutable(config), "-version"});
     }
 
@@ -137,16 +132,19 @@ public class ZXingCPPScanner {
                 "ZXingReader.exe" : "ZXingReader";
     }
 
-    private static String normalizeFormat(String format) {
-        if (StringUtils.isBlank(format)) {
-            return "";
+    String escapeCommandLine(String arg) {
+        if (arg == null) {
+            return null;
         }
-        String normalized = format.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "_")
-                .replaceAll("_+", "_");
-        normalized = normalized.replaceAll("^_", "");
-        normalized = normalized.replaceAll("_$", "");
-        return normalized;
+        if (isWindows() && arg.contains(" ") &&
+                (!arg.startsWith("\"") && !arg.endsWith("\""))) {
+            return "\"" + arg + "\"";
+        }
+        return arg;
+    }
+
+    boolean isWindows() {
+        return System.getProperty("os.name").startsWith("Windows");
     }
 
     private static String requireField(Map<String, String> json, String fieldName) {
@@ -187,6 +185,10 @@ public class ZXingCPPScanner {
         }
         while (index[0] < line.length() - 1) {
             String key = parseJsonString(line, index);
+            if (values.containsKey(key)) {
+                throw new IllegalArgumentException("Duplicate field '" + key +
+                        "' in ZXingReader -json line-delimited output");
+            }
             skipWhitespace(line, index);
             expect(line, index, ':');
             skipWhitespace(line, index);
