@@ -18,13 +18,36 @@ package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
 public class ZXingCPPScannerTest {
+
+    @Test
+    public void buildsJsonCommandWithConfiguredFormats() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setZxingPath("target/zxing-cpp/bin" + File.separator);
+        config.setFormats("QRCode,Code128");
+        Path imagePath = Paths.get("target/test-data/code.png");
+
+        List<String> command = new ZXingCPPScanner().buildCommand(imagePath, config);
+
+        assertEquals(config.getZxingPath() +
+                        (System.getProperty("os.name").startsWith("Windows") ?
+                                "ZXingReader.exe" : "ZXingReader"),
+                command.get(0));
+        assertEquals("-json", command.get(1));
+        assertEquals("-formats", command.get(2));
+        assertEquals("QRCode,Code128", command.get(3));
+        assertEquals(imagePath.toAbsolutePath().toString(), command.get(4));
+    }
 
     @Test
     public void parsesSingleResultJsonIntoRecord() {
@@ -61,6 +84,14 @@ public class ZXingCPPScannerTest {
         assertEquals("1234567890", results.get(1).getText());
         assertEquals("code_128", results.get(1).getFormat());
         assertTrue(results.get(1).isMirrored());
+    }
+
+    @Test
+    public void malformedOutputLineThrowsExplicitException() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("not json\n"));
+
+        assertTrue(exception.getMessage().contains("Expected JSON object"));
     }
 
     @Test
