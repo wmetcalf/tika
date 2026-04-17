@@ -161,10 +161,12 @@ public abstract class AbstractImageParser implements Parser {
         try {
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
+            prepareBarcodePathLookup(tis, context);
             Path path = tis.getPath();
             try (InputStream pathStream = Files.newInputStream(path)) {
                 extractMetadata(pathStream, new EmbeddedContentHandler(xhtml), metadata, context);
-                addBarcodeMetadata(path, metadata, context);
+                Path barcodePath = getBarcodePath(tis, context);
+                addBarcodeMetadata(barcodePath, metadata, context);
             } catch (SecurityException e) {
                 throw e;
             } catch (Exception e) {

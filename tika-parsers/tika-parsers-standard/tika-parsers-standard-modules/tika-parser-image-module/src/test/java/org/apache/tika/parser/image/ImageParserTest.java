@@ -378,6 +378,26 @@ public class ImageParserTest extends TikaTest {
         assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
     }
 
+    @Test
+    public void testNoBarcodeMetadataWhenEnabledButNoPathAvailableInOCRBranch() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        context.set(Parser.class, new OCRSupportingParser());
+        Parser parser = new NullPathBarcodeParser(Arrays.asList(new ZXingCPPScanner.Result(
+                "/tmp/code.png", "hello-qr", "QR Code", null, null, null, false)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+    }
+
     private static class StubBarcodeParser extends AbstractImageParser {
 
         private static final long serialVersionUID = 1L;
@@ -490,6 +510,22 @@ public class ImageParserTest extends TikaTest {
         @Override
         Path getBarcodePath(TikaInputStream tis, ParseContext context) {
             return null;
+        }
+    }
+
+    private static class OCRSupportingParser implements Parser {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Collections.singleton(AbstractImageParser.convertToOCRMediaType(
+                    MediaType.image("png")));
+        }
+
+        @Override
+        public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
+                          ParseContext context) {
         }
     }
 }
