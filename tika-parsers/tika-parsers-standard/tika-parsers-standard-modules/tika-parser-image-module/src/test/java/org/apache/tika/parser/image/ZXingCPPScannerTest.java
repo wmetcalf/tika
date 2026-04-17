@@ -165,6 +165,30 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void malformedFieldSeparatorsAreRejected() {
+        IllegalArgumentException missingComma = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"" +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        IllegalArgumentException repeatedComma = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\",," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        assertTrue(missingComma.getMessage().contains("ZXingReader -json"));
+        assertTrue(repeatedComma.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void invalidBooleanLiteralIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\",\"IsMirrored\":truthy}\n"));
+
+        assertTrue(exception.getMessage().contains("IsMirrored"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void jsonArrayOutputIsRejectedAsNotJsonLines() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("[{\"FilePath\":\"/tmp/code.png\"," +
@@ -230,6 +254,36 @@ public class ZXingCPPScannerTest {
                         .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
 
         assertTrue(exception.getMessage().contains("Unable to execute zxing-cpp scan"));
+    }
+
+    @Test
+    public void scanThrowsWhenCommandTimesOut() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        FileProcessResult result = successResult("");
+        result.setTimeout(true);
+
+        ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
+                () -> new StubScanner(result)
+                        .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
+
+        assertTrue(exception.getMessage().contains("Timed out running zxing-cpp"));
+    }
+
+    @Test
+    public void scanThrowsWhenCommandExitsNonZero() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        FileProcessResult result = new FileProcessResult();
+        result.setExitValue(3);
+        result.setStderr("bad input");
+
+        ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
+                () -> new StubScanner(result)
+                        .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
+
+        assertTrue(exception.getMessage().contains("zxing-cpp exited with 3"));
+        assertTrue(exception.getMessage().contains("bad input"));
     }
 
     private static FileProcessResult successResult(String stdout) {

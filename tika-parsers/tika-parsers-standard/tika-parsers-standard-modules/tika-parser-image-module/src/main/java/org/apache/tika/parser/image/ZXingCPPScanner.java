@@ -26,17 +26,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ProcessUtils;
 import org.apache.tika.utils.StringUtils;
 
 public class ZXingCPPScanner {
-
-    private static final Logger LOG = LoggerFactory.getLogger(ZXingCPPScanner.class);
 
     private static final int MAX_STDIO = 1024 * 1024;
 
@@ -116,7 +111,7 @@ public class ZXingCPPScanner {
             }
             results.add(new Result(json.get("FilePath"), json.get("Text"), format,
                     json.get("Bytes"), json.get("Position"), json.get("ECLevel"),
-                    Boolean.parseBoolean(json.get("IsMirrored"))));
+                    parseBooleanField(json, "IsMirrored")));
         }
         return results;
     }
@@ -162,6 +157,21 @@ public class ZXingCPPScanner {
         return value;
     }
 
+    private static boolean parseBooleanField(Map<String, String> json, String fieldName) {
+        String value = json.get(fieldName);
+        if (value == null) {
+            return false;
+        }
+        if ("true".equals(value)) {
+            return true;
+        }
+        if ("false".equals(value)) {
+            return false;
+        }
+        throw new IllegalArgumentException("Expected boolean field '" + fieldName +
+                "' in ZXingReader -json line-delimited output");
+    }
+
     private static Map<String, String> parseJsonLine(String line) {
         Map<String, String> values = new LinkedHashMap<>();
         if (!line.startsWith("{") || !line.endsWith("}")) {
@@ -170,17 +180,34 @@ public class ZXingCPPScanner {
         }
 
         int[] index = new int[]{1};
+        skipWhitespace(line, index);
+        if (index[0] < line.length() && line.charAt(index[0]) == '}') {
+            return values;
+        }
         while (index[0] < line.length() - 1) {
-            skipWhitespaceAndCommas(line, index);
-            if (index[0] >= line.length() - 1 || line.charAt(index[0]) == '}') {
-                break;
-            }
             String key = parseJsonString(line, index);
             skipWhitespace(line, index);
             expect(line, index, ':');
             skipWhitespace(line, index);
             values.put(key, parseJsonValue(line, index));
-            skipWhitespaceAndCommas(line, index);
+            skipWhitespace(line, index);
+            if (index[0] >= line.length() - 1) {
+                break;
+            }
+            char separator = line.charAt(index[0]);
+            if (separator == '}') {
+                break;
+            }
+            if (separator != ',') {
+                throw new IllegalArgumentException("Expected ',' between ZXingReader -json " +
+                        "fields: " + line);
+            }
+            index[0]++;
+            skipWhitespace(line, index);
+            if (index[0] >= line.length() - 1 || line.charAt(index[0]) != '"') {
+                throw new IllegalArgumentException("Expected field after ',' in ZXingReader " +
+                        "-json output: " + line);
+            }
         }
         return values;
     }
@@ -260,16 +287,6 @@ public class ZXingCPPScanner {
             }
         }
         throw new IllegalArgumentException("Unterminated string: " + line);
-    }
-
-    private static void skipWhitespaceAndCommas(String line, int[] index) {
-        while (index[0] < line.length()) {
-            char ch = line.charAt(index[0]);
-            if (!Character.isWhitespace(ch) && ch != ',') {
-                return;
-            }
-            index[0]++;
-        }
     }
 
     private static void skipWhitespace(String line, int[] index) {
