@@ -28,7 +28,8 @@ public class ZXingCPPConfigTest {
     @Test
     public void normalizesBinaryPathWithTrailingSeparator() throws Exception {
         ZXingCPPConfig config = new ZXingCPPConfig();
-        config.setZxingPath("target/zxing-cpp/bin");
+        String input = "target/zxing-cpp/bin" + File.separator;
+        config.setZxingPath(input);
 
         assertEquals(FilenameUtils.normalize("target/zxing-cpp/bin") + File.separator,
                 config.getZxingPath());
