@@ -155,6 +155,16 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void malformedLineMissingFormatIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\"}\n"));
+
+        assertTrue(exception.getMessage().contains("Format"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void jsonArrayOutputIsRejectedAsNotJsonLines() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("[{\"FilePath\":\"/tmp/code.png\"," +
@@ -179,6 +189,19 @@ public class ZXingCPPScannerTest {
 
         ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
                 () -> new StubScanner(successResult("[{\"Text\":\"hello\",\"Format\":\"QR Code\"}]"))
+                        .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
+
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void scanWrapsInvalidUnicodeEscapeAsProtocolFailure() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+
+        ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
+                () -> new StubScanner(successResult("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"bad \\uZZZZ\",\"Format\":\"QR Code\"}\n"))
                         .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
 
         assertTrue(exception.getMessage().contains("ZXingReader -json"));

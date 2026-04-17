@@ -73,7 +73,7 @@ public class ZXingCPPScanner {
             }
             try {
                 return parseOutput(processResult.getStdout());
-            } catch (IllegalArgumentException e) {
+            } catch (RuntimeException e) {
                 throw new ScanException("Invalid ZXingReader -json output contract", e);
             }
         } catch (IOException e) {
@@ -109,9 +109,10 @@ public class ZXingCPPScanner {
                 continue;
             }
             Map<String, String> json = parseJsonLine(line.trim());
-            String format = normalizeFormat(json.get("Format"));
+            String format = normalizeFormat(requireField(json, "Format"));
             if (StringUtils.isBlank(format)) {
-                continue;
+                throw new IllegalArgumentException("Expected non-blank Format in ZXingReader -json " +
+                        "output line: " + line.trim());
             }
             results.add(new Result(json.get("FilePath"), json.get("Text"), format,
                     json.get("Bytes"), json.get("Position"), json.get("ECLevel"),
@@ -150,6 +151,15 @@ public class ZXingCPPScanner {
         normalized = normalized.replaceAll("^_", "");
         normalized = normalized.replaceAll("_$", "");
         return normalized;
+    }
+
+    private static String requireField(Map<String, String> json, String fieldName) {
+        String value = json.get(fieldName);
+        if (StringUtils.isBlank(value)) {
+            throw new IllegalArgumentException("Expected required field '" + fieldName +
+                    "' in ZXingReader -json line-delimited output");
+        }
+        return value;
     }
 
     private static Map<String, String> parseJsonLine(String line) {
@@ -237,7 +247,12 @@ public class ZXingCPPScanner {
                     if (index[0] + 4 > line.length()) {
                         throw new IllegalArgumentException("Invalid unicode escape: " + line);
                     }
-                    sb.append((char) Integer.parseInt(line.substring(index[0], index[0] + 4), 16));
+                    try {
+                        sb.append((char) Integer.parseInt(line.substring(index[0], index[0] + 4),
+                                16));
+                    } catch (NumberFormatException e) {
+                        throw new IllegalArgumentException("Invalid unicode escape: " + line, e);
+                    }
                     index[0] += 4;
                     break;
                 default:
