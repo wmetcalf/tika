@@ -101,6 +101,21 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void scanUsesEscapedImagePathWhenItContainsSpaces() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        Path imagePath = Paths.get("target/test data/code image.png");
+
+        StubScanner scanner = new StubScanner(successResult(
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        scanner.scan(imagePath, config, new ParseContext());
+
+        assertEquals(ProcessUtils.escapeCommandLine(imagePath.toAbsolutePath().toString()),
+                scanner.lastCommand.get(scanner.lastCommand.size() - 1));
+    }
+
+    @Test
     public void parsesSingleResultJsonIntoRecord() {
         String output = "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello world\"," +
                 "\"Format\":\"QR Code\",\"Bytes\":\"68656c6c6f20776f726c64\"," +
