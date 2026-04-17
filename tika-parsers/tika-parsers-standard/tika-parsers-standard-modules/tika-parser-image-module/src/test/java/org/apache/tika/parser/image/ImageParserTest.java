@@ -18,11 +18,23 @@ package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+
 import org.junit.jupiter.api.Test;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -235,6 +247,72 @@ public class ImageParserTest extends TikaTest {
         metadata.set(Metadata.CONTENT_TYPE, "unparseablegarbage");
         try (TikaInputStream tis = getResourceAsStream("/test-documents/testBMP.bmp")) {
             parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+    }
+
+    @Test
+    public void testBarcodeMetadataEmittedFromImageParsing() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new StubBarcodeParser(Arrays.asList(new ZXingCPPScanner.Result(
+                "/tmp/code.png", "hello-qr", "QR Code", null, null, null, false)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals("hello-qr", metadata.getValues(Barcode.BARCODE_VALUE)[0]);
+        assertEquals("qr_code", metadata.getValues(Barcode.BARCODE_FORMAT)[0]);
+    }
+
+    @Test
+    public void testNoBarcodeMetadataWhenScanningDisabled() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        context.set(ZXingCPPConfig.class, new ZXingCPPConfig());
+        Parser parser = new StubBarcodeParser(Arrays.asList(new ZXingCPPScanner.Result(
+                "/tmp/code.png", "hello-qr", "QR Code", null, null, null, false)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+    }
+
+    private static class StubBarcodeParser extends AbstractImageParser {
+
+        private static final long serialVersionUID = 1L;
+        private final List<ZXingCPPScanner.Result> results;
+
+        private StubBarcodeParser(List<ZXingCPPScanner.Result> results) {
+            this.results = results;
+        }
+
+        @Override
+        void extractMetadata(InputStream is, ContentHandler contentHandler, Metadata metadata,
+                             ParseContext parseContext)
+                throws IOException, SAXException, TikaException {
+        }
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Collections.singleton(MediaType.image("png"));
+        }
+
+        @Override
+        List<ZXingCPPScanner.Result> scanBarcodes(Path imagePath, ParseContext context) {
+            ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
+            if (config == null || !config.isEnabled()) {
+                return Collections.emptyList();
+            }
+            return results == null ? Collections.<ZXingCPPScanner.Result>emptyList() : results;
         }
     }
 }
