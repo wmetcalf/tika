@@ -20,6 +20,8 @@ import java.io.Serializable;
 
 import org.apache.commons.io.FilenameUtils;
 
+import org.apache.tika.utils.StringUtils;
+
 public class ZXingCPPConfig implements Serializable {
 
     private static final long serialVersionUID = 5075417278575120353L;
@@ -42,9 +44,18 @@ public class ZXingCPPConfig implements Serializable {
     }
 
     public void setZxingPath(String zxingPath) {
-        zxingPath = FilenameUtils.normalize(zxingPath);
+        if (StringUtils.isBlank(zxingPath)) {
+            this.zxingPath = "";
+            return;
+        }
+        try {
+            zxingPath = FilenameUtils.normalize(zxingPath);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "zxingPath must be a normalizable executable path", e);
+        }
         if (zxingPath == null) {
-            zxingPath = "";
+            throw new IllegalArgumentException("zxingPath must be a normalizable executable path");
         }
         this.zxingPath = zxingPath;
     }

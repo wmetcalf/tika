@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.utils.FileProcessResult;
 
 public class ZXingCPPScannerTest {
 
@@ -58,6 +60,27 @@ public class ZXingCPPScannerTest {
                 "ZXingReader.exe" : "ZXingReader", command.get(0));
         assertEquals("-json", command.get(1));
         assertEquals(imagePath.toAbsolutePath().toString(), command.get(2));
+    }
+
+    @Test
+    public void scanParsesResultsFromActualCommandPath() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        config.setZxingPath("/opt/zxing/ZXingReader");
+        config.setFormats("QRCode");
+        Path imagePath = Paths.get("target/test-data/code.png");
+
+        StubScanner scanner = new StubScanner(successResult(
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        List<ZXingCPPScanner.Result> results = scanner.scan(imagePath, config, new ParseContext());
+
+        assertEquals(1, results.size());
+        assertEquals("/opt/zxing/ZXingReader", scanner.lastCommand.get(0));
+        assertEquals("-json", scanner.lastCommand.get(1));
+        assertEquals("-formats", scanner.lastCommand.get(2));
+        assertEquals("QRCode", scanner.lastCommand.get(3));
+        assertEquals(imagePath.toAbsolutePath().toString(), scanner.lastCommand.get(4));
     }
 
     @Test
@@ -95,6 +118,17 @@ public class ZXingCPPScannerTest {
         assertEquals("1234567890", results.get(1).getText());
         assertEquals("code_128", results.get(1).getFormat());
         assertTrue(results.get(1).isMirrored());
+    }
+
+    @Test
+    public void scanReturnsEmptyListWhenCommandFindsNoBarcode() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+
+        List<ZXingCPPScanner.Result> results = new StubScanner(successResult(""))
+                .scan(Paths.get("target/test-data/code.png"), config, new ParseContext());
+
+        assertTrue(results.isEmpty());
     }
 
     @Test
@@ -139,18 +173,72 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
-    public void disabledConfigSkipsScan() {
+    public void scanThrowsWhenCommandOutputViolatesJsonLinesContract() {
         ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
 
-        List<ZXingCPPScanner.Result> results = new ZXingCPPScanner()
-                .scan(Paths.get("target/test-data/code.png"), config, new ParseContext());
+        ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
+                () -> new StubScanner(successResult("[{\"Text\":\"hello\",\"Format\":\"QR Code\"}]"))
+                        .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
 
-        assertTrue(results.isEmpty());
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
     }
 
     @Test
-    public void noResultOutputReturnsEmptyList() {
-        assertTrue(ZXingCPPScanner.parseOutput("").isEmpty());
-        assertTrue(ZXingCPPScanner.parseOutput("\n").isEmpty());
+    public void disabledConfigSkipsScan() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        StubScanner scanner = new StubScanner(successResult(
+                "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\",\"Format\":\"QR Code\"}\n"));
+
+        List<ZXingCPPScanner.Result> results =
+                scanner.scan(Paths.get("target/test-data/code.png"), config, new ParseContext());
+
+        assertTrue(results.isEmpty());
+        assertTrue(scanner.lastCommand == null);
+    }
+
+    @Test
+    public void scanThrowsWhenCommandExecutionFails() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+
+        ZXingCPPScanner.ScanException exception = assertThrows(ZXingCPPScanner.ScanException.class,
+                () -> new StubScanner(new IOException("boom"))
+                        .scan(Paths.get("target/test-data/code.png"), config, new ParseContext()));
+
+        assertTrue(exception.getMessage().contains("Unable to execute zxing-cpp scan"));
+    }
+
+    private static FileProcessResult successResult(String stdout) {
+        FileProcessResult result = new FileProcessResult();
+        result.setExitValue(0);
+        result.setStdout(stdout);
+        return result;
+    }
+
+    private static class StubScanner extends ZXingCPPScanner {
+        private final FileProcessResult result;
+        private final IOException exception;
+        private List<String> lastCommand;
+
+        private StubScanner(FileProcessResult result) {
+            this.result = result;
+            this.exception = null;
+        }
+
+        private StubScanner(IOException exception) {
+            this.result = null;
+            this.exception = exception;
+        }
+
+        @Override
+        FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis)
+                throws IOException {
+            this.lastCommand = processBuilder.command();
+            if (exception != null) {
+                throw exception;
+            }
+            return result;
+        }
     }
 }

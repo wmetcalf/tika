@@ -43,4 +43,14 @@ public class ZXingCPPConfigTest {
 
         assertEquals("timeoutSeconds must be > 0", exception.getMessage());
     }
+
+    @Test
+    public void rejectsNonNormalizableExecutablePath() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> config.setZxingPath("blah\u0000deblah"));
+
+        assertEquals("zxingPath must be a normalizable executable path", exception.getMessage());
+    }
 }

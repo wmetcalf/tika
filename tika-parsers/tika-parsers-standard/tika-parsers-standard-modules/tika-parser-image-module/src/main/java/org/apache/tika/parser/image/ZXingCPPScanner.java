@@ -56,27 +56,28 @@ public class ZXingCPPScanner {
 
     public List<Result> scan(Path imagePath, ZXingCPPConfig config, ParseContext context) {
         ZXingCPPConfig activeConfig = config == null ? defaultConfig : config;
-        if (!activeConfig.isEnabled() || imagePath == null || !hasZXingCPP(activeConfig)) {
+        if (!activeConfig.isEnabled() || imagePath == null) {
             return Collections.emptyList();
         }
 
         ProcessBuilder processBuilder = new ProcessBuilder(buildCommand(imagePath, activeConfig));
         try {
-            FileProcessResult processResult = ProcessUtils.execute(processBuilder,
-                    activeConfig.getTimeoutSeconds() * 1000L, MAX_STDIO, MAX_STDIO);
+            FileProcessResult processResult = execute(processBuilder,
+                    activeConfig.getTimeoutSeconds() * 1000L);
             if (processResult.isTimeout()) {
-                LOG.warn("Timed out running zxing-cpp against {}", imagePath);
-                return Collections.emptyList();
+                throw new ScanException("Timed out running zxing-cpp against " + imagePath);
             }
             if (processResult.getExitValue() != 0) {
-                LOG.warn("zxing-cpp exited with {} for {}: {}", processResult.getExitValue(),
-                        imagePath, processResult.getStderr());
-                return Collections.emptyList();
+                throw new ScanException("zxing-cpp exited with " + processResult.getExitValue() +
+                        " for " + imagePath + ": " + processResult.getStderr());
             }
-            return parseOutput(processResult.getStdout());
-        } catch (IOException | RuntimeException e) {
-            LOG.warn("Unable to scan {} with zxing-cpp", imagePath, e);
-            return Collections.emptyList();
+            try {
+                return parseOutput(processResult.getStdout());
+            } catch (IllegalArgumentException e) {
+                throw new ScanException("Invalid ZXingReader -json output contract", e);
+            }
+        } catch (IOException e) {
+            throw new ScanException("Unable to execute zxing-cpp scan for " + imagePath, e);
         }
     }
 
@@ -128,6 +129,10 @@ public class ZXingCPPScanner {
 
     private static boolean hasZXingCPP(ZXingCPPConfig config) {
         return ProcessUtils.checkCommand(new String[]{getExecutable(config), "-version"});
+    }
+
+    FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis) throws IOException {
+        return ProcessUtils.execute(processBuilder, timeoutMillis, MAX_STDIO, MAX_STDIO);
     }
 
     private static String getZXingCPPProgram() {
@@ -263,6 +268,19 @@ public class ZXingCPPScanner {
             throw new IllegalArgumentException("Expected '" + expected + "' in: " + line);
         }
         index[0]++;
+    }
+
+    public static class ScanException extends RuntimeException {
+
+        private static final long serialVersionUID = 1467080700112152670L;
+
+        ScanException(String message) {
+            super(message);
+        }
+
+        ScanException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     public static class Result implements Serializable {
