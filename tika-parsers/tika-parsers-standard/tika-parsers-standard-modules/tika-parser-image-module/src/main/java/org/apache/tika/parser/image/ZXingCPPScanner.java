@@ -92,6 +92,11 @@ public class ZXingCPPScanner {
         return command;
     }
 
+    /**
+     * Parses the official {@code ZXingReader -json} output contract only.
+     * The supported format is one JSON object per line (JSON Lines style),
+     * not arbitrary JSON such as arrays or pretty-printed multi-line objects.
+     */
     static List<Result> parseOutput(String output) {
         if (StringUtils.isBlank(output)) {
             return Collections.emptyList();
@@ -145,7 +150,8 @@ public class ZXingCPPScanner {
     private static Map<String, String> parseJsonLine(String line) {
         Map<String, String> values = new LinkedHashMap<>();
         if (!line.startsWith("{") || !line.endsWith("}")) {
-            throw new IllegalArgumentException("Expected JSON object: " + line);
+            throw new IllegalArgumentException("Expected ZXingReader -json output as " +
+                    "line-delimited JSON objects; got: " + line);
         }
 
         int[] index = new int[]{1};

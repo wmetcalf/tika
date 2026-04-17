@@ -27,6 +27,8 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import org.apache.tika.parser.ParseContext;
+
 public class ZXingCPPScannerTest {
 
     @Test
@@ -96,6 +98,18 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void parsesOfficialJsonLinesOutput() {
+        String output = "{\"FilePath\":\"/tmp/one.png\",\"Text\":\"one\",\"Format\":\"QR Code\"}\n" +
+                "{\"FilePath\":\"/tmp/two.png\",\"Text\":\"two\",\"Format\":\"Data Matrix\"}\n";
+
+        List<ZXingCPPScanner.Result> results = ZXingCPPScanner.parseOutput(output);
+
+        assertEquals(2, results.size());
+        assertEquals("one", results.get(0).getText());
+        assertEquals("two", results.get(1).getText());
+    }
+
+    @Test
     public void parsesEscapedJsonStringsIntoRecord() {
         String output = "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello \\\"qr\\\" \\\\ " +
                 "\\u263A\",\"Format\":\"QR Code\"}\n";
@@ -107,11 +121,31 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void jsonArrayOutputIsRejectedAsNotJsonLines() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("[{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"}]"));
+
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+        assertTrue(exception.getMessage().contains("line-delimited JSON objects"));
+    }
+
+    @Test
     public void malformedOutputLineThrowsExplicitException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("not json\n"));
 
-        assertTrue(exception.getMessage().contains("Expected JSON object"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void disabledConfigSkipsScan() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+
+        List<ZXingCPPScanner.Result> results = new ZXingCPPScanner()
+                .scan(Paths.get("target/test-data/code.png"), config, new ParseContext());
+
+        assertTrue(results.isEmpty());
     }
 
     @Test
