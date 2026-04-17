@@ -189,6 +189,40 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void explicitNullBooleanIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\",\"IsMirrored\":null}\n"));
+
+        assertTrue(exception.getMessage().contains("IsMirrored"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void bareTokenStringValueIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":hello,\"Format\":\"QR Code\"}\n"));
+
+        assertTrue(exception.getMessage().contains("Text"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void trailingGarbageAfterObjectIsRejected() {
+        IllegalArgumentException trailingGarbage = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"} trailing\n"));
+
+        IllegalArgumentException extraBrace = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR Code\"}}\n"));
+
+        assertTrue(trailingGarbage.getMessage().contains("ZXingReader -json"));
+        assertTrue(extraBrace.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void jsonArrayOutputIsRejectedAsNotJsonLines() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("[{\"FilePath\":\"/tmp/code.png\"," +

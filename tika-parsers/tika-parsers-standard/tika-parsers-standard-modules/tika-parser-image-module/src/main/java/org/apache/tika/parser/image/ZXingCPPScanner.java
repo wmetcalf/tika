@@ -158,10 +158,10 @@ public class ZXingCPPScanner {
     }
 
     private static boolean parseBooleanField(Map<String, String> json, String fieldName) {
-        String value = json.get(fieldName);
-        if (value == null) {
+        if (!json.containsKey(fieldName)) {
             return false;
         }
+        String value = json.get(fieldName);
         if ("true".equals(value)) {
             return true;
         }
@@ -189,7 +189,7 @@ public class ZXingCPPScanner {
             skipWhitespace(line, index);
             expect(line, index, ':');
             skipWhitespace(line, index);
-            values.put(key, parseJsonValue(line, index));
+            values.put(key, parseJsonValue(line, index, key));
             skipWhitespace(line, index);
             if (index[0] >= line.length() - 1) {
                 break;
@@ -209,28 +209,44 @@ public class ZXingCPPScanner {
                         "-json output: " + line);
             }
         }
+        expect(line, index, '}');
+        skipWhitespace(line, index);
+        if (index[0] != line.length()) {
+            throw new IllegalArgumentException("Unexpected trailing content in ZXingReader " +
+                    "-json output: " + line);
+        }
         return values;
     }
 
-    private static String parseJsonValue(String line, int[] index) {
+    private static String parseJsonValue(String line, int[] index, String fieldName) {
         char ch = line.charAt(index[0]);
         if (ch == '"') {
             return parseJsonString(line, index);
         }
 
-        int start = index[0];
-        while (index[0] < line.length()) {
-            ch = line.charAt(index[0]);
-            if (ch == ',' || ch == '}') {
-                break;
-            }
-            index[0]++;
+        if (startsWithLiteral(line, index[0], "true")) {
+            index[0] += 4;
+            return "true";
         }
-        String value = line.substring(start, index[0]).trim();
-        if ("null".equals(value)) {
+        if (startsWithLiteral(line, index[0], "false")) {
+            index[0] += 5;
+            return "false";
+        }
+        if (startsWithLiteral(line, index[0], "null")) {
+            index[0] += 4;
             return null;
         }
-        return value;
+        throw new IllegalArgumentException("Expected JSON string or literal for field '" +
+                fieldName + "' in ZXingReader -json output near: " + line.substring(index[0]));
+    }
+
+    private static boolean startsWithLiteral(String line, int start, String literal) {
+        if (!line.startsWith(literal, start)) {
+            return false;
+        }
+        int end = start + literal.length();
+        return end >= line.length() || line.charAt(end) == ',' || line.charAt(end) == '}' ||
+                Character.isWhitespace(line.charAt(end));
     }
 
     private static String parseJsonString(String line, int[] index) {
