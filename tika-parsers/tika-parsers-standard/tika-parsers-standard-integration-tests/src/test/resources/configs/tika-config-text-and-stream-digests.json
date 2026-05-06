@@ -1,0 +1,15 @@
+{
+  "auto-detect-parser": {
+    "contentHandlerDecoratorFactory": "text-digesting-content-handler-decorator-factory",
+    "throwOnZeroBytes": false
+  },
+  "parse-context": {
+    "commons-digester-factory": {
+      "digests": [
+        { "algorithm": "MD5" },
+        { "algorithm": "SHA1" },
+        { "algorithm": "SHA256" }
+      ]
+    }
+  }
+}

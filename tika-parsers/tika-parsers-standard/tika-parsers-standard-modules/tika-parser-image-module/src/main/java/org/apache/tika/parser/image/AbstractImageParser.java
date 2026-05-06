@@ -20,7 +20,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -28,6 +33,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -40,6 +46,7 @@ import org.apache.tika.sax.XHTMLContentHandler;
 public abstract class AbstractImageParser implements Parser {
 
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
 
     /**
      *
@@ -63,6 +70,71 @@ public abstract class AbstractImageParser implements Parser {
         return mediaType;
     }
 
+    List<ZXingCPPScanner.Result> scanBarcodes(Path imagePath, ParseContext context) {
+        ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
+        if (config == null || !config.isEnabled()) {
+            return Collections.emptyList();
+        }
+        ZXingCPPScanner scanner = getBarcodeScanner();
+        if (!scanner.hasZXingCPP(config)) {
+            return Collections.emptyList();
+        }
+        return scanner.scan(imagePath, config, context);
+    }
+
+    ZXingCPPScanner getBarcodeScanner() {
+        return new ZXingCPPScanner();
+    }
+
+    private void addBarcodeMetadata(Path imagePath, Metadata metadata, ParseContext context) {
+        if (imagePath == null) {
+            return;
+        }
+        try {
+            for (ZXingCPPScanner.Result result : scanBarcodes(imagePath, context)) {
+                metadata.add(Barcode.BARCODE_VALUE, safe(result.getText()));
+                metadata.add(Barcode.BARCODE_FORMAT, safe(normalizeBarcodeFormat(result.getFormat())));
+                metadata.add(Barcode.BARCODE_RAW_BYTES, safe(result.getRawBytes()));
+                metadata.add(Barcode.BARCODE_POSITION, safe(result.getPosition()));
+                metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
+                        safe(result.getErrorCorrectionLevel()));
+                metadata.add(Barcode.BARCODE_IS_MIRRORED,
+                        Boolean.toString(result.isMirrored()));
+            }
+        } catch (ZXingCPPScanner.ScanException e) {
+            LOG.warn("Unable to scan barcodes from image {}", imagePath, e);
+        }
+    }
+
+    private String normalizeBarcodeFormat(String format) {
+        if (format == null) {
+            return null;
+        }
+        String normalized = format.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
+        return normalized.length() == 0 ? null : normalized;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {
+        ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
+        if (config == null || !config.isEnabled()) {
+            return;
+        }
+        tis.enableRewind();
+    }
+
+    Path getBarcodePath(TikaInputStream tis, ParseContext context) throws IOException {
+        ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
+        if (config == null || !config.isEnabled()) {
+            return null;
+        }
+        return tis.getPath();
+    }
+
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
@@ -75,7 +147,10 @@ public abstract class AbstractImageParser implements Parser {
         Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
         if (ocrMediaType == null ||
                 ocrParser == null || !ocrParser.getSupportedTypes(context).contains(ocrMediaType)) {
+            prepareBarcodePathLookup(tis, context);
             extractMetadata(tis, handler, metadata, context);
+            Path barcodePath = getBarcodePath(tis, context);
+            addBarcodeMetadata(barcodePath, metadata, context);
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
             xhtml.endDocument();
@@ -87,9 +162,12 @@ public abstract class AbstractImageParser implements Parser {
         try {
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
+            prepareBarcodePathLookup(tis, context);
             Path path = tis.getPath();
             try (InputStream pathStream = Files.newInputStream(path)) {
                 extractMetadata(pathStream, new EmbeddedContentHandler(xhtml), metadata, context);
+                Path barcodePath = getBarcodePath(tis, context);
+                addBarcodeMetadata(barcodePath, metadata, context);
             } catch (SecurityException e) {
                 throw e;
             } catch (Exception e) {
