@@ -87,7 +87,7 @@ public class ZXingCPPScanner {
             command.add("-formats");
             command.add(config.getFormats());
         }
-        command.add(escapeCommandLine(imagePath.toAbsolutePath().toString()));
+        command.add(imagePath.toAbsolutePath().toString());
         return command;
     }
 
@@ -118,7 +118,7 @@ public class ZXingCPPScanner {
 
     private String getExecutable(ZXingCPPConfig config) {
         if (!StringUtils.isBlank(config.getZxingPath())) {
-            return escapeCommandLine(config.getZxingPath());
+            return config.getZxingPath();
         }
         return getZXingCPPProgram();
     }
@@ -144,20 +144,6 @@ public class ZXingCPPScanner {
                 "ZXingReader.exe" : "ZXingReader";
     }
 
-    String escapeCommandLine(String arg) {
-        if (arg == null) {
-            return null;
-        }
-        if (isWindows() && arg.contains(" ") &&
-                (!arg.startsWith("\"") && !arg.endsWith("\""))) {
-            return "\"" + arg + "\"";
-        }
-        return arg;
-    }
-
-    boolean isWindows() {
-        return System.getProperty("os.name").startsWith("Windows");
-    }
 
     private static String requireField(Map<String, String> json, String fieldName) {
         String value = json.get(fieldName);
@@ -204,7 +190,9 @@ public class ZXingCPPScanner {
             skipWhitespace(line, index);
             expect(line, index, ':');
             skipWhitespace(line, index);
-            values.put(key, parseJsonValue(line, index, key));
+            String value = parseJsonValue(line, index, key);
+            rejectDecodedControlCharacters(key, value);
+            values.put(key, value);
             skipWhitespace(line, index);
             if (index[0] >= line.length() - 1) {
                 break;
@@ -233,6 +221,18 @@ public class ZXingCPPScanner {
         return values;
     }
 
+    private static void rejectDecodedControlCharacters(String fieldName, String value) {
+        if (value == null || !isStructuralStringField(fieldName)) {
+            return;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (value.charAt(i) <= 0x1f) {
+                throw new IllegalArgumentException("Unexpected decoded control character in field '" +
+                        fieldName + "' in ZXingReader -json output");
+            }
+        }
+    }
+
     private static void rejectExplicitNullFields(Map<String, String> json) {
         for (Map.Entry<String, String> entry : json.entrySet()) {
             if (entry.getValue() == null) {
@@ -242,14 +242,71 @@ public class ZXingCPPScanner {
         }
     }
 
+    private static String parseJsonNumber(String line, int[] index, String fieldName) {
+        if (isStringField(fieldName)) {
+            throw new IllegalArgumentException("Expected JSON string for field '" +
+                    fieldName + "' in ZXingReader -json output");
+        }
+        int start = index[0];
+        int len = line.length();
+        if (index[0] < len && line.charAt(index[0]) == '-') {
+            index[0]++;
+        }
+        if (index[0] >= len || !Character.isDigit(line.charAt(index[0]))) {
+            throw new IllegalArgumentException("Expected digit in JSON number near: " +
+                    line.substring(start));
+        }
+        while (index[0] < len && Character.isDigit(line.charAt(index[0]))) {
+            index[0]++;
+        }
+        if (index[0] < len && line.charAt(index[0]) == '.') {
+            index[0]++;
+            if (index[0] >= len || !Character.isDigit(line.charAt(index[0]))) {
+                throw new IllegalArgumentException("Expected digit after '.' in JSON number near: " +
+                        line.substring(start));
+            }
+            while (index[0] < len && Character.isDigit(line.charAt(index[0]))) {
+                index[0]++;
+            }
+        }
+        if (index[0] < len && (line.charAt(index[0]) == 'e' || line.charAt(index[0]) == 'E')) {
+            index[0]++;
+            if (index[0] < len && (line.charAt(index[0]) == '+' || line.charAt(index[0]) == '-')) {
+                index[0]++;
+            }
+            if (index[0] >= len || !Character.isDigit(line.charAt(index[0]))) {
+                throw new IllegalArgumentException("Expected digit in exponent of JSON number near: " +
+                        line.substring(start));
+            }
+            while (index[0] < len && Character.isDigit(line.charAt(index[0]))) {
+                index[0]++;
+            }
+        }
+        return line.substring(start, index[0]);
+    }
+
+    private static boolean isStringField(String fieldName) {
+        return "FilePath".equals(fieldName) || "Text".equals(fieldName) ||
+                "Format".equals(fieldName) || "Bytes".equals(fieldName) ||
+                "Position".equals(fieldName) || "ECLevel".equals(fieldName);
+    }
+
+    private static boolean isStructuralStringField(String fieldName) {
+        return "FilePath".equals(fieldName) || "Format".equals(fieldName) ||
+                "Position".equals(fieldName) || "ECLevel".equals(fieldName);
+    }
+
     private static String parseJsonValue(String line, int[] index, String fieldName) {
         char ch = line.charAt(index[0]);
         if (ch == '"') {
             return parseJsonString(line, index);
         }
+        if (ch == '-' || Character.isDigit(ch)) {
+            return parseJsonNumber(line, index, fieldName);
+        }
 
         if (startsWithLiteral(line, index[0], "true")) {
-            if (!"IsMirrored".equals(fieldName)) {
+            if (!"IsMirrored".equals(fieldName) && isStringField(fieldName)) {
                 throw new IllegalArgumentException("Expected JSON string for field '" +
                         fieldName + "' in ZXingReader -json output");
             }
@@ -257,7 +314,7 @@ public class ZXingCPPScanner {
             return "true";
         }
         if (startsWithLiteral(line, index[0], "false")) {
-            if (!"IsMirrored".equals(fieldName)) {
+            if (!"IsMirrored".equals(fieldName) && isStringField(fieldName)) {
                 throw new IllegalArgumentException("Expected JSON string for field '" +
                         fieldName + "' in ZXingReader -json output");
             }
@@ -268,7 +325,7 @@ public class ZXingCPPScanner {
             index[0] += 4;
             return null;
         }
-        throw new IllegalArgumentException("Expected JSON string or literal for field '" +
+        throw new IllegalArgumentException("Expected JSON string, number, or literal for field '" +
                 fieldName + "' in ZXingReader -json output near: " + line.substring(index[0]));
     }
 
@@ -288,6 +345,10 @@ public class ZXingCPPScanner {
             char ch = line.charAt(index[0]++);
             if (ch == '"') {
                 return sb.toString();
+            }
+            if (ch <= 0x1f) {
+                throw new IllegalArgumentException("Unexpected control character in " +
+                        "ZXingReader -json string: " + line);
             }
             if (ch != '\\') {
                 sb.append(ch);

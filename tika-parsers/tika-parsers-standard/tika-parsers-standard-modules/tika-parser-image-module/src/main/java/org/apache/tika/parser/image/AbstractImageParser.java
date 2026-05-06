@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -109,7 +110,7 @@ public abstract class AbstractImageParser implements Parser {
         if (format == null) {
             return null;
         }
-        String normalized = format.trim().toLowerCase().replaceAll("[^a-z0-9]+", "_")
+        String normalized = format.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")
                 .replaceAll("^_+|_+$", "");
         return normalized.length() == 0 ? null : normalized;
     }

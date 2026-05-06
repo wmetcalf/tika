@@ -83,7 +83,7 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
-    public void scanUsesEscapedConfiguredExecutablePathWhenItContainsSpaces() {
+    public void scanUsesRawConfiguredExecutablePathWhenItContainsSpaces() {
         ZXingCPPConfig config = new ZXingCPPConfig();
         config.setEnabled(true);
         config.setZxingPath("C:\\Program Files\\ZXing\\ZXingReader.exe");
@@ -95,22 +95,22 @@ public class ZXingCPPScannerTest {
 
         scanner.scan(imagePath, config, new ParseContext());
 
-        assertEquals("\"" + config.getZxingPath() + "\"", scanner.lastCommand.get(0));
+        assertEquals(config.getZxingPath(), scanner.lastCommand.get(0));
     }
 
     @Test
-    public void hasZXingCPPUsesEscapedConfiguredExecutablePathWhenItContainsSpaces() {
+    public void hasZXingCPPUsesRawConfiguredExecutablePathWhenItContainsSpaces() {
         ZXingCPPConfig config = new ZXingCPPConfig();
         config.setZxingPath("C:\\Program Files\\ZXing\\ZXingReader.exe");
         ProbeScanner scanner = new ProbeScanner(config, true, true);
 
         assertTrue(scanner.hasZXingCPP());
-        assertEquals("\"" + config.getZxingPath() + "\"", scanner.lastProbeCommand[0]);
+        assertEquals(config.getZxingPath(), scanner.lastProbeCommand[0]);
         assertEquals("-version", scanner.lastProbeCommand[1]);
     }
 
     @Test
-    public void scanUsesEscapedImagePathWhenItContainsSpaces() {
+    public void scanUsesRawImagePathWhenItContainsSpaces() {
         ZXingCPPConfig config = new ZXingCPPConfig();
         config.setEnabled(true);
         Path imagePath = Paths.get("target/test data/code image.png");
@@ -121,7 +121,7 @@ public class ZXingCPPScannerTest {
 
         scanner.scan(imagePath, config, new ParseContext());
 
-        assertEquals("\"" + imagePath.toAbsolutePath().toString() + "\"",
+        assertEquals(imagePath.toAbsolutePath().toString(),
                 scanner.lastCommand.get(scanner.lastCommand.size() - 1));
     }
 
@@ -197,6 +197,37 @@ public class ZXingCPPScannerTest {
     }
 
     @Test
+    public void escapedControlCharacterInTextIsPreserved() {
+        String output = "{\"FilePath\":\"/tmp/code.png\",\"Text\":\"hello\\u001dworld\"," +
+                "\"Format\":\"QR Code\"}\n";
+
+        List<ZXingCPPScanner.Result> results = ZXingCPPScanner.parseOutput(output);
+
+        assertEquals("hello\u001dworld", results.get(0).getText());
+    }
+
+    @Test
+    public void escapedControlCharacterInStructuralFieldIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":\"QR\\u001dCode\"}\n"));
+
+        assertTrue(exception.getMessage().contains("Format"));
+        assertTrue(exception.getMessage().contains("control character"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void unescapedControlCharacterInStringIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\u0001world\",\"Format\":\"QR Code\"}\n"));
+
+        assertTrue(exception.getMessage().contains("control character"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
     public void malformedLineMissingFormatIsRejectedAsProtocolFailure() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
@@ -257,6 +288,28 @@ public class ZXingCPPScannerTest {
                         "\"Text\":false,\"Format\":\"QR Code\"}\n"));
 
         assertTrue(exception.getMessage().contains("Text"));
+        assertTrue(exception.getMessage().contains("ZXingReader -json"));
+    }
+
+    @Test
+    public void unrecognizedFieldsWithBooleansOrNumbersAreSuccessfullyParsedAndIgnored() {
+        String output = "{\"FilePath\":\"/tmp/code.png\"," +
+                "\"Text\":\"hello\",\"Format\":\"QR Code\"," +
+                "\"UnknownBool\":true,\"UnknownNum\":42.5e-3}\n";
+
+        List<ZXingCPPScanner.Result> results = ZXingCPPScanner.parseOutput(output);
+        assertEquals(1, results.size());
+        assertEquals("hello", results.get(0).getText());
+        assertEquals("QR Code", results.get(0).getFormat());
+    }
+
+    @Test
+    public void numericLiteralInKnownStringFieldIsRejectedAsProtocolFailure() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> ZXingCPPScanner.parseOutput("{\"FilePath\":\"/tmp/code.png\"," +
+                        "\"Text\":\"hello\",\"Format\":12.34}\n"));
+
+        assertTrue(exception.getMessage().contains("Format"));
         assertTrue(exception.getMessage().contains("ZXingReader -json"));
     }
 
@@ -412,7 +465,6 @@ public class ZXingCPPScannerTest {
     private static class StubScanner extends ZXingCPPScanner {
         private final FileProcessResult result;
         private final IOException exception;
-        private final boolean windows;
         private List<String> lastCommand;
 
         private StubScanner(FileProcessResult result) {
@@ -422,13 +474,11 @@ public class ZXingCPPScannerTest {
         private StubScanner(FileProcessResult result, boolean windows) {
             this.result = result;
             this.exception = null;
-            this.windows = windows;
         }
 
         private StubScanner(IOException exception) {
             this.result = null;
             this.exception = exception;
-            this.windows = false;
         }
 
         @Override
@@ -441,21 +491,16 @@ public class ZXingCPPScannerTest {
             return result;
         }
 
-        @Override
-        boolean isWindows() {
-            return windows;
-        }
+
     }
 
     private static class ProbeScanner extends ZXingCPPScanner {
         private final boolean available;
-        private final boolean windows;
         private String[] lastProbeCommand;
 
         private ProbeScanner(ZXingCPPConfig config, boolean available, boolean windows) {
             super(config);
             this.available = available;
-            this.windows = windows;
         }
 
         @Override
@@ -464,9 +509,6 @@ public class ZXingCPPScannerTest {
             return available;
         }
 
-        @Override
-        boolean isWindows() {
-            return windows;
-        }
+
     }
 }

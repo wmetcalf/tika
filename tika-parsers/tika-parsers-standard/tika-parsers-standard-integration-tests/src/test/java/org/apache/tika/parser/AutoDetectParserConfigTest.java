@@ -121,6 +121,33 @@ public class AutoDetectParserConfigTest extends TikaTest {
     }
 
     @Test
+    public void testTextAndStreamDigests() throws Exception {
+        TikaLoader loader = TikaLoaderHelper.getLoader(
+                "tika-config-text-and-stream-digests.json");
+        Parser p = loader.loadAutoDetectParser();
+        ParseContext context = loader.loadParseContext();
+        List<Metadata> metadataList = getRecursiveMetadata("testPPT_EmbeddedPDF.pptx", p,
+                context);
+
+        assertDigestTriplet(metadataList.get(0), "X-TIKA:digest:",
+                "a16f14215ebbfa47bd995e799f03cb18",
+                "bda02354e86fc1826d9de902155e960f24ceb972",
+                "93bdfb75c6331c57b0b099e6d5f714e9217b3d8d23e9f3a9d9bea8b3c6081472");
+        assertDigestTriplet(metadataList.get(0), "X-TIKA:digest:text:",
+                "e8593ece676bc204a5cfb007015f10f1",
+                "f4e6d372198f78e6c07bcea367740deb3f4d87bf",
+                "9e519f57e9aa56660ac4ed588b534d59db5258aebe222cec489f1ddac10a17f7");
+        assertDigestTriplet(metadataList.get(6), "X-TIKA:digest:",
+                "90a8b249a6d6b6cb127c59e01cef3aaa",
+                "a83bbdfe58f30bf23ae9d6c1d1eb3e3250736868",
+                "87c7b896be1b4d9e060897a8a6dafc10d0a7a0c3a687f00c341d5c1c4b272fcb");
+        assertDigestTriplet(metadataList.get(6), "X-TIKA:digest:text:",
+                "c1309f350564c10604998b51b93b4d36",
+                "949256ecec068c777fd372606d03866a51ca14fb",
+                "b286710b845b732b845a17f08191d27336b7a6a2cf52e8ba86a2b9681fc330ae");
+    }
+
+    @Test
     public void testDigestsSkipContainer() throws Exception {
         //test to make sure that the decorator is only applied once for
         //legacy (e.g. not RecursiveParserWrapperHandler) parsing
@@ -166,5 +193,12 @@ public class AutoDetectParserConfigTest extends TikaTest {
         } finally {
             Files.delete(tmp);
         }
+    }
+
+    private void assertDigestTriplet(Metadata metadata, String prefix, String md5, String sha1,
+                                     String sha256) {
+        assertEquals(md5, metadata.get(prefix + "MD5"));
+        assertEquals(sha1, metadata.get(prefix + "SHA1"));
+        assertEquals(sha256, metadata.get(prefix + "SHA256"));
     }
 }
