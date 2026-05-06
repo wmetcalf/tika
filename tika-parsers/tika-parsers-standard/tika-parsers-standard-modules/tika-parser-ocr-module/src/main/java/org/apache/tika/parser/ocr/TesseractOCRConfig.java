@@ -16,14 +16,17 @@
  */
 package org.apache.tika.parser.ocr;
 
+import java.io.File;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.io.FilenameUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,6 +86,7 @@ public class TesseractOCRConfig implements Serializable {
     // See addOtherTesseractConfig.
     private HashMap<String, String> otherTesseractConfig = new HashMap<>();
     private boolean inlineContent = false;
+    private boolean preloadLangs = false;
 
     private String tesseractPath = "";
     private String tessdataPath = "";
@@ -367,7 +371,7 @@ public class TesseractOCRConfig implements Serializable {
 
     /**
      * @param colorspace the colorspace to set
-     *                   Deafult value is gray.
+     *                   Default value is gray.
      */
     public void setColorspace(String colorspace) {
         if (colorspace == null) {
@@ -465,6 +469,14 @@ public class TesseractOCRConfig implements Serializable {
         return inlineContent;
     }
 
+    public boolean isPreloadLangs() {
+        return preloadLangs;
+    }
+
+    public void setPreloadLangs(boolean preloadLangs) {
+        this.preloadLangs = preloadLangs;
+    }
+
     /**
      * Sets whether or not a rotation value should be calculated and passed to ImageMagick.
      *
@@ -477,8 +489,23 @@ public class TesseractOCRConfig implements Serializable {
     /**
      * @see #addOtherTesseractConfig(String, String)
      */
-    public HashMap<String, String> getOtherTesseractConfig() {
+    public Map<String, String> getOtherTesseractConfig() {
         return otherTesseractConfig;
+    }
+
+    /**
+     * Set the map of other Tesseract config parameters.
+     * Each key-value pair is passed to Tesseract using its -c command line option.
+     * To see the possible options, run tesseract --print-parameters.
+     *
+     * @param otherTesseractConfig map of key-value pairs
+     */
+    public void setOtherTesseractConfig(Map<String, String> otherTesseractConfig) {
+        if (otherTesseractConfig != null) {
+            for (Map.Entry<String, String> entry : otherTesseractConfig.entrySet()) {
+                addOtherTesseractConfig(entry.getKey(), entry.getValue());
+            }
+        }
     }
 
     /**
@@ -516,6 +543,10 @@ public class TesseractOCRConfig implements Serializable {
     }
 
     public void setTesseractPath(String tesseractPath) throws TikaConfigException {
+        tesseractPath = FilenameUtils.normalize(tesseractPath);
+        if (!tesseractPath.isEmpty() && !tesseractPath.endsWith(File.separator)) {
+            tesseractPath += File.separator;
+        }
         this.tesseractPath = tesseractPath;
     }
 
@@ -524,6 +555,10 @@ public class TesseractOCRConfig implements Serializable {
     }
 
     public void setTessdataPath(String tessdataPath) throws TikaConfigException {
+        tessdataPath = FilenameUtils.normalize(tessdataPath);
+        if (!tessdataPath.isEmpty() && !tessdataPath.endsWith(File.separator)) {
+            tessdataPath += File.separator;
+        }
         this.tessdataPath = tessdataPath;
     }
 
@@ -532,6 +567,10 @@ public class TesseractOCRConfig implements Serializable {
     }
 
     public void setImageMagickPath(String imageMagickPath) throws TikaConfigException {
+        imageMagickPath = FilenameUtils.normalize(imageMagickPath);
+        if (!imageMagickPath.isEmpty() && !imageMagickPath.endsWith(File.separator)) {
+            imageMagickPath += File.separator;
+        }
         this.imageMagickPath = imageMagickPath;
     }
 
@@ -568,6 +607,11 @@ public class TesseractOCRConfig implements Serializable {
             if (! StringUtils.isBlank(imageMagickPath)) {
                 throw new TikaConfigException("Cannot modify imageMagickPath at runtime. " + "Paths must be configured at parser initialization time.");
             }
+        }
+
+        @Override
+        public void setTrustedPageSeparator(String pageSeparator) {
+            throw new IllegalArgumentException("Cannot use setTrustedPageSeparator at runtime. " + "Use setPageSeparator instead.");
         }
     }
 

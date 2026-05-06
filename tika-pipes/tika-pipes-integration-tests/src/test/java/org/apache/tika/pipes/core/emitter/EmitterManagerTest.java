@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.config.loader.TikaJsonConfig;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.pipes.api.emitter.Emitter;
@@ -110,8 +111,8 @@ public class EmitterManagerTest {
                   },
                   "plugin-roots": "target/plugins"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output1")),
-                     PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output1")),
+                     JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
 
         Path configPath = tmpDir.resolve("config.json");
         Files.writeString(configPath, configJson, StandardCharsets.UTF_8);
@@ -272,13 +273,13 @@ public class EmitterManagerTest {
                   },
                   "plugin-roots": "target/plugins"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output1")),
-                     PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output1")),
+                     JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
 
         Path configPath = tmpDir.resolve("config.json");
         Files.writeString(configPath, configJson, StandardCharsets.UTF_8);
 
-        // PolymorphicObjectMapperFactory has FAIL_ON_READING_DUP_TREE_KEY enabled
+        // TikaObjectMapperFactory has FAIL_ON_READING_DUP_TREE_KEY enabled
         // so duplicate keys are caught during JSON parsing
         TikaConfigException exception = assertThrows(TikaConfigException.class, () -> {
             TikaJsonConfig.load(configPath);
@@ -323,8 +324,8 @@ public class EmitterManagerTest {
                   },
                   "plugin-roots": "target/plugins"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output1")),
-                     PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output1")),
+                     JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
 
         Path configPath = tmpDir.resolve("config.json");
         Files.writeString(configPath, configJson, StandardCharsets.UTF_8);
@@ -360,7 +361,7 @@ public class EmitterManagerTest {
                   "basePath": "%s",
                   "onExists": "REPLACE"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
         ExtensionConfig newConfig = new ExtensionConfig("fse2", "file-system-emitter", newConfigJson);
 
         emitterManager.saveEmitter(newConfig);
@@ -384,21 +385,32 @@ public class EmitterManagerTest {
 
         EmitterManager emitterManager = EmitterManager.load(pluginManager, tikaJsonConfig, true);
 
-        // Try to add an emitter with the same ID as existing one
+        // Update existing emitter with new configuration
         String newConfigJson = String.format(Locale.ROOT, """
                 {
                   "basePath": "%s",
                   "onExists": "REPLACE"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
-        ExtensionConfig duplicateConfig = new ExtensionConfig("fse", "file-system-emitter", newConfigJson);
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
+        ExtensionConfig updatedConfig = new ExtensionConfig("fse", "file-system-emitter", newConfigJson);
 
-        TikaConfigException exception = assertThrows(TikaConfigException.class, () -> {
-            emitterManager.saveEmitter(duplicateConfig);
-        });
+        // Get original emitter instance
+        Emitter originalEmitter = emitterManager.getEmitter("fse");
+        assertNotNull(originalEmitter);
 
-        assertTrue(exception.getMessage().contains("already exists"));
-        assertTrue(exception.getMessage().contains("fse"));
+        // Update the emitter config
+        emitterManager.saveEmitter(updatedConfig);
+
+        // Should still only have 1 emitter
+        assertEquals(1, emitterManager.getSupported().size());
+        assertTrue(emitterManager.getSupported().contains("fse"));
+
+        // Getting the emitter again should return a NEW instance (cache cleared)
+        Emitter updatedEmitter = emitterManager.getEmitter("fse");
+        assertNotNull(updatedEmitter);
+        
+        // Should be different instance due to re-instantiation
+        assertTrue(originalEmitter != updatedEmitter, "Updated emitter should be a new instance");
     }
 
     @Test
@@ -450,7 +462,7 @@ public class EmitterManagerTest {
                       "basePath": "%s",
                       "onExists": "REPLACE"
                     }
-                    """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output" + i)));
+                    """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output" + i)));
             ExtensionConfig config2 = new ExtensionConfig("fse" + i, "file-system-emitter", configJson);
             emitterManager.saveEmitter(config2);
         }
@@ -484,7 +496,7 @@ public class EmitterManagerTest {
                   "basePath": "%s",
                   "onExists": "REPLACE"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
         ExtensionConfig newConfig = new ExtensionConfig("fse2", "file-system-emitter", newConfigJson);
 
         TikaConfigException exception = assertThrows(TikaConfigException.class, () -> {
@@ -510,7 +522,7 @@ public class EmitterManagerTest {
                   "basePath": "%s",
                   "onExists": "REPLACE"
                 }
-                """, PluginsTestHelper.toJsonPath(tmpDir.resolve("output2")));
+                """, JsonConfigHelper.toJsonPath(tmpDir.resolve("output2")));
         ExtensionConfig newConfig = new ExtensionConfig("fse2", "file-system-emitter", newConfigJson);
 
         TikaConfigException exception = assertThrows(TikaConfigException.class, () -> {

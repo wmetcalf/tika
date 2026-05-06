@@ -60,7 +60,6 @@ import org.mockito.Mockito;
 
 import org.apache.tika.TikaTest;
 import org.apache.tika.client.HttpClientFactory;
-import org.apache.tika.config.ConfigContainer;
 import org.apache.tika.config.loader.TikaJsonConfig;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TemporaryResources;
@@ -89,14 +88,14 @@ class HttpFetcherTest extends TikaTest {
         httpFetcherConfig = new HttpFetcherConfig();
         httpFetcherConfig.setHttpHeaders(new ArrayList<>());
         httpFetcherConfig.setUserAgent("Test app");
-        httpFetcherConfig.setConnectTimeout(240_000);
-        httpFetcherConfig.setRequestTimeout(240_000);
-        httpFetcherConfig.setSocketTimeout(240_000);
+        httpFetcherConfig.setConnectTimeoutMillis(240_000);
+        httpFetcherConfig.setRequestTimeoutMillis(240_000);
+        httpFetcherConfig.setSocketTimeoutMillis(240_000);
         httpFetcherConfig.setMaxConnections(500);
         httpFetcherConfig.setMaxConnectionsPerRoute(20);
         httpFetcherConfig.setMaxRedirects(-1);
         httpFetcherConfig.setMaxErrMsgSize(500_000_000);
-        httpFetcherConfig.setOverallTimeout(400_000L);
+        httpFetcherConfig.setOverallTimeoutMillis(400_000L);
         httpFetcherConfig.setMaxSpoolSize(-1L);
 
         String json = OBJECT_MAPPER.writeValueAsString(httpFetcherConfig);
@@ -206,9 +205,7 @@ class HttpFetcherTest extends TikaTest {
         headersMap.put("fromFetchRequestHeader1", List.of("fromFetchRequestValue1"));
         headersMap.put("fromFetchRequestHeader2", List.of("fromFetchRequestValue2", "fromFetchRequestValue3"));
         additionalHttpFetcherConfig.getHttpRequestHeaders().setMap(headersMap);
-        ConfigContainer configContainer = new ConfigContainer();
-        configContainer.set(HttpFetcher.class, new ObjectMapper().writeValueAsString(additionalHttpFetcherConfig));
-        parseContext.set(ConfigContainer.class, configContainer);
+        parseContext.setJsonConfig("http-fetcher", new ObjectMapper().writeValueAsString(additionalHttpFetcherConfig));
 
         httpFetcher.getHttpFetcherConfig().setHttpRequestHeaders(new HttpHeaders());
         HashMap<String, Collection<String>> headersMapFromConfig = new HashMap<>();
@@ -216,7 +213,8 @@ class HttpFetcherTest extends TikaTest {
         headersMapFromConfig.put("fromFetchConfig2", List.of("fromFetchConfigValue2", "fromFetchConfigValue3"));
         httpFetcher.getHttpFetcherConfig().getHttpRequestHeaders().setMap(headersMapFromConfig);
 
-        httpFetcher.fetch("http://localhost", metadata, parseContext);
+        try (InputStream ignored = httpFetcher.fetch("http://localhost", metadata, parseContext)) {
+        }
         HttpGet httpGet = httpGetArgumentCaptor.getValue();
         Assertions.assertEquals("fromFetchRequestValue1", httpGet.getHeaders("fromFetchRequestHeader1")[0].getValue());
         List<String> fromFetchRequestHeader2s = Arrays.stream(httpGet.getHeaders("fromFetchRequestHeader2"))
@@ -226,7 +224,7 @@ class HttpFetcherTest extends TikaTest {
         Assertions.assertEquals(2, fromFetchRequestHeader2s.size());
         Assertions.assertEquals("fromFetchRequestValue2", fromFetchRequestHeader2s.get(0));
         Assertions.assertEquals("fromFetchRequestValue3", fromFetchRequestHeader2s.get(1));
-        // also make sure the headers from the fetcher config level are specified - see src/test/resources/tika-config-http.xml
+        // also make sure the headers from the fetcher config level are specified - see src/test/resources/configs/tika-config-http.json
         Assertions.assertEquals("fromFetchConfigValue1", httpGet.getHeaders("fromFetchConfig1")[0].getValue());
         List<String> fromFetchConfig2s = Arrays.stream(httpGet.getHeaders("fromFetchConfig2"))
                                     .map(Header::getValue)
@@ -237,11 +235,12 @@ class HttpFetcherTest extends TikaTest {
         Assertions.assertEquals("fromFetchConfigValue3", fromFetchConfig2s.get(1));
 
         metadata.set(Property.externalText("httpRequestHeaders"), new String[] {" nick1 :   val1", "nick2:   val2"});
-        httpFetcher.fetch("http://localhost", metadata, parseContext);
+        try (InputStream ignored = httpFetcher.fetch("http://localhost", metadata, parseContext)) {
+        }
         httpGet = httpGetArgumentCaptor.getValue();
         Assertions.assertEquals("val1", httpGet.getHeaders("nick1")[0].getValue());
         Assertions.assertEquals("val2", httpGet.getHeaders("nick2")[0].getValue());
-        // also make sure the headers from the fetcher config level are specified - see src/test/resources/tika-config-http.xml
+        // also make sure the headers from the fetcher config level are specified - see src/test/resources/configs/tika-config-http.json
 
         //TODO -- this isn't working atm because the tests are overwriting the baseline config with setConfig -- fix this
         // Assertions.assertEquals("headerValueFromFetcherConfig", httpGet.getHeaders("headerNameFromFetcherConfig")[0].getValue());

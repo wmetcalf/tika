@@ -30,11 +30,13 @@ import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.TikaMemoryLimitException;
 import org.apache.tika.io.EndianUtils;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Photoshop;
 import org.apache.tika.metadata.TIFF;
@@ -68,17 +70,28 @@ public class PSDParser implements Parser {
     private static final int MAX_DATA_LENGTH_BYTES = 10_000_000;
     private static final int MAX_BLOCKS = 10000;
 
-    private int maxDataLengthBytes = MAX_DATA_LENGTH_BYTES;
+    private PSDParserConfig defaultConfig = new PSDParserConfig();
+
+    public PSDParser() {
+    }
+
+    public PSDParser(PSDParserConfig config) {
+        this.defaultConfig = config;
+    }
+
+    public PSDParser(JsonConfig jsonConfig) {
+        this(ConfigDeserializer.buildConfig(jsonConfig, PSDParserConfig.class));
+    }
 
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
     }
 
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         // Check for the magic header signature
         byte[] signature = new byte[4];
-        IOUtils.readFully(stream, signature);
+        IOUtils.readFully(tis, signature);
         if (signature[0] == (byte) '8' && signature[1] == (byte) 'B' &&
                 signature[2] == (byte) 'P' && signature[3] == (byte) 'S') {
             // Good, signature found
@@ -87,7 +100,7 @@ public class PSDParser implements Parser {
         }
 
         // Check the version
-        int version = EndianUtils.readUShortBE(stream);
+        int version = EndianUtils.readUShortBE(tis);
         if (version == 1 || version == 2) {
             // Good, we support these two
         } else {
@@ -95,42 +108,42 @@ public class PSDParser implements Parser {
         }
 
         // Skip the reserved block
-        IOUtils.readFully(stream, new byte[6]);
+        IOUtils.readFully(tis, new byte[6]);
 
         // Number of channels in the image
-        int numChannels = EndianUtils.readUShortBE(stream);
+        int numChannels = EndianUtils.readUShortBE(tis);
         // TODO Identify a suitable metadata key for this
 
         // Width and Height
-        int height = EndianUtils.readIntBE(stream);
-        int width = EndianUtils.readIntBE(stream);
+        int height = EndianUtils.readIntBE(tis);
+        int width = EndianUtils.readIntBE(tis);
         metadata.set(TIFF.IMAGE_LENGTH, height);
         metadata.set(TIFF.IMAGE_WIDTH, width);
 
         // Depth (bits per channel)
-        int depth = EndianUtils.readUShortBE(stream);
+        int depth = EndianUtils.readUShortBE(tis);
         metadata.set(TIFF.BITS_PER_SAMPLE, Integer.toString(depth));
 
         // Colour mode, eg Bitmap or RGB
-        int colorMode = EndianUtils.readUShortBE(stream);
+        int colorMode = EndianUtils.readUShortBE(tis);
         if (colorMode < Photoshop._COLOR_MODE_CHOICES_INDEXED.length) {
             metadata.set(Photoshop.COLOR_MODE, Photoshop._COLOR_MODE_CHOICES_INDEXED[colorMode]);
         }
 
         // Next is the Color Mode section
         // We don't care about this bit
-        long colorModeSectionSize = EndianUtils.readIntBE(stream);
-        IOUtils.skipFully(stream, colorModeSectionSize);
+        long colorModeSectionSize = EndianUtils.readIntBE(tis);
+        IOUtils.skipFully(tis, colorModeSectionSize);
 
         // Next is the Image Resources section
         // Check for certain interesting keys here
-        long imageResourcesSectionSize = EndianUtils.readIntBE(stream);
+        long imageResourcesSectionSize = EndianUtils.readIntBE(tis);
         long read = 0;
         //if something is corrupt about this number, prevent an
         //infinite loop by only reading 10000 blocks
         int blocks = 0;
         while (read < imageResourcesSectionSize && blocks < MAX_BLOCKS) {
-            ResourceBlock rb = new ResourceBlock(stream, maxDataLengthBytes);
+            ResourceBlock rb = new ResourceBlock(tis, defaultConfig.getMaxDataLengthBytes());
             if (rb.totalLength <= 0) {
                 //break;
             }
@@ -157,18 +170,13 @@ public class PSDParser implements Parser {
         // We can't do anything with these parts
 
         // We don't have any helpful text, sorry...
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         xhtml.endDocument();
     }
 
-    @Field
-    public void setMaxDataLengthBytes(int maxDataLengthBytes) {
-        this.maxDataLengthBytes = maxDataLengthBytes;
-    }
-
-    public int getMaxDataLengthBytes() {
-        return maxDataLengthBytes;
+    public PSDParserConfig getDefaultConfig() {
+        return defaultConfig;
     }
 
     private static class ResourceBlock {
@@ -188,12 +196,12 @@ public class PSDParser implements Parser {
         private byte[] data;
         private int totalLength;
 
-        private ResourceBlock(InputStream stream, int maxDataLengthBytes)
+        private ResourceBlock(InputStream tis, int maxDataLengthBytes)
                 throws IOException, TikaException {
             this.maxDataLengthBytes = maxDataLengthBytes;
             counter++;
             // Verify the signature
-            long sig = EndianUtils.readIntBE(stream);
+            long sig = EndianUtils.readIntBE(tis);
             if (sig != SIGNATURE) {
                 throw new TikaException(
                         "Invalid Image Resource Block Signature Found, got " + sig + " 0x" +
@@ -201,12 +209,12 @@ public class PSDParser implements Parser {
             }
 
             // Read the block
-            id = EndianUtils.readUShortBE(stream);
+            id = EndianUtils.readUShortBE(tis);
 
             StringBuilder nameB = new StringBuilder();
             int nameLen = 0;
             while (true) {
-                int v = stream.read();
+                int v = tis.read();
                 if (v < 0) {
                     throw new EOFException();
                 }
@@ -215,7 +223,7 @@ public class PSDParser implements Parser {
                 if (v == 0) {
                     // The name length is padded to be even
                     if (nameLen % 2 == 1) {
-                        stream.read();
+                        tis.read();
                         nameLen++;
                     }
                     break;
@@ -225,7 +233,7 @@ public class PSDParser implements Parser {
                 name = nameB.toString();
             }
 
-            int dataLen = EndianUtils.readIntBE(stream);
+            int dataLen = EndianUtils.readIntBE(tis);
             if (dataLen < 0) {
                 throw new TikaException("data length must be >= 0: " + dataLen);
             }
@@ -245,10 +253,10 @@ public class PSDParser implements Parser {
                             "data length must be < " + maxDataLengthBytes + ": " + dataLen);
                 }
                 data = new byte[dataLen];
-                IOUtils.readFully(stream, data);
+                IOUtils.readFully(tis, data);
             } else {
                 data = new byte[0];
-                IOUtils.skipFully(stream, dataLen);
+                IOUtils.skipFully(tis, dataLen);
             }
         }
 
@@ -270,6 +278,21 @@ public class PSDParser implements Parser {
         private String getDataAsString() {
             // Will be null padded
             return new String(data, 0, data.length - 1, US_ASCII);
+        }
+    }
+
+    /**
+     * Configuration class for PSDParser.
+     */
+    public static class PSDParserConfig {
+        private int maxDataLengthBytes = MAX_DATA_LENGTH_BYTES;
+
+        public int getMaxDataLengthBytes() {
+            return maxDataLengthBytes;
+        }
+
+        public void setMaxDataLengthBytes(int maxDataLengthBytes) {
+            this.maxDataLengthBytes = maxDataLengthBytes;
         }
     }
 }

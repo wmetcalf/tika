@@ -16,8 +16,6 @@
  */
 package org.apache.tika.pipes.iterator.azblob;
 
-import static org.apache.tika.config.TikaConfig.mustNotBeEmpty;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
@@ -33,14 +31,13 @@ import com.azure.storage.blob.models.ListBlobsOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.tika.config.ConfigValidator;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
-import org.apache.tika.pipes.api.HandlerConfig;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorBaseConfig;
 import org.apache.tika.pipes.pipesiterator.PipesIteratorBase;
 import org.apache.tika.plugins.ExtensionConfig;
 import org.apache.tika.utils.StringUtils;
@@ -75,17 +72,15 @@ public class AZBlobPipesIterator extends PipesIteratorBase {
     }
 
     private void checkConfig(AZBlobPipesIteratorConfig config) throws TikaConfigException {
-        mustNotBeEmpty("sasToken", config.getSasToken());
-        mustNotBeEmpty("endpoint", config.getEndpoint());
-        mustNotBeEmpty("container", config.getContainer());
+        ConfigValidator.mustNotBeEmpty("sasToken", config.getSasToken());
+        ConfigValidator.mustNotBeEmpty("endpoint", config.getEndpoint());
+        ConfigValidator.mustNotBeEmpty("container", config.getContainer());
     }
 
     @Override
     protected void enqueue() throws InterruptedException, IOException, TimeoutException {
-        PipesIteratorBaseConfig baseConfig = config.getBaseConfig();
-        String fetcherId = baseConfig.fetcherId();
-        String emitterId = baseConfig.emitterId();
-        HandlerConfig handlerConfig = baseConfig.handlerConfig();
+        String fetcherId = config.getFetcherId();
+        String emitterId = config.getEmitterId();
 
         long start = System.currentTimeMillis();
         int count = 0;
@@ -126,10 +121,9 @@ public class AZBlobPipesIterator extends PipesIteratorBase {
             }
             //TODO -- extract metadata about content length etc from properties
             ParseContext parseContext = new ParseContext();
-            parseContext.set(HandlerConfig.class, handlerConfig);
             tryToAdd(new FetchEmitTuple(blob.getName(), new FetchKey(fetcherId, blob.getName()),
                     new EmitKey(emitterId, blob.getName()), new Metadata(), parseContext,
-                    baseConfig.onParseException()));
+                    FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT));
             count++;
         }
         long elapsed = System.currentTimeMillis() - start;

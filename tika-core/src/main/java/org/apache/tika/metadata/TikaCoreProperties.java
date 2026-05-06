@@ -102,10 +102,27 @@ public interface TikaCoreProperties {
 
     Property PARSE_TIME_MILLIS = Property.internalText(TIKA_META_PREFIX + "parse_time_millis");
     /**
-     * Simple class name of the content handler
+     * Simple class name of the content handler.
+     * @deprecated Use {@link #TIKA_CONTENT_HANDLER_TYPE} for the handler type enum value.
      */
+    @Deprecated
     Property TIKA_CONTENT_HANDLER = Property.internalText(TIKA_META_PREFIX + "content_handler");
+
+    /**
+     * The handler type used to produce {@link #TIKA_CONTENT}.
+     * Value is the {@link org.apache.tika.sax.BasicContentHandlerFactory.HANDLER_TYPE}
+     * enum name (e.g. {@code TEXT}, {@code MARKDOWN}, {@code HTML}, {@code XML}).
+     */
+    Property TIKA_CONTENT_HANDLER_TYPE =
+            Property.internalText(TIKA_META_PREFIX + "content_handler_type");
     Property TIKA_CONTENT = Property.internalText(TIKA_META_PREFIX + "content");
+
+    /**
+     * JSON array of chunks (text segments with optional embedding vectors and locators).
+     * Used by inference parsers and metadata filters to attach chunked representations
+     * of document content for downstream indexing and semantic search.
+     */
+    String TIKA_CHUNKS = "tika:chunks";
     /**
      * Use this to store parse exception information in the Metadata object.
      */
@@ -134,6 +151,13 @@ public interface TikaCoreProperties {
 
     Property WRITE_LIMIT_REACHED =
             Property.internalBoolean(TIKA_META_EXCEPTION_PREFIX + "write_limit_reached");
+
+    Property EMBEDDED_RESOURCE_LIMIT_REACHED =
+            Property.internalBoolean(TIKA_META_EXCEPTION_PREFIX + "embedded_resource_limit_reached");
+
+    Property EMBEDDED_DEPTH_LIMIT_REACHED =
+            Property.internalBoolean(TIKA_META_EXCEPTION_PREFIX + "embedded_depth_limit_reached");
+
     /**
      * Use this to store exceptions caught during a parse that are
      * non-fatal, e.g. if a parser is in lenient mode and more
@@ -150,6 +174,22 @@ public interface TikaCoreProperties {
      */
     Property TRUNCATED_METADATA =
             Property.internalBoolean(TIKA_META_WARN_PREFIX + "truncated_metadata");
+
+    /**
+     * This indicates that only a portion of the file content was provided for detection.
+     * Detectors should check this flag and may adjust their behavior accordingly
+     * (e.g., not returning a detection result that requires reading to end of file).
+     */
+    Property TRUNCATED_CONTENT_FOR_DETECTION =
+            Property.internalBoolean(TIKA_META_PREFIX + "truncated_content_for_detection");
+
+    /**
+     * When content is truncated for detection, this stores the number of bytes
+     * that were actually buffered for detection. This can be used by detectors
+     * to set appropriate mark limits.
+     */
+    Property DETECTION_CONTENT_LENGTH =
+            Property.internalInteger(TIKA_META_PREFIX + "detection_content_length");
 
     /**
      * Use this to store exceptions caught while trying to read the
@@ -176,6 +216,14 @@ public interface TikaCoreProperties {
             "detected_language_confidence_raw");
 
     Property RESOURCE_NAME_KEY = Property.internalText(TIKA_META_PREFIX + "resourceName");
+
+    /**
+     * Indicates that the file extension on the resource name was inferred by Tika
+     * (e.g., from content type detection) rather than provided by the original document.
+     */
+    Property RESOURCE_NAME_EXTENSION_INFERRED =
+            Property.externalBoolean(TIKA_META_PREFIX + "resourceNameExtensionInferred");
+
     Property EMBEDDED_RELATIONSHIP_ID = Property.internalText(TIKA_META_PREFIX + "embeddedRelationshipId");
 
     String EMBEDDED_RESOURCE_TYPE_KEY = "embeddedResourceType";
@@ -188,12 +236,19 @@ public interface TikaCoreProperties {
             Property.internalTextBag(TIKA_META_PREFIX + "origResourceName");
     /**
      * This should be used to store the path (relative or full)
-     * of the source file, including the file name,
+     * of the source/container file, including the file name,
      * e.g. doc/path/to/my_pdf.pdf
      * <p>
      * This can also be used for a primary key within a database.
      */
     Property SOURCE_PATH = Property.internalText(TIKA_META_PREFIX + "sourcePath");
+
+    /**
+     * This records the metadata as stored within a file for an embedded file's path
+     * including the file name. For example a zip file may include an msg with this path: /my-emails/important/this.msg
+     */
+    Property INTERNAL_PATH = Property.internalText(TIKA_META_PREFIX + "internalPath");
+
     /**
      * This is currently used to identify Content-Type that may be
      * included within a document, such as in html documents
@@ -213,6 +268,13 @@ public interface TikaCoreProperties {
      */
     Property CONTENT_TYPE_PARSER_OVERRIDE =
             Property.internalText(HttpHeaders.CONTENT_TYPE + "-Parser-Override");
+    /**
+     * This is set by DefaultDetector to store the result of MimeTypes (magic byte)
+     * detection. This allows downstream detectors to use it as a hint without
+     * re-running magic detection.
+     */
+    Property CONTENT_TYPE_MAGIC_DETECTED =
+            Property.internalText(HttpHeaders.CONTENT_TYPE + "-Magic-Detected");
     /**
      * @see DublinCore#FORMAT
      */
@@ -366,6 +428,26 @@ public interface TikaCoreProperties {
      * was used in the parse.
      */
     Property ENCODING_DETECTOR = Property.externalText(TIKA_META_PREFIX + "encodingDetector");
+
+    /**
+     * Diagnostic trace showing which encoding detectors ran and what each returned,
+     * plus the arbitration method used when detectors disagreed.
+     * Example: {@code "HtmlEncodingDetector->UTF-8, Icu4jEncodingDetector->windows-1256 (scored)"}
+     */
+    Property ENCODING_DETECTION_TRACE =
+            Property.externalText(TIKA_META_PREFIX + "encodingDetectionTrace");
+
+    /**
+     * The charset actually used to decode the stream when a superset override was applied.
+     * When the detected encoding (reported in Content-Type and {@link #DETECTED_ENCODING}) is
+     * a subset of a safer, broader charset (e.g. EUC-KR is a subset of x-windows-949, or
+     * GB2312 is a subset of GB18030), Tika decodes using the superset charset to avoid
+     * mojibake on extension characters. This field records the superset charset name so
+     * callers know which codec was actually used. Absent when detection and decoding use
+     * the same charset.
+     */
+    Property DECODED_CHARSET =
+            Property.externalText(TIKA_META_PREFIX + "decodedCharset");
 
     /**
      * General metadata key for the count of non-final versions available within a file.  This

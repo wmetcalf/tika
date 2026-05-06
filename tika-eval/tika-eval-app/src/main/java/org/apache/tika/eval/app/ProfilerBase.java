@@ -46,6 +46,7 @@ import org.apache.tika.eval.app.db.TableInfo;
 import org.apache.tika.eval.app.io.ExtractReaderException;
 import org.apache.tika.eval.app.io.IDBWriter;
 import org.apache.tika.eval.core.langid.LanguageIDWrapper;
+import org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter;
 import org.apache.tika.eval.core.textstats.BasicTokenCountStatsCalculator;
 import org.apache.tika.eval.core.textstats.CommonTokens;
 import org.apache.tika.eval.core.textstats.CompositeTextStatsCalculator;
@@ -70,7 +71,9 @@ import org.apache.tika.metadata.PDF;
 import org.apache.tika.metadata.PagedText;
 import org.apache.tika.metadata.Property;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.ml.junkdetect.JunkDetector;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
+import org.apache.tika.quality.TextQualityScore;
 import org.apache.tika.sax.ToXMLContentHandler;
 import org.apache.tika.utils.StringUtils;
 
@@ -100,6 +103,7 @@ public abstract class ProfilerBase {
     public static TableInfo REF_PARSE_EXCEPTION_TYPES =
             new TableInfo("ref_parse_exception_types", new ColInfo(Cols.PARSE_EXCEPTION_ID, Types.INTEGER), new ColInfo(Cols.PARSE_EXCEPTION_DESCRIPTION, Types.VARCHAR, 128));
     public static TableInfo MIME_TABLE = new TableInfo("mimes", new ColInfo(Cols.MIME_ID, Types.INTEGER, "PRIMARY KEY"), new ColInfo(Cols.MIME_STRING, Types.VARCHAR, 256),
+            new ColInfo(Cols.BASE_MIME, Types.VARCHAR, 256),
             new ColInfo(Cols.FILE_EXTENSION, Types.VARCHAR, 12));
     private static CommonTokenCountManager COMMON_TOKEN_COUNT_MANAGER;
     private static Pattern FILE_NAME_CLEANER = Pattern.compile("\\.(json|txt)(\\.(bz2|gz|zip))?$");
@@ -322,7 +326,7 @@ public abstract class ProfilerBase {
         calculators.add(new ContentLengthCalculator());
         calculators.add(new UnicodeBlockCounter(maxContentLengthForLangId));
 
-        return new CompositeTextStatsCalculator(calculators, analyzerManager.getGeneralAnalyzer(), langIder);
+        return new CompositeTextStatsCalculator(calculators, analyzerManager, langIder);
     }
 
     /**
@@ -460,8 +464,20 @@ public abstract class ProfilerBase {
         if (content == null || content.isBlank()) {
             content = "";
         }
-        return compositeTextStatsCalculator.calculate(content);
+        Map<Class, Object> results = compositeTextStatsCalculator.calculate(content);
+
+        JunkDetector jd = TikaEvalMetadataFilter.getJunkDetector();
+        if (jd != null && !content.isEmpty()) {
+            TextQualityScore q = jd.score(content);
+            if (!q.isUnknown()) {
+                results.put(LanguagenessMarker.class, q.getZScore());
+            }
+        }
+        return results;
     }
+
+    /** Sentinel key for the junk-detector z-score in the textStats map. */
+    static final class LanguagenessMarker { }
 
     /**
      * Checks to see if metadata is null or content is empty (null or only whitespace).
@@ -495,6 +511,9 @@ public abstract class ProfilerBase {
             double oov = commonTokenResult.getAlphabeticTokens() > 0 ? commonTokenResult.getOOV() : -1.0;
             data.put(Cols.OOV, Double.toString(oov));
         }
+        Float zScore = (Float) textStats.get(LanguagenessMarker.class);
+        double langness = (zScore != null && !Float.isNaN(zScore)) ? zScore : -99.0;
+        data.put(Cols.LANGUAGENESS, Double.toString(langness));
         TokenCounts tokenCounts = (TokenCounts) textStats.get(BasicTokenCountStatsCalculator.class);
         if (tokenCounts != null) {
 

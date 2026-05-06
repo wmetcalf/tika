@@ -26,11 +26,8 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
-import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.metadata.filter.MetadataFilter;
-import org.apache.tika.metadata.filter.NoOpFilter;
 import org.apache.tika.parser.RecursiveParserWrapper;
 import org.apache.tika.utils.ParserUtils;
 
@@ -51,30 +48,17 @@ import org.apache.tika.utils.ParserUtils;
 public class RecursiveParserWrapperHandler extends AbstractRecursiveParserWrapperHandler {
 
     protected final List<Metadata> metadataList = new LinkedList<>();
-    private final MetadataFilter metadataFilter;
 
     /**
-     * Create a handler with no limit on the number of embedded resources
+     * Create a handler for recursive parsing.
+     * <p>
+     * Embedded resource limits are now configured via {@link org.apache.tika.config.EmbeddedLimits}
+     * in the ParseContext, not on the handler.
+     *
+     * @param contentHandlerFactory factory for creating content handlers
      */
     public RecursiveParserWrapperHandler(ContentHandlerFactory contentHandlerFactory) {
-        this(contentHandlerFactory, -1, NoOpFilter.NOOP_FILTER);
-    }
-
-    /**
-     * Create a handler that limits the number of embedded resources that will be
-     * parsed
-     *
-     * @param maxEmbeddedResources number of embedded resources that will be parsed
-     */
-    public RecursiveParserWrapperHandler(ContentHandlerFactory contentHandlerFactory,
-                                         int maxEmbeddedResources) {
-        this(contentHandlerFactory, maxEmbeddedResources, NoOpFilter.NOOP_FILTER);
-    }
-
-    public RecursiveParserWrapperHandler(ContentHandlerFactory contentHandlerFactory,
-                                         int maxEmbeddedResources, MetadataFilter metadataFilter) {
-        super(contentHandlerFactory, maxEmbeddedResources);
-        this.metadataFilter = metadataFilter;
+        super(contentHandlerFactory);
     }
 
     /**
@@ -102,11 +86,6 @@ public class RecursiveParserWrapperHandler extends AbstractRecursiveParserWrappe
             throws SAXException {
         super.endEmbeddedDocument(contentHandler, metadata);
         addContent(contentHandler, metadata);
-        try {
-            metadataFilter.filter(List.of(metadata));
-        } catch (TikaException e) {
-            throw new SAXException(e);
-        }
 
         if (metadata.size() > 0) {
             metadataList.add(ParserUtils.cloneMetadata(metadata));
@@ -122,11 +101,6 @@ public class RecursiveParserWrapperHandler extends AbstractRecursiveParserWrappe
     public void endDocument(ContentHandler contentHandler, Metadata metadata) throws SAXException {
         super.endDocument(contentHandler, metadata);
         addContent(contentHandler, metadata);
-        try {
-            metadataFilter.filter(List.of(metadata));
-        } catch (TikaException e) {
-            throw new SAXException(e);
-        }
         if (metadata.size() > 0) {
             metadataList.add(0, ParserUtils.cloneMetadata(metadata));
         }
@@ -184,6 +158,8 @@ public class RecursiveParserWrapperHandler extends AbstractRecursiveParserWrappe
                 metadata.add(TikaCoreProperties.TIKA_CONTENT, content);
                 metadata.add(TikaCoreProperties.TIKA_CONTENT_HANDLER,
                         handler.getClass().getSimpleName());
+                metadata.set(TikaCoreProperties.TIKA_CONTENT_HANDLER_TYPE,
+                        getContentHandlerFactory().handlerTypeName());
             }
         }
     }

@@ -24,15 +24,17 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.util.List;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.ProcessingException;
 import jakarta.ws.rs.core.Response;
 import org.apache.commons.io.IOUtils;
@@ -47,17 +49,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.serialization.JsonMetadataList;
-import org.apache.tika.server.core.config.TimeoutConfig;
 import org.apache.tika.utils.ProcessUtils;
 
 public class TikaServerIntegrationTest extends IntegrationTestBase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(TikaServerIntegrationTest.class);
     private static Path TLS_KEYS;
 
     @TempDir
@@ -100,120 +98,123 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
     }
 
     @Test
-    public void testOOM() throws Exception {
-
-        startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
-
-        awaitServerStartup();
-
-        Response response = null;
-        try {
-            response = WebClient
-                    .create(endPoint + RMETA_PATH)
-                    .accept("application/json")
-                    .put(ClassLoader.getSystemResourceAsStream(TEST_OOM));
-        } catch (Exception e) {
-            //oom may or may not cause an exception depending
-            //on the timing
-        }
-        //give some time for the server to crash/terminate itself
-        testStopped(2000);
+    public void testBasicWithPipes() throws Exception {
+        // Test that pipes-based parsing works for normal documents
+        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
+        testBaseline();
     }
 
     @Test
-    public void testMinimumTimeoutInHeader() throws Exception {
+    public void testH2c() throws Exception {
         startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
+        awaitServerStartup();
+        // Using HttpClient in order to check Http2 Version
+        HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
+                .build();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(endPoint + STATUS_PATH))
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(UTF_8));
+        assertEquals(200, response.statusCode());
+        assertEquals(HttpClient.Version.HTTP_2, response.version());
+    }
+
+    @Test
+    public void testOOM() throws Exception {
+        // With pipes-based parsing, OOM in a child process should NOT crash the server
+        startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
+
         awaitServerStartup();
 
         Response response = WebClient
                 .create(endPoint + RMETA_PATH)
                 .accept("application/json")
-                .header(TimeoutConfig.X_TIKA_TIMEOUT_MILLIS, 1)
-                .put(ClassLoader.getSystemResourceAsStream(TEST_HEAVY_HANG));
-        assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+                .put(ClassLoader.getSystemResourceAsStream(TEST_OOM));
+
+        // Server should return 503 (Service Unavailable) for OOM, not crash
+        assertEquals(503, response.getStatus());
+
+        // Server should still be running - verify with a successful request
+        testBaseline();
     }
 
     @Test
-    public void testTaskTimeoutHeader() throws Exception {
+    public void testOOMWithPipes() throws Exception {
+        // With pipes-based parsing, OOM in a child process should NOT crash the server
+        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
 
-        startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
         awaitServerStartup();
-        Response response = null;
-        try {
-            response = WebClient
-                    .create(endPoint + RMETA_PATH)
-                    .accept("application/json")
-                    .header(TimeoutConfig.X_TIKA_TIMEOUT_MILLIS, 100)
-                    .put(ClassLoader.getSystemResourceAsStream(TEST_HEAVY_HANG));
-        } catch (Exception e) {
-            //oom may or may not cause an exception depending
-            //on the timing
-        }
-        //give some time for the server to crash/terminate itself
-        testStopped(2000);
-    }
 
-    private void testStopped(long millis) throws InterruptedException {
-        Thread.sleep(millis);
-        try {
-            Response response = WebClient
-                    .create(endPoint + STATUS_PATH)
-                    .accept("application/json")
-                    .get();
-            fail("shouldn't have had any response");
-        } catch (ProcessingException e) {
-            //success
-        }
-    }
-
-
-    private int getNumRestarts() throws Exception {
         Response response = WebClient
-                .create(endPoint + STATUS_PATH)
+                .create(endPoint + RMETA_PATH)
                 .accept("application/json")
-                .get();
-        String jsonString = CXFTestBase.getStringFromInputStream((InputStream) response.getEntity());
-        JsonNode root = new ObjectMapper().readTree(jsonString);
-        return root
-                .get("num_restarts")
-                .intValue();
+                .put(ClassLoader.getSystemResourceAsStream(TEST_OOM));
+
+        // Server should return 503 (Service Unavailable) for OOM, not crash
+        assertEquals(503, response.getStatus());
+
+        // Server should still be running - verify with a successful request
+        testBaseline();
     }
 
     @Test
     public void testSystemExit() throws Exception {
+        // With pipes-based parsing, System.exit in a child process should NOT crash the server
         startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
 
         awaitServerStartup();
-        Response response = null;
-        try {
-            response = WebClient
-                    .create(endPoint + RMETA_PATH)
-                    .accept("application/json")
-                    .put(ClassLoader.getSystemResourceAsStream(TEST_SYSTEM_EXIT));
-        } catch (Exception e) {
-            //sys exit causes catchable problems for the client
-        }
-        //give some time for the server to crash/terminate itself
-        testStopped(2000);
 
+        Response response = WebClient
+                .create(endPoint + RMETA_PATH)
+                .accept("application/json")
+                .put(ClassLoader.getSystemResourceAsStream(TEST_SYSTEM_EXIT));
+
+        // Server should return 500 (Internal Server Error) for unspecified crash
+        assertEquals(500, response.getStatus());
+
+        // Server should still be running - verify with a successful request
+        testBaseline();
+    }
+
+    @Test
+    public void testSystemExitWithPipes() throws Exception {
+        // With pipes-based parsing, System.exit in a child process should NOT crash the server
+        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
+
+        awaitServerStartup();
+
+        Response response = WebClient
+                .create(endPoint + RMETA_PATH)
+                .accept("application/json")
+                .put(ClassLoader.getSystemResourceAsStream(TEST_SYSTEM_EXIT));
+
+        // Server should return 500 (Internal Server Error) for unspecified crash
+        assertEquals(500, response.getStatus());
+
+        // Server should still be running - verify with a successful request
+        testBaseline();
     }
 
     @Test
     @Timeout(60000)
     public void testTimeout() throws Exception {
-        startProcess(new String[]{"-config", getConfig("tika-config-server-timeout-5000.json")});
+        // With pipes-based parsing, timeout in a child process should NOT crash the server
+        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
         awaitServerStartup();
-        Response response = null;
-        try {
-            response = WebClient
-                    .create(endPoint + RMETA_PATH)
-                    .accept("application/json")
-                    .put(ClassLoader.getSystemResourceAsStream(TEST_HEAVY_HANG));
-        } catch (Exception e) {
-            //catchable exception when server shuts down.
-        }
-        //sleep 10 seconds
-        testStopped(2000);
+
+        Response response = WebClient
+                .create(endPoint + RMETA_PATH)
+                .accept("application/json")
+                .put(ClassLoader.getSystemResourceAsStream(TEST_HEAVY_HANG));
+
+        // Server should return 503 (Service Unavailable) for timeout
+        assertEquals(503, response.getStatus());
+
+        // Server should still be running - verify with a successful request
+        testBaseline();
     }
 
 
@@ -246,7 +247,7 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
 
     @Test
     public void testStdErrOutBasic() throws Exception {
-        startProcess(new String[]{"-config", getConfig("tika-config-server-timeout-5000.json")});
+        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
         awaitServerStartup();
 
         Response response = WebClient

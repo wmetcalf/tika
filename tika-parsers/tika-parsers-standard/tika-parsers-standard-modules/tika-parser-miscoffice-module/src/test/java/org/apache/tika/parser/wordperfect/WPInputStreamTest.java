@@ -18,10 +18,12 @@ package org.apache.tika.parser.wordperfect;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
-import java.io.ByteArrayInputStream;
 import java.io.EOFException;
+import java.io.IOException;
 
 import org.junit.jupiter.api.Test;
+
+import org.apache.tika.io.TikaInputStream;
 
 public class WPInputStreamTest {
     //These test that we guarantee that a byte is read/skipped with the readWPX calls
@@ -120,7 +122,7 @@ public class WPInputStreamTest {
         }
     }
 
-    private WPInputStream emptyWPStream() {
-        return new WPInputStream(new ByteArrayInputStream(new byte[0]));
+    private WPInputStream emptyWPStream() throws IOException {
+        return new WPInputStream(TikaInputStream.get(new byte[0]));
     }
 }

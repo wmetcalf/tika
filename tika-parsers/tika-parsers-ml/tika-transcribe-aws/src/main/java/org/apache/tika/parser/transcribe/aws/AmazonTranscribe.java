@@ -21,7 +21,6 @@ import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -62,13 +61,13 @@ import software.amazon.awssdk.services.transcribe.model.StartTranscriptionJobReq
 import software.amazon.awssdk.services.transcribe.model.TranscriptionJob;
 import software.amazon.awssdk.services.transcribe.model.TranscriptionJobStatus;
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.Initializable;
-import org.apache.tika.config.InitializableProblemHandler;
-import org.apache.tika.config.Param;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -93,12 +92,10 @@ public class AmazonTranscribe implements Parser, Initializable {
     private static final Logger LOG = LoggerFactory.getLogger(AmazonTranscribe.class);
     private TranscribeAsyncClient amazonTranscribeAsync;
     private S3Client amazonS3;
-    private String bucketName;
-    private String region;
     private boolean isAvailable; // Flag for whether or not transcription is available.
-    private String clientId; // Access key
-    private String clientSecret; // Keys used for the API calls.
     private StaticCredentialsProvider credsProvider;
+
+    private AmazonTranscribeConfig defaultConfig = new AmazonTranscribeConfig();
 
     //https://docs.aws.amazon.com/transcribe/latest/dg/input.html
     protected static final Set<MediaType> SUPPORTED_TYPES = Collections.unmodifiableSet(
@@ -107,6 +104,16 @@ public class AmazonTranscribe implements Parser, Initializable {
                     MediaType.audio("mp4"), MediaType.video("mp4"), MediaType.application("mp4"),
                     MediaType.video("quicktime"))));
 
+    public AmazonTranscribe() {
+    }
+
+    public AmazonTranscribe(AmazonTranscribeConfig config) {
+        this.defaultConfig = config;
+    }
+
+    public AmazonTranscribe(JsonConfig jsonConfig) {
+        defaultConfig = ConfigDeserializer.buildConfig(jsonConfig, AmazonTranscribeConfig.class);
+    }
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -119,7 +126,7 @@ public class AmazonTranscribe implements Parser, Initializable {
     /**
      * Starts AWS Transcribe Job with language specification.
      *
-     * @param stream   the source input stream.
+     * @param stream   the source input tis.
      * @param handler  handler to use
      * @param metadata
      * @param context  -- set the {@link LanguageCode} in the ParseContext if known
@@ -130,7 +137,7 @@ public class AmazonTranscribe implements Parser, Initializable {
      * Language Code</a>
      */
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
         if (!isAvailable) {
@@ -140,9 +147,10 @@ public class AmazonTranscribe implements Parser, Initializable {
         if (amazonS3 == null) {
             return;
         }
+        String bucketName = defaultConfig.getBucketName();
         String jobName = getJobKey();
         LanguageCode languageCode = context.get(LanguageCode.class);
-        uploadFileToBucket(stream, jobName);
+        uploadFileToBucket(tis, jobName);
         StartTranscriptionJobRequest startTranscriptionJobRequest =
                 StartTranscriptionJobRequest.builder()
                         .build();
@@ -156,7 +164,7 @@ public class AmazonTranscribe implements Parser, Initializable {
             startTranscriptionJobRequest = startTranscriptionJobRequest.toBuilder().identifyLanguage(true).build();
         }
         amazonTranscribeAsync.startTranscriptionJob(startTranscriptionJobRequest);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         String text = getTranscriptText(jobName);
         xhtml.startElement("p");
@@ -178,51 +186,14 @@ public class AmazonTranscribe implements Parser, Initializable {
     }
 
     /**
-     * Sets the client Id for the transcriber API.
-     *
-     * @param id The ID to set.
-     */
-    @Field
-    public void setClientId(String id) {
-        this.clientId = id;
-        this.isAvailable = checkAvailable();
-    }
-
-    /**
-     * Sets the client secret for the transcriber API.
-     *
-     * @param secret The secret to set.
-     */
-    @Field
-    public void setClientSecret(String secret) {
-        this.clientSecret = secret;
-        this.isAvailable = checkAvailable();
-    }
-
-    /**
-     * Sets the client secret for the transcriber API.
-     *
-     * @param bucket The bucket to set.
-     */
-    @Field
-    public void setBucket(String bucket) {
-        this.bucketName = bucket;
-        this.isAvailable = checkAvailable();
-    }
-
-    @Field
-    public void setRegion(String region) {
-        this.region = region;
-        this.isAvailable = checkAvailable();
-    }
-
-    /**
      * Private method check if the service is available.
      *
      * @return if the service is available
      */
     private boolean checkAvailable() {
-        return clientId != null && clientSecret != null && bucketName != null;
+        return defaultConfig.getClientId() != null &&
+                defaultConfig.getClientSecret() != null &&
+                defaultConfig.getBucketName() != null;
     }
 
     /**
@@ -244,6 +215,7 @@ public class AmazonTranscribe implements Parser, Initializable {
      * @param jobName      The unique job name for each job(UUID).
      */
     private void uploadFileToBucket(InputStream inputStream, String jobName) throws TikaException {
+        String bucketName = defaultConfig.getBucketName();
         PutObjectRequest request = PutObjectRequest.builder().bucket(bucketName).key(jobName).build();
         try {
             @SuppressWarnings("unused")
@@ -254,6 +226,7 @@ public class AmazonTranscribe implements Parser, Initializable {
     }
 
     private void deleteFilesFromBucket(String jobName) throws TikaException {
+        String bucketName = defaultConfig.getBucketName();
         try {
             amazonS3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(jobName)
                     .build());
@@ -279,6 +252,7 @@ public class AmazonTranscribe implements Parser, Initializable {
      */
     private String getTranscriptText(String fileNameS3)
             throws AwsServiceException, SdkClientException, IOException {
+        String bucketName = defaultConfig.getBucketName();
         TranscriptionJob transcriptionJob = retrieveObjectWhenJobCompleted(fileNameS3);
         String text = "";
         if (transcriptionJob != null && !TranscriptionJobStatus.FAILED
@@ -329,21 +303,27 @@ public class AmazonTranscribe implements Parser, Initializable {
     }
 
     @Override
-    public void initialize(Map<String, Param> params) throws TikaConfigException {
-        if (!checkAvailable()) {
+    public void initialize() throws TikaConfigException {
+        this.isAvailable = checkAvailable();
+        if (!isAvailable) {
             return;
         }
 
+        String clientId = defaultConfig.getClientId();
+        String clientSecret = defaultConfig.getClientSecret();
+        String bucketName = defaultConfig.getBucketName();
+        String region = defaultConfig.getRegion();
+
         try {
-            AwsBasicCredentials creds = AwsBasicCredentials.create(this.clientId, this.clientSecret);
+            AwsBasicCredentials creds = AwsBasicCredentials.create(clientId, clientSecret);
             this.credsProvider = StaticCredentialsProvider.create(creds);
             if (region != null) {
                 this.amazonS3 = S3Client.builder().credentialsProvider(credsProvider)
-                        .region(Region.of(this.region)).build();
+                        .region(Region.of(region)).build();
             } else {
                 this.amazonS3 =
                         S3Client.builder().credentialsProvider(credsProvider).build();
-                this.region = amazonS3.serviceClientConfiguration().region().id(); // not sure if this works at all
+                region = amazonS3.serviceClientConfiguration().region().id(); // not sure if this works at all
             }
 
             // for debugging
@@ -356,7 +336,7 @@ public class AmazonTranscribe implements Parser, Initializable {
 
             if (!doesBucketExistV2(amazonS3, bucketName)) { // returns true if no access
                 try {
-                    amazonS3.createBucket(CreateBucketRequest.builder().bucket(this.bucketName)
+                    amazonS3.createBucket(CreateBucketRequest.builder().bucket(bucketName)
                             .build());
                 } catch (S3Exception e) {
                     throw new TikaConfigException("couldn't create bucket", e);
@@ -364,7 +344,7 @@ public class AmazonTranscribe implements Parser, Initializable {
             }
             this.amazonTranscribeAsync =
                     TranscribeAsyncClient.builder().credentialsProvider(credsProvider)
-                            .region(Region.of(this.region)).build();
+                            .region(Region.of(region)).build();
         } catch (Exception e) {
             LOG.warn("Exception reading config file", e);
             isAvailable = false;
@@ -372,13 +352,6 @@ public class AmazonTranscribe implements Parser, Initializable {
 
     }
 
-    @Override
-    public void checkInitialization(InitializableProblemHandler problemHandler)
-            throws TikaConfigException {
-        //TODO alert user if they've gotten 1 or 2 out of three?
-        this.isAvailable = checkAvailable();
-    }
-    
     // Thanks, ChatGPT
     private boolean doesBucketExistV2(S3Client s3, String bucketName) {
         try {
@@ -393,5 +366,9 @@ public class AmazonTranscribe implements Parser, Initializable {
             }
             throw e; // Re-throw unexpected exception
         }
+    }
+
+    public AmazonTranscribeConfig getDefaultConfig() {
+        return defaultConfig;
     }
 }

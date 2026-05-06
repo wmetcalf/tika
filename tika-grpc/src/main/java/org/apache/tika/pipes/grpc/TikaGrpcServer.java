@@ -19,9 +19,11 @@ package org.apache.tika.pipes.grpc;
 import static io.grpc.health.v1.HealthCheckResponse.ServingStatus;
 
 import java.io.File;
-import java.io.FileWriter;
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 
 import com.beust.jcommander.JCommander;
@@ -36,9 +38,6 @@ import io.grpc.protobuf.services.ProtoReflectionServiceV1;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.TikaConfig;
-import org.apache.tika.config.TikaConfigSerializer;
-
 /**
  * Server that manages startup/shutdown of the GRPC Tika server.
  */
@@ -46,14 +45,18 @@ public class TikaGrpcServer {
     private static final Logger LOGGER = LoggerFactory.getLogger(TikaGrpcServer.class);
     public static final int TIKA_SERVER_GRPC_DEFAULT_PORT = 50052;
     private Server server;
+    private TikaGrpcServerImpl serviceImpl;
     @Parameter(names = {"-p", "--port"}, description = "The grpc server port", help = true)
     private Integer port = TIKA_SERVER_GRPC_DEFAULT_PORT;
 
-    @Parameter(names = {"-c", "--config"}, description = "The grpc server port", help = true)
-    private File tikaConfigXml;
+    @Parameter(names = {"-c", "--config"}, description = "The tika config file", help = true)
+    private File tikaConfig;
 
     @Parameter(names = {"-l", "--plugins"}, description = "The tika pipes plugins config file", help = true)
     private File tikaPlugins;
+
+    @Parameter(names = {"--plugin-roots"}, description = "Comma-separated list of plugin root directories (overrides config file)", help = true)
+    private String pluginRoots;
 
     @Parameter(names = {"-s", "--secure"}, description = "Enable credentials required to access this grpc server")
     private boolean secure;
@@ -92,19 +95,16 @@ public class TikaGrpcServer {
         } else {
             creds = InsecureServerCredentials.create();
         }
-        //TODO -- this has to be converted to json
-        if (tikaConfigXml == null) {
-            // Create a default tika config
-            tikaConfigXml = Files.createTempFile("tika-config", ".xml").toFile();
-            try (FileWriter fw = new FileWriter(tikaConfigXml, StandardCharsets.UTF_8)) {
-                TikaConfigSerializer.serialize(new TikaConfig(), TikaConfigSerializer.Mode.STATIC_FULL, fw, StandardCharsets.UTF_8);
-            }
+        if (tikaConfig == null) {
+            tikaConfig = extractDefaultConfig();
+            LOGGER.info("No config file specified, using bundled default-tika-config.json");
         }
-        File tikaConfigFile = new File(tikaConfigXml.getAbsolutePath());
+        File tikaConfigFile = new File(tikaConfig.getAbsolutePath());
         healthStatusManager.setStatus(TikaGrpcServer.class.getSimpleName(), ServingStatus.SERVING);
+        serviceImpl = new TikaGrpcServerImpl(tikaConfigFile.getAbsolutePath(), pluginRoots);
         server = Grpc
                 .newServerBuilderForPort(port, creds)
-                .addService(new TikaGrpcServerImpl(tikaConfigFile.getAbsolutePath()))
+                .addService(serviceImpl)
                 .addService(healthStatusManager.getHealthService())
                 .addService(ProtoReflectionServiceV1.newInstance())
                 .build()
@@ -126,10 +126,16 @@ public class TikaGrpcServer {
     }
 
     public void stop() throws InterruptedException {
+        if (serviceImpl != null) {
+            serviceImpl.shutdown();
+        }
         if (server != null) {
             server
                     .shutdown()
                     .awaitTermination(30, TimeUnit.SECONDS);
+        }
+        if (serviceImpl != null) {
+            serviceImpl.postShutdown();
         }
     }
 
@@ -163,8 +169,24 @@ public class TikaGrpcServer {
         server.blockUntilShutdown();
     }
 
-    public TikaGrpcServer setTikaConfigXml(File tikaConfigXml) {
-        this.tikaConfigXml = tikaConfigXml;
+    private static File extractDefaultConfig() {
+        try (InputStream is = TikaGrpcServer.class.getResourceAsStream("/default-tika-config.json")) {
+            if (is == null) {
+                throw new IllegalArgumentException(
+                        "Tika config file is required. Use -c to specify a config file.");
+            }
+            Path tempConfig = Files.createTempFile("tika-config-", ".json");
+            tempConfig.toFile().deleteOnExit();
+            Files.copy(is, tempConfig, StandardCopyOption.REPLACE_EXISTING);
+            return tempConfig.toFile();
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    "Tika config file is required. Use -c to specify a config file.", e);
+        }
+    }
+
+    public TikaGrpcServer setTikaConfig(File tikaConfig) {
+        this.tikaConfig = tikaConfig;
         return this;
     }
 

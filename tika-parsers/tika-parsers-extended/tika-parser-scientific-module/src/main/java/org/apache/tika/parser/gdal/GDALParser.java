@@ -21,7 +21,6 @@ package org.apache.tika.parser.gdal;
 import static org.apache.tika.parser.external.ExternalParser.INPUT_FILE_TOKEN;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.Reader;
 import java.io.StringReader;
 import java.util.Arrays;
@@ -39,9 +38,9 @@ import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
 import org.apache.tika.config.TikaComponent;
-import org.apache.tika.config.TikaTaskTimeout;
+import org.apache.tika.config.TikaProgressTracker;
+import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
@@ -50,7 +49,6 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
-import org.apache.tika.parser.external.ExternalParser;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ProcessUtils;
@@ -153,7 +151,7 @@ public class GDALParser implements Parser {
     private long timeoutMs = DEFAULT_TIMEOUT_MS;
 
     public GDALParser() {
-        setCommand("gdalinfo ${INPUT}");
+        setCommand("gdalinfo ${INPUT_FILE}");
     }
 
     public String getCommand() {
@@ -164,8 +162,7 @@ public class GDALParser implements Parser {
         this.command = command;
     }
 
-    public String processCommand(InputStream stream) {
-        TikaInputStream tis = (TikaInputStream) stream;
+    public String processCommand(TikaInputStream tis) {
         String pCommand = this.command;
         try {
             if (this.command.contains(INPUT_FILE_TOKEN)) {
@@ -184,26 +181,26 @@ public class GDALParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
-        if (!ExternalParser.check("gdalinfo")) {
+        if (!ProcessUtils.checkCommand("gdalinfo")) {
             return;
         }
 
         // first set up and run GDAL
         // process the command
-        TemporaryResources tmp = new TemporaryResources();
-        TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
+        TemporaryResources tmp = null;
 
         String[] runCommand = processCommand(tis).split("\\s+", -1);
 
-        long localTimeoutMillis = TikaTaskTimeout.getTimeoutMillis(context, timeoutMs);
+        long localTimeoutMillis = TimeoutLimits.getProcessTimeoutMillis(context, timeoutMs);
         FileProcessResult result = ProcessUtils.execute(new ProcessBuilder(runCommand),
                 localTimeoutMillis, maxStdOut, maxStdErr);
 
         metadata.set(ExternalProcess.IS_TIMEOUT, result.isTimeout());
         metadata.set(ExternalProcess.EXIT_VALUE, result.getExitValue());
+        TikaProgressTracker.update(context);
         metadata.set(ExternalProcess.STD_OUT_LENGTH, result.getStdoutLength());
         metadata.set(ExternalProcess.STD_OUT_IS_TRUNCATED, result.isStdoutTruncated());
         metadata.set(ExternalProcess.STD_ERR_LENGTH, result.getStderrLength());
@@ -229,7 +226,7 @@ public class GDALParser implements Parser {
 
         // make the content handler and provide output there
         // now that we have metadata
-        processOutput(handler, metadata, output);
+        processOutput(handler, metadata, output, context);
     }
 
     private Map<Pattern, String> getPatterns() {
@@ -317,9 +314,9 @@ public class GDALParser implements Parser {
         }
     }
 
-    private void processOutput(ContentHandler handler, Metadata metadata, String output)
-            throws SAXException, IOException {
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+    private void processOutput(ContentHandler handler, Metadata metadata, String output,
+                               ParseContext context) throws SAXException, IOException {
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         try (Reader reader = new StringReader(output)) {
             xhtml.startDocument();
             xhtml.startElement("p");
@@ -335,17 +332,14 @@ public class GDALParser implements Parser {
 
     }
 
-    @Field
     public void setTimeoutMs(long timeoutMs) {
         this.timeoutMs = timeoutMs;
     }
 
-    @Field
     public void setMaxStdErr(int maxStdErr) {
         this.maxStdErr = maxStdErr;
     }
 
-    @Field
     public void setMaxStdOut(int maxStdOut) {
         this.maxStdOut = maxStdOut;
     }

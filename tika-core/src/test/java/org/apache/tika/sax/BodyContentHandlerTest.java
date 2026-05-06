@@ -20,13 +20,13 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
@@ -62,15 +62,16 @@ public class BodyContentHandlerTest extends TikaTest {
     @Test
     public void testLimit() throws Exception {
         //TIKA-2668 - java 11-ea
+        // Note: limit is 16 to account for metadata overhead (each metadata field adds a newline)
         Parser p = new MockParser();
-        WriteOutContentHandler handler = new WriteOutContentHandler(15);
+        WriteOutContentHandler handler = new WriteOutContentHandler(16);
         Metadata metadata = new Metadata();
         ParseContext parseContext = new ParseContext();
         Parser[] parsers = new Parser[1];
         parsers[0] = p;
         Parser autoDetectParser = new AutoDetectParser(parsers);
-        try (InputStream is = getResourceAsStream("/test-documents/example.xml")) {
-            autoDetectParser.parse(is, handler, metadata, parseContext);
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/example.xml")) {
+            autoDetectParser.parse(tis, handler, metadata, parseContext);
         } catch (Exception e) {
             tryToFindIllegalStateException(e);
         }

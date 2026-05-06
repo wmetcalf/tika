@@ -67,12 +67,32 @@ public class EmitterManager extends AbstractComponentManager<Emitter, EmitterFac
     public static EmitterManager load(PluginManager pluginManager, TikaJsonConfig tikaJsonConfig,
                                      boolean allowRuntimeModifications)
             throws IOException, TikaConfigException {
+        return load(pluginManager, tikaJsonConfig, allowRuntimeModifications, null);
+    }
+
+    /**
+     * Loads an EmitterManager with optional support for runtime modifications and a custom config store.
+     *
+     * @param pluginManager the plugin manager
+     * @param tikaJsonConfig the configuration
+     * @param allowRuntimeModifications if true, allows calling {@link #saveEmitter(ExtensionConfig)}
+     *                                  to add emitters at runtime
+     * @param configStore custom config store implementation, or null to use default in-memory store
+     * @return an EmitterManager
+     */
+    public static EmitterManager load(PluginManager pluginManager, TikaJsonConfig tikaJsonConfig,
+                                     boolean allowRuntimeModifications,
+                                     org.apache.tika.pipes.core.config.ConfigStore configStore)
+            throws IOException, TikaConfigException {
         EmitterManager manager = new EmitterManager(pluginManager, allowRuntimeModifications);
         JsonNode emittersNode = tikaJsonConfig.getRootNode().get(CONFIG_KEY);
 
         // Validate configuration and collect emitter configs without instantiating
         Map<String, ExtensionConfig> configs = manager.validateAndCollectConfigs(pluginManager, emittersNode);
 
+        if (configStore != null) {
+            return new EmitterManager(pluginManager, configs, allowRuntimeModifications, configStore);
+        }
         return new EmitterManager(pluginManager, configs, allowRuntimeModifications);
     }
 
@@ -83,6 +103,12 @@ public class EmitterManager extends AbstractComponentManager<Emitter, EmitterFac
     private EmitterManager(PluginManager pluginManager, Map<String, ExtensionConfig> emitterConfigs,
                           boolean allowRuntimeModifications) {
         super(pluginManager, emitterConfigs, allowRuntimeModifications);
+    }
+
+    private EmitterManager(PluginManager pluginManager, Map<String, ExtensionConfig> emitterConfigs,
+                          boolean allowRuntimeModifications,
+                          org.apache.tika.pipes.core.config.ConfigStore configStore) {
+        super(pluginManager, emitterConfigs, allowRuntimeModifications, configStore);
     }
 
     @Override
@@ -131,9 +157,10 @@ public class EmitterManager extends AbstractComponentManager<Emitter, EmitterFac
     }
 
     /**
-     * Dynamically adds an emitter configuration at runtime.
+     * Dynamically adds or updates an emitter configuration at runtime.
      * The emitter will not be instantiated until it is first requested via {@link #getEmitter(String)}.
      * This allows for dynamic configuration without the overhead of immediate instantiation.
+     * If an emitter with the same ID already exists, it will be replaced and the cached instance cleared.
      * <p>
      * This method is only available if the EmitterManager was loaded with
      * {@link #load(PluginManager, TikaJsonConfig, boolean)} with allowRuntimeModifications=true.
@@ -141,11 +168,30 @@ public class EmitterManager extends AbstractComponentManager<Emitter, EmitterFac
      * Only authorized/authenticated users should be allowed to modify emitters. BE CAREFUL.
      *
      * @param config the extension configuration for the emitter
-     * @throws TikaConfigException if the emitter type is unknown, if an emitter with the same ID
-     *                             already exists, or if runtime modifications are not allowed
+     * @throws TikaConfigException if the emitter type is unknown or if runtime modifications are not allowed
      * @throws IOException if there is an error accessing the plugin manager
      */
     public void saveEmitter(ExtensionConfig config) throws TikaConfigException, IOException {
         saveComponent(config);
+    }
+
+    /**
+     * Deletes an emitter configuration by ID.
+     *
+     * @param emitterId the emitter ID to delete
+     * @throws TikaConfigException if runtime modifications are not allowed or emitter not found
+     */
+    public void deleteEmitter(String emitterId) throws TikaConfigException {
+        deleteComponent(emitterId);
+    }
+
+    /**
+     * Gets the configuration for a specific emitter by ID.
+     *
+     * @param emitterId the emitter ID
+     * @return the emitter configuration, or null if not found
+     */
+    public ExtensionConfig getConfig(String emitterId) {
+        return getComponentConfig(emitterId);
     }
 }

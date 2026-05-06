@@ -17,17 +17,17 @@
 package org.apache.tika.pipes.api.fetcher;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import org.pf4j.ExtensionPoint;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.plugins.TikaExtension;
 
 /**
- * Interface for an object that will fetch an InputStream given
+ * Interface for an object that will fetch a TikaInputStream given
  * a fetch string.  This will also update the metadata object
  * based on the fetch.
  * <p>
@@ -35,5 +35,21 @@ import org.apache.tika.plugins.TikaExtension;
  */
 public interface Fetcher extends TikaExtension, ExtensionPoint {
 
-    InputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext) throws TikaException, IOException;
+    /**
+     * Fetches a resource and returns it as a TikaInputStream.
+     *
+     * @param fetchKey the key identifying the resource to fetch (interpretation
+     *                 depends on the implementation, e.g., file path, URL, S3 key)
+     * @param metadata metadata object to be updated with resource information
+     * @param parseContext the parse context
+     * @return a TikaInputStream for reading the resource content
+     * @throws TikaException if a Tika-specific error occurs during fetching
+     * @throws IOException if an I/O error occurs during fetching
+     * @throws SecurityException if the fetchKey attempts to access a resource
+     *         outside permitted boundaries (e.g., path traversal attack)
+     * @throws IllegalArgumentException if the fetchKey contains invalid characters
+     *         (e.g., null bytes)
+     */
+    TikaInputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext)
+            throws TikaException, IOException;
 }

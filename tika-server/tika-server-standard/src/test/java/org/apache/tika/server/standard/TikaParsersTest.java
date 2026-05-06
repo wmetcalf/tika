@@ -28,10 +28,10 @@ import jakarta.ws.rs.core.Response;
 import org.apache.cxf.jaxrs.JAXRSServerFactoryBean;
 import org.apache.cxf.jaxrs.client.WebClient;
 import org.apache.cxf.jaxrs.lifecycle.SingletonResourceProvider;
-import org.gagravarr.tika.OpusParser;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.parser.microsoft.ooxml.OOXMLParser;
+import org.apache.tika.parser.ogg.OpusParser;
 import org.apache.tika.parser.pkg.PackageParser;
 import org.apache.tika.server.core.CXFTestBase;
 import org.apache.tika.server.core.resource.TikaParsers;
@@ -100,9 +100,9 @@ public class TikaParsersTest extends CXFTestBase {
             String text = getStringFromInputStream((InputStream) response.getEntity());
             assertContains("Composite", text);
 
-            assertContains("<h3>OpusParser", text);
-            assertContains("<h3>PackageParser", text);
-            assertContains("<h3>OOXMLParser", text);
+            assertContains("<h4>OpusParser", text);
+            assertContains("<h4>PackageParser", text);
+            assertContains("<h4>OOXMLParser", text);
 
             assertContains(OpusParser.class.getName(), text);
             assertContains(PackageParser.class.getName(), text);
@@ -144,8 +144,10 @@ public class TikaParsersTest extends CXFTestBase {
             assertEquals("org.apache.tika.parser.CompositeParser", json.get("name"));
             assertEquals(Boolean.TRUE, json.get("composite"));
 
-            // At least 20 child parsers which aren't composite, except for CompositeExternalParser
-            List<Object> children = (List) json.get("children");
+            // At least 20 child parsers which aren't composite
+            List<Object> wrapper = (List) json.get("children");
+            Map<String, Object> firstItem = (Map) wrapper.get(0);
+            List<Object> children = (List) firstItem.get("children");
             assertTrue(children.size() >= 2);
             boolean hasOpus = false, hasOOXML = false, hasZip = false;
             int nonComposite = 0;
@@ -189,7 +191,7 @@ public class TikaParsersTest extends CXFTestBase {
             assertEquals(true, hasOOXML);
             assertEquals(true, hasZip);
             assertTrue(nonComposite > 20);
-            assertTrue(composite == 0 || composite == 1); // if CompositeExternalParser is available it will be 1
+            assertEquals(0, composite);
         }
     }
 }

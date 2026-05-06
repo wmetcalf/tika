@@ -29,15 +29,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.ConfigValidator;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
-import org.apache.tika.pipes.api.HandlerConfig;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorBaseConfig;
 import org.apache.tika.pipes.api.pipesiterator.TotalCountResult;
 import org.apache.tika.pipes.api.pipesiterator.TotalCounter;
 import org.apache.tika.pipes.pipesiterator.PipesIteratorBase;
@@ -79,9 +77,8 @@ public class FileSystemPipesIterator extends PipesIteratorBase implements TotalC
                     "\"basePath\" directory does not exist: " + config
                             .getBasePath().toAbsolutePath());
         }
-        PipesIteratorBaseConfig config = this.config.getBaseConfig();
         try {
-            Files.walkFileTree(this.config.getBasePath(), new FSFileVisitor(config.fetcherId(), config.emitterId()));
+            Files.walkFileTree(config.getBasePath(), new FSFileVisitor(config.getFetcherId(), config.getEmitterId()));
         } catch (IOException e) {
             Throwable cause = e.getCause();
             if (cause != null && cause instanceof TimeoutException) {
@@ -94,7 +91,7 @@ public class FileSystemPipesIterator extends PipesIteratorBase implements TotalC
     public void checkConfig(FileSystemPipesIteratorConfig config)
             throws TikaConfigException {
         //these should all be fatal
-        TikaConfig.mustNotBeEmpty("basePath", config.getBasePath());
+        ConfigValidator.mustNotBeEmpty("basePath", config.getBasePath());
     }
 
 
@@ -139,15 +136,14 @@ public class FileSystemPipesIterator extends PipesIteratorBase implements TotalC
 
         @Override
         public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-            String relPath = config
+            String relPath = FileSystemPipesIterator.this.config
                     .getBasePath().relativize(file).toString();
-            PipesIteratorBaseConfig config = FileSystemPipesIterator.this.config.getBaseConfig();
             try {
                 ParseContext parseContext = new ParseContext();
-                parseContext.set(HandlerConfig.class, config.handlerConfig());
+                // ContentHandlerFactory, ParseMode, and onParseException come from PipesConfig loaded via TikaLoader
                 tryToAdd(new FetchEmitTuple(relPath, new FetchKey(fetcherId, relPath),
                         new EmitKey(emitterId, relPath), new Metadata(), parseContext,
-                        config.onParseException()));
+                        FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT));
             } catch (TimeoutException e) {
                 throw new IOException(e);
             } catch (InterruptedException e) {

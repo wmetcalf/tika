@@ -17,7 +17,6 @@
 package org.apache.tika.example;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -50,7 +49,7 @@ public class ExtractEmbeddedFiles {
     public ExtractEmbeddedFiles() throws TikaConfigException, IOException {
     }
 
-    public void extract(InputStream is, Path outputDir) throws SAXException, TikaException, IOException {
+    public void extract(TikaInputStream tis, Path outputDir) throws SAXException, TikaException, IOException {
         Metadata m = new Metadata();
         ParseContext c = new ParseContext();
         ContentHandler h = new BodyContentHandler(-1);
@@ -59,7 +58,7 @@ public class ExtractEmbeddedFiles {
         EmbeddedDocumentExtractor ex = new MyEmbeddedDocumentExtractor(outputDir, c);
         c.set(EmbeddedDocumentExtractor.class, ex);
 
-        parser.parse(is, h, m, c);
+        parser.parse(tis, h, m, c);
     }
 
     private class MyEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentExtractor {
@@ -77,7 +76,8 @@ public class ExtractEmbeddedFiles {
         }
 
         @Override
-        public void parseEmbedded(TikaInputStream stream, ContentHandler handler, Metadata metadata, boolean outputHtml) throws SAXException, IOException {
+        public void parseEmbedded(TikaInputStream stream, ContentHandler handler, Metadata metadata,
+                                  ParseContext parseContext, boolean outputHtml) throws SAXException, IOException {
 
             //try to get the name of the embedded file from the metadata
             String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
@@ -97,7 +97,7 @@ public class ExtractEmbeddedFiles {
             }
 
             //now try to figure out the right extension for the embedded file
-            MediaType contentType = detector.detect(stream, metadata);
+            MediaType contentType = detector.detect(stream, metadata, context);
 
             if (name.indexOf('.') == -1 && contentType != null) {
                 try {

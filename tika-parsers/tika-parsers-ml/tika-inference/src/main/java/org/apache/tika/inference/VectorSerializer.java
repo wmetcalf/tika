@@ -1,0 +1,56 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.tika.inference;
+
+import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
+import java.util.Base64;
+
+/**
+ * Serializes and deserializes float vectors as base64-encoded big-endian
+ * float32 byte arrays.
+ *
+ * <p>Big-endian matches the format expected by Elasticsearch's
+ * {@code dense_vector} field type, which accepts either a JSON float array
+ * or a base64-encoded binary string in big-endian float32 order.
+ * See the Elasticsearch dense_vector mapping documentation for details.
+ */
+public final class VectorSerializer {
+
+    private VectorSerializer() {
+    }
+
+    /**
+     * Encode a float array as a base64 string (big-endian float32).
+     */
+    public static String encode(float[] vector) {
+        ByteBuffer buf = ByteBuffer.allocate(vector.length * Float.BYTES);
+        buf.asFloatBuffer().put(vector);
+        return Base64.getEncoder().encodeToString(buf.array());
+    }
+
+    /**
+     * Decode a base64 string back to a float array (big-endian float32).
+     */
+    public static float[] decode(String base64) {
+        byte[] bytes = Base64.getDecoder().decode(base64);
+        FloatBuffer fb = ByteBuffer.wrap(bytes).asFloatBuffer();
+        float[] vector = new float[fb.remaining()];
+        fb.get(vector);
+        return vector;
+    }
+}

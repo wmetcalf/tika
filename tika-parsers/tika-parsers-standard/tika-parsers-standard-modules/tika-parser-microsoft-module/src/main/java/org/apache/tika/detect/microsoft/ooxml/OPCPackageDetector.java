@@ -91,9 +91,12 @@ public class OPCPackageDetector implements ZipContainerDetector {
     static final MediaType THREE_MF = MediaType.application("vnd.ms-package.3dmanufacturing-3dmodel+xml");
 
     static final Set<String> OOXML_HINTS =
-            fillSet("word/document.xml", "_rels/.rels", "[Content_Types].xml",
+            fillSet("word/", "xl/", "ppt/", "docProps/",
+                    "word/document.xml", "_rels/.rels", "[Content_Types].xml",
                     "ppt/presentation.xml", "ppt/slides/slide1.xml", "xl/workbook.xml",
-                    "xl/sharedStrings.xml", "xl/worksheets/sheet1.xml");
+                    "xl/sharedStrings.xml", "xl/worksheets/sheet1.xml",
+                    "docProps/core.xml", "docProps/app.xml",
+                    "xl/styles.xml", "word/styles.xml", "word/fontTable.xml");
     private static final Pattern MACRO_TEMPLATE_PATTERN =
             Pattern.compile("macroenabledtemplate$", Pattern.CASE_INSENSITIVE);
     private static final String XPS_DOCUMENT =
@@ -278,7 +281,25 @@ public class OPCPackageDetector implements ZipContainerDetector {
             //no need to close zipEntrySource because it
             //only closes the underlying zipFile, not any other resources
             //as of this writing.... :'(
-            return null;
+            //fall through to [Content_Types].xml fallback below
+        }
+        // POI may have failed (caught above) OR returned null because the
+        // rels were malformed and POI silently produced an empty relationship
+        // collection. Either way, fall back to parsing [Content_Types].xml
+        // directly — same approach as the streaming detector.
+        if (type == null) {
+            ZipArchiveEntry ctEntry = zipEntrySource.getEntry("[Content_Types].xml");
+            if (ctEntry != null) {
+                try (InputStream contentTypesStream =
+                             zipEntrySource.getInputStream(ctEntry)) {
+                    type = parseOOXMLContentTypes(contentTypesStream);
+                } catch (IOException ignore) {
+                    //swallow
+                }
+            }
+            if (type == null || pkg == null) {
+                return type;
+            }
         }
         //this will now be closed eventually when the wrapper closes
         //the pkg which will close this

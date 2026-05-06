@@ -34,14 +34,29 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import aQute.bnd.annotation.spi.ServiceConsumer;
+
+import org.apache.tika.detect.Detector;
+import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.exception.TikaConfigException;
+import org.apache.tika.language.detect.LanguageDetector;
+import org.apache.tika.metadata.filter.MetadataFilter;
+import org.apache.tika.parser.Parser;
 import org.apache.tika.utils.ServiceLoaderUtils;
 
 /**
  * Internal utility class that Tika uses to look up service providers.
+ * Supports both static service loading using the {@link ServiceLoader} mechanism (and via
+ * <a href="https://docs.osgi.org/specification/osgi.cmpn/7.0.0/service.loader.html">OSGi Service Loader Mediator</a>)
+ * as well as dynamic loading via OSGi service tracking (from the {@link TikaActivator} class).
  *
  * @since Apache Tika 0.9
  */
+@ServiceConsumer(Parser.class)
+@ServiceConsumer(Detector.class)
+@ServiceConsumer(EncodingDetector.class)
+@ServiceConsumer(LanguageDetector.class)
+@ServiceConsumer(MetadataFilter.class)
 public class ServiceLoader {
 
     /**
@@ -59,36 +74,20 @@ public class ServiceLoader {
      */
     private static volatile ClassLoader CONTEXT_CLASS_LOADER = null;
     private final ClassLoader loader;
-    private final LoadErrorHandler handler;
-    private final InitializableProblemHandler initializableProblemHandler;
     private final boolean dynamic;
 
-    public ServiceLoader(ClassLoader loader, LoadErrorHandler handler,
-                         InitializableProblemHandler initializableProblemHandler, boolean dynamic) {
+    public ServiceLoader(ClassLoader loader, boolean dynamic) {
         this.loader = loader;
-        this.handler = handler;
-        this.initializableProblemHandler = initializableProblemHandler;
         this.dynamic = dynamic;
 
     }
-    public ServiceLoader(ClassLoader loader, LoadErrorHandler handler, boolean dynamic) {
-        this(loader, handler, InitializableProblemHandler.WARN, dynamic);
-    }
-
-    public ServiceLoader(ClassLoader loader, LoadErrorHandler handler) {
-        this(loader, handler, false);
-    }
 
     public ServiceLoader(ClassLoader loader) {
-        this(loader,
-                Boolean.getBoolean("org.apache.tika.service.error.warn") ? LoadErrorHandler.WARN :
-                        LoadErrorHandler.IGNORE);
+        this(loader, true);
     }
 
     public ServiceLoader() {
-        this(getContextClassLoader(),
-                Boolean.getBoolean("org.apache.tika.service.error.warn") ? LoadErrorHandler.WARN :
-                        LoadErrorHandler.IGNORE, true);
+        this(getContextClassLoader(), true);
     }
 
     /**
@@ -146,26 +145,6 @@ public class ServiceLoader {
     }
 
     /**
-     * Returns the load error handler used by this loader.
-     *
-     * @return load error handler
-     * @since Apache Tika 1.3
-     */
-    public LoadErrorHandler getLoadErrorHandler() {
-        return handler;
-    }
-
-    /**
-     * Returns the handler for problems with initializables
-     *
-     * @return handler for problems with initializables
-     * @since Apache Tika 1.15.1
-     */
-    public InitializableProblemHandler getInitializableProblemHandler() {
-        return initializableProblemHandler;
-    }
-
-    /**
      * Returns an input stream for reading the specified resource from the
      * configured class loader.
      *
@@ -195,9 +174,6 @@ public class ServiceLoader {
      * Loads and returns the named service class that's expected to implement
      * the given interface.
      * <p>
-     * Note that this class does not use the {@link LoadErrorHandler}, a
-     * {@link ClassNotFoundException} is always returned for unknown
-     * classes or classes of the wrong type
      *
      * @param iface service interface
      * @param name  service class name
@@ -313,7 +289,7 @@ public class ServiceLoader {
                 try {
                     collectServiceClassNames(resource, names);
                 } catch (IOException e) {
-                    handler.handleLoadError(serviceName, e);
+                    //TODO -- swallow log? or don't catch?
                 }
             }
         }
@@ -356,11 +332,6 @@ public class ServiceLoader {
                         }
                         if (!shouldExclude) {
                             T instance = ServiceLoaderUtils.newInstance(klass, this);
-                            if (instance instanceof Initializable) {
-                                ((Initializable) instance).initialize(Collections.EMPTY_MAP);
-                                ((Initializable) instance)
-                                        .checkInitialization(initializableProblemHandler);
-                            }
                             providers.add(instance);
                         }
                     } else {
@@ -368,7 +339,7 @@ public class ServiceLoader {
                                 "Class " + name + " is not of type: " + iface);
                     }
                 } catch (Throwable t) {
-                    handler.handleLoadError(name, t);
+                    //TODO: swallow, log, throw?
                 }
             }
         }

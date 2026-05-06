@@ -1,7 +1,6 @@
 .svn
 target
 dependency-reduced-pom.xml
-.editorconfig
 .idea
 .classpath
 .project
@@ -10,9 +9,15 @@ dependency-reduced-pom.xml
 *.ipr
 *.iws
 *.bin
+# Allow the bundled ML model resources
+!**/src/main/resources/**/*.bin
 nbactions.xml
 nb-configuration.xml
 *.DS_Store
 *.tmp-inception
 *.snap
 .*.swp
+
+tika-pipes/tika-pipes-plugins/tika-pipes-ignite/ignite
+tika-grpc/ignite
+.flattened-pom.xml

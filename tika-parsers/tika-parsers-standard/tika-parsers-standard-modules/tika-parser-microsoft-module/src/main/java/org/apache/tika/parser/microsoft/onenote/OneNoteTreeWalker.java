@@ -83,6 +83,7 @@ class OneNoteTreeWalker {
     }
 
     private final Metadata parentMetadata;
+    private final ParseContext parseContext;
     private final EmbeddedDocumentExtractor embeddedDocumentExtractor;
     private final Set<String> authors = new HashSet<>();
     private final Set<String> mostRecentAuthors = new HashSet<>();
@@ -125,6 +126,7 @@ class OneNoteTreeWalker {
         this.roleAndContext = roleAndContext;
         this.xhtml = xhtml;
         this.parentMetadata = parentMetadata;
+        this.parseContext = parseContext;
         this.embeddedDocumentExtractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(parseContext);
     }
@@ -341,7 +343,7 @@ class OneNoteTreeWalker {
     }
 
     private void handleEmbedded(int length) throws TikaException, IOException, SAXException {
-        TikaInputStream stream = null;
+        TikaInputStream tis = null;
         ByteBuffer buf;
         try {
             buf = ByteBuffer.allocate(length);
@@ -351,17 +353,17 @@ class OneNoteTreeWalker {
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
             return;
         }
-        Metadata embeddedMetadata = new Metadata();
+        Metadata embeddedMetadata = Metadata.newInstance(this.parseContext);
         try {
             AttributesImpl attributes = new AttributesImpl();
             attributes.addAttribute("", "class", "class", "CDATA", "embedded");
             xhtml.startElement("div", attributes);
             xhtml.endElement("div");
-            stream = TikaInputStream.get(buf.array());
-            embeddedDocumentExtractor.parseEmbedded(stream, new EmbeddedContentHandler(xhtml),
-                    embeddedMetadata, false);
+            tis = TikaInputStream.get(buf.array());
+            embeddedDocumentExtractor.parseEmbedded(tis, new EmbeddedContentHandler(xhtml),
+                    embeddedMetadata, this.parseContext, false);
         } finally {
-            IOUtils.closeQuietly(stream);
+            IOUtils.closeQuietly(tis);
         }
 
     }

@@ -21,13 +21,12 @@
   <parent>
     <artifactId>tika-parent</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
   <artifactId>tika-bundles</artifactId>
-  <version>4.0.0-SNAPSHOT</version>
   <name>Apache Tika bundles module</name>
 
   <packaging>pom</packaging>
@@ -42,9 +41,9 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>tika-bundle-standard/dependency-reduced-pom.xml</exclude> <!-- generated -->
-          </excludes>
+          <inputExcludes>
+            <inputExclude>tika-bundle-standard/dependency-reduced-pom.xml</inputExclude> <!-- generated -->
+          </inputExcludes>
         </configuration>
       </plugin>
     </plugins>

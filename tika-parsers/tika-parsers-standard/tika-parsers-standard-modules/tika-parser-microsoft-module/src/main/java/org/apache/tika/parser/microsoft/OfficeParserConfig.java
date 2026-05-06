@@ -32,12 +32,18 @@ public class OfficeParserConfig implements Serializable {
     private boolean includeSlideMasterContent = true;
     private boolean concatenatePhoneticRuns = true;
 
-    private boolean useSAXDocxExtractor = false;
-    private boolean useSAXPptxExtractor = false;
+    private boolean preferAlternateContentChoice = true;
 
     private boolean writeSelectHeadersInBody = false;
 
-    private boolean extractAllAlternativesFromMSG = false;
+    /**
+     * Maximum bytes per embedded object/pict when extracting from RTF within
+     * MSG files.  Since embedded data is streamed to disk (not held in memory),
+     * the default is 2 GB.  Set to -1 for unlimited.
+     */
+    private int rtfEmbeddedMaxBytesInKb = 2 * 1024 * 1024; // 2 GB
+
+    private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
     private int maxOverride = 0;//ignore
 
@@ -133,38 +139,30 @@ public class OfficeParserConfig implements Serializable {
         this.includeHeadersAndFooters = includeHeadersAndFooters;
     }
 
-    public boolean isUseSAXDocxExtractor() {
-        return useSAXDocxExtractor;
+    /**
+     * In OOXML, {@code mc:AlternateContent} wraps {@code mc:Choice} (newer/richer
+     * rendering, e.g. DrawingML text boxes) and {@code mc:Fallback} (degraded VML
+     * for older consumers). When {@code true} (default), the SAX parser processes
+     * the Choice branch and skips Fallback. When {@code false}, it processes
+     * Fallback and skips Choice (legacy behavior prior to Tika 4.x).
+     * <p>
+     * For text extraction, Choice typically contains equal or more content than
+     * Fallback.
+     * <p>
+     * Default: {@code true}
+     *
+     * @return whether to prefer mc:Choice over mc:Fallback
+     */
+    public boolean isPreferAlternateContentChoice() {
+        return preferAlternateContentChoice;
     }
 
     /**
-     * Use the experimental SAX-based streaming DOCX parser?
-     * If set to <code>false</code>, the classic parser will be used; if <code>true</code>,
-     * the new experimental parser will be used.
-     * <p/>
-     * Default: <code>false</code> (classic DOM parser)
-     *
-     * @param useSAXDocxExtractor
+     * @param preferAlternateContentChoice whether to prefer mc:Choice over mc:Fallback
+     * @see #isPreferAlternateContentChoice()
      */
-    public void setUseSAXDocxExtractor(boolean useSAXDocxExtractor) {
-        this.useSAXDocxExtractor = useSAXDocxExtractor;
-    }
-
-    public boolean isUseSAXPptxExtractor() {
-        return useSAXPptxExtractor;
-    }
-
-    /**
-     * Use the experimental SAX-based streaming DOCX parser?
-     * If set to <code>false</code>, the classic parser will be used; if <code>true</code>,
-     * the new experimental parser will be used.
-     * <p/>
-     * Default: <code>false</code> (classic DOM parser)
-     *
-     * @param useSAXPptxExtractor
-     */
-    public void setUseSAXPptxExtractor(boolean useSAXPptxExtractor) {
-        this.useSAXPptxExtractor = useSAXPptxExtractor;
+    public void setPreferAlternateContentChoice(boolean preferAlternateContentChoice) {
+        this.preferAlternateContentChoice = preferAlternateContentChoice;
     }
 
     public boolean isConcatenatePhoneticRuns() {
@@ -186,21 +184,21 @@ public class OfficeParserConfig implements Serializable {
         this.concatenatePhoneticRuns = concatenatePhoneticRuns;
     }
 
-    public boolean isExtractAllAlternativesFromMSG() {
-        return extractAllAlternativesFromMSG;
+    public boolean isIncludeGlossary() {
+        return includeGlossary;
     }
 
     /**
-     * Some .msg files can contain body content in html, rtf and/or text.
-     * The default behavior is to pick the first non-null value and include only that.
-     * If you'd like to extract all non-null body content, which is likely duplicative,
-     * set this value to true.
+     * Whether or not to include the glossary (building blocks / AutoText) document
+     * from docx files.  The glossary can contain template content such as form field
+     * placeholders that may duplicate content already present in the main body.
+     * <p/>
+     * Default: <code>true</code>
      *
-     * @param extractAllAlternativesFromMSG whether or not to extract all alternative parts
-     * @since 1.17
+     * @param includeGlossary whether or not to include glossary content
      */
-    public void setExtractAllAlternativesFromMSG(boolean extractAllAlternativesFromMSG) {
-        this.extractAllAlternativesFromMSG = extractAllAlternativesFromMSG;
+    public void setIncludeGlossary(boolean includeGlossary) {
+        this.includeGlossary = includeGlossary;
     }
 
     public boolean isIncludeMissingRows() {
@@ -290,5 +288,18 @@ public class OfficeParserConfig implements Serializable {
 
     public void setWriteSelectHeadersInBody(boolean writeSelectHeadersInBody) {
         this.writeSelectHeadersInBody = writeSelectHeadersInBody;
+    }
+
+    /**
+     * Maximum bytes (in KB) per embedded object/pict when extracting from RTF
+     * within MSG files.  Data is streamed to disk, so the default is 2 GB.
+     * Set to -1 for unlimited.
+     */
+    public int getRtfEmbeddedMaxBytesInKb() {
+        return rtfEmbeddedMaxBytesInKb;
+    }
+
+    public void setRtfEmbeddedMaxBytesInKb(int rtfEmbeddedMaxBytesInKb) {
+        this.rtfEmbeddedMaxBytesInKb = rtfEmbeddedMaxBytesInKb;
     }
 }

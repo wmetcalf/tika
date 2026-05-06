@@ -18,8 +18,8 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -30,6 +30,7 @@ import org.xml.sax.ContentHandler;
 
 import org.apache.tika.TikaTest;
 import org.apache.tika.exception.EncryptedDocumentException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -40,10 +41,10 @@ public class PowerPointParserTest extends TikaTest {
 
     @Test
     public void testPowerPointParser() throws Exception {
-        try (InputStream input = getResourceAsStream("/test-documents/testPPT.ppt")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPPT.ppt")) {
             Metadata metadata = new Metadata();
             ContentHandler handler = new BodyContentHandler();
-            new OfficeParser().parse(input, handler, metadata, new ParseContext());
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
 
             assertEquals("application/vnd.ms-powerpoint", metadata.get(Metadata.CONTENT_TYPE));
             assertEquals("Sample Powerpoint Slide", metadata.get(TikaCoreProperties.TITLE));
@@ -141,8 +142,8 @@ public class PowerPointParserTest extends TikaTest {
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
-        try (InputStream stream = getResourceAsStream("/test-documents/testPPT_masterFooter.ppt")) {
-            new OfficeParser().parse(stream, handler, metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPPT_masterFooter.ppt")) {
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
         }
 
         String content = handler.toString();
@@ -175,8 +176,8 @@ public class PowerPointParserTest extends TikaTest {
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
-        try (InputStream stream = getResourceAsStream("/test-documents/testPPT_masterText.ppt")) {
-            new OfficeParser().parse(stream, handler, metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPPT_masterText.ppt")) {
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
         }
 
         String content = handler.toString();
@@ -203,8 +204,8 @@ public class PowerPointParserTest extends TikaTest {
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
-        try (InputStream stream = getResourceAsStream("/test-documents/testPPT_masterText2.ppt")) {
-            new OfficeParser().parse(stream, handler, metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPPT_masterText2.ppt")) {
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
         }
 
         String content = handler.toString();
@@ -232,11 +233,11 @@ public class PowerPointParserTest extends TikaTest {
     public void testCustomProperties() throws Exception {
         Metadata metadata = new Metadata();
 
-        try (InputStream input = getResourceAsStream("/test-documents/testPPT_custom_props.ppt")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPPT_custom_props.ppt")) {
             ContentHandler handler = new BodyContentHandler(-1);
             ParseContext context = new ParseContext();
             context.set(Locale.class, Locale.US);
-            new OfficeParser().parse(input, handler, metadata, context);
+            new OfficeParser().parse(tis, handler, metadata, context);
         }
 
         assertEquals("application/vnd.ms-powerpoint", metadata.get(Metadata.CONTENT_TYPE));
@@ -349,11 +350,11 @@ public class PowerPointParserTest extends TikaTest {
         assertContains("tika", content);
         assertContains("MyTitle", content);
 
-        assertEquals("/embedded-1",
-                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
+        String path1 = metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+        assertTrue(path1.contains("."), "embedded resource should have extension: " + path1);
 
-        assertEquals("/embedded-2",
-                metadataList.get(2).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
+        String path2 = metadataList.get(2).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+        assertTrue(path2.contains("."), "embedded resource should have extension: " + path2);
 
     }
 

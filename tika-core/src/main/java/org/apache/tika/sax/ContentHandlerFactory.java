@@ -16,19 +16,42 @@
  */
 package org.apache.tika.sax;
 
-
-import java.io.OutputStream;
 import java.io.Serializable;
-import java.nio.charset.Charset;
 
 import org.xml.sax.ContentHandler;
 
 /**
- * Interface to allow easier injection of code for getting a new ContentHandler
+ * Factory interface for creating ContentHandler instances.
+ * <p>
+ * This is the base interface used by tika-pipes, RecursiveParserWrapper, and other
+ * components that need to create content handlers for in-memory content extraction.
+ * <p>
+ * For streaming output to an OutputStream, see {@link StreamingContentHandlerFactory}.
+ *
+ * @see StreamingContentHandlerFactory
+ * @see BasicContentHandlerFactory
  */
 public interface ContentHandlerFactory extends Serializable {
-    ContentHandler getNewContentHandler();
 
-    ContentHandler getNewContentHandler(OutputStream os, Charset charset);
+    /**
+     * Creates a new ContentHandler for extracting content.
+     *
+     * @return a new ContentHandler instance
+     */
+    ContentHandler createHandler();
 
+    /**
+     * Returns the name of the handler type produced by this factory
+     * (e.g. {@code TEXT}, {@code MARKDOWN}, {@code HTML}, {@code XML}).
+     * <p>
+     * This value is written to
+     * {@link org.apache.tika.metadata.TikaCoreProperties#TIKA_CONTENT_HANDLER_TYPE}
+     * so that downstream components (such as the inference pipeline) can
+     * determine what format {@code tika:content} is in without guessing.
+     *
+     * @return handler type name, never {@code null}
+     */
+    default String handlerTypeName() {
+        return "UNKNOWN";
+    }
 }

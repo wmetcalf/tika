@@ -23,7 +23,7 @@ import java.io.Serializable;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -55,7 +55,6 @@ public class EmbeddedDocumentUtil implements Serializable {
     private final ParseContext context;
     private final EmbeddedDocumentExtractor embeddedDocumentExtractor;
     //these are lazily initialized and can be null
-    private TikaConfig tikaConfig;
     private MimeTypes mimeTypes;
     private Detector detector;
 
@@ -84,12 +83,7 @@ public class EmbeddedDocumentUtil implements Serializable {
         //available for parsing embedded docs TIKA-2096
         Parser embeddedParser = context.get(Parser.class);
         if (embeddedParser == null) {
-            TikaConfig tikaConfig = context.get(TikaConfig.class);
-            if (tikaConfig == null) {
-                context.set(Parser.class, new AutoDetectParser());
-            } else {
-                context.set(Parser.class, new AutoDetectParser(tikaConfig));
-            }
+            context.set(Parser.class, new AutoDetectParser());
         }
         EmbeddedDocumentExtractor ex = new ParsingEmbeddedDocumentExtractor(context);
         context.set(EmbeddedDocumentExtractor.class, ex);
@@ -131,7 +125,7 @@ public class EmbeddedDocumentUtil implements Serializable {
             return detector;
         }
 
-        detector = getTikaConfig().getDetector();
+        detector = new DefaultDetector(getMimeTypes());
         return detector;
     }
 
@@ -144,25 +138,8 @@ public class EmbeddedDocumentUtil implements Serializable {
         if (mimeTypes != null) {
             return mimeTypes;
         }
-        mimeTypes = getTikaConfig().getMimeRepository();
+        mimeTypes = MimeTypes.getDefaultMimeTypes();
         return mimeTypes;
-    }
-
-    /**
-     * @return Returns a {@link TikaConfig} -- trying to find it first in the ParseContext
-     * that was included during initialization, and then creating a new one from
-     * via {@link TikaConfig#getDefaultConfig()} if it can't find one in the
-     * ParseContext. This caches the default config so that it only has to be created once.
-     */
-    public TikaConfig getTikaConfig() {
-        //be as lazy as possible and cache the TikaConfig
-        if (tikaConfig == null) {
-            tikaConfig = context.get(TikaConfig.class);
-            if (tikaConfig == null) {
-                tikaConfig = TikaConfig.getDefaultConfig();
-            }
-        }
-        return tikaConfig;
     }
 
     public String getExtension(TikaInputStream is, Metadata metadata) {
@@ -182,7 +159,7 @@ public class EmbeddedDocumentUtil implements Serializable {
         }
         if (mimeType == null) {
             try {
-                MediaType mediaType = getDetector().detect(is, metadata);
+                MediaType mediaType = getDetector().detect(is, metadata, context);
                 mimeType = localMimeTypes.forName(mediaType.toString());
                 detected = true;
                 is.reset();
@@ -198,6 +175,89 @@ public class EmbeddedDocumentUtil implements Serializable {
             return mimeType.getExtension();
         }
         return ".bin";
+    }
+
+    /**
+     * Looks up the file extension for a given media type string.
+     *
+     * @param mediaType the media type string (e.g., "image/png")
+     * @return the extension including the dot (e.g., ".png"), or empty string if unknown
+     */
+    /**
+     * Normalizes internal OCR routing media types (e.g., {@code image/ocr-png})
+     * back to standard media types (e.g., {@code image/png}).
+     * Returns the input unchanged if it is not an OCR routing type.
+     *
+     * @param mediaType the media type string
+     * @return the normalized media type string, or the original if no normalization needed
+     */
+    public static String normalizeMediaType(String mediaType) {
+        if (mediaType != null && mediaType.startsWith("image/ocr-")) {
+            return "image/" + mediaType.substring("image/ocr-".length());
+        }
+        return mediaType;
+    }
+
+    public static String getExtensionForMediaType(String mediaType) {
+        if (mediaType == null) {
+            return "";
+        }
+        mediaType = normalizeMediaType(mediaType);
+        try {
+            MimeType mimeType = MimeTypes.getDefaultMimeTypes().forName(mediaType);
+            return mimeType.getExtension();
+        } catch (MimeTypeException e) {
+            return "";
+        }
+    }
+
+    /**
+     * Type of embedded resource, used for generating canonical resource names.
+     */
+    public enum EmbeddedResourcePrefix {
+        EMBEDDED("embedded"),
+        IMAGE("image"),
+        THUMBNAIL("thumbnail");
+
+        private final String prefix;
+
+        EmbeddedResourcePrefix(String prefix) {
+            this.prefix = prefix;
+        }
+
+        public String getPrefix() {
+            return prefix;
+        }
+    }
+
+    /**
+     * Generates a canonical resource name from a type, counter, and media type.
+     * For example: {@code generateResourceName(EmbeddedResourcePrefix.EMBEDDED, 0, "image/png")}
+     * returns {@code "embedded-0.png"}.
+     *
+     * @param type      the embedded resource type
+     * @param count     the counter value
+     * @param mediaType the media type string, or null if unknown
+     * @return the generated resource name with extension
+     */
+    public static String generateResourceName(EmbeddedResourcePrefix type, int count,
+                                               String mediaType) {
+        return type.getPrefix() + "-" + count + getExtensionForMediaType(mediaType);
+    }
+
+    /**
+     * Sets a generated resource name on the metadata and marks the extension as inferred.
+     *
+     * @param metadata  the metadata to update
+     * @param type      the embedded resource type
+     * @param count     the counter value
+     * @param mediaType the media type string, or null if unknown
+     */
+    public static void setGeneratedResourceName(Metadata metadata, EmbeddedResourcePrefix type,
+                                                 int count, String mediaType) {
+        metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY,
+                generateResourceName(type, count, mediaType));
+        metadata.set(TikaCoreProperties.RESOURCE_NAME_EXTENSION_INFERRED, true);
     }
 
     public static void recordException(Throwable t, Metadata m) {
@@ -220,7 +280,7 @@ public class EmbeddedDocumentUtil implements Serializable {
 
     public void parseEmbedded(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                               boolean outputHtml) throws IOException, SAXException {
-        embeddedDocumentExtractor.parseEmbedded(tis, handler, metadata, outputHtml);
+        embeddedDocumentExtractor.parseEmbedded(tis, handler, metadata, context, outputHtml);
     }
 
     /**

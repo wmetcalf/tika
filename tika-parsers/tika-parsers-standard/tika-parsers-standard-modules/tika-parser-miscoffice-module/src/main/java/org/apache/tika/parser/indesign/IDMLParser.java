@@ -81,26 +81,21 @@ public class IDMLParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler baseHandler, Metadata metadata, ParseContext context)
+    public void parse(TikaInputStream tis, ContentHandler baseHandler, Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
         ZipFile zipFile = null;
         ZipInputStream zipStream = null;
-        if (stream instanceof TikaInputStream) {
-            TikaInputStream tis = (TikaInputStream) stream;
-            Object container = ((TikaInputStream) stream).getOpenContainer();
-            if (container instanceof ZipFile) {
-                zipFile = (ZipFile) container;
-            } else if (tis.hasFile()) {
-                zipFile = new ZipFile(tis.getFile());
-            } else {
-                zipStream = new ZipInputStream(stream);
-            }
+        Object container = tis.getOpenContainer();
+        if (container instanceof ZipFile) {
+            zipFile = (ZipFile) container;
+        } else if (tis.hasFile()) {
+            zipFile = new ZipFile(tis.getFile());
         } else {
-            zipStream = new ZipInputStream(stream);
+            zipStream = new ZipInputStream(tis);
         }
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, context);
         xhtml.startDocument();
         EndDocumentShieldingContentHandler handler = new EndDocumentShieldingContentHandler(xhtml);
 
@@ -172,17 +167,17 @@ public class IDMLParser implements Parser {
         } else if (entry.getName().equals("META-INF/metadata.xml")) {
             XMPMetadataExtractor.parse(zip, metadata);
         } else if (entry.getName().contains("MasterSpreads")) {
-            Metadata embeddedMeta = new Metadata();
+            Metadata embeddedMeta = Metadata.newInstance(context);
             ContentAndMetadataExtractor.extract(zip, handler, embeddedMeta, context);
             int spreadCount = Integer.parseInt(embeddedMeta.get("PageCount"));
             masterSpreadCount += spreadCount;
         } else if (entry.getName().contains("Spreads/Spread")) {
-            Metadata embeddedMeta = new Metadata();
+            Metadata embeddedMeta = Metadata.newInstance(context);
             ContentAndMetadataExtractor.extract(zip, handler, embeddedMeta, context);
             int spreadCount = Integer.parseInt(embeddedMeta.get("PageCount"));
             pageCount += spreadCount;
         }  else if (entry.getName().contains("Stories")) {
-            ContentAndMetadataExtractor.extract(zip, handler, new Metadata(), context);
+            ContentAndMetadataExtractor.extract(zip, handler, Metadata.newInstance(context), context);
         }
 
     }

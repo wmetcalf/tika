@@ -1,0 +1,12 @@
+{
+  "encoding-detectors": [
+    {
+      "html-encoding-detector": {
+        "markLimit": 65000
+      }
+    },
+    {
+      "override-encoding-detector": {}
+    }
+  ]
+}

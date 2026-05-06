@@ -1,7 +1,12 @@
 {
+  "fetchers": {
+    "file-system-fetcher": {
+      "file-system-fetcher": {
+        "allowAbsolutePaths": true
+      }
+    }
+  },
   "server": {
-    "taskTimeoutMillis": 120000,
-    "taskPulseMillis": 100,
     "port": 9999,
     "enableUnsecure": true,
     "endpoints": [
@@ -9,5 +14,17 @@
       "async",
       "status"
     ]
-  }
+  },
+  "parse-context": {
+    "timeout-limits": {
+      "progressTimeoutMillis": 120000
+    }
+  },
+  "pipes": {
+    "numClients": 2,
+    "forkedJvmArgs": [
+      "-Xmx256m"
+    ]
+  },
+  "plugin-roots": "target/plugins"
 }

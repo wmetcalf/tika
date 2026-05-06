@@ -25,7 +25,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
 
@@ -39,6 +39,19 @@
       <groupId>${project.groupId}</groupId>
       <artifactId>tika-parsers-standard-package</artifactId>
       <version>${project.version}</version>
+      <type>pom</type>
+    </dependency>
+    <!-- inference: text embeddings and CLIP image embeddings -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-inference</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- VLM: OpenAI-compatible, Gemini, and Claude vision parsers -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-vlm</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
@@ -47,7 +60,12 @@
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
-      <artifactId>tika-langdetect-optimaize</artifactId>
+      <artifactId>tika-langdetect-charsoup</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-ml-junkdetect</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
@@ -59,6 +77,12 @@
     <dependency>
       <groupId>${project.groupId}</groupId>
       <artifactId>tika-async-cli</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- for fork mode -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-pipes-fork-parser</artifactId>
       <version>${project.version}</version>
     </dependency>
 
@@ -109,9 +133,9 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/test/resources/test-data/**</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/test/resources/test-data/**</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

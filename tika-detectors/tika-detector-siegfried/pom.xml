@@ -21,7 +21,7 @@
   <parent>
     <artifactId>tika-detectors</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -58,6 +58,7 @@
       <groupId>${project.groupId}</groupId>
       <artifactId>tika-parsers-standard-package</artifactId>
       <version>${project.version}</version>
+      <type>pom</type>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -84,9 +85,9 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/test/resources/test-documents/testPDF.pdf</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/test/resources/test-documents/testPDF.pdf</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

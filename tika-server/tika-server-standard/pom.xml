@@ -19,7 +19,7 @@
   <parent>
     <artifactId>tika-server</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -37,6 +37,7 @@
       <groupId>${project.groupId}</groupId>
       <artifactId>tika-parsers-standard-package</artifactId>
       <version>${project.version}</version>
+      <type>pom</type>
       <!-- this is brought in by tika-server-core. Don't duplicate -->
       <exclusions>
         <exclusion>
@@ -48,6 +49,18 @@
           <artifactId>tika-parser-zip-commons</artifactId>
         </exclusion>
       </exclusions>
+    </dependency>
+    <!-- inference: text embeddings and CLIP image embeddings -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-inference</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- VLM: OpenAI-compatible, Gemini, and Claude vision parsers -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-vlm</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
@@ -88,6 +101,12 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-langdetect-optimaize</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <plugins>
@@ -108,6 +127,11 @@
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
           <archive>
+            <manifest>
+              <mainClass>org.apache.tika.server.core.TikaServerCli</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
+            </manifest>
             <manifestEntries>
               <Automatic-Module-Name>org.apache.tika.server.standard</Automatic-Module-Name>
             </manifestEntries>
@@ -119,13 +143,13 @@
         <artifactId>maven-dependency-plugin</artifactId>
         <executions>
           <execution>
-            <id>copy-plugins</id>
+            <id>unpack-plugins</id>
             <phase>process-test-resources</phase>
             <goals>
-              <goal>copy</goal>
+              <goal>unpack</goal>
             </goals>
             <configuration>
-              <outputDirectory>${project.build.directory}/plugins</outputDirectory>
+              <outputDirectory>${project.build.directory}/plugins/tika-pipes-file-system</outputDirectory>
               <artifactItems>
                 <artifactItem>
                   <groupId>org.apache.tika</groupId>
@@ -143,11 +167,11 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/main/resources/tikaserver-version.properties</exclude>
-            <exclude>src/test/resources/test-documents/*</exclude>
-            <exclude>src/TODO</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/main/resources/tikaserver-version.properties</inputExclude>
+            <inputExclude>src/test/resources/test-documents/*</inputExclude>
+            <inputExclude>src/TODO</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <!-- WAM: Added maven-shade-plugin to create standalone uber jar -->

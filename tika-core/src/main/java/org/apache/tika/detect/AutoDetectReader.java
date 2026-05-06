@@ -16,22 +16,22 @@
  */
 package org.apache.tika.detect;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.xml.sax.InputSource;
 
-import org.apache.tika.config.LoadErrorHandler;
 import org.apache.tika.config.ServiceLoader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.mime.MediaType;
-import org.apache.tika.utils.CharsetUtils;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * An input stream reader that automatically detects the character encoding
@@ -47,8 +47,11 @@ public class AutoDetectReader extends BufferedReader {
     private static final EncodingDetector DEFAULT_DETECTOR;
 
     static {
-        DEFAULT_DETECTOR = new CompositeEncodingDetector(
-                DEFAULT_LOADER.loadServiceProviders(EncodingDetector.class));
+        // Use DefaultEncodingDetector so SPI-discovered detectors are run in the
+        // pinned order (HtmlEncodingDetector, UniversalEncodingDetector, Icu4jEncodingDetector,
+        // then anything else by class name). Otherwise the order would be whatever
+        // ServiceLoader yields from classpath/jar order, which is fragile.
+        DEFAULT_DETECTOR = new DefaultEncodingDetector(DEFAULT_LOADER);
     }
 
     private final Charset charset;
@@ -64,31 +67,22 @@ public class AutoDetectReader extends BufferedReader {
         }
     }
 
-    /**
-     * @param stream    stream from which to read -- make sure that it supports mark!
-     * @param metadata
-     * @param detector
-     * @param handler
-     * @throws IOException
-     * @throws TikaException
-     */
-    private AutoDetectReader(InputStream stream, Metadata metadata,
-                             EncodingDetector detector, LoadErrorHandler handler)
-            throws IOException, TikaException {
-        this(stream, detect(stream, metadata, detector, handler));
-    }
-
     public AutoDetectReader(InputStream stream, Metadata metadata,
                             EncodingDetector encodingDetector) throws IOException, TikaException {
-        this(getBuffered(stream), metadata, encodingDetector,
-                DEFAULT_LOADER.getLoadErrorHandler());
+        // IMPORTANT: Only call getTikaInputStream once, then reuse the same instance.
+        // Calling it twice creates two different TikaInputStreams sharing the same underlying
+        // stream, causing the second one's reads to advance the position for both.
+        this(getTikaInputStream(stream), metadata, encodingDetector);
+    }
+
+    private AutoDetectReader(TikaInputStream tis, Metadata metadata,
+                             EncodingDetector encodingDetector) throws IOException, TikaException {
+        this(tis, detect(tis, metadata, encodingDetector));
     }
 
     public AutoDetectReader(InputStream stream, Metadata metadata, ServiceLoader loader)
             throws IOException, TikaException {
-        this(getBuffered(stream), metadata,
-                new CompositeEncodingDetector(loader.loadServiceProviders(EncodingDetector.class)),
-                loader.getLoadErrorHandler());
+        this(getTikaInputStream(stream), metadata, new DefaultEncodingDetector(loader));
     }
 
     public AutoDetectReader(InputStream stream, Metadata metadata)
@@ -100,45 +94,57 @@ public class AutoDetectReader extends BufferedReader {
         this(stream, new Metadata());
     }
 
-    private static Charset detect(InputStream input, Metadata metadata,
-                                  EncodingDetector detector, LoadErrorHandler handler)
+    private static Charset detect(TikaInputStream tis, Metadata metadata,
+                                  EncodingDetector detector)
             throws IOException, TikaException {
         // Ask all given detectors for the character encoding
-        try {
-            Charset charset = detector.detect(input, metadata);
-            if (charset != null) {
-                return charset;
+        List<EncodingResult> results = detector.detect(tis, metadata, new ParseContext());
+        if (!results.isEmpty()) {
+            Charset detected = results.get(0).getCharset();
+            Charset superset = CharsetSupersets.supersetOf(detected);
+            if (superset != null) {
+                metadata.set(TikaCoreProperties.DECODED_CHARSET, superset.name());
+                return superset;
             }
-        } catch (NoClassDefFoundError e) {
-            // TIKA-1041: Detector dependencies not present.
-            handler.handleLoadError(detector.getClass().getName(), e);
+            return detected;
         }
 
-        // Try determining the encoding based on hints in document metadata
-        MediaType type = MediaType.parse(metadata.get(Metadata.CONTENT_TYPE));
-        if (type != null) {
-            String charset = type.getParameters().get("charset");
-            if (charset != null) {
-                try {
-                    Charset cs = CharsetUtils.forName(charset);
-                    metadata.set(TikaCoreProperties.DETECTED_ENCODING, cs.name());
-                    metadata.set(TikaCoreProperties.ENCODING_DETECTOR,
-                            "AutoDetectReader-charset-metadata-fallback");
-                    return cs;
-                } catch (IllegalArgumentException e) {
-                    // ignore
-                }
-            }
+        // Try determining the encoding based on hints in document metadata.
+        // Two metadata keys are honoured (TIKA-4683 — restoring 3.x parser-layer
+        // behaviour that consulted both): the charset parameter of CONTENT_TYPE
+        // (e.g. "text/html; charset=UTF-8") and a bare charset label in
+        // CONTENT_ENCODING (set by parsers such as RFC822Parser).
+        Charset metaCharset = MetadataCharsetDetector.charsetFromContentType(metadata);
+        if (metaCharset == null) {
+            metaCharset = MetadataCharsetDetector.charsetFromContentEncoding(metadata);
+        }
+        if (metaCharset != null) {
+            metadata.set(TikaCoreProperties.DETECTED_ENCODING, metaCharset.name());
+            metadata.set(TikaCoreProperties.ENCODING_DETECTOR,
+                    "AutoDetectReader-charset-metadata-fallback");
+            return metaCharset;
         }
 
-        throw new TikaException("Failed to detect the character encoding of a document");
+        // Final fallback (TIKA-4683): when the rolled-back 3.x-style chain
+        // (Html, Universal, Icu4j) abstains on short/pure-ASCII inputs and
+        // metadata carries no charset hint, default to ISO-8859-1 rather
+        // than throwing.  This matches 3.x's default-charset behaviour:
+        // pre-TIKA-4685 the chain effectively returned ISO-8859-1 for
+        // ASCII-only content, and tests assert that.  4.x's TIKA-4685
+        // refactor moved to windows-1252 via WHATWG normalisation; we
+        // explicitly opt out of that here.
+        Charset fallback = StandardCharsets.ISO_8859_1;
+        metadata.set(TikaCoreProperties.DETECTED_ENCODING, fallback.name());
+        metadata.set(TikaCoreProperties.ENCODING_DETECTOR,
+                "AutoDetectReader-default-fallback");
+        return fallback;
     }
 
-    private static InputStream getBuffered(InputStream stream) {
-        if (stream.markSupported()) {
-            return stream;
+    private static TikaInputStream getTikaInputStream(InputStream stream) {
+        if (stream instanceof TikaInputStream) {
+            return (TikaInputStream) stream;
         }
-        return new BufferedInputStream(stream);
+        return TikaInputStream.get(stream);
     }
 
 

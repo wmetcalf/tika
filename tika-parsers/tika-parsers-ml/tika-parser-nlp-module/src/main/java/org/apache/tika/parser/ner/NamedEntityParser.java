@@ -17,7 +17,6 @@
 package org.apache.tika.parser.ner;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -34,8 +33,10 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.Tika;
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.TikaComponent;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -55,6 +56,7 @@ import org.apache.tika.sax.XHTMLContentHandler;
  * @see OpenNLPNERecogniser
  * @see NERecogniser
  */
+@TikaComponent(spi = false)
 public class NamedEntityParser implements Parser {
     public static final Logger LOG = LoggerFactory.getLogger(NamedEntityParser.class);
     public static final Set<MediaType> MEDIA_TYPES = new HashSet<>();
@@ -98,8 +100,8 @@ public class NamedEntityParser implements Parser {
             }
         }
         try {
-            TikaConfig config = new TikaConfig();
-            this.secondaryParser = new Tika(config);
+            TikaLoader loader = TikaLoader.loadDefault();
+            this.secondaryParser = new Tika(loader.loadDetectors(), loader.loadAutoDetectParser());
             this.available = !nerChain.isEmpty();
             LOG.info("Number of NERecognisers in chain {}", nerChain.size());
         } catch (Exception e) {
@@ -112,7 +114,7 @@ public class NamedEntityParser implements Parser {
         return MEDIA_TYPES;
     }
 
-    public void parse(InputStream inputStream, ContentHandler contentHandler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler contentHandler, Metadata metadata,
                       ParseContext parseContext) throws IOException, SAXException, TikaException {
 
         if (!initialized) {
@@ -124,8 +126,8 @@ public class NamedEntityParser implements Parser {
 
         Reader reader =
                 MediaType.TEXT_PLAIN.toString().equals(metadata.get(Metadata.CONTENT_TYPE)) ?
-                        new InputStreamReader(inputStream, StandardCharsets.UTF_8) :
-                        secondaryParser.parse(inputStream);
+                        new InputStreamReader(tis, StandardCharsets.UTF_8) :
+                        secondaryParser.parse(tis);
 
         String text = IOUtils.toString(reader);
         IOUtils.closeQuietly(reader);
@@ -143,7 +145,7 @@ public class NamedEntityParser implements Parser {
                 }
             }
         }
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(contentHandler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(contentHandler, metadata, parseContext);
         extractOutput(text.trim(), xhtml);
     }
 

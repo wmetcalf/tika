@@ -21,7 +21,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
@@ -32,6 +32,7 @@
   <packaging>pom</packaging>
 
   <modules>
+    <module>tika-pipes-es-integration-tests</module>
     <module>tika-pipes-opensearch-integration-tests</module>
     <module>tika-pipes-solr-integration-tests</module>
     <module>tika-pipes-s3-integration-tests</module>
@@ -40,16 +41,7 @@
     <module>tika-woodstox-tests</module>
   </modules>
 
-  <dependencies>
-    <!-- after we migrate everything to junit5, we can get rid of this -->
-    <dependency>
-      <groupId>org.junit.vintage</groupId>
-      <artifactId>junit-vintage-engine</artifactId>
-      <scope>test</scope>
-    </dependency>
-  </dependencies>
-
-  <scm>
+<scm>
     <tag>3.0.0-rc1</tag>
   </scm>
 </project>

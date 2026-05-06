@@ -16,46 +16,48 @@
  */
 package org.apache.tika.metadata.filter;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 
-import org.w3c.dom.Element;
-
-import org.apache.tika.config.ConfigBase;
-import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
-public abstract class MetadataFilter extends ConfigBase implements Serializable {
+public abstract class MetadataFilter implements Serializable, Closeable {
+
     /**
-     * Loads the metadata list filter from the config file if it exists, otherwise returns NoOpFilter
-     * @param root
-     * @return
-     * @throws TikaConfigException
-     * @throws IOException
+     * Filters the metadata list in place using per-request context.
+     * The list and the metadata objects within it may be modified.
+     * Callers must pass a mutable list and should make a defensive
+     * copy before calling if the original data must be preserved.
+     *
+     * @param metadataList the list to filter (must be mutable)
+     * @param parseContext per-request context (e.g. skip flags, runtime config)
+     * @throws TikaException if filtering fails
      */
-    public static MetadataFilter load(Element root, boolean allowMissing) throws TikaConfigException,
-            IOException {
-        try {
-            return buildComposite("metadataFilters", CompositeMetadataFilter.class,
-                    "metadataFilter", MetadataFilter.class, root);
-        } catch (TikaConfigException e) {
-            if (allowMissing && e.getMessage().contains("could not find metadataFilters")) {
-                return new NoOpFilter();
-            }
-            throw e;
-        }
+    public abstract void filter(List<Metadata> metadataList, ParseContext parseContext)
+            throws TikaException;
+
+    /**
+     * Convenience overload for callers that have no per-request context.
+     * Delegates to {@link #filter(List, ParseContext)} with an empty context.
+     */
+    public void filter(List<Metadata> metadataList) throws TikaException {
+        filter(metadataList, new ParseContext());
     }
 
     /**
-     * For efficiency's sake, the original metadata list and data therein may be modified.
-     * Users are responsible for doing a defensive copy before calling filter if mutability
-     * would be problematic.
-     *
-     * @param metadataList
-     * @return
-     * @throws TikaException
+     * Releases any resources held by this filter (e.g. HTTP connection pools,
+     * thread pools). The default implementation is a no-op; filters that hold
+     * long-lived resources should override this.
+     * <p>
+     * Callers that control the filter lifecycle (e.g. {@code PipesServer},
+     * try-with-resources blocks) should call this when the filter is no longer
+     * needed.
      */
-    public abstract List<Metadata> filter(List<Metadata> metadataList) throws TikaException;
+    @Override
+    public void close() throws IOException {
+    }
 }

@@ -17,11 +17,12 @@
 package org.apache.tika.renderer;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.Serializable;
 import java.util.Set;
 
+import org.apache.tika.config.SelfConfiguring;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -31,7 +32,7 @@ import org.apache.tika.parser.ParseContext;
  * but also on portions of PDF pages as well as on other document types.
  *
  */
-public interface Renderer extends Serializable {
+public interface Renderer extends Serializable, SelfConfiguring {
 
 
 
@@ -45,7 +46,7 @@ public interface Renderer extends Serializable {
      */
     Set<MediaType> getSupportedTypes(ParseContext context);
 
-    RenderResults render(InputStream is, Metadata metadata, ParseContext parseContext,
+    RenderResults render(TikaInputStream tis, Metadata metadata, ParseContext parseContext,
                          RenderRequest ... requests) throws IOException,
             TikaException;
 
@@ -54,7 +55,7 @@ public interface Renderer extends Serializable {
     page the requestor or the parser determines that they only want to render e.g. a
     box within a page.
 
-    RenderResults render(InputStream is, int page, Coordinates coordinates, Metadata metadata,
+    RenderResults render(TikaInputStream tis, int page, Coordinates coordinates, Metadata metadata,
                          ParseContext parseContext) throws IOException,
             TikaException;
 

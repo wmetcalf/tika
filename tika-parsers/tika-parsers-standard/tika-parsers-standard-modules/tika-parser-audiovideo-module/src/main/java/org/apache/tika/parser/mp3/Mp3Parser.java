@@ -26,10 +26,10 @@ import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TailStream;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.XMPDM;
@@ -62,7 +62,7 @@ public class Mp3Parser implements Parser {
      * Scans the MP3 frames for ID3 tags, and creates ID3Tag Handlers
      * for each supported set of tags.
      */
-    protected static ID3TagsAndAudio getAllTagHandlers(InputStream stream, ContentHandler handler)
+    protected static ID3TagsAndAudio getAllTagHandlers(InputStream tis, ContentHandler handler)
             throws IOException, SAXException, TikaException {
         ID3v24Handler v24 = null;
         ID3v23Handler v23 = null;
@@ -71,7 +71,7 @@ public class Mp3Parser implements Parser {
         LyricsHandler lyrics = null;
         AudioFrame firstAudio = null;
 
-        TailStream tailStream = new TailStream(stream, 10240 + 128);
+        TailStream tailStream = new TailStream(tis, 10240 + 128);
         MpegStream mpegStream = new MpegStream(tailStream);
 
         // ID3v2 tags live at the start of the file
@@ -141,15 +141,15 @@ public class Mp3Parser implements Parser {
         return SUPPORTED_TYPES;
     }
 
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         metadata.set(Metadata.CONTENT_TYPE, "audio/mpeg");
         metadata.set(XMPDM.AUDIO_COMPRESSOR, "MP3");
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
 
         // Create handlers for the various kinds of ID3 tags
-        ID3TagsAndAudio audioAndTags = getAllTagHandlers(stream, handler);
+        ID3TagsAndAudio audioAndTags = getAllTagHandlers(tis, handler);
 
         // Before we start on the XHTML output, process and store
         //  as much metadata as possible
@@ -251,7 +251,6 @@ public class Mp3Parser implements Parser {
      *
      * @param maxRecordSize
      */
-    @Field
     public void setMaxRecordSize(int maxRecordSize) {
         ID3v2Frame.setMaxRecordSize(maxRecordSize);
     }

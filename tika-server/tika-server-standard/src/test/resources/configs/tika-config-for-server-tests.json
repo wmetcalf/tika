@@ -10,13 +10,28 @@
     }
   ],
   "auto-detect-parser": {
-    "spoolToDisk": 1000000,
-    "outputThreshold": 1000000,
-    "digesterFactory": {
-      "@class": "org.apache.tika.parser.digestutils.CommonsDigesterFactory",
-      "markLimit": 100000,
-      "algorithmString": "md5,sha1:32"
-    },
     "throwOnZeroBytes": false
-  }
+  },
+  "parse-context": {
+    "timeout-limits": {
+      "progressTimeoutMillis": 30000
+    },
+    "commons-digester-factory": {
+        "digests": [
+          { "algorithm": "MD5" },
+          { "algorithm": "SHA1", "encoding": "BASE32" }
+        ]
+      }
+    },
+  "fetchers": {
+    "file-system-fetcher": {
+      "file-system-fetcher": {
+        "allowAbsolutePaths": true
+      }
+    }
+  },
+  "pipes": {
+    "numClients": 2
+  },
+  "plugin-roots": "target/plugins"
 }

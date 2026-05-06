@@ -18,18 +18,15 @@ package org.apache.tika.extractor;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Set;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
-import org.apache.tika.config.TikaConfig;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
-import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -56,12 +53,7 @@ public class ParserContainerExtractor implements ContainerExtractor {
     private final Detector detector;
 
     public ParserContainerExtractor() {
-        this(TikaConfig.getDefaultConfig());
-    }
-
-    public ParserContainerExtractor(TikaConfig config) {
-        this(new AutoDetectParser(config),
-                new DefaultDetector(config.getMimeRepository()));
+        this(new AutoDetectParser(), new DefaultDetector());
     }
 
     public ParserContainerExtractor(Parser parser, Detector detector) {
@@ -70,20 +62,19 @@ public class ParserContainerExtractor implements ContainerExtractor {
     }
 
     @Override
-    public boolean isSupported(TikaInputStream input) throws IOException {
-        MediaType type = detector.detect(input, new Metadata());
-        return parser.getSupportedTypes(new ParseContext()).contains(type);
+    public boolean isSupported(TikaInputStream input, ParseContext parseContext) throws IOException {
+        MediaType type = detector.detect(input, Metadata.newInstance(parseContext), parseContext);
+        return parser.getSupportedTypes(parseContext).contains(type);
     }
 
     @Override
     public void extract(
             TikaInputStream stream, ContainerExtractor recurseExtractor,
-            EmbeddedResourceHandler handler)
+            EmbeddedResourceHandler handler, ParseContext parseContext)
             throws IOException, TikaException {
-        ParseContext context = new ParseContext();
-        context.set(Parser.class, new RecursiveParser(parser, recurseExtractor, handler));
+        parseContext.set(Parser.class, new RecursiveParser(parser, recurseExtractor, handler, parseContext));
         try {
-            parser.parse(stream, new DefaultHandler(), new Metadata(), context);
+            parser.parse(stream, new DefaultHandler(), Metadata.newInstance(parseContext), parseContext);
         } catch (SAXException e) {
             throw new TikaException("Unexpected SAX exception", e);
         }
@@ -95,12 +86,16 @@ public class ParserContainerExtractor implements ContainerExtractor {
 
         private final EmbeddedResourceHandler handler;
 
+        private final ParseContext parseContext;
+
         private RecursiveParser(Parser statelessParser,
                 ContainerExtractor extractor,
-                EmbeddedResourceHandler handler) {
+                EmbeddedResourceHandler handler,
+                ParseContext parseContext) {
             super(statelessParser);
             this.extractor = extractor;
             this.handler = handler;
+            this.parseContext = parseContext;
         }
 
         @Override
@@ -110,34 +105,27 @@ public class ParserContainerExtractor implements ContainerExtractor {
 
         @Override
         public void parse(
-                InputStream stream, ContentHandler ignored,
+                TikaInputStream stream, ContentHandler ignored,
                 Metadata metadata, ParseContext context)
                 throws IOException, SAXException, TikaException {
-            TemporaryResources tmp = new TemporaryResources();
-            try {
-                TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
+            // Figure out what we have to process
+            String filename = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            MediaType type = detector.detect(stream, metadata, parseContext);
 
-                // Figure out what we have to process
-                String filename = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                MediaType type = detector.detect(tis, metadata);
+            if (extractor == null) {
+                // Let the handler process the embedded resource
+                handler.handle(filename, type, stream, parseContext);
+            } else {
+                // Use a temporary file to process the stream twice
+                File file = stream.getFile();
 
-                if (extractor == null) {
-                    // Let the handler process the embedded resource 
-                    handler.handle(filename, type, tis);
-                } else {
-                    // Use a temporary file to process the stream twice
-                    File file = tis.getFile();
-
-                    // Let the handler process the embedded resource
-                    try (InputStream input = TikaInputStream.get(file.toPath())) {
-                        handler.handle(filename, type, input);
-                    }
-
-                    // Recurse
-                    extractor.extract(tis, extractor, handler);
+                // Let the handler process the embedded resource
+                try (TikaInputStream tis = TikaInputStream.get(file.toPath())) {
+                    handler.handle(filename, type, tis, parseContext);
                 }
-            } finally {
-                tmp.dispose();
+
+                // Recurse
+                extractor.extract(stream, extractor, handler, parseContext);
             }
         }
 

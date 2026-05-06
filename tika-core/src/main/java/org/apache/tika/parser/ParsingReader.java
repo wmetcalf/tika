@@ -33,6 +33,7 @@ import java.util.concurrent.Executor;
 import org.xml.sax.ContentHandler;
 
 import org.apache.tika.exception.ZeroByteFileException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.sax.BodyContentHandler;
@@ -91,8 +92,7 @@ public class ParsingReader extends Reader {
      * @throws IOException if the document can not be parsed
      */
     public ParsingReader(InputStream stream) throws IOException {
-        this(new AutoDetectParser(), stream, new Metadata(), new ParseContext());
-        context.set(Parser.class, parser);
+        this(new AutoDetectParser(), stream, new ParseContext());
     }
 
     /**
@@ -104,7 +104,18 @@ public class ParsingReader extends Reader {
      * @throws IOException if the document can not be parsed
      */
     public ParsingReader(InputStream stream, String name) throws IOException {
-        this(new AutoDetectParser(), stream, getMetadata(name), new ParseContext());
+        this(new AutoDetectParser(), stream, name, new ParseContext());
+    }
+
+    private ParsingReader(Parser parser, InputStream stream, ParseContext context)
+            throws IOException {
+        this(parser, stream, Metadata.newInstance(context), context);
+        context.set(Parser.class, parser);
+    }
+
+    private ParsingReader(Parser parser, InputStream stream, String name, ParseContext context)
+            throws IOException {
+        this(parser, stream, getMetadata(name, context), context);
         context.set(Parser.class, parser);
     }
 
@@ -207,10 +218,11 @@ public class ParsingReader extends Reader {
      * for a document with the given name.
      *
      * @param name resource name (or <code>null</code>)
+     * @param context parse context to create metadata from
      * @return metadata instance
      */
-    private static Metadata getMetadata(String name) {
-        Metadata metadata = new Metadata();
+    private static Metadata getMetadata(String name, ParseContext context) {
+        Metadata metadata = Metadata.newInstance(context);
         if (name != null && name.length() > 0) {
             metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         }
@@ -263,19 +275,11 @@ public class ParsingReader extends Reader {
          * stored before the input stream is closed and processing is stopped.
          */
         public void run() {
-            try {
+            try (TikaInputStream tis = TikaInputStream.get(stream)) {
                 ContentHandler handler = new BodyContentHandler(writer);
-                parser.parse(stream, handler, metadata, context);
+                parser.parse(tis, handler, metadata, context);
             } catch (Throwable t) {
                 throwable = t;
-            }
-
-            try {
-                stream.close();
-            } catch (Throwable t) {
-                if (throwable == null) {
-                    throwable = t;
-                }
             }
 
             try {

@@ -18,7 +18,6 @@ package org.apache.tika.parser.csv;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UncheckedIOException;
@@ -34,16 +33,17 @@ import java.util.Set;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
-import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.AutoDetectReader;
 import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Property;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -70,7 +70,7 @@ import org.apache.tika.sax.XHTMLContentHandler;
  * {@link org.apache.commons.csv.CSVParser} is lost.
  * </p>
  */
-@TikaComponent
+@TikaComponent(name = "text-and-csv-parser")
 public class TextAndCSVParser extends AbstractEncodingDetectorParser {
 
     static final MediaType CSV = MediaType.text("csv");
@@ -97,32 +97,31 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
     private static final String TD = "td";
     private static final String TR = "tr";
     private static final String TABLE = "table";
-    private static final int DEFAULT_MARK_LIMIT = 20000;
 
     private static final Set<MediaType> SUPPORTED_TYPES = Collections
             .unmodifiableSet(new HashSet<>(Arrays.asList(CSV, TSV, MediaType.TEXT_PLAIN)));
 
-    /**
-     * This is the mark limit in characters (not bytes) to
-     * read from the stream when classifying the stream as
-     * csv, tsv or txt.
-     */
-    @Field
-    private int markLimit = DEFAULT_MARK_LIMIT;
-
-
-    /**
-     * minimum confidence score that there's enough
-     * evidence to determine csv/tsv vs. txt
-     */
-    @Field
-    private double minConfidence = 0.50;
+    private final TextAndCSVConfig defaultTextAndCSVConfig;
 
     public TextAndCSVParser() {
+        this.defaultTextAndCSVConfig = new TextAndCSVConfig();
+    }
+
+    public TextAndCSVParser(TextAndCSVConfig textAndCSVConfig) {
+        this.defaultTextAndCSVConfig = textAndCSVConfig;
+    }
+
+    /**
+     * This constructor is called by the JSON-based configuration
+     * loader.
+     */
+    public TextAndCSVParser(JsonConfig jsonConfig) throws TikaConfigException {
+        this(ConfigDeserializer.buildConfig(jsonConfig, TextAndCSVConfig.class));
     }
 
     public TextAndCSVParser(EncodingDetector encodingDetector) {
         super(encodingDetector);
+        this.defaultTextAndCSVConfig = new TextAndCSVConfig();
     }
 
     private static void handleText(Reader reader, XHTMLContentHandler xhtml)
@@ -145,14 +144,23 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
         return mediaType.getBaseType().equals(TSV) || mediaType.getBaseType().equals(CSV);
     }
 
-    private final TextAndCSVConfig defaultTextAndCSVConfig = new TextAndCSVConfig();
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                      ParseContext context) throws IOException, SAXException, TikaException {
+        tis.setCloseShield();
+        try {
+            parseInternal(tis, handler, metadata, context);
+        } finally {
+            tis.removeCloseShield();
+        }
+    }
+
+    private void parseInternal(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         TextAndCSVConfig textAndCSVConfig = context.get(TextAndCSVConfig.class, defaultTextAndCSVConfig);
 
@@ -160,14 +168,14 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
         Reader reader;
         Charset charset;
         if (!params.isComplete()) {
-            reader = detect(params, textAndCSVConfig, stream, metadata, context);
+            reader = detect(params, textAndCSVConfig, tis, metadata, context);
             if (params.getCharset() != null) {
                 charset = params.getCharset();
             } else {
                 charset = ((AutoDetectReader) reader).getCharset();
             }
         } else {
-            reader = new BufferedReader(new InputStreamReader(stream, params.getCharset()));
+            reader = new BufferedReader(new InputStreamReader(tis, params.getCharset()));
             charset = params.getCharset();
         }
 
@@ -178,14 +186,14 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
         //TODO -- if it was detected as a non-csv subtype of text
         if (!params.getMediaType().getBaseType().equals(CSV) &&
                 !params.getMediaType().getBaseType().equals(TSV)) {
-            handleText(reader, charset, handler, metadata);
+            handleText(reader, charset, handler, metadata, context);
             return;
         }
 
         CSVFormat csvFormat = CSVFormat.EXCEL.builder().setDelimiter(params.getDelimiter()).get();
         metadata.set(DELIMITER_PROPERTY, textAndCSVConfig.getDelimiterToNameMap().get(csvFormat.getDelimiterString().charAt(0)));
 
-        XHTMLContentHandler xhtmlContentHandler = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtmlContentHandler = new XHTMLContentHandler(handler, metadata, context);
         int totalRows = 0;
         try (CSVParser commonsParser = CSVParser.builder().setReader(reader).setFormat(csvFormat).get()) {
             xhtmlContentHandler.startDocument();
@@ -238,7 +246,7 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
     }
 
     private void handleText(Reader reader, Charset charset, ContentHandler handler,
-                            Metadata metadata) throws SAXException, IOException, TikaException {
+                            Metadata metadata, ParseContext context) throws SAXException, IOException, TikaException {
         // Automatically detect the character encoding
         //try to get detected content type; could be a subclass of text/plain
         //such as vcal, etc.
@@ -255,13 +263,13 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
         // deprecated, see TIKA-431
         metadata.set(Metadata.CONTENT_ENCODING, charset.name());
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         handleText(reader, xhtml);
         xhtml.endDocument();
     }
 
-    private Reader detect(CSVParams params, TextAndCSVConfig textAndCSVConfig, InputStream stream, Metadata metadata,
+    private Reader detect(CSVParams params, TextAndCSVConfig textAndCSVConfig, TikaInputStream tis, Metadata metadata,
                           ParseContext context) throws IOException, TikaException {
         //if the file was already identified as not .txt, .csv or .tsv
         //don't even try to csv or not
@@ -270,13 +278,13 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
             MediaType mediaType = MediaType.parse(mediaString);
             if (!SUPPORTED_TYPES.contains(mediaType.getBaseType())) {
                 params.setMediaType(mediaType);
-                return new AutoDetectReader(CloseShieldInputStream.wrap(stream), metadata,
+                return new AutoDetectReader(tis, metadata,
                         getEncodingDetector(context));
             }
         }
         Reader reader;
         if (params.getCharset() == null) {
-            reader = new AutoDetectReader(CloseShieldInputStream.wrap(stream), metadata,
+            reader = new AutoDetectReader(tis, metadata,
                     getEncodingDetector(context));
             params.setCharset(((AutoDetectReader) reader).getCharset());
             if (params.isComplete()) {
@@ -284,13 +292,15 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
             }
         } else {
             reader = new BufferedReader(
-                    new InputStreamReader(CloseShieldInputStream.wrap(stream), params.getCharset()));
+                    new InputStreamReader(tis, params.getCharset()));
         }
 
         if (params.getDelimiter() == null &&
                 (params.getMediaType() == null || isCSVOrTSV(params.getMediaType()))) {
 
-            CSVSniffer sniffer = new CSVSniffer(markLimit, textAndCSVConfig.getDelimiterToNameMap().keySet(), minConfidence);
+            CSVSniffer sniffer = new CSVSniffer(textAndCSVConfig.getMarkLimit(),
+                    textAndCSVConfig.getDelimiterToNameMap().keySet(),
+                    textAndCSVConfig.getMinConfidence());
             CSVResult result = sniffer.getBest(reader, metadata);
             params.setMediaType(result.getMediaType());
             params.setDelimiter(result.getDelimiter());
@@ -365,18 +375,6 @@ public class TextAndCSVParser extends AbstractEncodingDetectorParser {
         }
         MediaType type = new MediaType(mediaType, attrs);
         metadata.set(Metadata.CONTENT_TYPE, type.toString());
-    }
-
-    @Field
-    public void setNameToDelimiterMap(Map<String, String> map) throws TikaConfigException {
-        Map<String, Character> m = new HashMap<>();
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            if (e.getValue().length() > 1) {
-                throw new TikaConfigException("delimiter must be a single character: " + e.getValue());
-            }
-            m.put(e.getKey(), e.getValue().charAt(0));
-        }
-        defaultTextAndCSVConfig.setNameToDelimiterMap(m);
     }
 
 }

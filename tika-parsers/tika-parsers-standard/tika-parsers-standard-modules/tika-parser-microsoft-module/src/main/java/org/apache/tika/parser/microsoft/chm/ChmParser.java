@@ -17,7 +17,6 @@
 package org.apache.tika.parser.microsoft.chm;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -57,15 +56,15 @@ public class ChmParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        ChmExtractor chmExtractor = new ChmExtractor(stream);
+        ChmExtractor chmExtractor = new ChmExtractor(tis);
 
         // metadata
         metadata.set(Metadata.CONTENT_TYPE, "application/vnd.ms-htmlhelp");
 
         // content
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
         Parser htmlParser =
@@ -96,7 +95,7 @@ public class ChmParser implements Parser {
 
     private void parsePage(byte[] byteObject, Parser htmlParser, ContentHandler xhtml,
                            ParseContext context) throws TikaException, IOException, SAXException { // throws IOException
-        Metadata metadata = new Metadata();
+        Metadata metadata = Metadata.newInstance(context);
         ContentHandler handler = new EmbeddedContentHandler(new BodyContentHandler(xhtml));// -1
         try (TikaInputStream tis = TikaInputStream.get(byteObject)) {
             htmlParser.parse(tis, handler, metadata, context);

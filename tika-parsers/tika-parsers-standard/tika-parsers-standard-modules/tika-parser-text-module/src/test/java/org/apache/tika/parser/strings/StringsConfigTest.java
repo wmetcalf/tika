@@ -19,14 +19,14 @@ package org.apache.tika.parser.strings;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.io.InputStream;
-
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.TikaTest;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.parser.CompositeParser;
+import org.apache.tika.parser.Parser;
 
-public class StringsConfigTest {
+public class StringsConfigTest extends TikaTest {
 
     @Test
     public void testNoConfig() {
@@ -39,38 +39,33 @@ public class StringsConfigTest {
 
     @Test
     public void testPartialConfig() throws Exception {
-        TikaConfig tikaConfig = null;
-        try (InputStream stream = StringsConfigTest.class
-                .getResourceAsStream("/test-configs/tika-config-strings-partial.xml")) {
-            tikaConfig = new TikaConfig(stream);
+        Parser parser = TikaLoader.load(
+                        getConfigPath(StringsConfigTest.class, "tika-config-strings-partial.json"))
+                .loadParsers();
 
-        }
         StringsParser p =
-                (StringsParser) ((CompositeParser) tikaConfig.getParser()).getAllComponentParsers()
+                (StringsParser) ((CompositeParser) parser).getAllComponentParsers()
                         .get(0);
 
-        assertEquals(StringsEncoding.BIGENDIAN_16_BIT, p.getStringsEncoding(),
+        assertEquals(StringsEncoding.BIGENDIAN_16_BIT, p.getDefaultConfig().getEncoding(),
                 "Invalid overridden encoding value");
-        assertEquals(4, p.getMinLength(), "Invalid default min-len value");
-        assertEquals(60, p.getTimeoutSeconds(), "Invalid overridden timeout value");
+        assertEquals(4, p.getDefaultConfig().getMinLength(), "Invalid default min-len value");
+        assertEquals(60, p.getDefaultConfig().getTimeoutSeconds(), "Invalid overridden timeout value");
     }
 
     @Test
     public void testFullConfig() throws Exception {
-        TikaConfig tikaConfig = null;
-        try (InputStream stream = StringsConfigTest.class
-                .getResourceAsStream("/test-configs/tika-config-strings-full.xml")) {
-            tikaConfig = new TikaConfig(stream);
+        Parser parser = TikaLoader.load(
+                        getConfigPath(StringsConfigTest.class, "tika-config-strings-full.json"))
+                .loadParsers();
 
-        }
         StringsParser p =
-                (StringsParser) ((CompositeParser) tikaConfig.getParser()).getAllComponentParsers()
+                (StringsParser) ((CompositeParser) parser).getAllComponentParsers()
                         .get(0);
-        assertEquals(StringsEncoding.BIGENDIAN_16_BIT, p.getStringsEncoding(),
+        assertEquals(StringsEncoding.BIGENDIAN_16_BIT, p.getDefaultConfig().getEncoding(),
                 "Invalid overridden encoding value");
-        assertEquals(3, p.getMinLength(), "Invalid overridden min-len value");
-        assertEquals(60, p.getTimeoutSeconds(), "Invalid overridden timeout value");
-
+        assertEquals(3, p.getDefaultConfig().getMinLength(), "Invalid overridden min-len value");
+        assertEquals(60, p.getDefaultConfig().getTimeoutSeconds(), "Invalid overridden timeout value");
     }
 
     @Test

@@ -16,13 +16,14 @@
  */
 package org.apache.tika.parser;
 
-import java.io.InputStream;
 import java.util.Collections;
 import java.util.Set;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.config.TikaComponent;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.sax.XHTMLContentHandler;
@@ -32,6 +33,7 @@ import org.apache.tika.sax.XHTMLContentHandler;
  * attempting to parse the given document stream. Useful as a sentinel parser
  * for unknown document types.
  */
+@TikaComponent(spi = false)
 public class EmptyParser implements Parser {
     /**
      * Singleton instance of this class.
@@ -46,9 +48,9 @@ public class EmptyParser implements Parser {
         return Collections.emptySet();
     }
 
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws SAXException {
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         xhtml.endDocument();
     }

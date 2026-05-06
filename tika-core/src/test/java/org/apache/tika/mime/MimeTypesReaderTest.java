@@ -37,9 +37,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * These tests try to ensure that the MimeTypesReader
@@ -65,9 +66,9 @@ public class MimeTypesReaderTest {
 
     private static String getTypeAsString(MimeTypes mimeTypes, String text, Metadata metadata)
             throws IOException {
-        return mimeTypes
-                .detect(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)), metadata)
-                .toString();
+        try (TikaInputStream tis = TikaInputStream.get(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)))) {
+            return mimeTypes.detect(tis, metadata, new ParseContext()).toString();
+        }
 
     }
 
@@ -75,7 +76,7 @@ public class MimeTypesReaderTest {
     @BeforeEach
     public void setUp() throws NoSuchFieldException, SecurityException, IllegalArgumentException,
             IllegalAccessException {
-        this.mimeTypes = TikaConfig.getDefaultConfig().getMimeRepository();
+        this.mimeTypes = MimeTypes.getDefaultMimeTypes();
 
         Field magicsField = mimeTypes.getClass().getDeclaredField("magics");
         magicsField.setAccessible(true);
@@ -244,16 +245,17 @@ public class MimeTypesReaderTest {
             // By name
             Metadata m = new Metadata();
             m.add(TikaCoreProperties.RESOURCE_NAME_KEY, "test.hello.world");
-            assertEquals(hwf.toString(), this.mimeTypes.detect(null, m).toString());
+            assertEquals(hwf.toString(), this.mimeTypes.detect(null, m, new ParseContext()).toString());
 
             m = new Metadata();
             m.add(TikaCoreProperties.RESOURCE_NAME_KEY, "test.x-hello-world");
-            assertEquals(hxw.toString(), this.mimeTypes.detect(null, m).toString());
+            assertEquals(hxw.toString(), this.mimeTypes.detect(null, m, new ParseContext()).toString());
 
             // By contents - picks the x one as that sorts later
             m = new Metadata();
-            ByteArrayInputStream s = new ByteArrayInputStream("Hello, World!".getBytes(US_ASCII));
-            assertEquals(hxw.toString(), this.mimeTypes.detect(s, m).toString());
+            try (TikaInputStream tis = TikaInputStream.get("Hello, World!".getBytes(US_ASCII))) {
+                assertEquals(hxw.toString(), this.mimeTypes.detect(tis, m, new ParseContext()).toString());
+            }
         } catch (Exception e) {
             fail(e.getMessage());
         }
@@ -269,7 +271,7 @@ public class MimeTypesReaderTest {
         MimeTypes mimeTypes = MimeTypes.getDefaultMimeTypes(new CustomClassLoader());
         Metadata m = new Metadata();
         m.add(TikaCoreProperties.RESOURCE_NAME_KEY, "test.external.mime.type");
-        assertEquals("external/mime-type", mimeTypes.detect(null, m).toString());
+        assertEquals("external/mime-type", mimeTypes.detect(null, m, new ParseContext()).toString());
     }
 
     @Test

@@ -17,7 +17,6 @@
 package org.apache.tika.parser.warc;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -78,19 +77,21 @@ public class WARCParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         EmbeddedDocumentExtractor embeddedDocumentExtractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        try (WarcReader warcreader = new WarcReader(stream)) {
+        tis.setCloseShield();
+        try (WarcReader warcreader = new WarcReader(tis)) {
             //TODO: record warnings in metadata: warcreader.onWarning();
             for (WarcRecord record : warcreader) {
                 processRecord(record, xhtml, metadata, context, embeddedDocumentExtractor);
             }
         } finally {
+            tis.removeCloseShield();
             xhtml.endDocument();
         }
     }
@@ -132,7 +133,7 @@ public class WARCParser implements Parser {
             //TODO handle missing payload?  Report or ignore?
             return;
         }
-        Metadata metadata = new Metadata();
+        Metadata metadata = Metadata.newInstance(context);
         setNotNull(WARC.WARC_RECORD_CONTENT_TYPE, warcResponse.contentType(), metadata);
         setNotNull(WARC.WARC_PAYLOAD_CONTENT_TYPE, warcResponse.payloadType(), metadata);
         processWarcMetadata(warcResponse, metadata);
@@ -146,10 +147,10 @@ public class WARCParser implements Parser {
         metadata.set(Metadata.CONTENT_LENGTH, Long.toString(payload.body().size()));
 
         if (embeddedDocumentExtractor.shouldParseEmbedded(metadata)) {
-            //TODO check Content-Encoding on the warcResponse.http.headers and wrap the stream.
+            //TODO check Content-Encoding on the warcResponse.http.headers and wrap the tis.
             //May need to sniff first few bytes to confirm accuracy, e.g. gzip compression ?
             try (TikaInputStream tis = TikaInputStream.get(payload.body().stream())) {
-                embeddedDocumentExtractor.parseEmbedded(tis, xhtml, metadata, true);
+                embeddedDocumentExtractor.parseEmbedded(tis, xhtml, metadata, context, true);
             }
         }
 

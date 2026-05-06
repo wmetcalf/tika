@@ -17,13 +17,13 @@
 package org.apache.tika.parser.ctakes;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
@@ -60,14 +60,15 @@ public class CTAKESParser extends ParserDecorator {
      * Wraps the default Parser
      */
     public CTAKESParser() {
-        this(TikaConfig.getDefaultConfig());
+        this(loadDefaultParser());
     }
 
-    /**
-     * Wraps the default Parser for this Config
-     */
-    public CTAKESParser(TikaConfig config) {
-        this(config.getParser());
+    private static Parser loadDefaultParser() {
+        try {
+            return TikaLoader.loadDefault().loadAutoDetectParser();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load default parser", e);
+        }
     }
 
     /**
@@ -78,11 +79,11 @@ public class CTAKESParser extends ParserDecorator {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         CTAKESConfig config = context.get(CTAKESConfig.class, new CTAKESConfig());
         CTAKESContentHandler ctakesHandler = new CTAKESContentHandler(handler, metadata, config);
-        super.parse(stream, ctakesHandler, metadata, context);
+        super.parse(tis, ctakesHandler, metadata, context);
     }
 
     //@Override

@@ -20,13 +20,12 @@
     <module>tika-server-core</module>
     <module>tika-server-standard</module>
     <module>tika-server-client</module>
-    <module>tika-server-eval</module>
   </modules>
 
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
 

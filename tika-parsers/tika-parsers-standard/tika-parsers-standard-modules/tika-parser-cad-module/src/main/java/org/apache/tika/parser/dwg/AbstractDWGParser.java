@@ -17,7 +17,8 @@
 package org.apache.tika.parser.dwg;
 
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 
@@ -26,66 +27,29 @@ public abstract class AbstractDWGParser implements Parser {
 
 
     /**
-     * 
+     *
      */
     private static final long serialVersionUID = 6261810259683381984L;
-    private final DWGParserConfig defaultDwgParserConfig = new DWGParserConfig();
+    private final DWGParserConfig defaultDwgParserConfig;
+
+    public AbstractDWGParser() {
+        this.defaultDwgParserConfig = new DWGParserConfig();
+    }
+
+    public AbstractDWGParser(DWGParserConfig config) {
+        this.defaultDwgParserConfig = config;
+    }
+
+    public AbstractDWGParser(JsonConfig jsonConfig) {
+        this(ConfigDeserializer.buildConfig(jsonConfig, DWGParserConfig.class));
+    }
 
     public void configure(ParseContext parseContext) {
-        DWGParserConfig dwgParserConfig =  parseContext.get(DWGParserConfig.class, defaultDwgParserConfig);
+        DWGParserConfig dwgParserConfig = parseContext.get(DWGParserConfig.class, defaultDwgParserConfig);
         parseContext.set(DWGParserConfig.class, dwgParserConfig);
     }
 
-
-    public String getDwgReadExecutable() {
-        return defaultDwgParserConfig.getDwgReadExecutable();
+    public DWGParserConfig getDefaultConfig() {
+        return defaultDwgParserConfig;
     }
-    
-    @Field
-    public void setDwgReadExecutable(String dwgReadExecutable) {
-        defaultDwgParserConfig.setDwgReadExecutable(dwgReadExecutable);
-    }
-    
-    public boolean isCleanDwgReadOutput() {
-        return defaultDwgParserConfig.isCleanDwgReadOutput();
-    }
-    
-    @Field
-    public void setCleanDwgReadOutput(boolean cleanDwgReadOutput) {
-        defaultDwgParserConfig.setCleanDwgReadOutput(cleanDwgReadOutput);
-    }
-
-    public int getCleanDwgReadOutputBatchSize() {
-        return defaultDwgParserConfig.getCleanDwgReadOutputBatchSize();
-    }
-    
-    @Field
-    public void setCleanDwgReadOutputBatchSize(int cleanDwgReadOutputBatchSize) {
-        defaultDwgParserConfig.setCleanDwgReadOutputBatchSize(cleanDwgReadOutputBatchSize);
-    }
-    public String getCleanDwgReadRegexToReplace() {
-        return defaultDwgParserConfig.getCleanDwgReadRegexToReplace();
-    }
-    
-    @Field
-    public void setCleanDwgReadRegexToReplace(String cleanDwgReadRegexToReplace) {
-        defaultDwgParserConfig.setCleanDwgReadRegexToReplace(cleanDwgReadRegexToReplace);
-    }
-    public String getCleanDwgReadReplaceWith() {
-        return defaultDwgParserConfig.getCleanDwgReadReplaceWith();
-    }
-    
-    @Field
-    public void setCleanDwgReadReplaceWith(String cleanDwgReadReplaceWith) {
-        defaultDwgParserConfig.setCleanDwgReadReplaceWith(cleanDwgReadReplaceWith);
-    }
-    public long getDwgReadTimeout() {
-        return defaultDwgParserConfig.getDwgReadTimeout();
-    }
-
-    @Field
-    public void setDwgReadTimeout(long dwgReadTimeout) {
-        defaultDwgParserConfig.setDwgReadtimeout(dwgReadTimeout);
-    }
-    
 }

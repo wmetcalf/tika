@@ -34,7 +34,10 @@ import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.AnnotationMirror;
+import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
@@ -52,7 +55,7 @@ import org.apache.tika.config.TikaComponent;
  * </ul>
  *
  * <p>The processor maintains an inclusion list of known Tika service interfaces
- * to avoid generating SPI files for utility interfaces like Serializable, Initializable, etc.
+ * to avoid generating SPI files for utility interfaces like Serializable, etc.
  */
 @SupportedAnnotationTypes("org.apache.tika.config.TikaComponent")
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
@@ -61,6 +64,10 @@ public class TikaComponentProcessor extends AbstractProcessor {
     /**
      * Known Tika service interfaces for SPI generation.
      * Only classes implementing these interfaces will have SPI files generated.
+     * <p>
+     * Components that don't implement any of these interfaces (e.g., DigesterFactory,
+     * ContentHandlerFactory implementations) go to parse-context.idx instead.
+     * These should specify their contextKey explicitly via @TikaComponent(contextKey=...).
      */
     private static final Map<String, String> SERVICE_INTERFACES = new LinkedHashMap<>();
 
@@ -125,21 +132,58 @@ public class TikaComponentProcessor extends AbstractProcessor {
         // Check if component should be included in SPI
         boolean includeSpi = annotation.spi();
 
+        // Get contextKey if specified (need to use mirror API for Class types)
+        String contextKey = getContextKeyFromAnnotation(element);
+
+        // Get defaultFor if specified (need to use mirror API for Class types)
+        String defaultFor = getDefaultForFromAnnotation(element);
+
         messager.printMessage(Diagnostic.Kind.NOTE,
                 "Processing @TikaComponent: " + className + " -> " + componentName +
-                " (SPI: " + includeSpi + ")");
+                " (SPI: " + includeSpi + ", contextKey: " + contextKey +
+                ", defaultFor: " + defaultFor + ")");
 
         // Find all implemented service interfaces
         List<String> serviceInterfaces = findServiceInterfaces(element);
 
-        if (serviceInterfaces.isEmpty()) {
+        // Build the index entry value (className or className:key=X[:default])
+        // Auto-detect contextKey from service interface if not explicitly specified
+        String indexValue = className;
+        if (contextKey != null) {
+            // Explicit contextKey specified
+            indexValue = className + ":key=" + contextKey;
+        } else if (serviceInterfaces.size() == 1) {
+            // Auto-detect contextKey from single service interface
+            indexValue = className + ":key=" + serviceInterfaces.get(0);
+            messager.printMessage(Diagnostic.Kind.NOTE,
+                    "Auto-detected contextKey=" + serviceInterfaces.get(0) + " for " + className);
+        } else if (serviceInterfaces.size() > 1) {
+            // Multiple interfaces - warn that contextKey should be specified
             messager.printMessage(Diagnostic.Kind.WARNING,
-                    "Class " + className + " annotated with @TikaComponent " +
-                    "but does not implement any known Tika service interface", element);
-            return;
+                    "Class " + className + " implements multiple interfaces: " +
+                    serviceInterfaces + ". Consider specifying @TikaComponent(contextKey=...) " +
+                    "to select which one to use as ParseContext key.", element);
         }
 
-        // Process each service interface
+        // Add :default marker if defaultFor is specified
+        if (defaultFor != null) {
+            indexValue = indexValue + ":default";
+        }
+
+        // Components that don't implement any known service interface go to parse-context.idx
+        // These should specify their contextKey explicitly via @TikaComponent(contextKey=...)
+        if (serviceInterfaces.isEmpty()) {
+            // Put in parse-context.idx
+            messager.printMessage(Diagnostic.Kind.NOTE,
+                    "Class " + className + " is a parse-context component, " +
+                    "adding to parse-context.idx", element);
+
+            Map<String, String> index = indexFiles.computeIfAbsent("parse-context",
+                    k -> new LinkedHashMap<>());
+            addToIndex(index, componentName, indexValue, className, element);
+        }
+
+        // Process SPI service interfaces (these also get their own idx files)
         for (String serviceInterface : serviceInterfaces) {
             // Add to SPI services only if spi = true
             if (includeSpi) {
@@ -152,20 +196,73 @@ public class TikaComponentProcessor extends AbstractProcessor {
             if (indexFileName != null) {
                 Map<String, String> index = indexFiles.computeIfAbsent(indexFileName,
                         k -> new LinkedHashMap<>());
+                addToIndex(index, componentName, indexValue, className, element);
+            }
+        }
+    }
 
-                // Check for duplicate names
-                if (index.containsKey(componentName)) {
-                    String existingClass = index.get(componentName);
-                    if (!existingClass.equals(className)) {
-                        messager.printMessage(Diagnostic.Kind.ERROR,
-                                "Duplicate component name '" + componentName + "' for classes: " +
-                                existingClass + " and " + className, element);
+    /**
+     * Adds an entry to an index, checking for duplicates.
+     */
+    private void addToIndex(Map<String, String> index, String componentName,
+                           String indexValue, String className, TypeElement element) {
+        if (index.containsKey(componentName)) {
+            String existingValue = index.get(componentName);
+            // Extract class name from value (may have :key= suffix)
+            String existingClass = existingValue.contains(":")
+                    ? existingValue.substring(0, existingValue.indexOf(":"))
+                    : existingValue;
+            if (!existingClass.equals(className)) {
+                messager.printMessage(Diagnostic.Kind.ERROR,
+                        "Duplicate component name '" + componentName + "' for classes: " +
+                        existingClass + " and " + className, element);
+            }
+        } else {
+            index.put(componentName, indexValue);
+        }
+    }
+
+    /**
+     * Gets the contextKey value from the annotation using the mirror API.
+     * Returns null if contextKey is void.class (the default).
+     */
+    private String getContextKeyFromAnnotation(TypeElement element) {
+        return getClassAttributeFromAnnotation(element, "contextKey");
+    }
+
+    /**
+     * Gets the defaultFor value from the annotation using the mirror API.
+     * Returns null if defaultFor is void.class (the default).
+     */
+    private String getDefaultForFromAnnotation(TypeElement element) {
+        return getClassAttributeFromAnnotation(element, "defaultFor");
+    }
+
+    /**
+     * Gets a Class-typed attribute value from the annotation using the mirror API.
+     * Returns null if the attribute is void.class (the default).
+     */
+    private String getClassAttributeFromAnnotation(TypeElement element, String attributeName) {
+        for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
+            DeclaredType annotationType = mirror.getAnnotationType();
+            if (annotationType.toString().equals(TikaComponent.class.getName())) {
+                for (Map.Entry<? extends ExecutableElement, ? extends AnnotationValue> entry
+                        : mirror.getElementValues().entrySet()) {
+                    if (entry.getKey().getSimpleName().toString().equals(attributeName)) {
+                        // The value is a TypeMirror for Class types
+                        Object value = entry.getValue().getValue();
+                        if (value instanceof TypeMirror) {
+                            String typeName = value.toString();
+                            // void.class is the default, meaning "not specified"
+                            if (!"void".equals(typeName) && !"java.lang.Void".equals(typeName)) {
+                                return typeName;
+                            }
+                        }
                     }
-                } else {
-                    index.put(componentName, className);
                 }
             }
         }
+        return null;
     }
 
     /**
@@ -174,15 +271,20 @@ public class TikaComponentProcessor extends AbstractProcessor {
     private List<String> findServiceInterfaces(TypeElement element) {
         List<String> result = new ArrayList<>();
         Set<String> visited = new LinkedHashSet<>();
-        findServiceInterfacesRecursive(element.asType(), result, visited);
+        findInterfacesRecursive(element.asType(), result, visited, SERVICE_INTERFACES.keySet());
         return result;
     }
 
     /**
-     * Recursively searches for service interfaces in the type hierarchy.
+     * Recursively searches for interfaces in the type hierarchy.
+     *
+     * @param type the type to search from
+     * @param result list to add found interfaces to
+     * @param visited set of already visited types (to avoid infinite loops)
+     * @param targetInterfaces the set of interface names to look for
      */
-    private void findServiceInterfacesRecursive(TypeMirror type, List<String> result,
-                                                 Set<String> visited) {
+    private void findInterfacesRecursive(TypeMirror type, List<String> result,
+                                         Set<String> visited, Set<String> targetInterfaces) {
         if (type == null || !(type instanceof DeclaredType)) {
             return;
         }
@@ -196,8 +298,8 @@ public class TikaComponentProcessor extends AbstractProcessor {
             return;
         }
 
-        // Check if this is a service interface
-        if (SERVICE_INTERFACES.containsKey(typeName)) {
+        // Check if this is a target interface
+        if (targetInterfaces.contains(typeName)) {
             if (!result.contains(typeName)) {
                 result.add(typeName);
             }
@@ -205,11 +307,11 @@ public class TikaComponentProcessor extends AbstractProcessor {
 
         // Check superclass
         TypeMirror superclass = typeElement.getSuperclass();
-        findServiceInterfacesRecursive(superclass, result, visited);
+        findInterfacesRecursive(superclass, result, visited, targetInterfaces);
 
         // Check interfaces
         for (TypeMirror interfaceType : typeElement.getInterfaces()) {
-            findServiceInterfacesRecursive(interfaceType, result, visited);
+            findInterfacesRecursive(interfaceType, result, visited, targetInterfaces);
         }
     }
 
@@ -235,6 +337,8 @@ public class TikaComponentProcessor extends AbstractProcessor {
                     writer.write("# Generated by TikaComponentProcessor\n");
                     writer.write("# Do not edit manually\n");
                     for (String impl : sortedImplementations) {
+                        // add comments for Bnd to generate OSGi metadata for Service Mediator spec (https://bnd.bndtools.org/chapters/230-manifest-annotations.html#meta-infservices-annotations)
+                        writer.write("#@aQute.bnd.annotation.spi.ServiceProvider()\n");
                         writer.write(impl);
                         writer.write("\n");
                     }
@@ -267,7 +371,7 @@ public class TikaComponentProcessor extends AbstractProcessor {
                     writeApacheLicenseHeader(writer);
                     writer.write("# Generated by TikaComponentProcessor\n");
                     writer.write("# Do not edit manually\n");
-                    writer.write("# Format: component-name=fully.qualified.ClassName\n");
+                    writer.write("# Format: component-name=fully.qualified.ClassName[:key=contextKeyClass]\n");
                     for (Map.Entry<String, String> component : components.entrySet()) {
                         writer.write(component.getKey());
                         writer.write("=");

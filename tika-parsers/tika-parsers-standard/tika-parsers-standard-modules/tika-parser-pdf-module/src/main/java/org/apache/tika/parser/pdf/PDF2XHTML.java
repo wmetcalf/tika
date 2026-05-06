@@ -73,8 +73,8 @@ class PDF2XHTML extends AbstractPDF2XHTML {
     private AtomicInteger inlineImageCounter = new AtomicInteger(0);
 
     PDF2XHTML(PDDocument document, ContentHandler handler, ParseContext context, Metadata metadata,
-              PDFParserConfig config) throws IOException {
-        super(document, handler, context, metadata, config);
+              PDFParserConfig config, Renderer renderer) throws IOException {
+        super(document, handler, context, metadata, config, renderer);
     }
 
     /**
@@ -84,11 +84,12 @@ class PDF2XHTML extends AbstractPDF2XHTML {
      * @param document PDF document
      * @param handler  SAX content handler
      * @param metadata PDF metadata
+     * @param renderer the renderer to use for rendering pages
      * @throws SAXException  if the content handler fails to process SAX events
      * @throws TikaException if there was an exception outside of per page processing
      */
     public static void process(PDDocument document, ContentHandler handler, ParseContext context,
-                               Metadata metadata, PDFParserConfig config)
+                               Metadata metadata, PDFParserConfig config, Renderer renderer)
             throws SAXException, TikaException {
         PDF2XHTML pdf2XHTML = null;
         try {
@@ -97,9 +98,9 @@ class PDF2XHTML extends AbstractPDF2XHTML {
             // handler.
             if (config.isDetectAngles()) {
                 pdf2XHTML =
-                        new AngleDetectingPDF2XHTML(document, handler, context, metadata, config);
+                        new AngleDetectingPDF2XHTML(document, handler, context, metadata, config, renderer);
             } else {
-                pdf2XHTML = new PDF2XHTML(document, handler, context, metadata, config);
+                pdf2XHTML = new PDF2XHTML(document, handler, context, metadata, config, renderer);
             }
             config.configure(pdf2XHTML);
 
@@ -165,9 +166,8 @@ class PDF2XHTML extends AbstractPDF2XHTML {
         //this is the document's inputstream/PDDocument
         //TODO: figure out if we can send in the PDPage in the TikaInputStream
         TikaInputStream tis = state.getTikaInputStream();
-        Renderer renderer = config.getRenderer();
         RenderRequest request = new PageRangeRequest(getCurrentPageNo(), getCurrentPageNo());
-        Metadata renderedMetadata = new Metadata();
+        Metadata renderedMetadata = Metadata.newInstance(context);
         renderedMetadata.set(TikaCoreProperties.TYPE, PDFParser.MEDIA_TYPE.toString());
         try (RenderResults results = renderer.render(tis, renderedMetadata, context, request)) {
             for (RenderResult result : results.getResults()) {
@@ -177,7 +177,7 @@ class PDF2XHTML extends AbstractPDF2XHTML {
                         try (TikaInputStream resultInputStream = result.getInputStream()) {
                             //TODO: add markup here?
                             embeddedDocumentExtractor.parseEmbedded(resultInputStream, xhtml,
-                                    result.getMetadata(), true);
+                                    result.getMetadata(), context, true);
                         }
                     }
                 }
@@ -270,8 +270,8 @@ class PDF2XHTML extends AbstractPDF2XHTML {
 
         private AngleDetectingPDF2XHTML(PDDocument document, ContentHandler handler,
                                         ParseContext context, Metadata metadata,
-                                        PDFParserConfig config) throws IOException {
-            super(document, handler, context, metadata, config);
+                                        PDFParserConfig config, Renderer renderer) throws IOException {
+            super(document, handler, context, metadata, config, renderer);
         }
 
         @Override

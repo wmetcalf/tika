@@ -20,6 +20,7 @@ import java.util.List;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Base class for iterating a call to {@link #filter(Metadata)} on a list
@@ -29,11 +30,10 @@ import org.apache.tika.metadata.Metadata;
 public abstract class MetadataFilterBase extends MetadataFilter {
 
     @Override
-    public List<Metadata> filter(List<Metadata> metadataList) throws TikaException {
+    public void filter(List<Metadata> metadataList, ParseContext parseContext) throws TikaException {
         for (Metadata m : metadataList) {
             filter(m);
         }
-        return metadataList;
     }
 
     protected abstract void filter(Metadata metadata);

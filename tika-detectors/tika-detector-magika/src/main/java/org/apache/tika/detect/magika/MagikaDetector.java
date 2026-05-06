@@ -16,11 +16,7 @@
  */
 package org.apache.tika.detect.magika;
 
-import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
-
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,17 +28,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.tika.config.ConfigDeserializer;
-import org.apache.tika.config.Field;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.Detector;
-import org.apache.tika.io.BoundedInputStream;
-import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.ExternalProcess;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Property;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ProcessUtils;
 import org.apache.tika.utils.StringUtils;
@@ -99,19 +93,69 @@ public class MagikaDetector implements Detector {
      * Configuration class for JSON deserialization.
      */
     public static class Config {
-        public String magikaPath = DEFAULT_MAGIKA_PATH;
-        public int maxBytes = 1_000_000;
-        public long timeoutMs = DEFAULT_TIMEOUT_MS;
-        public boolean useMime = false;
+        private String magikaPath = DEFAULT_MAGIKA_PATH;
+        private int maxBytes = 1_000_000;
+        private long timeoutMs = DEFAULT_TIMEOUT_MS;
+        private boolean useMime = false;
+
+        public String getMagikaPath() {
+            return magikaPath;
+        }
+
+        public void setMagikaPath(String magikaPath) {
+            this.magikaPath = magikaPath;
+        }
+
+        public int getMaxBytes() {
+            return maxBytes;
+        }
+
+        public void setMaxBytes(int maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        public long getTimeoutMs() {
+            return timeoutMs;
+        }
+
+        public void setTimeoutMs(long timeoutMs) {
+            this.timeoutMs = timeoutMs;
+        }
+
+        public boolean isUseMime() {
+            return useMime;
+        }
+
+        public void setUseMime(boolean useMime) {
+            this.useMime = useMime;
+        }
     }
 
-    private final Config config;
+    /**
+     * RuntimeConfig blocks modification of security-sensitive path fields at runtime.
+     */
+    public static class RuntimeConfig extends Config {
+        public RuntimeConfig() {
+            super();
+        }
+
+        @Override
+        public void setMagikaPath(String magikaPath) {
+            if (!StringUtils.isBlank(magikaPath)) {
+                throw new IllegalArgumentException(
+                        "Cannot modify magikaPath at runtime. " +
+                                "Paths must be configured at detector initialization time.");
+            }
+        }
+    }
+
+    private final Config defaultConfig;
 
     /**
      * Default constructor.
      */
     public MagikaDetector() {
-        this.config = new Config();
+        this.defaultConfig = new Config();
     }
 
     /**
@@ -121,7 +165,7 @@ public class MagikaDetector implements Detector {
      * @param jsonConfig JSON configuration
      */
     public MagikaDetector(JsonConfig jsonConfig) {
-        this.config = ConfigDeserializer.buildConfig(jsonConfig, Config.class);
+        this.defaultConfig = ConfigDeserializer.buildConfig(jsonConfig, Config.class);
     }
 
     public static boolean checkHasMagika(String magikaCommandPath) {
@@ -156,69 +200,41 @@ public class MagikaDetector implements Detector {
     }
 
     /**
-     * @param input    document input stream, or <code>null</code>
+     * @param tis      document input stream, or <code>null</code>
      * @param metadata input metadata for the document
      * @return mime as identified by the file command or application/octet-stream otherwise
      * @throws IOException
      */
     @Override
-    public MediaType detect(InputStream input, Metadata metadata) throws IOException {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext) throws IOException {
         if (hasMagika == null) {
-            hasMagika = checkHasMagika(this.config.magikaPath);
+            hasMagika = checkHasMagika(this.defaultConfig.getMagikaPath());
         }
         if (!hasMagika) {
             if (!HAS_WARNED) {
-                LOGGER.warn("'magika' command isn't working: '" + config.magikaPath + "'");
+                LOGGER.warn("'magika' command isn't working: '" + defaultConfig.getMagikaPath() + "'");
                 HAS_WARNED = true;
             }
             return MediaType.OCTET_STREAM;
         }
-        TikaInputStream tis = TikaInputStream.cast(input);
-        if (tis != null) {
-            //spool the full file to disk, if called with a TikaInputStream
-            //and there is no underlying file
-            return detectOnPath(tis.getPath(), metadata);
-        }
-
-        input.mark(config.maxBytes);
-        try (TemporaryResources tmp = new TemporaryResources()) {
-            Path tmpFile = tmp.createTempFile();
-            Files.copy(new BoundedInputStream(config.maxBytes, input), tmpFile, REPLACE_EXISTING);
-            return detectOnPath(tmpFile, metadata);
-        } finally {
-            input.reset();
-        }
+        //spool the full file to disk if there is no underlying file
+        return detectOnPath(tis.getPath(), metadata);
     }
 
-    /**
-     * As default behavior, Tika runs magika to add its detection
-     * to the metadata, but NOT to use detection in determining parsers
-     * etc.  If this is set to <code>true</code>, this detector
-     * will return the first mime detected by magika and that
-     * mime will be used by the AutoDetectParser to select the appropriate
-     * parser.
-     *
-     * @param useMime
-     */
-    @Field
-    public void setUseMime(boolean useMime) {
-        this.config.useMime = useMime;
-    }
-
-    public boolean isUseMime() {
-        return config.useMime;
+    public Config getDefaultConfig() {
+        return defaultConfig;
     }
 
     private MediaType detectOnPath(Path path, Metadata metadata) throws IOException {
 
         String[] args = new String[]{
-                ProcessUtils.escapeCommandLine(config.magikaPath),
+                ProcessUtils.escapeCommandLine(defaultConfig.getMagikaPath()),
                 ProcessUtils.escapeCommandLine(path.toAbsolutePath().toString()),
                 "--json"
         };
         ProcessBuilder builder = new ProcessBuilder(args);
-        FileProcessResult result = ProcessUtils.execute(builder, config.timeoutMs, 10000000, 1000);
-        return processResult(result, metadata, config.useMime);
+        FileProcessResult result = ProcessUtils.execute(builder, defaultConfig.getTimeoutMs(), 10000000, 1000);
+        return processResult(result, metadata, defaultConfig.isUseMime());
     }
 
     protected static MediaType processResult(FileProcessResult result, Metadata metadata,
@@ -355,28 +371,4 @@ public class MagikaDetector implements Detector {
         }
     }
 
-    @Field
-    public void setMagikaPath(String fileCommandPath) {
-        //this opens up a potential command vulnerability.
-        //Don't ever let an untrusted user set this.
-        this.config.magikaPath = fileCommandPath;
-        checkHasMagika(this.config.magikaPath);
-    }
-
-    /**
-     * If this is not called on a TikaInputStream, this detector
-     * will spool up to this many bytes to a file to be detected
-     * by the 'file' command.
-     *
-     * @param maxBytes
-     */
-    @Field
-    public void setMaxBytes(int maxBytes) {
-        this.config.maxBytes = maxBytes;
-    }
-
-    @Field
-    public void setTimeoutMs(long timeoutMs) {
-        this.config.timeoutMs = timeoutMs;
-    }
 }

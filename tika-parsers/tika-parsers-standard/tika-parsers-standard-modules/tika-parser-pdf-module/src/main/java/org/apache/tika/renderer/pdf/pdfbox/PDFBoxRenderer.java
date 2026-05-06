@@ -18,12 +18,10 @@ package org.apache.tika.renderer.pdf.pdfbox;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
-import java.util.Map;
 import java.util.Set;
 
 import org.apache.pdfbox.Loader;
@@ -35,11 +33,7 @@ import org.apache.pdfbox.tools.imageio.ImageIOUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.Initializable;
-import org.apache.tika.config.InitializableProblemHandler;
-import org.apache.tika.config.Param;
 import org.apache.tika.config.TikaComponent;
-import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
@@ -61,7 +55,7 @@ import org.apache.tika.renderer.RenderResults;
 import org.apache.tika.renderer.RenderingTracker;
 
 @TikaComponent(name = "pdfbox-renderer")
-public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
+public class PDFBoxRenderer implements PDDocumentRenderer {
 
     Set<MediaType> SUPPORTED_TYPES = Collections.singleton(PDFParser.MEDIA_TYPE);
 
@@ -93,17 +87,16 @@ public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
 
 
     @Override
-    public RenderResults render(InputStream is, Metadata metadata, ParseContext parseContext,
+    public RenderResults render(TikaInputStream tis, Metadata metadata, ParseContext parseContext,
                                 RenderRequest... requests) throws IOException, TikaException {
 
 
         PDDocument pdDocument;
-        TikaInputStream tis = TikaInputStream.get(is);
         boolean mustClose = false;
         if (tis.getOpenContainer() != null) {
             pdDocument = (PDDocument) tis.getOpenContainer();
         } else {
-            pdDocument = Loader.loadPDF(new RandomAccessReadBuffer(is));
+            pdDocument = Loader.loadPDF(new RandomAccessReadBuffer(tis));
             mustClose = true;
         }
         PageBasedRenderResults results = new PageBasedRenderResults(new TemporaryResources());
@@ -142,7 +135,7 @@ public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
         }
         for (int i = start; i <= endInclusive; i++) {
             int id = tracker.getNextId();
-            Metadata m = new Metadata();
+            Metadata m = Metadata.newInstance(parseContext);
             m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
                     TikaCoreProperties.EmbeddedResourceType.RENDERING.name());
             try {
@@ -192,17 +185,6 @@ public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
         return new RenderResult(RenderResult.STATUS.SUCCESS, id, tmpFile, metadata);
     }
 
-    @Override
-    public void initialize(Map<String, Param> params) throws TikaConfigException {
-        //check file format names
-    }
-
-    @Override
-    public void checkInitialization(InitializableProblemHandler problemHandler)
-            throws TikaConfigException {
-
-    }
-
     public void setDPI(int dpi) {
         this.defaultDPI = dpi;
     }
@@ -228,7 +210,7 @@ public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
         if (pdfParserConfig == null) {
             return defaultImageType;
         }
-        return pdfParserConfig.getOcrImageType().getImageType();
+        return pdfParserConfig.getOcrImageType().getPdfBoxImageType();
     }
 
     protected String getImageFormatName(ParseContext parseContext) {
@@ -236,6 +218,6 @@ public class PDFBoxRenderer implements PDDocumentRenderer, Initializable {
         if (pdfParserConfig == null) {
             return defaultImageFormatName;
         }
-        return pdfParserConfig.getOcrImageFormatName();
+        return pdfParserConfig.getOcrImageFormat().getFormatName();
     }
 }

@@ -31,21 +31,31 @@ import org.apache.tika.config.JsonConfig;
  * Extracts framework-level configuration from component JSON,
  * separating fields prefixed with underscore from component-specific config.
  *
- * <p>Framework fields:
+ * <p>Framework fields (underscore prefix):
  * <ul>
- *   <li>{@code _decorate} - Parser decoration config (mime filtering, fallbacks)</li>
+ *   <li>{@code _mime-include} - Only handle these mime types</li>
+ *   <li>{@code _mime-exclude} - Don't handle these mime types</li>
  * </ul>
  */
 public class FrameworkConfig {
 
-    private static final String DECORATE_KEY = "_decorate";
+    private static final String MIME_INCLUDE_KEY = "_mime-include";
+    private static final String MIME_EXCLUDE_KEY = "_mime-exclude";
+
+    // Plain JSON mapper for converting JsonNodes to JSON strings.
+    // This is needed because the main mapper may use a binary format (e.g., Smile)
+    // which doesn't support writeValueAsString().
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     private final ParserDecoration decoration;
     private final JsonConfig componentConfigJson;
+    private final JsonNode componentConfigNode;
 
-    private FrameworkConfig(ParserDecoration decoration, JsonConfig componentConfigJson) {
+    private FrameworkConfig(ParserDecoration decoration, JsonConfig componentConfigJson,
+                            JsonNode componentConfigNode) {
         this.decoration = decoration;
         this.componentConfigJson = componentConfigJson;
+        this.componentConfigNode = componentConfigNode;
     }
 
     /**
@@ -59,41 +69,29 @@ public class FrameworkConfig {
     public static FrameworkConfig extract(JsonNode configNode,
                                            ObjectMapper objectMapper) throws IOException {
         if (configNode == null || !configNode.isObject()) {
-            String jsonString = objectMapper.writeValueAsString(configNode);
+            // Use plain JSON mapper since the main mapper may be binary (Smile)
+            String jsonString = JSON_MAPPER.writeValueAsString(configNode);
             JsonConfig jsonConfig = () -> jsonString;
-            return new FrameworkConfig(null, jsonConfig);
+            return new FrameworkConfig(null, jsonConfig, configNode);
         }
 
         ObjectNode objNode = (ObjectNode) configNode.deepCopy();
 
-        // Extract decoration (parser-specific)
+        // Extract mime filtering config (framework-level, underscore prefix)
+        List<String> mimeInclude = parseStringList(objNode.remove(MIME_INCLUDE_KEY));
+        List<String> mimeExclude = parseStringList(objNode.remove(MIME_EXCLUDE_KEY));
+
         ParserDecoration decoration = null;
-        if (objNode.has(DECORATE_KEY)) {
-            JsonNode decorateNode = objNode.remove(DECORATE_KEY);
-            decoration = parseDecoration(decorateNode);
+        if (!mimeInclude.isEmpty() || !mimeExclude.isEmpty()) {
+            decoration = new ParserDecoration(mimeInclude, mimeExclude);
         }
 
         // Remaining fields are component-specific config
-        String jsonString = objectMapper.writeValueAsString(objNode);
+        // Use plain JSON mapper since the main mapper may be binary (Smile)
+        String jsonString = JSON_MAPPER.writeValueAsString(objNode);
         JsonConfig componentConfigJson = () -> jsonString;
 
-        return new FrameworkConfig(decoration, componentConfigJson);
-    }
-
-    private static ParserDecoration parseDecoration(JsonNode decorateNode) {
-        if (decorateNode == null || !decorateNode.isObject()) {
-            return null;
-        }
-
-        List<String> mimeInclude = parseStringList(decorateNode.get("mimeInclude"));
-        List<String> mimeExclude = parseStringList(decorateNode.get("mimeExclude"));
-        List<String> fallbacks = parseStringList(decorateNode.get("fallbacks"));
-
-        if (mimeInclude.isEmpty() && mimeExclude.isEmpty() && fallbacks.isEmpty()) {
-            return null;
-        }
-
-        return new ParserDecoration(mimeInclude, mimeExclude, fallbacks);
+        return new FrameworkConfig(decoration, componentConfigJson, objNode);
     }
 
     private static List<String> parseStringList(JsonNode node) {
@@ -123,19 +121,20 @@ public class FrameworkConfig {
         return componentConfigJson;
     }
 
+    public JsonNode getComponentConfigNode() {
+        return componentConfigNode;
+    }
+
     /**
-     * Parser decoration configuration for mime type filtering and fallbacks.
+     * Parser decoration configuration for mime type filtering.
      */
     public static class ParserDecoration {
         private final List<String> mimeInclude;
         private final List<String> mimeExclude;
-        private final List<String> fallbacks;
 
-        public ParserDecoration(List<String> mimeInclude, List<String> mimeExclude,
-                                 List<String> fallbacks) {
+        public ParserDecoration(List<String> mimeInclude, List<String> mimeExclude) {
             this.mimeInclude = Collections.unmodifiableList(mimeInclude);
             this.mimeExclude = Collections.unmodifiableList(mimeExclude);
-            this.fallbacks = Collections.unmodifiableList(fallbacks);
         }
 
         public List<String> getMimeInclude() {
@@ -146,16 +145,8 @@ public class FrameworkConfig {
             return mimeExclude;
         }
 
-        public List<String> getFallbacks() {
-            return fallbacks;
-        }
-
         public boolean hasFiltering() {
             return !mimeInclude.isEmpty() || !mimeExclude.isEmpty();
-        }
-
-        public boolean hasFallbacks() {
-            return !fallbacks.isEmpty();
         }
     }
 }

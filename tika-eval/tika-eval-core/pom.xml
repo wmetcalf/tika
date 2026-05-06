@@ -21,7 +21,7 @@
   <parent>
     <artifactId>tika-eval</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>tika-eval-core</artifactId>
@@ -37,12 +37,13 @@
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
-      <artifactId>tika-langdetect-opennlp</artifactId>
+      <artifactId>tika-langdetect-charsoup</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-ml-junkdetect</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>commons-codec</groupId>
@@ -51,18 +52,6 @@
     <dependency>
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-math3</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.lucene</groupId>
-      <artifactId>lucene-core</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.lucene</groupId>
-      <artifactId>lucene-analysis-common</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.lucene</groupId>
-      <artifactId>lucene-analysis-icu</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -78,12 +67,6 @@
       <artifactId>tika-core</artifactId>
       <version>${project.version}</version>
       <type>test-jar</type>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.lucene</groupId>
-      <artifactId>lucene-memory</artifactId>
-      <version>${lucene.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -109,12 +92,12 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/main/resources/common_tokens/*</exclude>
-            <exclude>src/main/resources/*.json</exclude>
-            <exclude>src/test/resources/common_tokens/*</exclude>
-            <exclude>src/test/resources/test-dirs/**</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/main/resources/common_tokens/*</inputExclude>
+            <inputExclude>src/main/resources/*.json</inputExclude>
+            <inputExclude>src/test/resources/common_tokens/*</inputExclude>
+            <inputExclude>src/test/resources/test-dirs/**</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

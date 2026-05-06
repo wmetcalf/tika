@@ -1,4 +1,11 @@
 {
+  "content-handler-factory": {
+    "basic-content-handler-factory": {
+      "type": "TEXT",
+      "writeLimit": -1,
+      "throwOnWriteLimitReached": true
+    }
+  },
   "parsers": [
     {
       "default-parser": {}
@@ -6,10 +13,7 @@
     {
       "pdf-parser": {
         "extractActions": true,
-        "accessChecker": {
-          "needToCheck": true,
-          "allowExtractionForAccessibility": true
-        }
+        "accessCheckMode": "ALLOW_EXTRACTION_FOR_ACCESSIBILITY"
       }
     },
     {
@@ -25,7 +29,7 @@
       }
     }
   ],
-  "metadataFilters": [
+  "metadata-filters": [
     {
       "date-normalizing-filter": {}
     },
@@ -63,8 +67,8 @@
           "userName": "USER_NAME",
           "password": "PASSWORD",
           "authScheme": "http",
-          "connectionTimeout": 60,
-          "socketTimeout": 60
+          "connectionTimeoutMillis": 60000,
+          "socketTimeoutMillis": 60000
         }
       }
     }
@@ -73,20 +77,8 @@
     "file-system-pipes-iterator": {
       "basePath": "FETCHER_BASE_PATH",
       "countTotal": true,
-      "baseConfig": {
-        "fetcherId": "fsf",
-        "emitterId": "ose",
-        "handlerConfig": {
-          "type": "TEXT",
-          "parseMode": "PARSE_MODE",
-          "writeLimit": -1,
-          "maxEmbeddedResources": -1,
-          "throwOnWriteLimitReached": true
-        },
-        "onParseException": "EMIT",
-        "maxWaitMs": 600000,
-        "queueSize": 10000
-      }
+      "fetcherId": "fsf",
+      "emitterId": "ose"
     }
   },
   "pipes-reporters": {
@@ -98,12 +90,14 @@
         "userName": "USER_NAME",
         "password": "PASSWORD",
         "authScheme": "http",
-        "connectionTimeout": 60,
-        "socketTimeout": 60
+        "connectionTimeoutMillis": 60000,
+        "socketTimeoutMillis": 60000
       }
     }
   },
   "pipes": {
+    "parseMode": "PARSE_MODE",
+    "onParseException": "EMIT",
     "emitStrategy": {
       "type": "DYNAMIC",
       "thresholdBytes": 10000
@@ -115,9 +109,8 @@
     "forkedJvmArgs": [
       "-Xmx512m",
       "-XX:ParallelGCThreads=2",
-      "-Dlog4j.configurationFile=LOG4J_PROPERTIES_FILE"
-    ],
-    "timeoutMillis": 60000
+      "LOG4J_JVM_ARG"
+    ]
   },
   "plugin-roots": "target/plugins"
 }

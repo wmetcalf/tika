@@ -385,9 +385,10 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
     protected void processImage(PDImage pdImage, int imageNumber)
             throws IOException, TikaException, SAXException {
         //this is the metadata for this particular image
-        Metadata metadata = new Metadata();
+        Metadata metadata = Metadata.newInstance(parseContext);
         String suffix = getSuffix(pdImage, metadata);
-        String fileName = "image" + imageNumber + "." + suffix;
+        String fileName = EmbeddedDocumentUtil.EmbeddedResourcePrefix.IMAGE.getPrefix()
+                + "-" + imageNumber + "." + suffix;
 
 
         AttributesImpl attr = new AttributesImpl();
@@ -398,6 +399,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
 
 
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, fileName);
+        metadata.set(TikaCoreProperties.RESOURCE_NAME_EXTENSION_INFERRED, true);
         metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
                 TikaCoreProperties.EmbeddedResourceType.INLINE.toString());
         metadata.set(TikaPagedText.PAGE_NUMBER, pageNumber);
@@ -431,8 +433,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                     tis.setOpenContainer(bufferedImage);
                 }
                 embeddedDocumentExtractor
-                        .parseEmbedded(tis, new EmbeddedContentHandler(xhtml), metadata,
-                                false);
+                        .parseEmbedded(tis, new EmbeddedContentHandler(xhtml), metadata, parseContext, false);
             }
         }
 
@@ -449,11 +450,11 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         //TODO: what else can we extract from the PDImage without rendering?
         ZeroByteFileException.IgnoreZeroByteFileException before =
                 parseContext.get(ZeroByteFileException.IgnoreZeroByteFileException.class);
-        try {
+        try (TikaInputStream tis = TikaInputStream.get(new byte[0])) {
             parseContext.set(ZeroByteFileException.IgnoreZeroByteFileException.class,
                     ZeroByteFileException.IGNORE_ZERO_BYTE_FILE_EXCEPTION);
-            embeddedDocumentExtractor.parseEmbedded(TikaInputStream.get(new byte[0]),
-                    new EmbeddedContentHandler(xhtml), metadata, false);
+            embeddedDocumentExtractor.parseEmbedded(tis,
+                    new EmbeddedContentHandler(xhtml), metadata, parseContext, false);
         } finally {
             //replace whatever was there before
             parseContext.set(ZeroByteFileException.IgnoreZeroByteFileException.class, before);

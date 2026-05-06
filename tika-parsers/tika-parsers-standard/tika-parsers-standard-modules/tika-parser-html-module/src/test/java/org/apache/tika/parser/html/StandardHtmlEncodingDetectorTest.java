@@ -20,17 +20,20 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.SequenceInputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import org.apache.tika.detect.EncodingResult;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.html.charsetdetector.StandardHtmlEncodingDetector;
 import org.apache.tika.parser.html.charsetdetector.charsets.ReplacementCharset;
 
@@ -170,7 +173,7 @@ public class StandardHtmlEncodingDetectorTest {
     public void replacement() throws IOException {
         // Several dangerous charsets should are aliases of 'replacement' in the spec
         String inString = "<meta charset='iso-2022-cn'>";
-        assertCharset(new ByteArrayInputStream(inString.getBytes(StandardCharsets.ISO_8859_1)),
+        assertCharset(TikaInputStream.get(inString.getBytes(StandardCharsets.ISO_8859_1)),
                 new ReplacementCharset());
     }
 
@@ -187,11 +190,12 @@ public class StandardHtmlEncodingDetectorTest {
     }
 
     @Test
-    public void bom() throws IOException {
-        // A BOM should have precedence over the meta
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_8);
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_16LE);
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_16BE);
+    public void bomIgnoredMetaWins() throws IOException {
+        // This detector no longer handles BOMs; BOMDetector is a separate detector
+        // in the chain. If the stream happens to start with BOM bytes, the prescan
+        // still finds <meta charset>.
+        assertCharset("\ufeff<meta charset='WINDOWS-1252'>",
+                Charset.forName("WINDOWS-1252"));
     }
 
     @Test
@@ -291,10 +295,6 @@ public class StandardHtmlEncodingDetectorTest {
         assertWindows1252("");
         assertWindows1252("<meta charset='UTF-8'>");
         assertWindows1252("<meta http-equiv='content-type' content='charset=utf-8'>");
-        // if a BOM is present, it has precedence over transport layer information
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_8);
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_16LE);
-        assertCharset("\ufeff<meta charset='WINDOWS-1252'>", StandardCharsets.UTF_16BE);
     }
 
     @Test
@@ -326,7 +326,7 @@ public class StandardHtmlEncodingDetectorTest {
         // The stream should be reset after detection
         byte[] inBytes = {0, 1, 2, 3, 4};
         byte[] outBytes = new byte[5];
-        InputStream inStream = new ByteArrayInputStream(inBytes);
+        InputStream inStream = TikaInputStream.get(inBytes);
         detectCharset(inStream);
         // The stream should still be readable from the beginning after detection
         inStream.read(outBytes);
@@ -342,9 +342,14 @@ public class StandardHtmlEncodingDetectorTest {
     }
 
     private void assertCharset(String html, Charset charset) throws IOException {
+        assertCharset(html, charset, new StandardHtmlEncodingDetector());
+    }
+
+    private void assertCharset(String html, Charset charset,
+                                StandardHtmlEncodingDetector detector) throws IOException {
         final Charset contentsCharset = (charset == null) ? StandardCharsets.UTF_8 : charset;
-        InputStream inStream = new ByteArrayInputStream(html.getBytes(contentsCharset));
-        final Charset detected = detectCharset(inStream);
+        InputStream inStream = TikaInputStream.get(html.getBytes(contentsCharset));
+        final Charset detected = detectCharset(inStream, detector);
         assertEquals(charset, detected,
                 html + " should be detected as " + charset);
     }
@@ -355,12 +360,21 @@ public class StandardHtmlEncodingDetectorTest {
     }
 
     private Charset detectCharset(InputStream inStream) throws IOException {
-        return new StandardHtmlEncodingDetector().detect(inStream, metadata);
+        return detectCharset(inStream, new StandardHtmlEncodingDetector());
+    }
+
+    private Charset detectCharset(InputStream inStream,
+                                  StandardHtmlEncodingDetector detector) throws IOException {
+        TikaInputStream tis = (inStream instanceof TikaInputStream) ?
+                (TikaInputStream) inStream : TikaInputStream.get(inStream);
+        List<EncodingResult> results =
+                detector.detect(tis, metadata, new ParseContext());
+        return results.isEmpty() ? null : results.get(0).getCharset();
     }
 
     private InputStream throwAfter(String html) {
         byte[] contents = html.getBytes(StandardCharsets.UTF_8);
-        InputStream contentsInStream = new ByteArrayInputStream(contents);
+        InputStream contentsInStream = new java.io.ByteArrayInputStream(contents);
         InputStream errorThrowing = new InputStream() {
             @Override
             public int read() throws IOException {

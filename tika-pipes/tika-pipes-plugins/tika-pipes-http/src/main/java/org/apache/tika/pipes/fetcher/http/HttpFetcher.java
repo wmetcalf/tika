@@ -34,7 +34,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -62,7 +61,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.tika.client.HttpClientFactory;
-import org.apache.tika.config.ConfigContainer;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
@@ -161,7 +159,7 @@ public class HttpFetcher extends AbstractTikaExtension implements Fetcher, Range
     JwtGenerator jwtGenerator;
 
     @Override
-    public InputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext) throws IOException, TikaException {
+    public TikaInputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext) throws IOException, TikaException {
         HttpFetcherConfig additionalHttpFetcherConfig = getAdditionalHttpFetcherConfig(parseContext);
         HttpGet get = new HttpGet(fetchKey);
         RequestConfig requestConfig = RequestConfig
@@ -205,20 +203,18 @@ public class HttpFetcher extends AbstractTikaExtension implements Fetcher, Range
     }
 
     private HttpFetcherConfig getAdditionalHttpFetcherConfig(ParseContext parseContext) throws JsonProcessingException {
-        HttpFetcherConfig additionalHttpFetcherConfig = null;
-        ConfigContainer configContainer = parseContext.get(ConfigContainer.class);
-        if (configContainer == null) {
-            return null;
+        // Check for JSON config in ParseContext (new pattern)
+        if (parseContext.hasJsonConfig("http-fetcher")) {
+            JsonConfig jsonConfig = parseContext.getJsonConfig("http-fetcher");
+            if (jsonConfig != null) {
+                return OM.readValue(jsonConfig.json(), HttpFetcherConfig.class);
+            }
         }
-        Optional<JsonConfig> jsonOpt = configContainer.get(HttpFetcher.class);
-        if (jsonOpt.isPresent()) {
-            additionalHttpFetcherConfig = OM.readValue(jsonOpt.get().json(), HttpFetcherConfig.class);
-        }
-        return additionalHttpFetcherConfig;
+        return null;
     }
 
     @Override
-    public InputStream fetch(String fetchKey, long startRange, long endRange, Metadata metadata,
+    public TikaInputStream fetch(String fetchKey, long startRange, long endRange, Metadata metadata,
                              ParseContext parseContext) throws IOException, TikaException {
         HttpFetcherConfig additionalHttpFetcherConfig = getAdditionalHttpFetcherConfig(parseContext);
         HttpGet get = new HttpGet(fetchKey);
@@ -265,12 +261,12 @@ public class HttpFetcher extends AbstractTikaExtension implements Fetcher, Range
         get.setHeader(headerKey, headerValue);
     }
 
-    private InputStream execute(HttpGet get, Metadata metadata, HttpClient client, boolean retryOnBadLength) throws IOException {
+    private TikaInputStream execute(HttpGet get, Metadata metadata, HttpClient client, boolean retryOnBadLength) throws IOException {
         HttpClientContext context = HttpClientContext.create();
         HttpResponse response = null;
         final AtomicBoolean timeout = new AtomicBoolean(false);
         Timer timer = null;
-        long overallTimeout = httpFetcherConfig.getOverallTimeout() == null ? -1 : httpFetcherConfig.getOverallTimeout();
+        long overallTimeout = httpFetcherConfig.getOverallTimeoutMillis() == null ? -1 : httpFetcherConfig.getOverallTimeoutMillis();
         try {
             if (overallTimeout > -1) {
                 TimerTask task = new TimerTask() {
@@ -337,7 +333,7 @@ public class HttpFetcher extends AbstractTikaExtension implements Fetcher, Range
         }
     }
 
-    private InputStream spool(InputStream content, Metadata metadata) throws IOException {
+    private TikaInputStream spool(InputStream content, Metadata metadata) throws IOException {
         long start = System.currentTimeMillis();
         TemporaryResources tmp = new TemporaryResources();
         Path tmpFile = tmp.createTempFile(metadata);
@@ -463,14 +459,14 @@ public class HttpFetcher extends AbstractTikaExtension implements Fetcher, Range
 
     //we should make this private. Try to fix test so we can.
     void initialize() throws TikaConfigException {
-        if (httpFetcherConfig.getSocketTimeout() != null) {
-            httpClientFactory.setSocketTimeout(httpFetcherConfig.getSocketTimeout());
+        if (httpFetcherConfig.getSocketTimeoutMillis() != null) {
+            httpClientFactory.setSocketTimeoutMillis(httpFetcherConfig.getSocketTimeoutMillis());
         }
-        if (httpFetcherConfig.getRequestTimeout() != null) {
-            httpClientFactory.setRequestTimeout(httpFetcherConfig.getRequestTimeout());
+        if (httpFetcherConfig.getRequestTimeoutMillis() != null) {
+            httpClientFactory.setRequestTimeoutMillis(httpFetcherConfig.getRequestTimeoutMillis());
         }
-        if (httpFetcherConfig.getConnectTimeout() != null) {
-            httpClientFactory.setSocketTimeout(httpFetcherConfig.getConnectTimeout());
+        if (httpFetcherConfig.getConnectTimeoutMillis() != null) {
+            httpClientFactory.setSocketTimeoutMillis(httpFetcherConfig.getConnectTimeoutMillis());
         }
         if (httpFetcherConfig.getMaxConnections() != null) {
             httpClientFactory.setMaxConnections(httpFetcherConfig.getMaxConnections());

@@ -25,7 +25,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
 
@@ -166,6 +166,9 @@
             <Bundle-ActivationPolicy>lazy</Bundle-ActivationPolicy>
             <Import-Package>
               org.apache.xerces.util;resolution:=optional,
+              com.fasterxml.jackson.*;resolution:=optional,
+              org.apache.tika.config.loader;resolution:=optional,
+              org.apache.tika.serialization;resolution:=optional,
               org.apache.commons.io.*;version="[2,3)",
               *
             </Import-Package>
@@ -183,14 +186,14 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/test/resources/org/apache/tika/**</exclude>
-            <exclude>src/main/resources/org/apache/tika/language/*.ngp</exclude>
-            <exclude>src/main/resources/org/apache/tika/detect/*.nnmodel</exclude>
-            <exclude>src/test/resources/test-documents/file-list.txt</exclude>
-            <exclude>src/test/resources/test-documents/ang20150420t182050_corr_v1e_img.hdr</exclude>
-            <exclude>src/test/resources/test-documents/*.pdf</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/test/resources/org/apache/tika/**</inputExclude>
+            <inputExclude>src/main/resources/org/apache/tika/language/*.ngp</inputExclude>
+            <inputExclude>src/main/resources/org/apache/tika/detect/*.nnmodel</inputExclude>
+            <inputExclude>src/test/resources/test-documents/file-list.txt</inputExclude>
+            <inputExclude>src/test/resources/test-documents/ang20150420t182050_corr_v1e_img.hdr</inputExclude>
+            <inputExclude>src/test/resources/test-documents/*.pdf</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

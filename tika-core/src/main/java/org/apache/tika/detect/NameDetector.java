@@ -18,15 +18,16 @@ package org.apache.tika.detect;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Content type detection based on the resource name. An instance of this
@@ -90,11 +91,12 @@ public class NameDetector implements Detector {
      * all the configured name patterns. If a match is found, then the (first)
      * matching media type is returned.
      *
-     * @param input    ignored
+     * @param tis      ignored
      * @param metadata input metadata, possibly with a RESOURCE_NAME_KEY value
+     * @param parseContext the parse context
      * @return detected media type, or <code>application/octet-stream</code>
      */
-    public MediaType detect(InputStream input, Metadata metadata) {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext) {
         // Look for a resource name in the input metadata
         String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
         if (name != null) {

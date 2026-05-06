@@ -25,7 +25,7 @@
   },
   "server": {
     "port": 9999,
-    "taskTimeoutMillis": TIMEOUT_MILLIS,
+    "taskTimeoutMillis": "TIMEOUT_MILLIS",
     "taskPulseMillis": 100,
     "enableUnsecureFeatures": true,
     "endpoints": [
@@ -37,7 +37,6 @@
   },
   "pipes": {
     "numClients": 2,
-    "timeoutMillis": TIMEOUT_MILLIS,
     "emitIntermediateResults": false,
     "forkedJvmArgs": [
       "-Xmx512m"
@@ -47,14 +46,18 @@
     }
   },
   "auto-detect-parser": {
-    "spoolToDisk": 1000000,
-    "outputThreshold": 1000000,
-    "digesterFactory": {
-      "@class": "org.apache.tika.parser.digestutils.CommonsDigesterFactory",
-      "markLimit": 100000,
-      "algorithmString": "md5,sha1:32"
-    },
     "throwOnZeroBytes": false
+  },
+  "parse-context": {
+    "commons-digester-factory": {
+        "digests": [
+          { "algorithm": "MD5" },
+          { "algorithm": "SHA1", "encoding": "BASE32" }
+        ]
+      },
+    "timeout-limits": {
+      "progressTimeoutMillis": "TIMEOUT_MILLIS"
+    }
   },
   "plugin-roots": "PLUGINS_PATHS"
 }

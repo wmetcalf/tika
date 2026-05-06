@@ -21,7 +21,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parsers</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
@@ -33,6 +33,7 @@
   <modules>
     <module>tika-parser-sqlite3-module</module>
     <module>tika-parser-scientific-module</module>
+    <module>tika-parser-ocr-encode-module</module>
     <module>tika-parser-sqlite3-package</module>
     <module>tika-parser-scientific-package</module>
     <module>tika-parsers-extended-integration-tests</module>
@@ -53,12 +54,12 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>tika-parser-scientific-module/src/test/resources/**</exclude> <!-- already checked -->
-            <exclude>tika-parser-scientific-package/**</exclude> <!-- already checked -->
-            <exclude>tika-parser-tagsoup-module/target/**</exclude> <!-- already checked -->
-            <exclude>tika-parser-tagsoup-package/target/**</exclude> <!-- already checked -->
-          </excludes>
+          <inputExcludes>
+            <inputExclude>tika-parser-scientific-module/src/test/resources/**</inputExclude> <!-- already checked -->
+            <inputExclude>tika-parser-scientific-package/**</inputExclude> <!-- already checked -->
+            <inputExclude>tika-parser-tagsoup-module/target/**</inputExclude> <!-- already checked -->
+            <inputExclude>tika-parser-tagsoup-package/target/**</inputExclude> <!-- already checked -->
+          </inputExcludes>
         </configuration>
       </plugin>
     </plugins>

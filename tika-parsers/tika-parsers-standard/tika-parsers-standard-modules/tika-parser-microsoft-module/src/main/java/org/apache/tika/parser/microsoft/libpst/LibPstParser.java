@@ -17,30 +17,25 @@
 package org.apache.tika.parser.microsoft.libpst;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.Initializable;
-import org.apache.tika.config.InitializableProblemHandler;
-import org.apache.tika.config.Param;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
-import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
@@ -69,28 +64,27 @@ public class LibPstParser implements Parser, Initializable {
     private static final int MAX_STDERR = 10000;
     private static final String READ_PST_COMMAND = "readpst";
 
-    private final LibPstParserConfig defaultConfig = new LibPstParserConfig();
-    //for security purposes, this cannot be set via the parseContext. This must
-    //be set via the usual @Field setters in tika-config.xml
-    private String readPstPath = "";
+    private LibPstParserConfig defaultConfig = new LibPstParserConfig();
+
+    public LibPstParser() {
+    }
+
+    public LibPstParser(LibPstParserConfig config) {
+        this.defaultConfig = config;
+    }
+
+    public LibPstParser(JsonConfig jsonConfig) {
+        defaultConfig = ConfigDeserializer.buildConfig(jsonConfig, LibPstParserConfig.class);
+    }
+
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext parseContext) {
         return SUPPORTED;
     }
 
     @Override
-    public void parse(InputStream inputStream, ContentHandler contentHandler, Metadata metadata, ParseContext parseContext) throws IOException, SAXException, TikaException {
-        TikaInputStream tis = TikaInputStream.cast(inputStream);
-        TemporaryResources tmp = null;
-        if (tis == null) {
-            tmp = new TemporaryResources();
-            tis = TikaInputStream.get(inputStream, tmp, metadata);
-        }
-        try {
-            _parse(tis.getPath(), contentHandler, metadata, parseContext);
-        } finally {
-            IOUtils.closeQuietly(tmp);
-        }
+    public void parse(TikaInputStream tis, ContentHandler contentHandler, Metadata metadata, ParseContext parseContext) throws IOException, SAXException, TikaException {
+        _parse(tis.getPath(), contentHandler, metadata, parseContext);
     }
 
     private void _parse(Path pst, ContentHandler contentHandler, Metadata metadata, ParseContext parseContext) throws TikaException, IOException, SAXException {
@@ -99,7 +93,7 @@ public class LibPstParser implements Parser, Initializable {
         Path debugFile = activeConfig.isDebug() ? Files.createTempFile("tika-libpst-debug", ".txt") : null;
         try {
             ProcessBuilder pb = getProcessBuilder(pst, activeConfig, outDir, debugFile);
-            XHTMLContentHandler xhtml = new XHTMLContentHandler(contentHandler, metadata);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(contentHandler, metadata, parseContext);
             FileProcessResult fileProcessResult = ProcessUtils.execute(pb, activeConfig.getTimeoutSeconds() * 1000l, MAX_STDOUT, MAX_STDERR);
             xhtml.startDocument();
             processContents(outDir, activeConfig, xhtml, metadata, parseContext);
@@ -163,7 +157,8 @@ public class LibPstParser implements Parser, Initializable {
     }
 
     @Override
-    public void initialize(Map<String, Param> map) throws TikaConfigException {
+    public void initialize() throws TikaConfigException {
+        String readPstPath = defaultConfig.getReadPstPath();
         if (readPstPath.contains("\u0000")) {
             throw new TikaConfigException("path can't include null values");
         }
@@ -177,11 +172,6 @@ public class LibPstParser implements Parser, Initializable {
             LOGGER.error("Couldn't get version of libpst", e);
             throw new TikaConfigException("Unable to check version of readpst. Is it installed?!", e);
         }
-    }
-
-    @Override
-    public void checkInitialization(InitializableProblemHandler initializableProblemHandler) throws TikaConfigException {
-
     }
 
     //throws exception if readpst is not available
@@ -209,6 +199,7 @@ public class LibPstParser implements Parser, Initializable {
     }
 
     private String getFullReadPstCommand() throws TikaConfigException {
+        String readPstPath = defaultConfig.getReadPstPath();
         if (StringUtils.isBlank(readPstPath)) {
             return READ_PST_COMMAND;
         }
@@ -218,34 +209,7 @@ public class LibPstParser implements Parser, Initializable {
         return readPstPath + READ_PST_COMMAND;
     }
 
-    @Field
-    public void setTimeoutSeconds(long timeoutSeconds) {
-        defaultConfig.setTimeoutSeconds(timeoutSeconds);
+    public LibPstParserConfig getDefaultConfig() {
+        return defaultConfig;
     }
-
-    @Field
-    public void setProcessEmailAsMsg(boolean processEmailAsMsg) {
-        defaultConfig.setProcessEmailAsMsg(processEmailAsMsg);
-    }
-
-    @Field
-    public void setIncludeDeleted(boolean includeDeleted) {
-        defaultConfig.setIncludeDeleted(includeDeleted);
-    }
-
-    @Field
-    public void setMaxEmails(int maxEmails) {
-        defaultConfig.setMaxEmails(maxEmails);
-    }
-
-    /**
-     * This should include the path up to but not including 'readpst', e.g. "C:\my_bin" where
-     * readpst is at "C:\my_bin\readpst"
-     * @param readPstPath
-     */
-    @Field
-    public void setReadPstPath(String readPstPath) {
-        this.readPstPath = readPstPath;
-    }
-
 }

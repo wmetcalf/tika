@@ -18,7 +18,6 @@ package org.apache.tika.parser.microsoft;
 
 import org.apache.poi.util.IOUtils;
 
-import org.apache.tika.config.Field;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 
@@ -50,103 +49,8 @@ public abstract class AbstractOfficeParser implements Parser {
         this.defaultOfficeParserConfig = config;
     }
 
-    /**
-     * @return
-     * @see OfficeParserConfig#isIncludeDeletedContent
-     */
-    public boolean isIncludeDeletedContent() {
-        return defaultOfficeParserConfig.isIncludeDeletedContent();
-    }
-
-    @Field
-    public void setIncludeDeletedContent(boolean includeDeletedConent) {
-        defaultOfficeParserConfig.setIncludeDeletedContent(includeDeletedConent);
-    }
-
-    /**
-     * @return
-     * @see OfficeParserConfig#isIncludeMoveFromContent()
-     */
-
-    public boolean isIncludeMoveFromContent() {
-        return defaultOfficeParserConfig.isIncludeMoveFromContent();
-    }
-
-    @Field
-    public void setIncludeMoveFromContent(boolean includeMoveFromContent) {
-        defaultOfficeParserConfig.setIncludeMoveFromContent(includeMoveFromContent);
-    }
-
-    /**
-     * @return
-     * @see OfficeParserConfig#isUseSAXDocxExtractor()
-     */
-    public boolean isUseSAXDocxExtractor() {
-        return defaultOfficeParserConfig.isUseSAXDocxExtractor();
-    }
-
-    @Field
-    public void setUseSAXDocxExtractor(boolean useSAXDocxExtractor) {
-        defaultOfficeParserConfig.setUseSAXDocxExtractor(useSAXDocxExtractor);
-    }
-
-    /**
-     * @return whether or not to extract macros
-     * @see OfficeParserConfig#isExtractMacros()
-     */
-    public boolean isExtractMacros() {
-        return defaultOfficeParserConfig.isExtractMacros();
-    }
-
-    @Field
-    public void setExtractMacros(boolean extractMacros) {
-        defaultOfficeParserConfig.setExtractMacros(extractMacros);
-    }
-
-    @Field
-    public void setIncludeShapeBasedContent(boolean includeShapeBasedContent) {
-        defaultOfficeParserConfig.setIncludeShapeBasedContent(includeShapeBasedContent);
-    }
-
-    public boolean isIncludeShapeBasedContent() {
-        return defaultOfficeParserConfig.isIncludeShapeBasedContent();
-    }
-
-    @Field
-    public void setUseSAXPptxExtractor(boolean useSAXPptxExtractor) {
-        defaultOfficeParserConfig.setUseSAXPptxExtractor(useSAXPptxExtractor);
-    }
-
-    public boolean isUseSAXPptxExtractor() {
-        return defaultOfficeParserConfig.isUseSAXPptxExtractor();
-    }
-
-    @Field
-    public void setConcatenatePhoneticRuns(boolean concatenatePhoneticRuns) {
-        defaultOfficeParserConfig.setConcatenatePhoneticRuns(concatenatePhoneticRuns);
-    }
-
-    public boolean isConcatenatePhoneticRuns() {
-        return defaultOfficeParserConfig.isConcatenatePhoneticRuns();
-    }
-
-    public boolean isExtractAllAlternativesFromMSG() {
-        return defaultOfficeParserConfig.isExtractAllAlternativesFromMSG();
-    }
-
-    /**
-     * Some .msg files can contain body content in html, rtf and/or text.
-     * The default behavior is to pick the first non-null value and include only that.
-     * If you'd like to extract all non-null body content, which is likely duplicative,
-     * set this value to true.
-     *
-     * @param extractAllAlternativesFromMSG whether or not to extract all alternative parts from
-     *                                     msg files
-     * @since 1.17
-     */
-    @Field
-    public void setExtractAllAlternativesFromMSG(boolean extractAllAlternativesFromMSG) {
-        defaultOfficeParserConfig.setExtractAllAlternativesFromMSG(extractAllAlternativesFromMSG);
+    public OfficeParserConfig getDefaultConfig() {
+        return defaultOfficeParserConfig;
     }
 
     /**
@@ -159,7 +63,6 @@ public abstract class AbstractOfficeParser implements Parser {
      *
      * @param maxOverride
      */
-    @Field
     public void setByteArrayMaxOverride(int maxOverride) {
         if (maxOverride > 0) {
             IOUtils.setByteArrayMaxOverride(maxOverride);
@@ -170,24 +73,6 @@ public abstract class AbstractOfficeParser implements Parser {
 
     public int getByteArrayMaxOverride() {
         return defaultOfficeParserConfig.getMaxOverride();
-    }
-
-    @Field
-    public void setDateFormatOverride(String format) {
-        defaultOfficeParserConfig.setDateOverrideFormat(format);
-    }
-
-    public String getDateFormatOverride() {
-        return defaultOfficeParserConfig.getDateFormatOverride();
-    }
-
-    @Field
-    public void setIncludeHeadersAndFooters(boolean includeHeadersAndFooters) {
-        defaultOfficeParserConfig.setIncludeHeadersAndFooters(includeHeadersAndFooters);
-    }
-
-    public boolean isIncludeHeadersAndFooters() {
-        return defaultOfficeParserConfig.isIncludeHeadersAndFooters();
     }
 
 }

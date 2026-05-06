@@ -1,0 +1,27 @@
+{
+  "parsers": [
+    {
+      "external-parser": {
+        "_mime-include": [
+          "video/avi",
+          "video/mpeg",
+          "video/x-msvideo",
+          "video/mp4"
+        ],
+        "commandLine": ["exiftool", "${INPUT_FILE}"],
+        "checkCommandLine": ["exiftool", "-ver"],
+        "checkErrorCodes": [126, 127],
+        "contentSource": "none",
+        "stdoutHandler": {
+          "regex-capture-parser": {
+            "captureMap": {
+              "mime": "^MIME Type\\s+: ([^\\r\\n]+)",
+              "pages": "^Page Count\\s+: ([^\\r\\n]+)",
+              "pdf:version": "^PDF Version\\s+: ([^\\r\\n]+)"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -26,7 +26,7 @@ import static org.apache.tika.pipes.core.serialization.FetchEmitTupleSerializer.
 import static org.apache.tika.pipes.core.serialization.FetchEmitTupleSerializer.ID;
 import static org.apache.tika.pipes.core.serialization.FetchEmitTupleSerializer.METADATA_KEY;
 import static org.apache.tika.pipes.core.serialization.FetchEmitTupleSerializer.ON_PARSE_EXCEPTION;
-import static org.apache.tika.serialization.ParseContextSerializer.PARSE_CONTEXT;
+import static org.apache.tika.serialization.serdes.ParseContextSerializer.PARSE_CONTEXT;
 
 import java.io.IOException;
 import java.util.Map;
@@ -36,19 +36,21 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
-import org.apache.tika.serialization.ParseContextDeserializer;
+import org.apache.tika.serialization.serdes.ParseContextDeserializer;
 
 public class FetchEmitTupleDeserializer extends JsonDeserializer<FetchEmitTuple> {
 
     @Override
     public FetchEmitTuple deserialize(JsonParser jsonParser, DeserializationContext deserializationContext) throws IOException, JacksonException {
         JsonNode root = jsonParser.readValueAsTree();
+        ObjectMapper mapper = (ObjectMapper) jsonParser.getCodec();
 
         String id = readVal(ID, root, null, true);
         String fetcherId = readVal(FETCHER, root, null, true);
@@ -59,7 +61,7 @@ public class FetchEmitTupleDeserializer extends JsonDeserializer<FetchEmitTuple>
         long fetchRangeEnd = readLong(FETCH_RANGE_END, root, -1l, false);
         Metadata metadata = readMetadata(root);
         JsonNode parseContextNode = root.get(PARSE_CONTEXT);
-        ParseContext parseContext = parseContextNode == null ? new ParseContext() : ParseContextDeserializer.readParseContext(parseContextNode);
+        ParseContext parseContext = parseContextNode == null ? new ParseContext() : ParseContextDeserializer.readParseContext(parseContextNode, mapper);
         FetchEmitTuple.ON_PARSE_EXCEPTION onParseException = readOnParseException(root);
 
         return new FetchEmitTuple(id, new FetchKey(fetcherId, fetchKey, fetchRangeStart, fetchRangeEnd),

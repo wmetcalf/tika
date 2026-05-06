@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MimeTypeException;
@@ -292,9 +293,11 @@ public class FilenameUtils {
 
     //may return null
     private static String getEmbeddedPath(Metadata metadata) {
-        //potentially look for other values in embedded path or original file name, etc...
-        //maybe different fallback order?
         String path = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+        if (! StringUtils.isBlank(path)) {
+            return path;
+        }
+        path = metadata.get(TikaCoreProperties.INTERNAL_PATH);
         if (! StringUtils.isBlank(path)) {
             return path;
         }
@@ -311,9 +314,11 @@ public class FilenameUtils {
 
     //this tries for resource name first, and then backs off to path
     private static String getEmbeddedName(Metadata metadata) {
-        //potentially look for other values in embedded path or original file name, etc...
-        //maybe different fallback order?
         String path = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+        if (! StringUtils.isBlank(path)) {
+            return path;
+        }
+        path = metadata.get(TikaCoreProperties.INTERNAL_PATH);
         if (! StringUtils.isBlank(path)) {
             return path;
         }
@@ -321,12 +326,10 @@ public class FilenameUtils {
         if (! StringUtils.isBlank(path)) {
             return path;
         }
-
         path = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
         if (! StringUtils.isBlank(path)) {
             return path;
         }
-
         return metadata.get(TikaCoreProperties.ORIGINAL_RESOURCE_NAME);
     }
 
@@ -343,19 +346,27 @@ public class FilenameUtils {
         if (mime == null) {
             return defaultValue;
         }
+        // Normalize OCR routing types (e.g., image/ocr-png -> image/png)
+        mime = EmbeddedDocumentUtil.normalizeMediaType(mime);
+        String ext = lookupExtension(mime);
+        if (ext != null) {
+            return ext;
+        }
+        return ".bin";
+    }
+
+    private static String lookupExtension(String mime) {
         try {
             String ext = MIME_TYPES
                     .forName(mime)
                     .getExtension();
-            if (ext == null) {
-                return ".bin";
-            } else {
+            if (!StringUtils.isBlank(ext)) {
                 return ext;
             }
         } catch (MimeTypeException e) {
             //swallow
         }
-        return ".bin";
+        return null;
     }
 
 }

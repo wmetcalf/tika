@@ -17,7 +17,6 @@
 package org.apache.tika.parser.pkg;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Collections;
 import java.util.Set;
 
@@ -57,10 +56,10 @@ public class RarParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
         EmbeddedDocumentExtractor extractor =
@@ -72,7 +71,6 @@ public class RarParser implements Parser {
         }
         Archive rar = null;
         try (TemporaryResources tmp = new TemporaryResources()) {
-            TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
             rar = new Archive(tis.getFile());
 
             if (rar.isEncrypted()) {
@@ -85,12 +83,12 @@ public class RarParser implements Parser {
             FileHeader header = rar.nextFileHeader();
             while (header != null && !Thread.currentThread().isInterrupted()) {
                 if (!header.isDirectory()) {
-                    Metadata entrydata = PackageParser.handleEntryMetadata(header.getFileName(),
-                            header.getCTime(), header.getMTime(), header.getFullUnpackSize(),
-                            xhtml);
+                    Metadata entrydata = AbstractArchiveParser.handleEntryMetadata(
+                            header.getFileName(), header.getCTime(), header.getMTime(),
+                            header.getFullUnpackSize(), xhtml, context);
                     try (TikaInputStream rarTis = TikaInputStream.get(rar.getInputStream(header))) {
                         if (extractor.shouldParseEmbedded(entrydata)) {
-                            extractor.parseEmbedded(rarTis, handler, entrydata, true);
+                            extractor.parseEmbedded(rarTis, handler, entrydata, context, true);
                         }
                     }
                 }

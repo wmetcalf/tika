@@ -18,7 +18,6 @@ package org.apache.tika.parser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -32,32 +31,44 @@ import java.util.regex.Pattern;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
-import org.apache.tika.config.Initializable;
-import org.apache.tika.config.InitializableProblemHandler;
-import org.apache.tika.config.Param;
-import org.apache.tika.exception.TikaConfigException;
+import org.apache.tika.config.ConfigDeserializer;
+import org.apache.tika.config.JsonConfig;
+import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 
-public class RegexCaptureParser implements Parser, Initializable {
+@TikaComponent(spi = false)
+public class RegexCaptureParser implements Parser {
 
     private static final Set<MediaType> SUPPORTED_TYPES =
             Collections.singleton(MediaType.TEXT_PLAIN);
 
-    private Map<String, Pattern> captureMap = new HashMap<>();
-    private Map<String, Pattern> matchMap = new HashMap<>();
+    private final RegexCaptureParserConfig config;
+    private final Map<String, Pattern> captureMap;
+    private final Map<String, Pattern> matchMap;
+    private final boolean writeContent;
 
-    @Override
-    public void initialize(Map<String, Param> params) throws TikaConfigException {
-
+    public RegexCaptureParser() {
+        this(new RegexCaptureParserConfig());
     }
 
-    @Override
-    public void checkInitialization(InitializableProblemHandler problemHandler)
-            throws TikaConfigException {
+    public RegexCaptureParser(RegexCaptureParserConfig config) {
+        this.config = config;
+        this.captureMap = new HashMap<>();
+        for (Map.Entry<String, String> e : config.getCaptureMap().entrySet()) {
+            this.captureMap.put(e.getKey(), Pattern.compile(e.getValue()));
+        }
+        this.matchMap = new HashMap<>();
+        for (Map.Entry<String, String> e : config.getMatchMap().entrySet()) {
+            this.matchMap.put(e.getKey(), Pattern.compile(e.getValue()));
+        }
+        this.writeContent = config.isWriteContent();
+    }
 
+    public RegexCaptureParser(JsonConfig jsonConfig) {
+        this(ConfigDeserializer.buildConfig(jsonConfig, RegexCaptureParserConfig.class));
     }
 
     @Override
@@ -65,12 +76,14 @@ public class RegexCaptureParser implements Parser, Initializable {
         return SUPPORTED_TYPES;
     }
 
-    private boolean writeContent = false;
+    public RegexCaptureParserConfig getConfig() {
+        return config;
+    }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream,
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(tis,
                 StandardCharsets.UTF_8))) {
             String line = reader.readLine();
             Map<String, Matcher> localCaptureMap = new HashMap();
@@ -113,28 +126,5 @@ public class RegexCaptureParser implements Parser, Initializable {
                 }
             }
         }
-    }
-
-    @Field
-    public void setCaptureMap(Map<String, String> map) {
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            String field = e.getKey();
-            Pattern pattern = Pattern.compile(e.getValue());
-            captureMap.put(field, pattern);
-        }
-    }
-
-    @Field
-    public void setMatchMap(Map<String, String> map) {
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            String field = e.getKey();
-            Pattern pattern = Pattern.compile(e.getValue());
-            matchMap.put(field, pattern);
-        }
-    }
-
-    @Field
-    public void setWriteContent(boolean writeContent) {
-        this.writeContent = writeContent;
     }
 }

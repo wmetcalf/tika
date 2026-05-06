@@ -25,13 +25,11 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.metadata.MAPI;
 import org.apache.tika.metadata.Message;
 import org.apache.tika.metadata.Metadata;
-import org.apache.tika.metadata.PST;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.Parser;
 
 public class TestLibPstParser extends TikaTest {
@@ -49,8 +47,9 @@ public class TestLibPstParser extends TikaTest {
         if (!LIBPST_EXISTS) {
             return;
         }
-        TikaConfig tikaConfig = new TikaConfig(TestLibPstParser.class.getResourceAsStream("tika-libpst-config.xml"));
-        Parser p = new AutoDetectParser(tikaConfig);
+        Parser p = TikaLoader.load(
+                getConfigPath(TestLibPstParser.class, "tika-libpst-config.json"))
+                .loadAutoDetectParser();
         List<Metadata> metadataList = getRecursiveMetadata("testPST.pst", p);
         //libpst is non-deterministic when creating msg files -- sometimes we get 7, sometimes 8
         assumeTrue(metadataList.size() == 8);
@@ -61,9 +60,8 @@ public class TestLibPstParser extends TikaTest {
         for (int i = 1; i < metadataList.size(); i++) {
             String path = metadataList
                     .get(i)
-                    .get(PST.PST_FOLDER_PATH);
-            if (path != null) {
-                assertEquals("hong-thai.nguyen", path);
+                    .get(TikaCoreProperties.INTERNAL_PATH);
+            if (path != null && path.startsWith("hong-thai.nguyen/")) {
                 validPaths++;
             }
         }
@@ -87,8 +85,9 @@ public class TestLibPstParser extends TikaTest {
         if (!LIBPST_EXISTS) {
             return;
         }
-        TikaConfig tikaConfig = new TikaConfig(TestLibPstParser.class.getResourceAsStream("tika-libpst-eml-config.xml"));
-        Parser p = new AutoDetectParser(tikaConfig);
+        Parser p = TikaLoader.load(
+                getConfigPath(TestLibPstParser.class, "tika-libpst-eml-config.json"))
+                .loadAutoDetectParser();
 
         List<Metadata> metadataList = getRecursiveMetadata("testPST.pst", p);
         //libpst is non-deterministic -- sometimes we get 10, sometimes 8
@@ -99,9 +98,8 @@ public class TestLibPstParser extends TikaTest {
         for (int i = 1; i < metadataList.size(); i++) {
             String path = metadataList
                     .get(i)
-                    .get(PST.PST_FOLDER_PATH);
-            if (path != null) {
-                assertEquals("hong-thai.nguyen", path);
+                    .get(TikaCoreProperties.INTERNAL_PATH);
+            if (path != null && path.startsWith("hong-thai.nguyen/")) {
                 validPaths++;
             }
         }

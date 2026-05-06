@@ -27,12 +27,10 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
-import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.ConfigContainer;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
@@ -119,6 +117,7 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
                 return;
             }
         }
+
         if (config.onExists() == FileSystemEmitterConfig.ON_EXISTS.EXCEPTION) {
             try (Writer writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE_NEW)) { //CREATE_NEW forces an IOException if the file already exists
@@ -128,7 +127,6 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
             try (Writer writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
                 JsonMetadataList.toJson(metadataList, writer, config.prettyPrint());
             }
-
         }
     }
 
@@ -173,27 +171,23 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
 
     private FileSystemEmitterConfig getConfig(ParseContext parseContext) throws TikaConfigException, IOException {
         FileSystemEmitterConfig config = fileSystemEmitterConfig;
-        ConfigContainer configContainer = parseContext.get(ConfigContainer.class);
-        if (configContainer != null) {
-            Optional<JsonConfig> configJson = configContainer.get(getExtensionConfig().id());
-            if (configJson.isPresent()) {
+        String configKey = getExtensionConfig().id();
+        if (parseContext.hasJsonConfig(configKey)) {
+            JsonConfig configJson = parseContext.getJsonConfig(configKey);
+            if (configJson != null) {
                 // Check if basePath is present in runtime config - this is not allowed for security
-                if (configJson
-                        .get()
-                        .json()
-                        .contains("\"basePath\"")) {
+                if (configJson.json().contains("\"basePath\"")) {
                     throw new TikaConfigException("Cannot change 'basePath' at runtime for security reasons. " + "basePath can only be set during initialization.");
                 }
 
                 // Load runtime config (excludes basePath for security)
-                FileSystemEmitterRuntimeConfig runtimeConfig = FileSystemEmitterRuntimeConfig.load(configJson.get().json());
+                FileSystemEmitterRuntimeConfig runtimeConfig = FileSystemEmitterRuntimeConfig.load(configJson.json());
 
                 // Merge runtime config into default config while preserving basePath
                 config = new FileSystemEmitterConfig(fileSystemEmitterConfig.basePath(), runtimeConfig.getFileExtension(), runtimeConfig.getOnExists(),
                         runtimeConfig.isPrettyPrint());
                 checkConfig(config);
             }
-
         }
         return config;
     }

@@ -1,0 +1,155 @@
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+= Tika Pipes
+
+This section covers Tika Pipes for scalable, fault-tolerant document processing.
+
+== Overview
+
+Tika Pipes provides a framework for fault-tolerant, scalable document processing.
+Each document is parsed in a forked JVM with configurable timeouts and memory limits,
+so a single malformed file cannot crash or hang your application.
+
+While Tika Pipes has a programmatic Java API, it is best used through:
+
+* xref:using-tika/cli/index.adoc[tika-app] — batch processing from the command line
+* xref:using-tika/server/index.adoc[tika-server] — REST API with pipes-based robustness built in
+* xref:using-tika/grpc/index.adoc[tika-grpc] — gRPC API with pipes-based robustness built in
+
+See xref:advanced/robustness.adoc[Robustness] for details on how Tika Pipes protects
+against problematic files.
+
+=== Key Components
+
+* **Fetchers** — retrieve documents from various sources (filesystem, S3, HTTP, etc.)
+* **Emitters** — send parsed results to various destinations (filesystem, OpenSearch, ES-compatible, Solr, etc.)
+* **Pipelines** — configure processing workflows
+
+== Topics
+
+* xref:pipes/getting-started.adoc[Getting Started] -- complete working example with tika-app
+* xref:pipes/fetchers.adoc[Fetchers] -- all available document sources (filesystem, S3, HTTP, GCS, Azure, etc.)
+* xref:pipes/emitters.adoc[Emitters] -- all available output destinations (filesystem, ES, OpenSearch, Solr, S3, Kafka, etc.)
+* xref:pipes/iterators.adoc[Iterators] -- document enumeration (directory walk, S3 listing, CSV, JDBC, Kafka, etc.)
+* xref:pipes/reporters.adoc[Reporters] -- track per-document processing status
+* xref:pipes/configuration.adoc[Pipeline Configuration] -- numClients, timeouts, JVM args, parse modes, emit batching
+* xref:pipes/parse-modes.adoc[Parse Modes] -- control how documents are parsed and emitted (`RMETA`, `CONCATENATE`, `CONTENT_ONLY`, `UNPACK`)
+* xref:pipes/unpack-config.adoc[Extracting Embedded Bytes] -- extract raw bytes from embedded documents
+* xref:pipes/timeouts.adoc[Timeouts] -- two-tier timeout system for handling long-running and hung parsers
+
+== Emitters
+
+=== ES Emitter (`es-emitter`)
+
+The ES emitter sends parsed documents to any ES-compatible REST API (ES 7+/8+) via
+the `_bulk` endpoint. It uses plain HTTP (Apache HttpClient) — there is no dependency
+on the ES Java client, which carries a non-ASL license.
+
+[source,json]
+----
+"emitters": {
+  "my-es": {
+    "es-emitter": {
+      "esUrl": "https://localhost:9200/my-index",
+      "idField": "_id",
+      "attachmentStrategy": "SEPARATE_DOCUMENTS",
+      "updateStrategy": "UPSERT",
+      "embeddedFileFieldName": "embedded",
+      "apiKey": "<base64-encoded id:api_key>"
+    }
+  }
+}
+----
+
+[cols="1,1,3"]
+|===
+|Field |Default |Description
+
+|`esUrl`
+|_required_
+|Full URL including the index name, e.g. `https://localhost:9200/my-index`
+
+|`idField`
+|`_id`
+|Metadata field used as the document `_id`
+
+|`attachmentStrategy`
+|`SEPARATE_DOCUMENTS`
+|How embedded documents are stored. `SEPARATE_DOCUMENTS` gives each embedded
+file its own flat document. `PARENT_CHILD` uses an ES join field so embedded
+files are linked to their container via `relation_type`.
+
+|`updateStrategy`
+|`OVERWRITE`
+|`OVERWRITE` uses a bulk `index` action (full replace).
+`UPSERT` uses a bulk `update` / `doc_as_upsert` action (field-level merge).
+
+|`embeddedFileFieldName`
+|`embedded`
+|Name of the join-field relation used in `PARENT_CHILD` mode.
+
+|`apiKey`
+|_none_
+|Base64-encoded `id:api_key` sent as `Authorization: ApiKey <value>`.
+Takes precedence over `httpClientConfig` basic auth.
+
+|`httpClientConfig`
+|_none_
+|Optional block for `userName`, `password`, `authScheme`, `connectionTimeout`,
+`socketTimeout`, `proxyHost`, `proxyPort`, and `verifySsl` (boolean, default `false`).
+|===
+
+[WARNING]
+====
+By default (`verifySsl: false`) TLS certificate verification is disabled — all
+certificates are trusted and hostname verification is skipped.  Set
+`httpClientConfig.verifySsl: true` to enable proper certificate and hostname
+validation using the JVM's default trust store.  When `verifySsl` is `false`,
+do not transmit credentials over plain HTTP in production; prefer HTTPS with
+network-level controls (VPN, private endpoint) until verification is enabled.
+====
+
+=== ES Pipes Reporter (`es-pipes-reporter`)
+
+The ES reporter writes per-document parse status back into the same index,
+so you can query the processing outcome alongside the extracted content.
+
+[source,json]
+----
+"pipes-reporters": {
+  "es-pipes-reporter": {
+    "esUrl": "https://localhost:9200/my-index",
+    "keyPrefix": "tika_",
+    "includeRouting": false
+  }
+}
+----
+
+The reporter adds `<keyPrefix>parse_status`, `<keyPrefix>parse_time_ms`,
+and (when the forked JVM exits abnormally) `<keyPrefix>exit_value` fields
+to each document via an upsert.
+
+=== OpenSearch Emitter
+
+The OpenSearch emitter is configured identically but uses `opensearch-emitter` as the
+plugin key and `openSearchUrl` as the URL field. It also ships with an
+`opensearch-pipes-reporter`.
+
+== Advanced Topics
+
+* xref:pipes/shared-server-mode.adoc[Shared Server Mode] - Experimental mode for reduced memory usage

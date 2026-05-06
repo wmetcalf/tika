@@ -19,7 +19,6 @@ package org.apache.tika.detect.ole;
 import static org.apache.tika.mime.MediaType.application;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashSet;
@@ -30,12 +29,12 @@ import org.apache.poi.poifs.filesystem.DirectoryNode;
 import org.apache.poi.poifs.filesystem.Entry;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 
-import org.apache.tika.config.Field;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 /**
  * TODO: refactor this copy/paste from POIFSContainerDetector
  */
@@ -64,10 +63,6 @@ public class MiscOLEDetector implements Detector {
      * Base QuattroPro mime
      */
     public static final MediaType QUATTROPRO = application("x-quattro-pro");
-
-
-    @Field
-    private int markLimit = 16 * 1024 * 1024;
 
     /**
      * Internal detection of the specific kind of OLE2 document, based on the
@@ -119,31 +114,11 @@ public class MiscOLEDetector implements Detector {
         return names;
     }
 
-    /**
-     * If a TikaInputStream is passed in to {@link #detect(InputStream, Metadata)},
-     * and there is not an underlying file, this detector will spool up to {@link #markLimit}
-     * to disk.  If the stream was read in entirety (e.g. the spooled file is not truncated),
-     * this detector will open the file with POI and perform detection.
-     * If the spooled file is truncated, the detector will return {@link #OLE} (or
-     * {@link MediaType#OCTET_STREAM} if there's no OLE header).
-     * <p>
-     * As of Tika 1.21, this detector respects the legacy behavior of not performing detection
-     * on a non-TikaInputStream.
-     *
-     * @param markLimit
-     */
-    public void setMarkLimit(int markLimit) {
-        this.markLimit = markLimit;
-    }
-
     private Set<String> getTopLevelNames(TikaInputStream stream) throws IOException {
         // Force the document stream to a (possibly temporary) file
         // so we don't modify the current position of the stream.
-        //If the markLimit is < 0, this will spool the entire file
-        //to disk if there is not an underlying file.
-        Path file = stream.getPath(markLimit);
+        Path file = stream.getPath();
 
-        //if the stream was longer than markLimit, don't detect
         if (file == null) {
             return Collections.emptySet();
         }
@@ -166,50 +141,46 @@ public class MiscOLEDetector implements Detector {
     }
 
     @Override
-    public MediaType detect(InputStream input, Metadata metadata) throws IOException {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext) throws IOException {
         // Check if we have access to the document
-        if (input == null) {
+        if (tis == null) {
             return MediaType.OCTET_STREAM;
         }
 
         // If this is a TikaInputStream wrapping an already
         // parsed NPOIFileSystem/DirectoryNode, just get the
         // names from the root:
-        TikaInputStream tis = TikaInputStream.cast(input);
         Set<String> names = null;
-        if (tis != null) {
-            Object container = tis.getOpenContainer();
-            if (container instanceof POIFSFileSystem) {
-                names = getTopLevelNames(((POIFSFileSystem) container).getRoot());
-            } else if (container instanceof DirectoryNode) {
-                names = getTopLevelNames((DirectoryNode) container);
-            }
+        Object container = tis.getOpenContainer();
+        if (container instanceof POIFSFileSystem) {
+            names = getTopLevelNames(((POIFSFileSystem) container).getRoot());
+        } else if (container instanceof DirectoryNode) {
+            names = getTopLevelNames((DirectoryNode) container);
         }
 
         if (names == null) {
             // Check if the document starts with the OLE header
-            input.mark(8);
+            tis.mark(8);
             try {
-                if (input.read() != 0xd0 || input.read() != 0xcf || input.read() != 0x11 ||
-                        input.read() != 0xe0 || input.read() != 0xa1 || input.read() != 0xb1 ||
-                        input.read() != 0x1a || input.read() != 0xe1) {
+                if (tis.read() != 0xd0 || tis.read() != 0xcf || tis.read() != 0x11 ||
+                        tis.read() != 0xe0 || tis.read() != 0xa1 || tis.read() != 0xb1 ||
+                        tis.read() != 0x1a || tis.read() != 0xe1) {
                     return MediaType.OCTET_STREAM;
                 }
             } catch (IOException e) {
                 return MediaType.OCTET_STREAM;
             } finally {
-                input.reset();
+                tis.reset();
             }
         }
 
-        // We can only detect the exact type when given a TikaInputStream
-        if (names == null && tis != null) {
-            // Look for known top level entry names to detect the document type
+        // Look for known top level entry names to detect the document type
+        if (names == null) {
             names = getTopLevelNames(tis);
         }
 
         // Detect based on the names (as available)
-        if (tis != null && tis.getOpenContainer() != null &&
+        if (tis.getOpenContainer() != null &&
                 tis.getOpenContainer() instanceof POIFSFileSystem) {
             return detect(names, ((POIFSFileSystem) tis.getOpenContainer()).getRoot());
         } else {

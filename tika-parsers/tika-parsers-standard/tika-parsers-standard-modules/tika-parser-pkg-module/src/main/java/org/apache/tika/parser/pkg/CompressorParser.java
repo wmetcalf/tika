@@ -33,9 +33,7 @@ import static org.apache.tika.detect.zip.CompressorConstants.ZLIB;
 import static org.apache.tika.detect.zip.CompressorConstants.ZSTD;
 import static org.apache.tika.metadata.HttpHeaders.CONTENT_TYPE;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -49,6 +47,7 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.deflate.DeflateCompressorInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipParameters;
 import org.apache.commons.compress.compressors.gzip.GzipUtils;
 import org.apache.commons.compress.compressors.lzma.LZMACompressorInputStream;
 import org.apache.commons.compress.compressors.pack200.Pack200CompressorInputStream;
@@ -56,18 +55,17 @@ import org.apache.commons.compress.compressors.snappy.FramedSnappyCompressorInpu
 import org.apache.commons.compress.compressors.snappy.SnappyCompressorInputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.z.ZCompressorInputStream;
-import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.config.ConfigDeserializer;
-import org.apache.tika.config.Field;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.TikaMemoryLimitException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
+import org.apache.tika.io.FilenameUtils;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -75,6 +73,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.StringUtils;
 
 /**
  * Parser for various compression formats.
@@ -91,14 +90,30 @@ public class CompressorParser implements Parser {
      * Configuration class for JSON deserialization.
      */
     public static class Config {
-        public int memoryLimitInKb = 100000;
-        public boolean decompressConcatenated = false;
+        private int memoryLimitInKb = 100000;
+        private boolean decompressConcatenated = false;
+
+        public int getMemoryLimitInKb() {
+            return memoryLimitInKb;
+        }
+
+        public void setMemoryLimitInKb(int memoryLimitInKb) {
+            this.memoryLimitInKb = memoryLimitInKb;
+        }
+
+        public boolean isDecompressConcatenated() {
+            return decompressConcatenated;
+        }
+
+        public void setDecompressConcatenated(boolean decompressConcatenated) {
+            this.decompressConcatenated = decompressConcatenated;
+        }
     }
 
     private static Set<MediaType> SUPPORTED_TYPES;
     private static Map<String, String> MIMES_TO_NAME;
 
-    private boolean decompressConcatenated = false;
+    private Config defaultConfig = new Config();
 
     static {
         Set<MediaType> TMP_SET = new HashSet<>(MediaType
@@ -138,8 +153,6 @@ public class CompressorParser implements Parser {
     }
 
 
-    private int memoryLimitInKb = 100000;//100MB
-
     public CompressorParser() {
     }
 
@@ -149,8 +162,7 @@ public class CompressorParser implements Parser {
      * @param config the configuration
      */
     public CompressorParser(Config config) {
-        this.memoryLimitInKb = config.memoryLimitInKb;
-        this.decompressConcatenated = config.decompressConcatenated;
+        this.defaultConfig = config;
     }
 
     /**
@@ -201,39 +213,37 @@ public class CompressorParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         // At the end we want to close the compression stream to release
         // any associated resources, but the underlying document stream
         // should not be closed
-        if (stream.markSupported()) {
-            stream = CloseShieldInputStream.wrap(stream);
-        } else {
-            // Ensure that the stream supports the mark feature
-            stream = new BufferedInputStream(CloseShieldInputStream.wrap(stream));
-        }
+        // TikaInputStream always supports mark
+        tis.setCloseShield();
 
         CompressorInputStream cis;
         try {
             CompressorParserOptions options =
-                    context.get(CompressorParserOptions.class, metadata1 -> decompressConcatenated);
+                    context.get(CompressorParserOptions.class,
+                        metadata1 -> defaultConfig.isDecompressConcatenated());
             CompressorStreamFactory factory =
                     new CompressorStreamFactory(options.decompressConcatenated(metadata),
-                            memoryLimitInKb);
+                            defaultConfig.getMemoryLimitInKb());
             //if we've already identified it via autodetect
             //trust that and go with the appropriate name
             //to avoid calling CompressorStreamFactory.detect() twice
             String name = getStreamName(metadata);
             if (name != null) {
-                cis = factory.createCompressorInputStream(name, stream);
+                cis = factory.createCompressorInputStream(name, tis);
             } else {
-                cis = factory.createCompressorInputStream(stream);
+                cis = factory.createCompressorInputStream(tis);
                 MediaType type = getMediaType(cis);
                 if (!type.equals(MediaType.OCTET_STREAM)) {
                     metadata.set(CONTENT_TYPE, type.toString());
                 }
             }
         } catch (CompressorException e) {
+            tis.removeCloseShield();
             if (e.getCause() instanceof MemoryLimitException) {
                 throw new TikaMemoryLimitException(e.getMessage());
             }
@@ -241,37 +251,67 @@ public class CompressorParser implements Parser {
         }
 
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
-
         try {
-            Metadata entrydata = new Metadata();
-            String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-            if (name != null) {
-                if (name.endsWith(".tbz") || name.endsWith(".tbz2")) {
-                    name = name.substring(0, name.lastIndexOf(".")) + ".tar";
-                } else if (name.endsWith(".bz") || name.endsWith(".bz2") || name.endsWith(".xz") ||
-                        name.endsWith(".zlib") || name.endsWith(".pack") || name.endsWith(".br")) {
-                    name = name.substring(0, name.lastIndexOf("."));
-                } else if (name.length() > 0) {
-                    name = GzipUtils.getUncompressedFileName(name);
-                }
-                entrydata.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
+            Metadata entrydata = Metadata.newInstance(context);
+            boolean foundName = false;
+            if (cis instanceof GzipCompressorInputStream) {
+                foundName = extractGzipMetadata((GzipCompressorInputStream) cis, entrydata);
+            }
+            if (! foundName) {
+                setName(metadata, entrydata);
             }
 
             // Use the delegate parser to parse the compressed document
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
             if (extractor.shouldParseEmbedded(entrydata)) {
-                try (TikaInputStream tis = TikaInputStream.get(cis)) {
-                    extractor.parseEmbedded(tis, xhtml, entrydata, true);
+                try (TikaInputStream inner = TikaInputStream.get(cis)) {
+                    extractor.parseEmbedded(inner, xhtml, entrydata, context, true);
                 }
             }
         } finally {
             cis.close();
+            tis.removeCloseShield();
         }
 
         xhtml.endDocument();
+    }
+
+    private boolean extractGzipMetadata(GzipCompressorInputStream gzcis, Metadata metadata) {
+        GzipParameters gzipParameters = gzcis.getMetaData();
+        if (gzipParameters == null) {
+            return false;
+        }
+        String name = gzipParameters.getFileName();
+        if (!StringUtils.isBlank(name)) {
+            metadata.set(TikaCoreProperties.INTERNAL_PATH, name);
+            metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
+            return true;
+        }
+        //TODO: modification, OS, comment
+        return false;
+    }
+
+    private void setName(Metadata parentMetadata, Metadata metadata) {
+        String name = parentMetadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+        //if parent's name is blank stop now
+        if (StringUtils.isBlank(name)) {
+            return;
+        }
+
+        name = FilenameUtils.getName(name);
+
+        if (name.endsWith(".tgz") || name.endsWith(".tbz") || name.endsWith(".tbz2")) {
+            name = name.substring(0, name.lastIndexOf(".")) + ".tar";
+        } else if (name.endsWith(".bz") || name.endsWith(".gz") || name.endsWith(".bz2") || name.endsWith(".xz") || name.endsWith(".zlib") || name.endsWith(".pack") ||
+                name.endsWith(".br")) {
+            name = name.substring(0, name.lastIndexOf("."));
+        } else if (!name.isEmpty()) {
+            name = GzipUtils.getUncompressedFileName(name);
+        }
+        metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
     }
 
     /**
@@ -288,22 +328,8 @@ public class CompressorParser implements Parser {
         return MIMES_TO_NAME.get(mimeString);
     }
 
-    @Field
-    public void setMemoryLimitInKb(int memoryLimitInKb) {
-        this.memoryLimitInKb = memoryLimitInKb;
-    }
-
-    public int getMemoryLimitInKb() {
-        return this.memoryLimitInKb;
-    }
-
-    @Field
-    public void setDecompressConcatenated(boolean decompressConcatenated) {
-        this.decompressConcatenated = decompressConcatenated;
-    }
-
-    public boolean isDecompressConcatenated() {
-        return this.decompressConcatenated;
+    public Config getDefaultConfig() {
+        return defaultConfig;
     }
 
 }

@@ -18,11 +18,11 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -36,14 +36,14 @@ import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 
 import org.apache.tika.TikaTest;
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.EncryptedDocumentException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.DublinCore;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.OfficeOpenXMLExtended;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
@@ -52,10 +52,10 @@ public class WordParserTest extends TikaTest {
 
     @Test
     public void testWordParser() throws Exception {
-        try (InputStream input = getResourceAsStream("/test-documents/testWORD.doc")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testWORD.doc")) {
             ContentHandler handler = new BodyContentHandler();
             Metadata metadata = new Metadata();
-            new OfficeParser().parse(input, handler, metadata, new ParseContext());
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
 
             assertEquals("application/msword", metadata.get(Metadata.CONTENT_TYPE));
             assertEquals("Sample Word Document", metadata.get(TikaCoreProperties.TITLE));
@@ -66,10 +66,10 @@ public class WordParserTest extends TikaTest {
 
     @Test
     public void testWordWithWAV() throws Exception {
-        try (InputStream input = getResourceAsStream("/test-documents/Doc1_ole.doc")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/Doc1_ole.doc")) {
             ContentHandler handler = new BodyContentHandler();
             Metadata metadata = new Metadata();
-            new OfficeParser().parse(input, handler, metadata, new ParseContext());
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
 
             assertContains("MSj00974840000[1].wav", handler.toString());
         }
@@ -114,9 +114,9 @@ public class WordParserTest extends TikaTest {
         xml = getXML("testWORD_3imgs.doc").xml;
 
         // Images 1-3
-        assertTrue(xml.contains("src=\"embedded:image1.png\""), "Image not found in:\n" + xml);
-        assertTrue(xml.contains("src=\"embedded:image2.jpg\""), "Image not found in:\n" + xml);
-        assertTrue(xml.contains("src=\"embedded:image3.png\""), "Image not found in:\n" + xml);
+        assertTrue(xml.contains("src=\"embedded:image-1.png\""), "Image not found in:\n" + xml);
+        assertTrue(xml.contains("src=\"embedded:image-2.jpg\""), "Image not found in:\n" + xml);
+        assertTrue(xml.contains("src=\"embedded:image-3.png\""), "Image not found in:\n" + xml);
 
         // Text too
         assertTrue(xml.contains("<p>The end!"));
@@ -175,10 +175,10 @@ public class WordParserTest extends TikaTest {
 
     @Test
     public void testWord6Parser() throws Exception {
-        try (InputStream input = getResourceAsStream("/test-documents/testWORD6.doc")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testWORD6.doc")) {
             ContentHandler handler = new BodyContentHandler();
             Metadata metadata = new Metadata();
-            new OfficeParser().parse(input, handler, metadata, new ParseContext());
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
 
             assertEquals("application/msword", metadata.get(Metadata.CONTENT_TYPE));
             assertEquals("The quick brown fox jumps over the lazy dog",
@@ -228,8 +228,8 @@ public class WordParserTest extends TikaTest {
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
-        try (InputStream stream = getResourceAsStream("/test-documents/testWORD_various.doc")) {
-            new OfficeParser().parse(stream, handler, metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testWORD_various.doc")) {
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
         }
 
         String content = handler.toString();
@@ -301,10 +301,9 @@ public class WordParserTest extends TikaTest {
         assertNotContained("This is the header text.", xml);
         assertNotContained("This is the footer text.", xml);
 
-        Parser configuredParser = null;
-        try (InputStream is = getResourceAsStream("tika-config-headers-footers.xml")) {
-            configuredParser = new AutoDetectParser(new TikaConfig(is));
-        }
+        Parser configuredParser = TikaLoader.load(
+                getConfigPath(WordParserTest.class, "tika-config-headers-footers.json"))
+                .loadAutoDetectParser();
         xml = getXML("testWORD_various.doc", configuredParser).xml;
         assertNotContained("This is the header text.", xml);
         assertNotContained("This is the footer text.", xml);
@@ -319,8 +318,8 @@ public class WordParserTest extends TikaTest {
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
-        try (InputStream stream = getResourceAsStream("/test-documents/testWORD_no_format.doc")) {
-            new OfficeParser().parse(stream, handler, metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testWORD_no_format.doc")) {
+            new OfficeParser().parse(tis, handler, metadata, new ParseContext());
         }
 
         String content = handler.toString();
@@ -334,11 +333,11 @@ public class WordParserTest extends TikaTest {
     public void testCustomProperties() throws Exception {
         Metadata metadata = new Metadata();
 
-        try (InputStream input = getResourceAsStream("/test-documents/testWORD_custom_props.doc")) {
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testWORD_custom_props.doc")) {
             ContentHandler handler = new BodyContentHandler(-1);
             ParseContext context = new ParseContext();
             context.set(Locale.class, Locale.US);
-            new OfficeParser().parse(input, handler, metadata, context);
+            new OfficeParser().parse(tis, handler, metadata, context);
         }
 
         assertEquals("application/msword", metadata.get(Metadata.CONTENT_TYPE));
@@ -613,13 +612,11 @@ public class WordParserTest extends TikaTest {
         assertContainsAtLeast(minExpected, metadataList);
 
         //test configuring via config file
-        try (InputStream is = getResourceAsStream("tika-config-macros.xml")) {
-            TikaConfig tikaConfig = new TikaConfig(is);
-            AutoDetectParser parser = new AutoDetectParser(tikaConfig);
-
-            metadataList = getRecursiveMetadata("testWORD_macros.doc", parser);
-            assertContainsAtLeast(minExpected, metadataList);
-        }
+        Parser parser = TikaLoader.load(
+                getConfigPath(WordParserTest.class, "tika-config-macros.json"))
+                .loadAutoDetectParser();
+        metadataList = getRecursiveMetadata("testWORD_macros.doc", parser);
+        assertContainsAtLeast(minExpected, metadataList);
     }
 
     @Test
@@ -685,5 +682,13 @@ public class WordParserTest extends TikaTest {
         assertEquals("true", m.get(Office.HAS_HIDDEN_TEXT));
         assertEquals("true", m.get(Office.HAS_TRACK_CHANGES));
         assertEquals("true", m.get(Office.HAS_COMMENTS));
+    }
+
+    @Test
+    public void testNoFalsePositiveHasComments() throws Exception {
+        // TIKA-4718: POI returns empty strings from getCommentsText() for .doc files
+        // without real comments. Verify we don't falsely report HAS_COMMENTS.
+        Metadata m = getRecursiveMetadata("testWORD.doc").get(0);
+        assertNull(m.get(Office.HAS_COMMENTS), "testWORD.doc should not have comments");
     }
 }

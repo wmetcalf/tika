@@ -95,7 +95,7 @@ public class JoshuaNetworkTranslator extends AbstractTranslator {
                 networkServer = props.getProperty(JOSHUA_SERVER);
             }
         } catch (IOException e) {
-            LOG.error("An error occured whilst reading translator.joshua.properties file", e);
+            LOG.error("An error occurred whilst reading translator.joshua.properties file", e);
         }
     }
 
@@ -103,7 +103,7 @@ public class JoshuaNetworkTranslator extends AbstractTranslator {
      * <p>Initially then check if the source language has been provided.
      * If no source language (or a null value) has been provided then
      * we make an attempt to guess the source using Tika's
-     * {@link org.apache.tika.langdetect.OptimaizeLangDetector}. If we
+     * {@link org.apache.tika.language.detect.LanguageDetector}. If we
      * are still unable to guess the language then we return the source
      * text.</p>
      *

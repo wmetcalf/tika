@@ -31,7 +31,6 @@ import org.apache.commons.csv.CSVRecord;
 import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaConfig;
 import org.apache.tika.detect.AutoDetectReader;
 import org.apache.tika.detect.DefaultEncodingDetector;
 import org.apache.tika.detect.EncodingDetector;
@@ -82,7 +81,8 @@ public class ISATabUtils {
         TikaInputStream tis = TikaInputStream.get(stream);
         // Automatically detect the character encoding
         EncodingDetector encodingDetector = getEncodingDetector(context);
-        try (AutoDetectReader reader = new AutoDetectReader(CloseShieldInputStream.wrap(tis),
+        tis.setCloseShield();
+        try (AutoDetectReader reader = new AutoDetectReader(tis,
                 metadata, encodingDetector);
                 CSVParser csvParser = CSVParser.builder().setReader(reader).setFormat(CSVFormat.TDF).get()) {
             Iterator<CSVRecord> iterator = csvParser.iterator();
@@ -114,13 +114,15 @@ public class ISATabUtils {
             xhtml.endElement("tbody");
 
             xhtml.endElement("table");
+        } finally {
+            tis.removeCloseShield();
         }
     }
 
     private static EncodingDetector getEncodingDetector(ParseContext context) {
-        TikaConfig tikaConfig = context.get(TikaConfig.class);
-        if (tikaConfig != null) {
-            return tikaConfig.getEncodingDetector();
+        EncodingDetector encodingDetector = context.get(EncodingDetector.class);
+        if (encodingDetector != null) {
+            return encodingDetector;
         }
         return new DefaultEncodingDetector();
     }
@@ -132,7 +134,8 @@ public class ISATabUtils {
 
         // Automatically detect the character encoding
         EncodingDetector encodingDetector = getEncodingDetector(context);
-        try (AutoDetectReader reader = new AutoDetectReader(CloseShieldInputStream.wrap(tis),
+        tis.setCloseShield();
+        try (AutoDetectReader reader = new AutoDetectReader(tis,
                 metadata, encodingDetector);
                 CSVParser csvParser = CSVParser.builder().setReader(reader).setFormat(CSVFormat.TDF).get()) {
             xhtml.startElement("table");
@@ -164,6 +167,8 @@ public class ISATabUtils {
             xhtml.endElement("tbody");
 
             xhtml.endElement("table");
+        } finally {
+            tis.removeCloseShield();
         }
     }
 

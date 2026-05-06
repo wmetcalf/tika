@@ -18,8 +18,6 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import java.io.IOException;
 
-import org.apache.poi.ooxml.POIXMLDocument;
-import org.apache.xmlbeans.XmlException;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -29,23 +27,9 @@ import org.apache.tika.parser.ParseContext;
 
 /**
  * Interface implemented by all Tika OOXML extractors.
- *
- * @see org.apache.poi.ooxml.extractor.POIXMLTextExtractor
  */
 public interface OOXMLExtractor {
 
-    /**
-     * Returns the opened document.
-     *
-     * @see org.apache.poi.ooxml.extractor.POIXMLTextExtractor#getDocument()
-     */
-    POIXMLDocument getDocument();
-
-    /**
-     * {@link org.apache.poi.ooxml.extractor.POIXMLTextExtractor#getMetadataTextExtractor()}
-     * not yet supported
-     * for OOXML by POI.
-     */
     MetadataExtractor getMetadataExtractor();
 
     /**
@@ -53,5 +37,5 @@ public interface OOXMLExtractor {
      * given content handler.
      */
     void getXHTML(ContentHandler handler, Metadata metadata, ParseContext context)
-            throws SAXException, XmlException, IOException, TikaException;
+            throws SAXException, IOException, TikaException;
 }

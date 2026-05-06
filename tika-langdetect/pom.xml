@@ -21,7 +21,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
@@ -33,11 +33,12 @@
 
   <modules>
     <module>tika-langdetect-test-commons</module>
-    <module>tika-langdetect-tika</module>
+    <module>tika-langdetect-charsoup-core</module>
+    <module>tika-langdetect-charsoup</module>
     <module>tika-langdetect-lingo24</module>
+    <module>tika-langdetect-opennlp</module>
     <module>tika-langdetect-optimaize</module>
     <module>tika-langdetect-mitll-text</module>
-    <module>tika-langdetect-opennlp</module>
   </modules>
 
   <dependencies>
@@ -66,14 +67,14 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>**/*.test</exclude>
-            <exclude>**/text-test.tsv</exclude>
-            <exclude>**/language-codes.tsv</exclude>
-            <exclude>**/udhr-known.txt</exclude>
-            <exclude>**/udhr-unknown.txt</exclude>
-            <exclude>**/language-codes.txt</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>**/*.test</inputExclude>
+            <inputExclude>**/text-test.tsv</inputExclude>
+            <inputExclude>**/language-codes.tsv</inputExclude>
+            <inputExclude>**/udhr-known.txt</inputExclude>
+            <inputExclude>**/udhr-unknown.txt</inputExclude>
+            <inputExclude>**/language-codes.txt</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

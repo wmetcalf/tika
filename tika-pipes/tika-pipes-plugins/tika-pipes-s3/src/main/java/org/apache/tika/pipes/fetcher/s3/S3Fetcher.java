@@ -16,10 +16,7 @@
  */
 package org.apache.tika.pipes.fetcher.s3;
 
-import static org.apache.tika.config.TikaConfig.mustNotBeEmpty;
-
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
@@ -50,6 +47,7 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 
+import org.apache.tika.config.ConfigValidator;
 import org.apache.tika.exception.FileTooLongException;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
@@ -104,8 +102,8 @@ public class S3Fetcher extends AbstractTikaExtension implements Fetcher, RangeFe
     }
 
     private void initialize() throws TikaConfigException {
-        mustNotBeEmpty("bucket", config.getBucket());
-        mustNotBeEmpty("region", config.getRegion());
+        ConfigValidator.mustNotBeEmpty("bucket", config.getBucket());
+        ConfigValidator.mustNotBeEmpty("region", config.getRegion());
 
         AwsCredentialsProvider provider;
         String credentialsProvider = config.getCredentialsProvider();
@@ -155,12 +153,12 @@ public class S3Fetcher extends AbstractTikaExtension implements Fetcher, RangeFe
     }
 
     @Override
-    public InputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext) throws TikaException, IOException {
+    public TikaInputStream fetch(String fetchKey, Metadata metadata, ParseContext parseContext) throws TikaException, IOException {
         return fetch(fetchKey, -1, -1, metadata, parseContext);
     }
 
     @Override
-    public InputStream fetch(String fetchKey, long startRange, long endRange, Metadata metadata, ParseContext parseContext)
+    public TikaInputStream fetch(String fetchKey, long startRange, long endRange, Metadata metadata, ParseContext parseContext)
             throws TikaException, IOException {
         String prefix = config.getPrefix();
         String theFetchKey = StringUtils.isBlank(prefix) ? fetchKey : prefix + fetchKey;
@@ -181,10 +179,10 @@ public class S3Fetcher extends AbstractTikaExtension implements Fetcher, RangeFe
         do {
             try {
                 long start = System.currentTimeMillis();
-                InputStream is = _fetch(theFetchKey, metadata, startRange, endRange);
+                TikaInputStream tis = _fetch(theFetchKey, metadata, startRange, endRange);
                 long elapsed = System.currentTimeMillis() - start;
                 LOGGER.debug("total to fetch {}", elapsed);
-                return is;
+                return tis;
             } catch (AwsServiceException e) {
                 if (e.awsErrorDetails() != null) {
                     String errorCode = e.awsErrorDetails().errorCode();
@@ -215,7 +213,7 @@ public class S3Fetcher extends AbstractTikaExtension implements Fetcher, RangeFe
         throw ex;
     }
 
-    private InputStream _fetch(String fetchKey, Metadata metadata,
+    private TikaInputStream _fetch(String fetchKey, Metadata metadata,
                                Long startRange, Long endRange) throws IOException {
         TemporaryResources tmp = null;
         ResponseInputStream<GetObjectResponse> s3Object = null;

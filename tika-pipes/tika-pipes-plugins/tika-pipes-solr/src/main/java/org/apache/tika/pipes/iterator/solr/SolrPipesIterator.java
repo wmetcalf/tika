@@ -42,10 +42,8 @@ import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
-import org.apache.tika.pipes.api.HandlerConfig;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorBaseConfig;
 import org.apache.tika.pipes.pipesiterator.PipesIteratorBase;
 import org.apache.tika.plugins.ExtensionConfig;
 import org.apache.tika.utils.StringUtils;
@@ -119,9 +117,8 @@ public class SolrPipesIterator extends PipesIteratorBase {
 
     @Override
     protected void enqueue() throws InterruptedException, IOException, TimeoutException {
-        PipesIteratorBaseConfig baseConfig = config.getBaseConfig();
-        String fetcherId = baseConfig.fetcherId();
-        String emitterId = baseConfig.emitterId();
+        String fetcherId = config.getFetcherId();
+        String emitterId = config.getEmitterId();
 
         try (SolrClient solrClient = createSolrClient()) {
             int fileCount = 0;
@@ -145,8 +142,6 @@ public class SolrPipesIterator extends PipesIteratorBase {
             List<String> filters = config.getFilters() != null ? config.getFilters() : Collections.emptyList();
             query.setFilterQueries(filters.toArray(new String[]{}));
 
-            HandlerConfig handlerConfig = baseConfig.handlerConfig();
-
             String cursorMark = CursorMarkParams.CURSOR_MARK_START;
             boolean done = false;
             while (!done) {
@@ -167,9 +162,8 @@ public class SolrPipesIterator extends PipesIteratorBase {
                     }
                     LOGGER.info("iterator doc: {}, idField={}, fetchKey={}", sd, config.getIdField(), fetchKey);
                     ParseContext parseContext = new ParseContext();
-                    parseContext.set(HandlerConfig.class, handlerConfig);
                     tryToAdd(new FetchEmitTuple(fetchKey, new FetchKey(fetcherId, fetchKey), new EmitKey(emitterId, emitKey), new Metadata(), parseContext,
-                            baseConfig.onParseException()));
+                            FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT));
                 }
                 if (cursorMark.equals(nextCursorMark)) {
                     done = true;
@@ -192,8 +186,8 @@ public class SolrPipesIterator extends PipesIteratorBase {
                 http2SolrClientBuilder.withBasicAuthCredentials(httpClientFactory.getUserName(), httpClientFactory.getPassword());
             }
             http2SolrClientBuilder
-                    .withRequestTimeout(httpClientFactory.getRequestTimeout(), TimeUnit.MILLISECONDS)
-                    .withConnectionTimeout(config.getConnectionTimeout(), TimeUnit.MILLISECONDS);
+                    .withRequestTimeout(httpClientFactory.getRequestTimeoutMillis(), TimeUnit.MILLISECONDS)
+                    .withConnectionTimeout(config.getConnectionTimeoutMillis(), TimeUnit.MILLISECONDS);
 
 
             Http2SolrClient http2SolrClient = http2SolrClientBuilder.build();
@@ -203,8 +197,8 @@ public class SolrPipesIterator extends PipesIteratorBase {
 
         }
         return new LBHttpSolrClient.Builder()
-                .withConnectionTimeout(config.getConnectionTimeout())
-                .withSocketTimeout(config.getSocketTimeout())
+                .withConnectionTimeout(config.getConnectionTimeoutMillis())
+                .withSocketTimeout(config.getSocketTimeoutMillis())
                 .withHttpClient(httpClientFactory.build())
                 .withBaseSolrUrls(solrUrls.toArray(new String[]{}))
                 .build();

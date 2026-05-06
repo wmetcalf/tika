@@ -21,7 +21,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-pipes-plugins</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -51,9 +51,9 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/test/resources/test-simple.csv</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/test/resources/test-simple.csv</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

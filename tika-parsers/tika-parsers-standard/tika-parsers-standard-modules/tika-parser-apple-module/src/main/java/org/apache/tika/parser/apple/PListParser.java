@@ -17,7 +17,6 @@
 package org.apache.tika.parser.apple;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -89,7 +88,7 @@ public class PListParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
         EmbeddedDocumentExtractor embeddedDocumentExtractor =
@@ -98,16 +97,14 @@ public class PListParser implements Parser {
         NSObject rootObj = null;
         //if this already went through the PListDetector,
         //there should be an NSObject in the open container
-        if (stream instanceof TikaInputStream) {
-            rootObj = (NSObject) ((TikaInputStream) stream).getOpenContainer();
-        }
+        rootObj = (NSObject) tis.getOpenContainer();
 
         if (rootObj == null) {
             try {
-                if (stream instanceof TikaInputStream && ((TikaInputStream) stream).hasFile()) {
-                    rootObj = PropertyListParser.parse(((TikaInputStream) stream).getFile());
+                if (tis.hasFile()) {
+                    rootObj = PropertyListParser.parse(tis.getFile());
                 } else {
-                    rootObj = PropertyListParser.parse(stream);
+                    rootObj = PropertyListParser.parse(tis);
                 }
             } catch (PropertyListFormatException | ParseException |
                     ParserConfigurationException e) {
@@ -122,8 +119,8 @@ public class PListParser implements Parser {
                 metadata.set(Metadata.CONTENT_TYPE, subtype.toString());
             }
         }
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
-        State state = new State(xhtml, metadata, embeddedDocumentExtractor, df);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+        State state = new State(xhtml, metadata, embeddedDocumentExtractor, df, context);
         xhtml.startDocument();
         xhtml.startElement(PLIST);
         parseObject(rootObj, state);
@@ -131,7 +128,7 @@ public class PListParser implements Parser {
         xhtml.endDocument();
     }
 
-    private void parseObject(NSObject obj, State state) throws SAXException, IOException {
+    private void parseObject(NSObject obj, State state) throws SAXException, IOException, TikaException {
 
         if (obj instanceof NSDictionary) {
             parseDict((NSDictionary) obj, state);
@@ -173,7 +170,7 @@ public class PListParser implements Parser {
         }
     }
 
-    private void parseSet(NSSet obj, State state) throws SAXException, IOException {
+    private void parseSet(NSSet obj, State state) throws SAXException, IOException, TikaException {
         state.xhtml.startElement(SET);
         for (NSObject child : obj.allObjects()) {
             parseObject(child, state);
@@ -181,7 +178,7 @@ public class PListParser implements Parser {
         state.xhtml.endElement(SET);
     }
 
-    private void parseDict(NSDictionary obj, State state) throws SAXException, IOException {
+    private void parseDict(NSDictionary obj, State state) throws SAXException, IOException, TikaException {
         state.xhtml.startElement(DICT);
         for (Map.Entry<String, NSObject> mapEntry : obj.getHashMap().entrySet()) {
             String key = mapEntry.getKey();
@@ -192,16 +189,16 @@ public class PListParser implements Parser {
         state.xhtml.endElement(DICT);
     }
 
-    private void handleData(NSData value, State state) throws IOException, SAXException {
+    private void handleData(NSData value, State state) throws IOException, SAXException, TikaException {
         state.xhtml.characters(value.getBase64EncodedData());
-        Metadata embeddedMetadata = new Metadata();
+        Metadata embeddedMetadata = Metadata.newInstance(state.parseContext);
         if (!state.embeddedDocumentExtractor.shouldParseEmbedded(embeddedMetadata)) {
             return;
         }
 
         try (TikaInputStream tis = TikaInputStream.get(value.bytes())) {
             state.embeddedDocumentExtractor
-                    .parseEmbedded(tis, state.xhtml, embeddedMetadata, true);
+                    .parseEmbedded(tis, state.xhtml, embeddedMetadata, new ParseContext(), true);
         }
     }
 
@@ -210,13 +207,16 @@ public class PListParser implements Parser {
         final Metadata metadata;
         final EmbeddedDocumentExtractor embeddedDocumentExtractor;
         final DateFormat dateFormat;
+        final ParseContext parseContext;
 
         public State(XHTMLContentHandler xhtml, Metadata metadata,
-                     EmbeddedDocumentExtractor embeddedDocumentExtractor, DateFormat df) {
+                     EmbeddedDocumentExtractor embeddedDocumentExtractor, DateFormat df,
+                     ParseContext parseContext) {
             this.xhtml = xhtml;
             this.metadata = metadata;
             this.embeddedDocumentExtractor = embeddedDocumentExtractor;
             this.dateFormat = df;
+            this.parseContext = parseContext;
         }
     }
 }

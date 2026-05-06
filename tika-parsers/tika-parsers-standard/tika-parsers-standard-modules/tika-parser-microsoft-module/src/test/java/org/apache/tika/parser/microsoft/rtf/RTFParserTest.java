@@ -18,7 +18,6 @@ package org.apache.tika.parser.microsoft.rtf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
@@ -32,7 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import org.apache.tika.Tika;
 import org.apache.tika.TikaTest;
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.extractor.ContainerExtractor;
 import org.apache.tika.extractor.ParserContainerExtractor;
 import org.apache.tika.io.TikaInputStream;
@@ -41,7 +40,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
-import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 
 /**
@@ -344,16 +343,13 @@ public class RTFParserTest extends TikaTest {
 
     @Test
     public void testTurningOffList() throws Exception {
-        try (InputStream is = getResourceAsStream(
-                "/org/apache/tika/parser/microsoft/rtf/ignoreListMarkup-tika-config.xml")) {
-            assertNotNull(is);
-            TikaConfig tikaConfig = new TikaConfig(is);
-            Parser p = new AutoDetectParser(tikaConfig);
-            String content = getXML("testRTFListMicrosoftWord.rtf", p).xml;
-            assertNotContained("<ol>", content);
-            assertNotContained("<ul>", content);
-            assertNotContained("<li>", content);
-        }
+        Parser p = TikaLoader.load(
+                getConfigPath(RTFParserTest.class, "ignoreListMarkup-tika-config.json"))
+                .loadAutoDetectParser();
+        String content = getXML("testRTFListMicrosoftWord.rtf", p).xml;
+        assertNotContained("<ol>", content);
+        assertNotContained("<ul>", content);
+        assertNotContained("<li>", content);
     }
 
     @Test
@@ -369,11 +365,12 @@ public class RTFParserTest extends TikaTest {
     @Test
     public void testBinControlWord() throws Exception {
         ByteCopyingHandler embHandler = new ByteCopyingHandler();
+        ParseContext context = new ParseContext();
         try (TikaInputStream tis = TikaInputStream
                 .get(getResourceAsStream("/test-documents/testBinControlWord.rtf"))) {
             ContainerExtractor ex = new ParserContainerExtractor();
-            assertEquals(true, ex.isSupported(tis));
-            ex.extract(tis, ex, embHandler);
+            assertEquals(true, ex.isSupported(tis, context));
+            ex.extract(tis, ex, embHandler, context);
         }
         assertEquals(1, embHandler.bytes.size());
 
@@ -425,12 +422,13 @@ public class RTFParserTest extends TikaTest {
         skipTypes.add(MediaType.parse("image/emf"));
         skipTypes.add(MediaType.parse("image/wmf"));
 
+        ParseContext context = new ParseContext();
         TrackingHandler tracker = new TrackingHandler(skipTypes);
         try (TikaInputStream tis = TikaInputStream
                 .get(getResourceAsStream("/test-documents/testRTFEmbeddedLink.rtf"))) {
             ContainerExtractor ex = new ParserContainerExtractor();
-            assertEquals(true, ex.isSupported(tis));
-            ex.extract(tis, ex, tracker);
+            assertEquals(true, ex.isSupported(tis, context));
+            ex.extract(tis, ex, tracker, context);
         }
         //should gracefully skip link and not throw NPE, IOEx, etc
         assertEquals(0, tracker.filenames.size());
@@ -439,8 +437,8 @@ public class RTFParserTest extends TikaTest {
         try (TikaInputStream tis = TikaInputStream
                 .get(getResourceAsStream("/test-documents/testRTFEmbeddedLink.rtf"))) {
             ContainerExtractor ex = new ParserContainerExtractor();
-            assertEquals(true, ex.isSupported(tis));
-            ex.extract(tis, ex, tracker);
+            assertEquals(true, ex.isSupported(tis, context));
+            ex.extract(tis, ex, tracker, context);
         }
         //should gracefully skip link and not throw NPE, IOEx, etc
         assertEquals(2, tracker.filenames.size());
@@ -451,16 +449,13 @@ public class RTFParserTest extends TikaTest {
         //test that memory allocation of the bin element is limited
         //via the config file.  Unfortunately, this test file's bin embedding contains 10 bytes
         //so we had to set the config to 0.
-        try (InputStream is = getResourceAsStream(
-                "/org/apache/tika/parser/microsoft/rtf/tika-config.xml")) {
-            assertNotNull(is);
-            TikaConfig tikaConfig = new TikaConfig(is);
-            Parser p = new AutoDetectParser(tikaConfig);
-            List<Metadata> metadataList = getRecursiveMetadata("testBinControlWord.rtf", p);
-            assertEquals(1, metadataList.size());
-            assertContains("TikaMemoryLimitException", metadataList.get(0)
-                    .get(TikaCoreProperties.TIKA_META_EXCEPTION_EMBEDDED_STREAM));
-        }
+        Parser p = TikaLoader.load(
+                getConfigPath(RTFParserTest.class, "tika-config.json"))
+                .loadAutoDetectParser();
+        List<Metadata> metadataList = getRecursiveMetadata("testBinControlWord.rtf", p);
+        assertEquals(1, metadataList.size());
+        assertContains("TikaMemoryLimitException", metadataList.get(0)
+                .get(TikaCoreProperties.TIKA_META_EXCEPTION_EMBEDDED_STREAM));
     }
 
     @Test

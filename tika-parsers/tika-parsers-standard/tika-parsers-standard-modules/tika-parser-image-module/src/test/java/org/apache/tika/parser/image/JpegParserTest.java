@@ -21,14 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.TimeZone;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.TikaTest;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Geographic;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TIFF;
@@ -37,18 +43,32 @@ import org.apache.tika.metadata.XMPMM;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 
-public class JpegParserTest {
+@Isolated
+@ResourceLock(Resources.TIME_ZONE)
+public class JpegParserTest extends TikaTest {
 
     static TimeZone CURR_TIME_ZONE = TimeZone.getDefault();
     private final Parser parser = new JpegParser();
+    private static TimeZone originalTimeZone;
+
+    @BeforeAll
+    static void init() {
+        // metadata-extractor 2.20.0 started making these parsed dates depend on the JVM default time zone;
+        // force GMT so the assertions remain deterministic across environments
+        originalTimeZone = TimeZone.getDefault();
+        TimeZone.setDefault(TimeZone.getTimeZone("GMT"));
+    }
+    @AfterAll
+    static void tearDown() {
+        TimeZone.setDefault(originalTimeZone);
+    }
 
     @Test
     public void testJPEG() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_EXIF.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_EXIF.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Core EXIF/TIFF tags
@@ -93,9 +113,8 @@ public class JpegParserTest {
     public void testJPEGGeo() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_GEO.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_GEO.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Geo tags
@@ -141,9 +160,8 @@ public class JpegParserTest {
     public void testJPEGGeo2() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_GEO_2.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_GEO_2.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Geo tags should be there with 5dp, and not rounded
@@ -157,9 +175,8 @@ public class JpegParserTest {
     public void testJPEGTitleAndDescription() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_commented.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_commented.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // embedded comments with non-ascii characters
@@ -204,9 +221,8 @@ public class JpegParserTest {
     public void testJPEGTitleAndDescriptionPhotoshop() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_commented_pspcs2mac.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_commented_pspcs2mac.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // embedded comments with non-ascii characters
@@ -222,9 +238,8 @@ public class JpegParserTest {
     public void testJPEGTitleAndDescriptionXnviewmp() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_commented_xnviewmp026.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_commented_xnviewmp026.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // XnViewMp's default comment dialog has only comment, not headline.
@@ -244,9 +259,8 @@ public class JpegParserTest {
     public void testJPEGoddTagComponent() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_oddTagComponent.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_oddTagComponent.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         assertEquals(null, metadata.get(TikaCoreProperties.TITLE));
@@ -259,9 +273,8 @@ public class JpegParserTest {
     public void testJPEGEmptyEXIFDateTime() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_EXIF_emptyDateTime.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_EXIF_emptyDateTime.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
         assertEquals("300.0", metadata.get(TIFF.RESOLUTION_HORIZONTAL));
         assertEquals("300.0", metadata.get(TIFF.RESOLUTION_VERTICAL));
@@ -271,9 +284,8 @@ public class JpegParserTest {
     public void testJPEGXMPMM() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/jpeg");
-        try (InputStream stream = getClass()
-                .getResourceAsStream("/test-documents/testJPEG_EXIF_emptyDateTime.jpg")) {
-            parser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testJPEG_EXIF_emptyDateTime.jpg")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // TODO: when jempbox is fixed/xmpbox is used

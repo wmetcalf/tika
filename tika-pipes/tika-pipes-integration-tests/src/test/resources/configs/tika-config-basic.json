@@ -1,4 +1,11 @@
 {
+  "content-handler-factory": {
+    "basic-content-handler-factory": {
+      "type": "TEXT",
+      "writeLimit": -1,
+      "throwOnWriteLimitReached": true
+    }
+  },
   "fetchers": {
     "fsf": {
       "file-system-fetcher": {
@@ -18,30 +25,17 @@
   },
   "pipes-iterator": {
     "file-system-pipes-iterator": {
-      "fspi": {
-        "basePath": "FETCHER_BASE_PATH",
-        "countTotal": true,
-        "baseConfig": {
-          "fetcherId": "fsf",
-          "emitterId": "fse",
-          "handlerConfig": {
-            "type": "TEXT",
-            "parseMode": "RMETA",
-            "writeLimit": -1,
-            "maxEmbeddedResources": -1,
-            "throwOnWriteLimitReached": true
-          },
-          "onParseException": "EMIT",
-          "maxWaitMs": 600000,
-          "queueSize": 10000
-        }
-      }
+      "basePath": "FETCHER_BASE_PATH",
+      "countTotal": true,
+      "fetcherId": "fsf",
+      "emitterId": "fse"
     }
   },
   "pipes": {
+    "parseMode": "RMETA",
+    "onParseException": "EMIT",
     "numClients": 4,
-    "timeoutMillis": 5000,
-    "emitIntermediateResults": EMIT_INTERMEDIATE_RESULTS,
+    "emitIntermediateResults": "EMIT_INTERMEDIATE_RESULTS",
     "forkedJvmArgs": ["-Xmx512m"],
     "emitStrategy": {
       "type": "DYNAMIC",
@@ -49,13 +43,13 @@
     }
   },
   "auto-detect-parser": {
-    "spoolToDisk": 1000000,
-    "outputThreshold": 1000000,
-    "digesterFactory": {
-      "@class": "org.apache.tika.pipes.core.async.MockDigesterFactory",
-      "skipContainerDocument": false
-    },
     "throwOnZeroBytes": false
+  },
+  "parse-context": {
+    "mock-digester-factory": {},
+    "timeout-limits": {
+      "progressTimeoutMillis": 5000
+    }
   },
   "plugin-roots": "PLUGINS_PATHS"
 }

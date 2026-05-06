@@ -18,7 +18,6 @@ package org.apache.tika.parser.html;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Serializable;
 import java.nio.charset.Charset;
@@ -27,10 +26,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import javax.xml.XMLConstants;
 
-import org.apache.commons.io.input.CloseShieldInputStream;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.DataNode;
@@ -47,11 +46,12 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.config.ConfigDeserializer;
-import org.apache.tika.config.Field;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.EncodingDetector;
+import org.apache.tika.detect.EncodingResult;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AbstractEncodingDetectorParser;
@@ -107,7 +107,6 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         }
     }
 
-    @Field
     private boolean extractScripts = false;
 
     public JSoupParser() {
@@ -152,18 +151,18 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
      *
      * @param extractScripts
      */
-    @Field
     public void setExtractScripts(boolean extractScripts) {
         this.extractScripts = extractScripts;
     }
 
 
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
         EncodingDetector encodingDetector = getEncodingDetector(context);
-        Charset charset = encodingDetector.detect(stream, metadata);
-        charset = charset == null ? DEFAULT_CHARSET : charset;
+        List<EncodingResult> encResults = encodingDetector.detect(tis, metadata, context);
+        Charset charset = encResults.isEmpty() ? DEFAULT_CHARSET
+                : encResults.get(0).getCharset();
         String previous = metadata.get(Metadata.CONTENT_TYPE);
         MediaType contentType = null;
         if (previous == null || previous.startsWith("text/html")) {
@@ -193,8 +192,14 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         */
 
         //do better with baseUri?
-        Document document = Jsoup.parse(CloseShieldInputStream.wrap(stream), charset.name(), "",
-                Parser.htmlParser().tagSet(tagSet));
+        tis.setCloseShield();
+        Document document;
+        try {
+            document = Jsoup.parse(tis, charset.name(), "",
+                    Parser.htmlParser().tagSet(tagSet));
+        } finally {
+            tis.removeCloseShield();
+        }
         document.quirksMode(Document.QuirksMode.quirks);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
                 new HtmlHandler(mapper, handler, metadata, context, extractScripts));

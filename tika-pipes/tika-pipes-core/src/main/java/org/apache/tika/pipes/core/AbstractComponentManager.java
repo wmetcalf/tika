@@ -30,9 +30,11 @@ import org.pf4j.PluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.loader.PolymorphicObjectMapperFactory;
+import org.apache.tika.config.loader.TikaObjectMapperFactory;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.pipes.core.config.ConfigStore;
+import org.apache.tika.pipes.core.config.InMemoryConfigStore;
 import org.apache.tika.plugins.ExtensionConfig;
 import org.apache.tika.plugins.TikaExtension;
 import org.apache.tika.plugins.TikaExtensionFactory;
@@ -50,15 +52,28 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
     private static final Logger LOG = LoggerFactory.getLogger(AbstractComponentManager.class);
 
     protected final PluginManager pluginManager;
-    private final Map<String, ExtensionConfig> componentConfigs = new ConcurrentHashMap<>();
+    private final ConfigStore configStore;
     private final Map<String, T> componentCache = new ConcurrentHashMap<>();
     private final boolean allowRuntimeModifications;
 
     protected AbstractComponentManager(PluginManager pluginManager,
                                       Map<String, ExtensionConfig> componentConfigs,
                                       boolean allowRuntimeModifications) {
+        this(pluginManager, componentConfigs, allowRuntimeModifications, new InMemoryConfigStore());
+    }
+
+    protected AbstractComponentManager(PluginManager pluginManager,
+                                      Map<String, ExtensionConfig> componentConfigs,
+                                      boolean allowRuntimeModifications,
+                                      ConfigStore configStore) {
         this.pluginManager = pluginManager;
-        this.componentConfigs.putAll(componentConfigs);
+        this.configStore = configStore;
+        try {
+            configStore.init();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize ConfigStore", e);
+        }
+        componentConfigs.forEach(configStore::put);
         this.allowRuntimeModifications = allowRuntimeModifications;
     }
 
@@ -66,6 +81,14 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
      * Returns the JSON configuration key for this component type (e.g., "fetchers", "emitters").
      */
     protected abstract String getConfigKey();
+
+    /**
+     * Returns the config store used by this manager.
+     * Useful for subclasses that need direct access to the store.
+     */
+    protected ConfigStore getConfigStore() {
+        return configStore;
+    }
 
     /**
      * Returns the factory class for this component type.
@@ -177,7 +200,7 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
 
     private static String toJsonString(final JsonNode node) throws TikaConfigException {
         try {
-            return PolymorphicObjectMapperFactory.getMapper().writeValueAsString(node);
+            return TikaObjectMapperFactory.getMapper().writeValueAsString(node);
         } catch (JsonProcessingException e) {
             throw new TikaConfigException("Failed to serialize config to JSON string", e);
         }
@@ -194,11 +217,11 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
         }
 
         // Check if config exists
-        ExtensionConfig config = componentConfigs.get(id);
+        ExtensionConfig config = configStore.get(id);
         if (config == null) {
             throw createNotFoundException(
                     "Can't find " + getComponentName() + " for id=" + id +
-                    ". Available: " + componentConfigs.keySet());
+                    ". Available: " + configStore.keySet());
         }
 
         // Synchronized block to ensure only one thread builds the component
@@ -239,16 +262,16 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
     }
 
     /**
-     * Dynamically adds a component configuration at runtime.
+     * Dynamically adds or updates a component configuration at runtime.
      * The component will not be instantiated until it is first requested via {@link #getComponent(String)}.
+     * If a component with the same ID already exists, it will be replaced and the cached instance cleared.
      * <p>
      * This method is only available if the manager was loaded with allowRuntimeModifications=true.
      * <p>
      * Only authorized/authenticated users should be allowed to modify components. BE CAREFUL.
      *
      * @param config the extension configuration for the component
-     * @throws TikaConfigException if the component type is unknown, if a component with the same ID already exists,
-     *         or if runtime modifications are not allowed
+     * @throws TikaConfigException if the component type is unknown or if runtime modifications are not allowed
      * @throws IOException if there is an error accessing the plugin manager
      */
     public synchronized void saveComponent(ExtensionConfig config) throws TikaConfigException, IOException {
@@ -266,12 +289,6 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
         String componentId = config.id();
         String typeName = config.name();
 
-        // Check for duplicate ID
-        if (componentConfigs.containsKey(componentId)) {
-            throw new TikaConfigException(getComponentName().substring(0, 1).toUpperCase(Locale.ROOT) +
-                    getComponentName().substring(1) + " with id '" + componentId + "' already exists");
-        }
-
         // Validate that factory exists for this type
         Map<String, F> factories = getFactories(pluginManager);
         if (!factories.containsKey(typeName)) {
@@ -280,16 +297,64 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
                     ". Available: " + factories.keySet());
         }
 
+        // If updating existing component, clear the cache so it gets re-instantiated
+        if (configStore.containsKey(componentId)) {
+            componentCache.remove(componentId);
+            LOG.debug("Updating existing {} config: id={}, type={}", getComponentName(), componentId, typeName);
+        } else {
+            LOG.debug("Creating new {} config: id={}, type={}", getComponentName(), componentId, typeName);
+        }
+
         // Store config without instantiating
-        componentConfigs.put(componentId, config);
-        LOG.debug("Saved {} config: id={}, type={}", getComponentName(), componentId, typeName);
+        configStore.put(componentId, config);
+    }
+
+    /**
+     * Deletes a component configuration by ID.
+     * Clears the cached instance and removes the configuration.
+     *
+     * @param componentId the component ID to delete
+     * @throws TikaConfigException if runtime modifications are not allowed or component not found
+     */
+    public synchronized void deleteComponent(String componentId) throws TikaConfigException {
+        if (!allowRuntimeModifications) {
+            throw new TikaConfigException(
+                    "Runtime modifications are not allowed. " + getClass().getSimpleName() +
+                    " must be loaded with allowRuntimeModifications=true to use delete" +
+                    getComponentName().substring(0, 1).toUpperCase(Locale.ROOT) + getComponentName().substring(1) + "()");
+        }
+
+        if (componentId == null) {
+            throw new IllegalArgumentException("Component ID cannot be null");
+        }
+
+        if (!configStore.containsKey(componentId)) {
+            throw new TikaConfigException(
+                    getComponentName().substring(0, 1).toUpperCase(Locale.ROOT) + 
+                    getComponentName().substring(1) + " with ID '" + componentId + "' not found");
+        }
+
+        // Clear cache and remove config
+        componentCache.remove(componentId);
+        configStore.remove(componentId);
+        LOG.debug("Deleted {} config: id={}", getComponentName(), componentId);
+    }
+
+    /**
+     * Gets the configuration for a specific component by ID.
+     *
+     * @param componentId the component ID
+     * @return the component configuration, or null if not found
+     */
+    public ExtensionConfig getComponentConfig(String componentId) {
+        return configStore.get(componentId);
     }
 
     /**
      * Returns the set of supported component IDs.
      */
     public Set<String> getSupported() {
-        return componentConfigs.keySet();
+        return configStore.keySet();
     }
 
     /**
@@ -299,15 +364,15 @@ public abstract class AbstractComponentManager<T extends TikaExtension,
      * @return the single configured component
      */
     public T getComponent() throws IOException, TikaException {
-        if (componentConfigs.size() != 1) {
+        if (configStore.size() != 1) {
             throw new IllegalArgumentException(
                     "No-arg get" + getComponentName().substring(0, 1).toUpperCase(Locale.ROOT) +
                     getComponentName().substring(1) + "() requires exactly 1 configured " +
-                    getComponentName() + ". Found: " + componentConfigs.size() +
-                    " (" + componentConfigs.keySet() + ")");
+                    getComponentName() + ". Found: " + configStore.size() +
+                    " (" + configStore.keySet() + ")");
         }
         // Get the single component id and use getComponent(id) for lazy loading
-        String componentId = componentConfigs.keySet().iterator().next();
+        String componentId = configStore.keySet().iterator().next();
         return getComponent(componentId);
     }
 }

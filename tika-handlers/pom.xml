@@ -22,7 +22,7 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-parent</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../tika-parent/pom.xml</relativePath>
   </parent>
 
@@ -49,9 +49,9 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>README.md</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>README.md</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
     </plugins>

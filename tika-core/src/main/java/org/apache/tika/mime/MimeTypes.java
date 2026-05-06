@@ -32,15 +32,15 @@ import java.util.Locale;
 import java.util.Map;
 import javax.xml.namespace.QName;
 
-import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
-
 import org.apache.tika.Tika;
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.detect.TextDetector;
 import org.apache.tika.detect.XmlRootExtractor;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * This class is a MimeType repository. It gathers a set of MimeTypes and
@@ -294,10 +294,10 @@ public final class MimeTypes implements Detector, Serializable {
         // Finally, assume plain text if no control bytes are found
         try {
             TextDetector detector = new TextDetector(getMinLength());
-            UnsynchronizedByteArrayInputStream stream =
-                    UnsynchronizedByteArrayInputStream.builder().setByteArray(data).get();
-            MimeType type = forName(detector.detect(stream, new Metadata()).toString());
-            return Collections.singletonList(type);
+            try (TikaInputStream tis = TikaInputStream.get(data)) {
+                MimeType type = forName(detector.detect(tis, new Metadata(), new ParseContext()).toString());
+                return Collections.singletonList(type);
+            }
         } catch (Exception e) {
             return rootMimeTypeL;
         }
@@ -518,17 +518,18 @@ public final class MimeTypes implements Detector, Serializable {
      * @throws IOException if the document stream could not be read
      */
     @Override
-    public MediaType detect(InputStream input, Metadata metadata) throws IOException {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext)
+            throws IOException {
         List<MimeType> possibleTypes = null;
 
         // Get type based on magic prefix
-        if (input != null) {
-            input.mark(getMinLength());
+        if (tis != null) {
+            tis.mark(getMinLength());
             try {
-                byte[] prefix = readMagicHeader(input);
+                byte[] prefix = readMagicHeader(tis);
                 possibleTypes = getMimeType(prefix);
             } finally {
-                input.reset();
+                tis.reset();
             }
         }
 

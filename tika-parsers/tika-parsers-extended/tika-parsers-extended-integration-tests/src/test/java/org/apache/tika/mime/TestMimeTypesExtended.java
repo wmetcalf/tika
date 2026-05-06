@@ -20,23 +20,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.TikaTest;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
-public class TestMimeTypesExtended {
+public class TestMimeTypesExtended extends TikaTest {
 
     MimeTypes repo;
 
     @BeforeEach
     public void setUp() throws Exception {
-        TikaConfig config = TikaConfig.getDefaultConfig();
-        repo = config.getMimeRepository();
+        repo = TikaLoader.getMimeTypes();
     }
 
     @Test
@@ -45,11 +45,10 @@ public class TestMimeTypesExtended {
     }
 
     private void assertTypeByData(String expected, String filename) throws IOException {
-        try (InputStream stream = TikaInputStream.get(TestMimeTypesExtended.class
-                .getResourceAsStream("/test-documents/" + filename))) {
-            assertNotNull(stream, "Test file not found: " + filename);
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/" + filename)) {
+            assertNotNull(tis, "Test file not found: " + filename);
             Metadata metadata = new Metadata();
-            assertEquals(expected, repo.detect(stream, metadata).toString());
+            assertEquals(expected, repo.detect(tis, metadata, new ParseContext()).toString());
         }
     }
 }

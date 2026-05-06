@@ -17,11 +17,13 @@
 package org.apache.tika.detect;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.Serializable;
 
+import org.apache.tika.config.SelfConfiguring;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Content type detector. Implementations of this interface use various
@@ -30,7 +32,7 @@ import org.apache.tika.mime.MediaType;
  *
  * @since Apache Tika 0.3
  */
-public interface Detector extends Serializable {
+public interface Detector extends Serializable, SelfConfiguring {
 
     /**
      * Detects the content type of the given input document. Returns
@@ -40,20 +42,19 @@ public interface Detector extends Serializable {
      * If the document input stream is not available, then the first
      * argument may be <code>null</code>. Otherwise the detector may
      * read bytes from the start of the stream to help in type detection.
-     * The given stream is guaranteed to support the
-     * {@link InputStream#markSupported() mark feature} and the detector
-     * is expected to {@link InputStream#mark(int) mark} the stream before
-     * reading any bytes from it, and to {@link InputStream#reset() reset}
-     * the stream before returning. The stream must not be closed by the
-     * detector.
+     * The detector is expected to mark the stream before reading any bytes
+     * from it, and to reset the stream before returning. The stream must
+     * not be closed by the detector.
      * <p>
      * The given input metadata is only read, not modified, by the detector.
      *
-     * @param input    document input stream, or <code>null</code>
+     * @param tis      document input stream, or <code>null</code>
      * @param metadata input metadata for the document
+     * @param parseContext the parse context
      * @return detected media type, or <code>application/octet-stream</code>
      * @throws IOException if the document input stream could not be read
      */
-    MediaType detect(InputStream input, Metadata metadata) throws IOException;
+    MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext)
+            throws IOException;
 
 }

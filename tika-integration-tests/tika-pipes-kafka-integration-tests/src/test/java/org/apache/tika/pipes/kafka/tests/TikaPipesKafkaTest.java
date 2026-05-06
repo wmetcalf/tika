@@ -36,13 +36,10 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Stopwatch;
 import org.apache.commons.io.FilenameUtils;
-import org.apache.commons.io.IOUtils;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -65,7 +62,8 @@ import org.testcontainers.kafka.ConfluentKafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import org.apache.tika.cli.TikaCLI;
-import org.apache.tika.pipes.api.HandlerConfig;
+import org.apache.tika.config.JsonConfigHelper;
+import org.apache.tika.pipes.api.ParseMode;
 import org.apache.tika.utils.SystemUtils;
 
 /**
@@ -179,9 +177,9 @@ public class TikaPipesKafkaTest {
                 "Tika pipes have been started. See if we can pull the response messages from the EMITTER_TOPIC={}",
                 EMITTER_TOPIC);
 
-        Stopwatch stopwatch = Stopwatch.createStarted();
+        long startNanos = System.nanoTime();
         while (!waitingFor.isEmpty()) {
-            assertFalse(stopwatch.elapsed(TimeUnit.MINUTES) > WAIT_FOR_EMITTED_DOCS_TIMEOUT_MINUTES,
+            assertFalse(TimeUnit.NANOSECONDS.toMinutes(System.nanoTime() - startNanos) > WAIT_FOR_EMITTED_DOCS_TIMEOUT_MINUTES,
                     "Timed out after " + WAIT_FOR_EMITTED_DOCS_TIMEOUT_MINUTES +
                             " minutes waiting for the emitted docs");
             try {
@@ -208,30 +206,24 @@ public class TikaPipesKafkaTest {
 
     @NotNull
     private Path getTikaConfig(Path pipesDirectory, Path testFileFolderPath) throws Exception {
-        String json;
-        try (InputStream is = this.getClass().getResourceAsStream("/kafka/plugins-template.json")) {
-            assert is != null;
-            json = IOUtils.toString(is, StandardCharsets.UTF_8);
-        }
-
-        String res = json.replace("PIPE_ITERATOR_TOPIC", PIPE_ITERATOR_TOPIC)
-                .replace("EMITTER_TOPIC", EMITTER_TOPIC)
-                .replace("BOOTSTRAP_SERVERS", kafka.getBootstrapServers())
-                .replaceAll("FETCHER_BASE_PATH",
-                        Matcher.quoteReplacement(testFileFolderPath.toAbsolutePath().toString()))
-                .replace("PARSE_MODE", HandlerConfig.PARSE_MODE.RMETA.name());
         Path tikaConfig = pipesDirectory.resolve("tika-config.json");
-
-        res = res.replace("TIKA_CONFIG", tikaConfig.toAbsolutePath().toString());
 
         Path log4jPropFile = pipesDirectory.resolve("log4j2.xml");
         try (InputStream is = this.getClass().getResourceAsStream("/pipes-fork-server-custom-log4j2.xml")) {
             assert is != null;
             Files.copy(is, log4jPropFile);
         }
-        res = res.replace("LOG4J_PROPERTIES_FILE", log4jPropFile.toAbsolutePath().toString());
 
-        Files.writeString(tikaConfig, res, StandardCharsets.UTF_8);
+        Map<String, Object> replacements = new HashMap<>();
+        replacements.put("PIPE_ITERATOR_TOPIC", PIPE_ITERATOR_TOPIC);
+        replacements.put("EMITTER_TOPIC", EMITTER_TOPIC);
+        replacements.put("BOOTSTRAP_SERVERS", kafka.getBootstrapServers());
+        replacements.put("FETCHER_BASE_PATH", testFileFolderPath);
+        replacements.put("PARSE_MODE", ParseMode.RMETA.name());
+        replacements.put("LOG4J_JVM_ARG", "-Dlog4j.configurationFile=" + log4jPropFile.toAbsolutePath());
+
+        JsonConfigHelper.writeConfigFromResource("/kafka/plugins-template.json",
+                TikaPipesKafkaTest.class, replacements, tikaConfig);
         return tikaConfig;
     }
 }

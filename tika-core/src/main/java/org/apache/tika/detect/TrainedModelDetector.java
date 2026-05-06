@@ -32,8 +32,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.tika.io.TemporaryResources;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 
 public abstract class TrainedModelDetector implements Detector {
     private static final long serialVersionUID = 1L;
@@ -47,11 +49,12 @@ public abstract class TrainedModelDetector implements Detector {
         return Integer.MAX_VALUE;
     }
 
-    public MediaType detect(InputStream input, Metadata metadata) throws IOException {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext)
+            throws IOException {
         // convert to byte-histogram
-        if (input != null) {
-            input.mark(getMinLength());
-            float[] histogram = readByteFrequencies(input);
+        if (tis != null) {
+            tis.mark(getMinLength());
+            float[] histogram = readByteFrequencies(tis);
             // writeHisto(histogram); //on testing purpose
 
             // threshold will be considered as
@@ -72,7 +75,7 @@ public abstract class TrainedModelDetector implements Detector {
                     maxType = key;
                 }
             }
-            input.reset();
+            tis.reset();
             return maxType;
         }
         return null;

@@ -19,16 +19,18 @@ package org.apache.tika.parser.html;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import org.apache.tika.detect.EncodingResult;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
 public class HtmlEncodingDetectorTest {
 
@@ -50,6 +52,64 @@ public class HtmlEncodingDetectorTest {
         // According to the specification 'If charset is x-user-defined,
         // then set charset to windows-1252.'
         assertWindows1252("<meta charset='x-user-defined'>");
+    }
+
+    @Test
+    public void iso88591IsWindows1252() throws IOException {
+        // WHATWG: iso-8859-1 is an alias for windows-1252.
+        assertWindows1252("<meta charset='iso-8859-1'>");
+    }
+
+    @Test
+    public void usAsciiIsWindows1252() throws IOException {
+        assertWindows1252("<meta charset='us-ascii'>");
+    }
+
+    @Test
+    public void iso88599IsWindows1254() throws IOException {
+        assertCharset("<meta charset='iso-8859-9'>", Charset.forName("windows-1254"));
+    }
+
+    @Test
+    public void tis620IsWindows874() throws IOException {
+        assertCharset("<meta charset='tis-620'>", Charset.forName("windows-874"));
+    }
+
+    @Test
+    public void gb2312IsGbk() throws IOException {
+        assertCharset("<meta charset='gb2312'>", Charset.forName("GBK"));
+    }
+
+    @Test
+    public void ms932IsShiftJis() throws IOException {
+        assertCharset("<meta charset='ms932'>", Charset.forName("Shift_JIS"));
+    }
+
+    @Test
+    public void ms949IsXWindows949() throws IOException {
+        // Tika convention (differs from WHATWG which downgrades to EUC-KR):
+        // route MS949 labels to x-windows-949 to preserve extension bytes.
+        assertCharset("<meta charset='ms949'>", Charset.forName("x-windows-949"));
+        assertCharset("<meta charset='windows-949'>", Charset.forName("x-windows-949"));
+    }
+
+    @Test
+    public void nakedUtf16IsUtf16Le() throws IOException {
+        // WHATWG: naked 'utf-16' (no BOM) defaults to UTF-16LE.
+        assertCharset("<meta charset='utf-16'>", StandardCharsets.UTF_16LE);
+    }
+
+    @Test
+    public void hebrewLabelIsIso88598() throws IOException {
+        assertCharset("<meta charset='hebrew'>", Charset.forName("ISO-8859-8"));
+    }
+
+    @Test
+    public void iso2022KrIsNotReplaced() throws IOException {
+        // WHATWG replaces iso-2022-kr with a dummy "replacement" decoder;
+        // Tika keeps the real ISO-2022-KR charset because we want to extract
+        // text, not block attacks.
+        assertCharset("<meta charset='iso-2022-kr'>", Charset.forName("ISO-2022-KR"));
     }
 
     @Test
@@ -132,7 +192,10 @@ public class HtmlEncodingDetectorTest {
 
     private Charset detectCharset(String test) throws IOException {
         Metadata metadata = new Metadata();
-        InputStream inStream = new ByteArrayInputStream(test.getBytes(StandardCharsets.UTF_8));
-        return new HtmlEncodingDetector().detect(inStream, metadata);
+        try (TikaInputStream tis = TikaInputStream.get(test.getBytes(StandardCharsets.UTF_8))) {
+            List<EncodingResult> results =
+                    new HtmlEncodingDetector().detect(tis, metadata, new ParseContext());
+            return results.isEmpty() ? null : results.get(0).getCharset();
+        }
     }
 }

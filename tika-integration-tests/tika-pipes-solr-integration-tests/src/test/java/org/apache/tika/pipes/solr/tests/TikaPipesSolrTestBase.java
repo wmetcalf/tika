@@ -20,13 +20,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.regex.Matcher;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
@@ -40,18 +43,25 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.FixedHostPortGenericContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.utility.DockerImageName;
 
 import org.apache.tika.cli.TikaCLI;
-import org.apache.tika.pipes.api.HandlerConfig;
+import org.apache.tika.config.JsonConfigHelper;
+import org.apache.tika.pipes.api.ParseMode;
 import org.apache.tika.pipes.emitter.solr.SolrEmitterConfig;
 import org.apache.tika.utils.SystemUtils;
 
 
 public abstract class TikaPipesSolrTestBase {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TikaPipesSolrTestBase.class);
+    private static final int SOLR_READY_TIMEOUT_MS = 30_000;
+    private static final int SOLR_READY_POLL_MS = 500;
 
     private final String collection = "testcol";
     private final int numDocs = 42;
@@ -93,9 +103,40 @@ public abstract class TikaPipesSolrTestBase {
                     .withCommand("-DzkRun");
         }
         solr.start();
+        waitForSolrReady();
+    }
 
-        // Ideally wanted to use TestContainers WaitStrategy but they were inconsistent
-        Thread.sleep(2000);
+    private void waitForSolrReady() {
+        String host = solr.getHost();
+        int port = solr.getMappedPort(8983);
+        String adminUrl = "http://" + host + ":" + port + "/solr/admin/info/system";
+        long deadline = System.currentTimeMillis() + SOLR_READY_TIMEOUT_MS;
+        LOG.info("Waiting for Solr to be ready at {}...", adminUrl);
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(adminUrl).openConnection();
+                conn.setConnectTimeout(1000);
+                conn.setReadTimeout(1000);
+                int code = conn.getResponseCode();
+                conn.disconnect();
+                if (code == 200) {
+                    LOG.info("Solr is ready (responded 200 in {} ms)",
+                            SOLR_READY_TIMEOUT_MS - (deadline - System.currentTimeMillis()));
+                    return;
+                }
+                LOG.debug("Solr returned status {}, retrying...", code);
+            } catch (Exception e) {
+                LOG.debug("Solr not ready yet: {}", e.getMessage());
+            }
+            try {
+                Thread.sleep(SOLR_READY_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted waiting for Solr", e);
+            }
+        }
+        LOG.error("Solr did not become ready within {} ms at {}", SOLR_READY_TIMEOUT_MS, adminUrl);
+        throw new RuntimeException("Solr did not become ready within " + SOLR_READY_TIMEOUT_MS + " ms");
     }
 
     @AfterEach
@@ -123,7 +164,8 @@ public abstract class TikaPipesSolrTestBase {
         Files.createDirectories(testFileFolder);
         for (int i = 0; i < numDocs; ++i) {
             Files.writeString(testFileFolder.resolve("test-" + i + ".html"),
-                    "<html><body>" + bodyContent + "</body></html>", StandardCharsets.UTF_8);
+                    "<html><head><meta charset=\"UTF-8\"></head><body>" + bodyContent
+                            + "</body></html>", StandardCharsets.UTF_8);
         }
         try (InputStream is = this.getClass().getResourceAsStream("/embedded/embedded.docx")) {
             Files.copy(is, testFileFolder.resolve("test-embedded.docx"));
@@ -138,7 +180,15 @@ public abstract class TikaPipesSolrTestBase {
         zkPort = solr.getMappedPort(9983);
         solrEndpoint = "http://" + solrHost + ":" + solrPort + "/solr";
 
-        solr.execInContainer("/opt/solr/bin/solr", "create_collection", "-c", collection);
+        org.testcontainers.containers.Container.ExecResult createResult =
+                solr.execInContainer("/opt/solr/bin/solr", "create_collection", "-c", collection);
+        if (createResult.getExitCode() != 0) {
+            LOG.error("Failed to create Solr collection '{}'. Exit code: {}, stdout: {}, stderr: {}",
+                    collection, createResult.getExitCode(),
+                    createResult.getStdout(), createResult.getStderr());
+            throw new RuntimeException("Failed to create Solr collection: " + createResult.getStderr());
+        }
+        LOG.info("Created Solr collection '{}': {}", collection, createResult.getStdout().trim());
 
         try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
 
@@ -208,14 +258,14 @@ public abstract class TikaPipesSolrTestBase {
 
         Path tikaConfigFile = getTikaConfig(pipesDirectory,
                 SolrEmitterConfig.UpdateStrategy.ADD, SolrEmitterConfig.AttachmentStrategy.PARENT_CHILD,
-                HandlerConfig.PARSE_MODE.RMETA);
+                ParseMode.RMETA);
 
         TikaCLI.main(new String[]{"-a", "-c", tikaConfigFile.toAbsolutePath().toString()});
 
         try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
             solrClient.commit(collection, true, true);
             assertEquals(numDocs, solrClient.query(collection,
-                            new SolrQuery("mime_s:\"text/html; charset=ISO-8859-1\"")).getResults()
+                            new SolrQuery("mime_s:text/html*")).getResults()
                     .getNumFound());
             assertEquals(numDocs,
                     solrClient.query(collection, new SolrQuery("content_s:*initial*")).getResults()
@@ -242,14 +292,14 @@ public abstract class TikaPipesSolrTestBase {
         tikaConfigFile = getTikaConfig(pipesDirectory,
                 SolrEmitterConfig.UpdateStrategy.UPDATE_MUST_EXIST,
                 SolrEmitterConfig.AttachmentStrategy.PARENT_CHILD,
-                HandlerConfig.PARSE_MODE.RMETA);
+                ParseMode.RMETA);
 
         TikaCLI.main(new String[]{"-a", "-c", tikaConfigFile.toAbsolutePath().toString()});
 
         try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
             solrClient.commit(collection, true, true);
             assertEquals(numDocs, solrClient.query(collection,
-                            new SolrQuery("mime_s:\"text/html; charset=ISO-8859-1\"")).getResults()
+                            new SolrQuery("mime_s:text/html*")).getResults()
                     .getNumFound());
             assertEquals(numDocs,
                     solrClient.query(collection, new SolrQuery("content_s:*updated*")).getResults()
@@ -261,41 +311,36 @@ public abstract class TikaPipesSolrTestBase {
     private Path getTikaConfig(Path pipesDirectory,
                                SolrEmitterConfig.UpdateStrategy updateStrategy,
                                SolrEmitterConfig.AttachmentStrategy attachmentStrategy,
-                               HandlerConfig.PARSE_MODE parseMode) throws IOException {
+                               ParseMode parseMode) throws IOException {
         Path tikaConfig = pipesDirectory.resolve("plugins-config.json");
-
-        String json;
-        try (InputStream is = this.getClass().getResourceAsStream("/solr/plugins-template.json")) {
-            json = IOUtils.toString(is, StandardCharsets.UTF_8);
-        }
-
-        String solrUrls;
-        String solrZkHosts;
-        if (useZk()) {
-            solrUrls = "[]";
-            solrZkHosts = "[\"" + solrHost + ":" + zkPort + "\"]";
-        } else {
-            solrUrls = "[\"http://" + solrHost + ":" + solrPort + "/solr\"]";
-            solrZkHosts = "[]";
-        }
-
-        String res = json.replace("UPDATE_STRATEGY", updateStrategy.toString())
-                .replace("ATTACHMENT_STRATEGY", attachmentStrategy.toString())
-                .replaceAll("FETCHER_BASE_PATH",
-                        Matcher.quoteReplacement(testFileFolder.toAbsolutePath().toString()))
-                .replace("PARSE_MODE", parseMode.name())
-                .replace("SOLR_URLS", solrUrls)
-                .replace("SOLR_ZK_HOSTS", solrZkHosts);
-
-        res = res.replace("TIKA_CONFIG", tikaConfig.toAbsolutePath().toString());
 
         Path log4jPropFile = pipesDirectory.resolve("log4j2.xml");
         try (InputStream is = this.getClass().getResourceAsStream("/pipes-fork-server-custom-log4j2.xml")) {
             Files.copy(is, log4jPropFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
-        res = res.replace("LOG4J_PROPERTIES_FILE", log4jPropFile.toAbsolutePath().toString());
 
-        Files.writeString(tikaConfig, res, StandardCharsets.UTF_8);
+        List<String> solrUrls;
+        List<String> solrZkHosts;
+        if (useZk()) {
+            solrUrls = List.of();
+            solrZkHosts = List.of(solrHost + ":" + zkPort);
+        } else {
+            solrUrls = List.of("http://" + solrHost + ":" + solrPort + "/solr");
+            solrZkHosts = List.of();
+        }
+
+        Map<String, Object> replacements = new HashMap<>();
+        replacements.put("UPDATE_STRATEGY", updateStrategy.toString());
+        replacements.put("ATTACHMENT_STRATEGY", attachmentStrategy.toString());
+        replacements.put("FETCHER_BASE_PATH", testFileFolder);
+        replacements.put("PARSE_MODE", parseMode.name());
+        replacements.put("SOLR_URLS", solrUrls);
+        replacements.put("SOLR_ZK_HOSTS", solrZkHosts);
+        replacements.put("LOG4J_JVM_ARG", "-Dlog4j.configurationFile=" + log4jPropFile.toAbsolutePath());
+
+        JsonConfigHelper.writeConfigFromResource("/solr/plugins-template.json",
+                TikaPipesSolrTestBase.class, replacements, tikaConfig);
+
         return tikaConfig;
     }
 

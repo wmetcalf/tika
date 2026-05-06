@@ -17,7 +17,6 @@
 package org.apache.tika.pipes.core.server;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
 import org.apache.tika.pipes.api.PipesResult;
 import org.apache.tika.pipes.api.fetcher.Fetcher;
@@ -41,24 +41,18 @@ class FetchHandler {
         this.fetcherManager = fetcherManager;
     }
 
-    public TisOrResult fetch(FetchEmitTuple fetchEmitTuple, Metadata metadata) {
+    public TisOrResult fetch(FetchEmitTuple fetchEmitTuple, Metadata metadata, ParseContext parseContext) {
         FetcherOrResult fetcherResult = getFetcher(fetchEmitTuple);
         if (fetcherResult.pipesResult != null) {
             return new TisOrResult(null, fetcherResult.pipesResult);
         }
-        InputStream is = null;
         try {
-            is = fetcherResult.fetcher.fetch(
-                    fetchEmitTuple.getFetchKey().getFetchKey(), metadata, fetchEmitTuple.getParseContext());
+            TikaInputStream tis = fetcherResult.fetcher.fetch(
+                    fetchEmitTuple.getFetchKey().getFetchKey(), metadata, parseContext);
+            return new TisOrResult(tis, null);
         } catch (IOException | TikaException e) {
             return new TisOrResult(null, new PipesResult(PipesResult.RESULT_STATUS.FETCH_EXCEPTION, ExceptionUtils.getStackTrace(e)));
         }
-
-        TikaInputStream tis = TikaInputStream.cast(is);
-        if (tis == null) {
-            return new TisOrResult(TikaInputStream.get(is), null);
-        }
-        return new TisOrResult(tis, null);
     }
 
     private FetcherOrResult getFetcher(FetchEmitTuple t) {
@@ -66,10 +60,10 @@ class FetchHandler {
             return new FetcherOrResult(fetcherManager.getFetcher(t.getFetchKey().getFetcherId()), null);
         } catch (IllegalArgumentException e) {
             String noFetcherMsg = getNoFetcherMsg(t.getFetchKey().getFetcherId());
-            LOG.warn(noFetcherMsg);
+            LOG.info(noFetcherMsg);
             return new FetcherOrResult(null, new PipesResult(PipesResult.RESULT_STATUS.FETCHER_NOT_FOUND, noFetcherMsg));
         } catch (IOException | TikaException e) {
-            LOG.warn("Couldn't initialize fetcher for fetch id={}", t.getId(), e);
+            LOG.info("Couldn't initialize fetcher for fetch id={}", t.getId(), e);
             return new FetcherOrResult(null, new PipesResult(PipesResult.RESULT_STATUS.FETCHER_INITIALIZATION_EXCEPTION,
                     ExceptionUtils.getStackTrace(e)));
         }

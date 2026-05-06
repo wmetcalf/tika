@@ -40,6 +40,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
+import org.apache.tika.config.loader.ComponentInfo;
 import org.apache.tika.config.loader.ComponentRegistry;
 import org.apache.tika.config.loader.KebabCaseConverter;
 import org.apache.tika.exception.TikaConfigException;
@@ -117,7 +118,7 @@ import org.apache.tika.utils.XMLReaderUtils;
  *     },
  *     {
  *       "default-parser": {
- *         "exclude": ["pdf-parser"]
+ *         "_exclude": ["pdf-parser"]
  *       }
  *     }
  *   ]
@@ -256,9 +257,9 @@ public class XmlToJsonConfigConverter {
         for (Map<String, Object> parserEntry : parsersList) {
             if (parserEntry.containsKey("default-parser")) {
                 Map<?, ?> config = (Map<?, ?>) parserEntry.get("default-parser");
-                if (config.containsKey("exclude")) {
+                if (config.containsKey("_exclude")) {
                     @SuppressWarnings("unchecked")
-                    List<String> excludes = (List<String>) config.get("exclude");
+                    List<String> excludes = (List<String>) config.get("_exclude");
                     excludedParsers.addAll(excludes);
                 }
             }
@@ -363,7 +364,7 @@ public class XmlToJsonConfigConverter {
         }
 
         if (excludes != null && !excludes.isEmpty()) {
-            config.put("exclude", excludes);
+            config.put("_exclude", excludes);
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -585,8 +586,8 @@ public class XmlToJsonConfigConverter {
             Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(fullClassName);
 
             // Reverse lookup: find the component name for this class
-            for (Map.Entry<String, Class<?>> entry : registry.getAllComponents().entrySet()) {
-                if (entry.getValue().equals(clazz)) {
+            for (Map.Entry<String, ComponentInfo> entry : registry.getAllComponents().entrySet()) {
+                if (entry.getValue().componentClass().equals(clazz)) {
                     return entry.getKey();
                 }
             }

@@ -17,8 +17,8 @@
 package org.apache.tika.parser;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -26,6 +26,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.mime.MediaTypeRegistry;
@@ -68,20 +69,8 @@ public class ParserDecorator implements Parser {
      * @param types  supported media types
      * @return the decorated parser
      */
-    public static final Parser withTypes(Parser parser, final Set<MediaType> types) {
-        return new ParserDecorator(parser) {
-            private static final long serialVersionUID = -7345051519565330731L;
-
-            @Override
-            public Set<MediaType> getSupportedTypes(ParseContext context) {
-                return types;
-            }
-
-            @Override
-            public String getDecorationName() {
-                return "With Types";
-            }
-        };
+    public static Parser withTypes(Parser parser, Set<MediaType> types) {
+        return new MimeFilteringDecorator(parser, types, null);
     }
 
     /**
@@ -92,26 +81,26 @@ public class ParserDecorator implements Parser {
      * @param excludeTypes excluded/ignored media types
      * @return the decorated parser
      */
-    public static final Parser withoutTypes(Parser parser, final Set<MediaType> excludeTypes) {
-        return new ParserDecorator(parser) {
-            private static final long serialVersionUID = 7979614774021768609L;
+    public static Parser withoutTypes(Parser parser, Set<MediaType> excludeTypes) {
+        return new MimeFilteringDecorator(parser, null, excludeTypes);
+    }
 
-            @Override
-            public Set<MediaType> getSupportedTypes(ParseContext context) {
-                // Get our own, writable copy of the types the parser supports
-                Set<MediaType> parserTypes =
-                        new HashSet<>(super.getSupportedTypes(context));
-                // Remove anything on our excludes list
-                parserTypes.removeAll(excludeTypes);
-                // Return whatever is left
-                return parserTypes;
-            }
-
-            @Override
-            public String getDecorationName() {
-                return "Without Types";
-            }
-        };
+    /**
+     * Decorates the given parser with mime type filtering.
+     * Supports both include and exclude lists for round-trip serialization.
+     *
+     * @param parser the parser to be decorated
+     * @param includeTypes types to include (if non-empty, only these types are supported)
+     * @param excludeTypes types to exclude (removed from supported types)
+     * @return the decorated parser, or the original parser if no filtering needed
+     */
+    public static Parser withMimeFilters(Parser parser, Set<MediaType> includeTypes,
+                                         Set<MediaType> excludeTypes) {
+        if ((includeTypes == null || includeTypes.isEmpty()) &&
+                (excludeTypes == null || excludeTypes.isEmpty())) {
+            return parser;
+        }
+        return new MimeFilteringDecorator(parser, includeTypes, excludeTypes);
     }
 
     /**
@@ -135,6 +124,65 @@ public class ParserDecorator implements Parser {
     }
 
     /**
+     * A ParserDecorator that filters supported mime types.
+     * Stores include/exclude sets for round-trip serialization.
+     * Results are cached when includeTypes is specified (deterministic case).
+     */
+    public static class MimeFilteringDecorator extends ParserDecorator {
+        private static final long serialVersionUID = 1L;
+
+        private final Set<MediaType> includeTypes;
+        private final Set<MediaType> excludeTypes;
+        private volatile Set<MediaType> cachedTypes;
+
+        public MimeFilteringDecorator(Parser parser, Set<MediaType> includeTypes,
+                                      Set<MediaType> excludeTypes) {
+            super(parser);
+            this.includeTypes = includeTypes != null ?
+                    Collections.unmodifiableSet(new HashSet<>(includeTypes)) : Collections.emptySet();
+            this.excludeTypes = excludeTypes != null ?
+                    Collections.unmodifiableSet(new HashSet<>(excludeTypes)) : Collections.emptySet();
+        }
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            // If includeTypes is specified, result is deterministic - use cache
+            if (!includeTypes.isEmpty()) {
+                if (cachedTypes == null) {
+                    Set<MediaType> types = new HashSet<>(includeTypes);
+                    types.removeAll(excludeTypes);
+                    cachedTypes = Collections.unmodifiableSet(types);
+                }
+                return cachedTypes;
+            }
+
+            // Otherwise compute from wrapped parser (may vary by context)
+            Set<MediaType> types = new HashSet<>(super.getSupportedTypes(context));
+            types.removeAll(excludeTypes);
+            return types;
+        }
+
+        @Override
+        public String getDecorationName() {
+            return "Mime Filtering";
+        }
+
+        /**
+         * @return the included mime types, or empty set if no include filter
+         */
+        public Set<MediaType> getIncludeTypes() {
+            return includeTypes;
+        }
+
+        /**
+         * @return the excluded mime types, or empty set if no exclude filter
+         */
+        public Set<MediaType> getExcludeTypes() {
+            return excludeTypes;
+        }
+    }
+
+    /**
      * Delegates the method call to the decorated parser. Subclasses should
      * override this method (and use <code>super.getSupportedTypes()</code>
      * to invoke the decorated parser) to implement extra decoration.
@@ -148,9 +196,9 @@ public class ParserDecorator implements Parser {
      * override this method (and use <code>super.parse()</code> to invoke
      * the decorated parser) to implement extra decoration.
      */
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        parser.parse(stream, handler, metadata, context);
+        parser.parse(tis, handler, metadata, context);
     }
 
     /**

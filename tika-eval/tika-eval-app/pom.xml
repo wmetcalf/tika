@@ -21,7 +21,7 @@
   <parent>
     <artifactId>tika-eval</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -66,6 +66,10 @@
       <artifactId>poi-ooxml</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.apache.tika</groupId>
       <artifactId>tika-core</artifactId>
       <version>${project.version}</version>
@@ -76,22 +80,20 @@
   <build>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-dependency-plugin</artifactId>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <configuration>
+          <descriptors>
+            <descriptor>src/main/assembly/assembly.xml</descriptor>
+          </descriptors>
+          <appendAssemblyId>false</appendAssemblyId>
+        </configuration>
         <executions>
           <execution>
-            <id>copy-dependencies</id>
+            <id>make-assembly</id>
             <phase>package</phase>
             <goals>
-              <goal>copy-dependencies</goal>
+              <goal>single</goal>
             </goals>
-            <configuration>
-              <outputDirectory>${project.build.directory}/lib</outputDirectory>
-              <includeScope>runtime</includeScope>
-              <stripVersion>false</stripVersion>
-              <overWriteReleases>false</overWriteReleases>
-              <overWriteSnapshots>false</overWriteSnapshots>
-            </configuration>
           </execution>
         </executions>
       </plugin>
@@ -114,12 +116,12 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/main/resources/common_tokens/*</exclude>
-            <exclude>src/main/resources/*.json</exclude>
-            <exclude>src/test/resources/common_tokens/*</exclude>
-            <exclude>src/test/resources/test-dirs/**</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/main/resources/common_tokens/*</inputExclude>
+            <inputExclude>src/main/resources/*.json</inputExclude>
+            <inputExclude>src/test/resources/common_tokens/*</inputExclude>
+            <inputExclude>src/test/resources/test-dirs/**</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>
@@ -128,6 +130,11 @@
         <version>${maven.jar.version}</version>
         <configuration>
           <archive>
+            <manifest>
+              <mainClass>org.apache.tika.eval.app.TikaEvalCLI</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
+            </manifest>
             <manifestEntries>
               <Automatic-Module-Name>org.apache.tika.eval.app</Automatic-Module-Name>
             </manifestEntries>

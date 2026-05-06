@@ -19,8 +19,12 @@ package org.apache.tika.pipes.core.server;
 
 import static org.apache.tika.pipes.core.server.PipesWorker.metadataIsEmpty;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,20 +32,21 @@ import org.slf4j.LoggerFactory;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.filter.IncludeFieldMetadataFilter;
 import org.apache.tika.metadata.filter.MetadataFilter;
 import org.apache.tika.metadata.filter.NoOpFilter;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
+import org.apache.tika.pipes.api.ParseMode;
 import org.apache.tika.pipes.api.PipesResult;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.emitter.Emitter;
 import org.apache.tika.pipes.api.emitter.StreamEmitter;
 import org.apache.tika.pipes.core.EmitStrategy;
-import org.apache.tika.pipes.core.EmitStrategyOverride;
+import org.apache.tika.pipes.core.EmitStrategyConfig;
 import org.apache.tika.pipes.core.PassbackFilter;
 import org.apache.tika.pipes.core.emitter.EmitDataImpl;
 import org.apache.tika.pipes.core.emitter.EmitterManager;
-import org.apache.tika.pipes.core.extractor.EmbeddedDocumentBytesConfig;
 import org.apache.tika.utils.ExceptionUtils;
 import org.apache.tika.utils.StringUtils;
 
@@ -62,14 +67,12 @@ class EmitHandler {
         this.directEmitThresholdBytes = directEmitThresholdBytes;
     }
 
-    public PipesResult emitParseData(FetchEmitTuple t, MetadataListAndEmbeddedBytes parseData) {
+    public PipesResult emitParseData(FetchEmitTuple t, MetadataListAndEmbeddedBytes parseData, ParseContext parseContext) {
         long start = System.currentTimeMillis();
         String stack = getContainerStacktrace(t, parseData.getMetadataList());
         //we need to apply the metadata filter after we pull out the stacktrace
-        filterMetadata(t, parseData);
-        ParseContext parseContext = t.getParseContext();
+        filterMetadata(parseData, parseContext);
         FetchEmitTuple.ON_PARSE_EXCEPTION onParseException = t.getOnParseException();
-        EmbeddedDocumentBytesConfig embeddedDocumentBytesConfig = parseContext.get(EmbeddedDocumentBytesConfig.class);
         if (StringUtils.isBlank(stack) ||
                 onParseException == FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT) {
             injectUserMetadata(t.getMetadata(), parseData.getMetadataList());
@@ -79,8 +82,9 @@ class EmitHandler {
                 t.setEmitKey(emitKey);
             }
             EmitDataImpl emitDataTuple = new EmitDataImpl(t.getEmitKey().getEmitKey(), parseData.getMetadataList(), stack);
-            if (shouldEmit(embeddedDocumentBytesConfig, parseData, emitDataTuple, parseContext)) {
-                return emit(t.getId(), emitKey, embeddedDocumentBytesConfig.isExtractEmbeddedDocumentBytes(),
+            ParseMode parseMode = parseContext.get(ParseMode.class);
+            if (shouldEmit(parseMode, parseData, emitDataTuple, parseContext)) {
+                return emit(t.getId(), emitKey, parseMode == ParseMode.UNPACK,
                         parseData, stack, parseContext);
             } else {
                 if (StringUtils.isBlank(stack)) {
@@ -103,37 +107,39 @@ class EmitHandler {
             emitter = emitterManager.getEmitter(emitKey.getEmitterId());
         } catch (org.apache.tika.pipes.api.emitter.EmitterNotFoundException e) {
             String noEmitterMsg = getNoEmitterMsg(taskId);
-            LOG.warn(noEmitterMsg);
+            LOG.info(noEmitterMsg);
             return new PipesResult(PipesResult.RESULT_STATUS.EMITTER_NOT_FOUND, noEmitterMsg);
         } catch (IOException | TikaException e) {
-            LOG.warn("Couldn't initialize emitter for task id '" + taskId + "'", e);
+            LOG.info("Couldn't initialize emitter for task id '" + taskId + "'", e);
             return new PipesResult(PipesResult.RESULT_STATUS.EMITTER_INITIALIZATION_EXCEPTION, ExceptionUtils.getStackTrace(e));
         }
         try {
-            if (isExtractEmbeddedBytes &&
+            ParseMode parseMode = parseContext.get(ParseMode.class);
+            if (parseMode == ParseMode.CONTENT_ONLY && emitter instanceof StreamEmitter) {
+                emitContentOnly((StreamEmitter) emitter, emitKey, parseData, parseContext);
+            } else if (isExtractEmbeddedBytes &&
                     parseData.toBePackagedForStreamEmitter()) {
                 emitContentsAndBytes(emitter, emitKey, parseData);
             } else {
                 emitter.emit(emitKey.getEmitKey(), parseData.getMetadataList(), parseContext);
             }
         } catch (IOException e) {
-            LOG.warn("emit exception", e);
+            LOG.info("emit exception", e);
             String msg = ExceptionUtils.getStackTrace(e);
             //for now, we're hiding the parse exception if there was also an emit exception
             return new PipesResult(PipesResult.RESULT_STATUS.EMIT_EXCEPTION, msg);
         }
         PassbackFilter passbackFilter = parseContext.get(PassbackFilter.class);
         if (passbackFilter != null) {
-            List<Metadata> filtered = null;
             try {
-                filtered = passbackFilter.filter(parseData.metadataList);
+                passbackFilter.filter(parseData.metadataList);
             } catch (TikaException e) {
-                LOG.warn("problem filtering for pass back", e);
+                LOG.info("problem filtering for pass back", e);
             }
             if (StringUtils.isBlank(parseExceptionStack)) {
-                return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PASSBACK, new EmitDataImpl(emitKey.getEmitKey(), filtered));
+                return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PASSBACK, new EmitDataImpl(emitKey.getEmitKey(), parseData.metadataList));
             } else {
-                return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PARSE_EXCEPTION, new EmitDataImpl(emitKey.getEmitKey(), filtered), parseExceptionStack);
+                return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PARSE_EXCEPTION, new EmitDataImpl(emitKey.getEmitKey(), parseData.metadataList), parseExceptionStack);
             }
 
         }
@@ -141,6 +147,23 @@ class EmitHandler {
             return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS);
         } else {
             return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PARSE_EXCEPTION, parseExceptionStack);
+        }
+    }
+
+    private void emitContentOnly(StreamEmitter emitter, EmitKey emitKey,
+                                  MetadataListAndEmbeddedBytes parseData,
+                                  ParseContext parseContext) throws IOException {
+        List<Metadata> metadataList = parseData.getMetadataList();
+        String content = "";
+        if (metadataList != null && !metadataList.isEmpty()) {
+            String val = metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT);
+            if (val != null) {
+                content = val;
+            }
+        }
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        try (InputStream is = new ByteArrayInputStream(bytes)) {
+            emitter.emit(emitKey.getEmitKey(), is, new Metadata(), parseContext);
         }
     }
 
@@ -155,23 +178,31 @@ class EmitHandler {
     }
 
 
-    private boolean shouldEmit(EmbeddedDocumentBytesConfig embeddedDocumentBytesConfig, MetadataListAndEmbeddedBytes parseData,
+    private boolean shouldEmit(ParseMode parseMode, MetadataListAndEmbeddedBytes parseData,
                                EmitDataImpl emitDataTuple, ParseContext parseContext) {
         EmitStrategy strategy = emitStrategy;
         long thresholdBytes = directEmitThresholdBytes;
 
-        EmitStrategyOverride overrideConfig = parseContext.get(EmitStrategyOverride.class);
+        EmitStrategyConfig overrideConfig = parseContext.get(EmitStrategyConfig.class);
         if (overrideConfig != null) {
-            strategy = overrideConfig.getEmitStrategy();
-            if (overrideConfig.getDirectEmitThresholdBytes() != null) {
-                thresholdBytes = overrideConfig.getDirectEmitThresholdBytes();
+            strategy = overrideConfig.getType();
+            if (overrideConfig.getThresholdBytes() != null) {
+                thresholdBytes = overrideConfig.getThresholdBytes();
             }
         }
 
-        if (strategy == EmitStrategy.EMIT_ALL) {
+        // UNPACK mode: bytes are already emitted during parsing
+        // For PASSBACK_ALL, don't emit metadata - pass it back to client instead
+        // For other strategies, also emit metadata
+        if (parseMode == ParseMode.UNPACK) {
+            if (strategy == EmitStrategy.PASSBACK_ALL) {
+                // Bytes were emitted during parsing, metadata will be passed back
+                return false;
+            }
             return true;
-        } else if (embeddedDocumentBytesConfig.isExtractEmbeddedDocumentBytes() &&
-                parseData.toBePackagedForStreamEmitter()) {
+        }
+
+        if (strategy == EmitStrategy.EMIT_ALL) {
             return true;
         } else if (strategy == EmitStrategy.PASSBACK_ALL) {
             return false;
@@ -201,18 +232,25 @@ class EmitHandler {
         }
     }
 
-    private void filterMetadata(FetchEmitTuple t, MetadataListAndEmbeddedBytes parseData) {
-        MetadataFilter filter = t.getParseContext().get(MetadataFilter.class);
+    private void filterMetadata(MetadataListAndEmbeddedBytes parseData, ParseContext parseContext) {
+        MetadataFilter filter = parseContext.get(MetadataFilter.class);
         if (filter == null) {
-            filter = defaultMetadataFilter;
+            ParseMode parseMode = parseContext.get(ParseMode.class);
+            if (parseMode == ParseMode.CONTENT_ONLY) {
+                filter = new IncludeFieldMetadataFilter(
+                        Set.of(TikaCoreProperties.TIKA_CONTENT.getName(),
+                                TikaCoreProperties.CONTAINER_EXCEPTION.getName()));
+            } else {
+                filter = defaultMetadataFilter;
+            }
         }
         if (filter instanceof NoOpFilter) {
             return;
         }
         try {
-            parseData.filter(filter);
+            parseData.filter(filter, parseContext);
         } catch (TikaException e) {
-            LOG.warn("failed to filter metadata list", e);
+            LOG.info("failed to filter metadata list", e);
         }
     }
 

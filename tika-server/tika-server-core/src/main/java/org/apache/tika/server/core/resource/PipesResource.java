@@ -45,6 +45,7 @@ import org.apache.tika.pipes.core.PipesConfig;
 import org.apache.tika.pipes.core.PipesException;
 import org.apache.tika.pipes.core.PipesParser;
 import org.apache.tika.pipes.core.serialization.JsonFetchEmitTuple;
+import org.apache.tika.serialization.ParseContextUtils;
 
 @Path("/pipes")
 public class PipesResource {
@@ -57,14 +58,14 @@ public class PipesResource {
     public PipesResource(java.nio.file.Path tikaConfig) throws TikaConfigException, IOException {
         TikaJsonConfig tikaJsonConfig = TikaJsonConfig.load(tikaConfig);
         PipesConfig pipesConfig = PipesConfig.load(tikaJsonConfig);
-        // Everything must be emitted through the PipesServer (EMIT_ALL strategy)
+        // The /pipes endpoint always emits from the child process; force EMIT_ALL.
         if (pipesConfig.getEmitStrategy().getType() != EmitStrategy.EMIT_ALL) {
             if (pipesConfig.getEmitStrategy().getType() != EmitStrategyConfig.DEFAULT_EMIT_STRATEGY) {
                 LOG.warn("resetting emit strategy to EMIT_ALL for pipes endpoint");
-                pipesConfig.setEmitStrategy(new EmitStrategyConfig(EmitStrategy.EMIT_ALL));
             }
+            pipesConfig.setEmitStrategy(new EmitStrategyConfig(EmitStrategy.EMIT_ALL));
         }
-        this.pipesParser = new PipesParser(pipesConfig, tikaConfig);
+        this.pipesParser = PipesParser.load(tikaJsonConfig, pipesConfig, tikaConfig);
     }
 
 
@@ -91,6 +92,8 @@ public class PipesResource {
         try (Reader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
             t = JsonFetchEmitTuple.fromJson(reader);
         }
+        // Resolve friendly-named configs in ParseContext to actual objects
+        ParseContextUtils.resolveAll(t.getParseContext(), getClass().getClassLoader());
         return processTuple(t);
     }
 
@@ -99,7 +102,8 @@ public class PipesResource {
         PipesResult pipesResult = pipesParser.parse(fetchEmitTuple);
         if (pipesResult.isProcessCrash()) {
             return returnProcessCrash(pipesResult.status().toString());
-        } else if (pipesResult.isApplicationError()) {
+        } else if (!pipesResult.isSuccess()) {
+            // Handle fatal errors, initialization failures, and task exceptions
             return returnApplicationError(pipesResult
                     .status()
                     .toString());

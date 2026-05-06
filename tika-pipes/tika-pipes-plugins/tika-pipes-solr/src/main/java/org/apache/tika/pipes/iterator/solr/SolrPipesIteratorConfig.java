@@ -24,10 +24,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.tika.exception.TikaConfigException;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorBaseConfig;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorConfig;
+import org.apache.tika.pipes.pipesiterator.PipesIteratorConfig;
 
-public class SolrPipesIteratorConfig implements PipesIteratorConfig {
+public class SolrPipesIteratorConfig extends PipesIteratorConfig {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -53,14 +52,13 @@ public class SolrPipesIteratorConfig implements PipesIteratorConfig {
     private String sizeFieldName;
     private List<String> additionalFields = Collections.emptyList();
     private int rows = 5000;
-    private int connectionTimeout = 10000;
-    private int socketTimeout = 60000;
+    private int connectionTimeoutMillis = 10000;
+    private int socketTimeoutMillis = 60000;
     private String userName;
     private String password;
     private String authScheme;
     private String proxyHost;
     private int proxyPort = 0;
-    private PipesIteratorBaseConfig baseConfig = null;
 
     public String getSolrCollection() {
         return solrCollection;
@@ -106,12 +104,12 @@ public class SolrPipesIteratorConfig implements PipesIteratorConfig {
         return rows;
     }
 
-    public int getConnectionTimeout() {
-        return connectionTimeout;
+    public int getConnectionTimeoutMillis() {
+        return connectionTimeoutMillis;
     }
 
-    public int getSocketTimeout() {
-        return socketTimeout;
+    public int getSocketTimeoutMillis() {
+        return socketTimeoutMillis;
     }
 
     public String getUserName() {
@@ -135,19 +133,16 @@ public class SolrPipesIteratorConfig implements PipesIteratorConfig {
     }
 
     @Override
-    public PipesIteratorBaseConfig getBaseConfig() {
-        return baseConfig;
-    }
-
-    @Override
-    public final boolean equals(Object o) {
+    public boolean equals(Object o) {
         if (!(o instanceof SolrPipesIteratorConfig that)) {
             return false;
         }
-
+        if (!super.equals(o)) {
+            return false;
+        }
         return rows == that.rows &&
-                connectionTimeout == that.connectionTimeout &&
-                socketTimeout == that.socketTimeout &&
+                connectionTimeoutMillis == that.connectionTimeoutMillis &&
+                socketTimeoutMillis == that.socketTimeoutMillis &&
                 proxyPort == that.proxyPort &&
                 Objects.equals(solrCollection, that.solrCollection) &&
                 Objects.equals(solrUrls, that.solrUrls) &&
@@ -162,13 +157,13 @@ public class SolrPipesIteratorConfig implements PipesIteratorConfig {
                 Objects.equals(userName, that.userName) &&
                 Objects.equals(password, that.password) &&
                 Objects.equals(authScheme, that.authScheme) &&
-                Objects.equals(proxyHost, that.proxyHost) &&
-                Objects.equals(baseConfig, that.baseConfig);
+                Objects.equals(proxyHost, that.proxyHost);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hashCode(solrCollection);
+        int result = super.hashCode();
+        result = 31 * result + Objects.hashCode(solrCollection);
         result = 31 * result + Objects.hashCode(solrUrls);
         result = 31 * result + Objects.hashCode(solrZkHosts);
         result = 31 * result + Objects.hashCode(solrZkChroot);
@@ -179,14 +174,13 @@ public class SolrPipesIteratorConfig implements PipesIteratorConfig {
         result = 31 * result + Objects.hashCode(sizeFieldName);
         result = 31 * result + Objects.hashCode(additionalFields);
         result = 31 * result + rows;
-        result = 31 * result + connectionTimeout;
-        result = 31 * result + socketTimeout;
+        result = 31 * result + connectionTimeoutMillis;
+        result = 31 * result + socketTimeoutMillis;
         result = 31 * result + Objects.hashCode(userName);
         result = 31 * result + Objects.hashCode(password);
         result = 31 * result + Objects.hashCode(authScheme);
         result = 31 * result + Objects.hashCode(proxyHost);
         result = 31 * result + proxyPort;
-        result = 31 * result + Objects.hashCode(baseConfig);
         return result;
     }
 }

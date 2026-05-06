@@ -22,7 +22,6 @@ import static java.nio.charset.StandardCharsets.UTF_16LE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
-import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,20 +29,22 @@ import java.io.InputStream;
 import org.apache.commons.io.IOUtils;
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.TikaTest;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Test cases for the {@link MagicDetector} class.
  */
-public class MagicDetectorTest {
+public class MagicDetectorTest extends TikaTest {
 
     @Test
     public void testDetectNull() throws Exception {
         MediaType html = new MediaType("text", "html");
         Detector detector = new MagicDetector(html, "<html".getBytes(US_ASCII));
-        assertEquals(MediaType.OCTET_STREAM, detector.detect(null, new Metadata()));
+        assertEquals(MediaType.OCTET_STREAM, detector.detect(null, new Metadata(), new ParseContext()));
     }
 
     @Test
@@ -165,21 +166,22 @@ public class MagicDetectorTest {
         Detector detector = new MagicDetector(testMT, data, null, false, 0, 0);
         // Deliberately prevent InputStream.read(...) from reading the entire
         // buffer in one go
-        InputStream stream = new RestrictiveInputStream(data);
-        assertEquals(testMT, detector.detect(stream, new Metadata()));
+        try (TikaInputStream tis = TikaInputStream.get(new RestrictiveInputStream(data))) {
+            assertEquals(testMT, detector.detect(tis, new Metadata(), new ParseContext()));
+        }
     }
 
     @Test
     public void testDetectApplicationEnviHdr() throws Exception {
-        InputStream iStream = MagicDetectorTest.class
-                .getResourceAsStream("/test-documents/ang20150420t182050_corr_v1e_img.hdr");
+        InputStream iStream = getResourceAsStream("/test-documents/ang20150420t182050_corr_v1e_img.hdr");
         byte[] data = IOUtils.toByteArray(iStream);
         MediaType testMT = new MediaType("application", "envi.hdr");
         Detector detector = new MagicDetector(testMT, data, null, false, 0, 0);
         // Deliberately prevent InputStream.read(...) from reading the entire
         // buffer in one go
-        InputStream stream = new RestrictiveInputStream(data);
-        assertEquals(testMT, detector.detect(stream, new Metadata()));
+        try (TikaInputStream tis = TikaInputStream.get(new RestrictiveInputStream(data))) {
+            assertEquals(testMT, detector.detect(tis, new Metadata(), new ParseContext()));
+        }
     }
 
     @Test
@@ -212,14 +214,14 @@ public class MagicDetectorTest {
 
     private void assertDetect(Detector detector, MediaType type, byte[] bytes) {
         try {
-            InputStream stream = new ByteArrayInputStream(bytes);
-            assertEquals(type, detector.detect(stream, new Metadata()));
+            TikaInputStream tis = TikaInputStream.get(bytes);
+            assertEquals(type, detector.detect(tis, new Metadata(), new ParseContext()));
 
             // Test that the stream has been reset
             for (byte aByte : bytes) {
-                assertEquals(aByte, (byte) stream.read());
+                assertEquals(aByte, (byte) tis.read());
             }
-            assertEquals(-1, stream.read());
+            assertEquals(-1, tis.read());
         } catch (IOException e) {
             fail("Unexpected exception from MagicDetector");
         }
@@ -249,7 +251,7 @@ public class MagicDetectorTest {
 
     @Test
     public void testBZ2Detection() throws Exception {
-        Detector detector = new TikaConfig().getDetector();
+        Detector detector = new DefaultDetector();
         for (String bz2 : new String[]{"bzip2-8-file.txt.bz2",
                 "empty-file.txt.bz2", "lbzip2-8-file.txt.bz2",
                 "small-file.txt.bz2", "test-file-1.csv.bz2",
@@ -259,10 +261,8 @@ public class MagicDetectorTest {
     }
 
     private String detect(Detector detector, String bz2Name) throws IOException  {
-        try (InputStream is = new BufferedInputStream(
-                this.getClass().getResourceAsStream(
-                        "/test-documents/bz2/" + bz2Name))) {
-            return detector.detect(is, new Metadata()).toString();
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/bz2/" + bz2Name)) {
+            return detector.detect(tis, new Metadata(), new ParseContext()).toString();
         }
     }
 }

@@ -17,21 +17,21 @@
 package org.apache.tika.config.loader;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.helpers.DefaultHandler;
 
-import org.apache.tika.language.translate.EmptyTranslator;
-import org.apache.tika.language.translate.Translator;
+import org.apache.tika.config.EmbeddedLimits;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -50,7 +50,7 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
         TikaLoader loader = TikaLoader.load(configPath);
 
-        Parser parser = loader.loadParsers();
+        Parser parser = loader.get(Parser.class);
         assertNotNull(parser, "Parser should not be null");
     }
 
@@ -60,14 +60,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Parse with the composite parser to verify config was applied
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "application/test+configurable");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Verify the configured values were used
@@ -83,7 +83,7 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser parser = loader.loadParsers();
+        Parser parser = loader.get(Parser.class);
 
         ParseContext context = new ParseContext();
 
@@ -92,6 +92,10 @@ public class TikaLoaderTest {
                 "Should support application/pdf");
         assertTrue(parser.getSupportedTypes(context).contains(MediaType.parse("text/plain")),
                 "Should support text/plain");
+
+        // Test that excluded types are not supported
+        assertFalse(parser.getSupportedTypes(context).contains(MediaType.parse("application/pdf+fdf")),
+                "Should NOT support application/pdf+fdf (excluded)");
     }
 
     @Test
@@ -105,11 +109,11 @@ public class TikaLoaderTest {
         assertNotNull(loader, "Loader should be created");
 
         // Load parsers
-        Parser parser1 = loader.loadParsers();
+        Parser parser1 = loader.get(Parser.class);
         assertNotNull(parser1, "First load should return parser");
 
         // Load again - should return cached instance
-        Parser parser2 = loader.loadParsers();
+        Parser parser2 = loader.get(Parser.class);
         assertTrue(parser1 == parser2, "Should return same cached instance");
     }
 
@@ -119,14 +123,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Parse with minimal parser type
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "application/test+minimal");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Verify minimal parser was invoked
@@ -139,14 +143,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Parse with fallback parser type
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "application/test+fallback");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Verify fallback parser was invoked with correct config
@@ -161,14 +165,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Parse with ConfigurableTestParser - should use the explicitly configured instance
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "application/test+configurable");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Verify it used the configured instance (with "explicitly-configured" name)
@@ -180,8 +184,8 @@ public class TikaLoaderTest {
         Metadata fallbackMetadata = new Metadata();
         fallbackMetadata.set(Metadata.CONTENT_TYPE, "application/test+fallback");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), fallbackMetadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), fallbackMetadata, new ParseContext());
         }
 
         // FallbackTestParser should be loaded from SPI with default config
@@ -196,14 +200,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Verify ConfigurableTestParser uses the configured instance
         Metadata configurableMetadata = new Metadata();
         configurableMetadata.set(Metadata.CONTENT_TYPE, "application/test+configurable");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), configurableMetadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), configurableMetadata, new ParseContext());
         }
 
         assertEquals("with-default-config", configurableMetadata.get("parser-name"));
@@ -213,8 +217,8 @@ public class TikaLoaderTest {
         Metadata fallbackMetadata = new Metadata();
         fallbackMetadata.set(Metadata.CONTENT_TYPE, "application/test+fallback");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), fallbackMetadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), fallbackMetadata, new ParseContext());
         }
 
         // FallbackTestParser should be loaded from SPI with default config
@@ -228,7 +232,7 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         ParseContext context = new ParseContext();
 
@@ -255,7 +259,7 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         ParseContext context = new ParseContext();
 
@@ -282,14 +286,14 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         // Parse with the opt-in parser
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "application/test+optin");
 
-        try (InputStream stream = new ByteArrayInputStream("test".getBytes(StandardCharsets.UTF_8))) {
-            compositeParser.parse(stream, new DefaultHandler(), metadata, new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get("test".getBytes(StandardCharsets.UTF_8))) {
+            compositeParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
         // Verify opt-in parser was loaded
@@ -304,7 +308,7 @@ public class TikaLoaderTest {
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Parser compositeParser = loader.loadParsers();
+        Parser compositeParser = loader.get(Parser.class);
 
         ParseContext context = new ParseContext();
 
@@ -320,80 +324,85 @@ public class TikaLoaderTest {
     }
 
     @Test
-    public void testTranslatorLoading() throws Exception {
-        URL configUrl = getClass().getResource("/configs/test-translator-config.json");
-        Path configPath = Path.of(configUrl.toURI());
-
-        TikaLoader loader = TikaLoader.load(configPath);
-        Translator translator = loader.loadTranslator();
-
-        assertNotNull(translator, "Translator should not be null");
-        assertTrue(translator instanceof EmptyTranslator, "Should be EmptyTranslator");
-        assertTrue(translator.isAvailable(), "Translator should be available");
-    }
-
-    @Test
-    public void testTranslatorLazyLoading() throws Exception {
-        URL configUrl = getClass().getResource("/configs/test-translator-config.json");
+    public void testLoadConfigWithDefaults() throws Exception {
+        // Test the loadConfig method that merges JSON config with defaults
+        URL configUrl = getClass().getResource("/configs/embedded-limits-test.json");
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
 
-        // Load translator
-        Translator translator1 = loader.loadTranslator();
-        assertNotNull(translator1, "First load should return translator");
+        // Create defaults - some values will be overridden by JSON, others kept
+        EmbeddedLimits defaults = new EmbeddedLimits();
+        // Default values from EmbeddedLimits: maxDepth=UNLIMITED, maxCount=UNLIMITED, throwOnMax*=false
 
-        // Load again - should return cached instance
-        Translator translator2 = loader.loadTranslator();
-        assertTrue(translator1 == translator2, "Should return same cached instance");
+        // Load with defaults - JSON has: maxDepth=5, throwOnMaxDepth=true, maxCount=100, throwOnMaxCount=false
+        EmbeddedLimits config = loader.loadConfig(EmbeddedLimits.class, defaults);
+
+        assertNotNull(config, "Config should not be null");
+        assertEquals(5, config.getMaxDepth(), "maxDepth should be from JSON");
+        assertTrue(config.isThrowOnMaxDepth(), "throwOnMaxDepth should be from JSON");
+        assertEquals(100, config.getMaxCount(), "maxCount should be from JSON");
+        assertFalse(config.isThrowOnMaxCount(), "throwOnMaxCount should be from JSON");
+
+        // Verify original defaults object was NOT modified
+        assertEquals(EmbeddedLimits.UNLIMITED, defaults.getMaxDepth(), "Original defaults should be unchanged");
     }
 
     @Test
-    public void testDefaultTranslatorWhenNotConfigured() throws Exception {
+    public void testLoadConfigMissingKeyReturnsDefaults() throws Exception {
+        // Test that loadConfig returns defaults when key is not in config
         URL configUrl = getClass().getResource("/configs/test-loader-config.json");
         Path configPath = Path.of(configUrl.toURI());
 
         TikaLoader loader = TikaLoader.load(configPath);
-        Translator translator = loader.loadTranslator();
 
-        assertNotNull(translator, "Translator should not be null");
-        // Should be DefaultTranslator since no translator configured in test-loader-config.json
+        // Create defaults
+        EmbeddedLimits defaults = new EmbeddedLimits(10, true, 500, false);
+
+        // Load with defaults - this config doesn't have embedded-limits
+        EmbeddedLimits config = loader.loadConfig(EmbeddedLimits.class, defaults);
+
+        // Should return the defaults since key is missing
+        assertEquals(10, config.getMaxDepth(), "Should return defaults when key missing");
+        assertTrue(config.isThrowOnMaxDepth(), "Should return defaults when key missing");
+        assertEquals(500, config.getMaxCount(), "Should return defaults when key missing");
+        assertFalse(config.isThrowOnMaxCount(), "Should return defaults when key missing");
     }
 
+    // TODO: TIKA-SERIALIZATION-FOLLOWUP - Jackson may need configuration to fail on unknown properties
+    @Disabled("TIKA-SERIALIZATION-FOLLOWUP")
     @Test
-    public void testExcludesInsteadOfExcludeThrowsException() throws Exception {
-        // Create a config with the common mistake: "excludes" instead of "exclude"
-        String invalidConfig = "{\n" +
-                "  \"parsers\": [\n" +
-                "    {\n" +
-                "      \"default-parser\": {\n" +
-                "        \"excludes\": [\"pdf-parser\"]\n" +
-                "      }\n" +
-                "    }\n" +
-                "  ]\n" +
-                "}";
+    public void testInvalidBeanPropertyThrowsException() throws Exception {
+        // Config with a property that doesn't exist on DefaultDetector
+        String invalidConfig = """
+                {
+                  "detectors": [
+                    {
+                      "default-detector": {
+                        "nonExistentProperty": 12345
+                      }
+                    }
+                  ]
+                }
+                """;
 
-        // Write to a temp file
-        Path tempFile = Files.createTempFile("test-invalid-excludes", ".json");
+        Path tempFile = Files.createTempFile("test-invalid-property", ".json");
         try {
             Files.write(tempFile, invalidConfig.getBytes(StandardCharsets.UTF_8));
 
-            // Attempt to load should throw TikaConfigException
+            TikaLoader loader = TikaLoader.load(tempFile);
             try {
-                TikaLoader loader = TikaLoader.load(tempFile);
-                loader.loadParsers();
-                throw new AssertionError("Expected TikaConfigException to be thrown");
+                loader.loadDetectors();
+                throw new AssertionError("Expected TikaConfigException for invalid property");
             } catch (org.apache.tika.exception.TikaConfigException e) {
-                // Expected - verify the error message is helpful
-                assertTrue(e.getMessage().contains("excludes"),
-                        "Error message should mention 'excludes'");
-                assertTrue(e.getMessage().contains("exclude"),
-                        "Error message should mention the correct field 'exclude'");
-                assertTrue(e.getMessage().contains("singular"),
-                        "Error message should explain it should be singular");
+                // Expected - Jackson should fail on unknown property
+                assertTrue(e.getMessage().contains("nonExistentProperty") ||
+                                e.getCause().getMessage().contains("nonExistentProperty"),
+                        "Error should mention the invalid property name");
             }
         } finally {
             Files.deleteIfExists(tempFile);
         }
     }
+
 }

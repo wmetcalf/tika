@@ -20,24 +20,22 @@ import static org.apache.tika.parser.strings.StringsParser.getStringsProg;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-import java.io.InputStream;
 import java.util.Arrays;
-import java.util.Collections;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 
-import org.apache.tika.config.Initializable;
+import org.apache.tika.TikaTest;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
-import org.apache.tika.parser.Parser;
-import org.apache.tika.parser.external.ExternalParser;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.utils.ProcessUtils;
 
-public class StringsParserTest {
+public class StringsParserTest extends TikaTest {
     public static boolean canRun() {
-        String[] checkCmd = {new StringsParser().getStringsPath() + getStringsProg(), "--version"};
-        return ExternalParser.check(checkCmd);
+        String[] checkCmd = {new StringsParser().getDefaultConfig().getStringsPath() + getStringsProg(), "--version"};
+        return ProcessUtils.checkCommand(checkCmd);
     }
 
     @Test
@@ -52,16 +50,16 @@ public class StringsParserTest {
 
         StringsConfig stringsConfig = new StringsConfig();
 
-        Parser parser = new StringsParser();
-        ((Initializable) parser).initialize(Collections.emptyMap());
+        StringsParser parser = new StringsParser();
+        parser.initialize();
         ContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
 
         ParseContext context = new ParseContext();
         context.set(StringsConfig.class, stringsConfig);
 
-        try (InputStream stream = StringsParserTest.class.getResourceAsStream(resource)) {
-            parser.parse(stream, handler, metadata, context);
+        try (TikaInputStream tis = getResourceAsStream(resource)) {
+            parser.parse(tis, handler, metadata, context);
         } catch (Exception e) {
             e.printStackTrace();
         }

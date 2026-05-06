@@ -60,12 +60,14 @@ import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.StringUtils;
 
 public class WordExtractor extends AbstractPOIFSExtractor {
 
@@ -193,21 +195,29 @@ public class WordExtractor extends AbstractPOIFSExtractor {
         if (officeParserConfig.isIncludeShapeBasedContent()) {
             // Do everything else
             for (String paragraph : wordExtractor.getMainTextboxText()) {
-                xhtml.element("p", paragraph);
+                if (!StringUtils.isBlank(paragraph)) {
+                    xhtml.element("p", paragraph);
+                }
             }
         }
 
         for (String paragraph : wordExtractor.getFootnoteText()) {
-            xhtml.element("p", paragraph);
+            if (!StringUtils.isBlank(paragraph)) {
+                xhtml.element("p", paragraph);
+            }
         }
 
         for (String paragraph : wordExtractor.getCommentsText()) {
-            xhtml.element("p", paragraph);
-            hasComments = true;
+            if (!StringUtils.isBlank(paragraph)) {
+                xhtml.element("p", paragraph);
+                hasComments = true;
+            }
         }
 
         for (String paragraph : wordExtractor.getEndnoteText()) {
-            xhtml.element("p", paragraph);
+            if (!StringUtils.isBlank(paragraph)) {
+                xhtml.element("p", paragraph);
+            }
         }
 
         if (officeParserConfig.isIncludeHeadersAndFooters()) {
@@ -599,7 +609,8 @@ public class WordExtractor extends AbstractPOIFSExtractor {
         // Make up a name for the picture
         // There isn't one in the file, but we need to be able to reference
         //  the picture from the img tag and the embedded resource
-        String filename = "image" + pictureNumber + (extension.length() > 0 ? "." + extension : "");
+        String filename = EmbeddedDocumentUtil.EmbeddedResourcePrefix.IMAGE.getPrefix()
+                + "-" + pictureNumber + (extension.length() > 0 ? "." + extension : "");
 
         // Grab the mime type for the picture
         String mimeType = picture.getMimeType();
@@ -614,8 +625,11 @@ public class WordExtractor extends AbstractPOIFSExtractor {
         // Have we already output this one?
         // (Only expose each individual image once)
         if (!pictures.hasOutput(picture)) {
-            TikaInputStream stream = TikaInputStream.get(picture.getContent());
-            handleEmbeddedResource(stream, filename, null, mimeType, xhtml, false);
+            TikaInputStream tis = TikaInputStream.get(picture.getContent());
+            Metadata picMetadata = Metadata.newInstance(context);
+            picMetadata.set(TikaCoreProperties.RESOURCE_NAME_EXTENSION_INFERRED, true);
+            handleEmbeddedResource(tis, picMetadata, filename, null,
+                    null, mimeType, xhtml, false);
             pictures.recordOutput(picture);
         }
     }

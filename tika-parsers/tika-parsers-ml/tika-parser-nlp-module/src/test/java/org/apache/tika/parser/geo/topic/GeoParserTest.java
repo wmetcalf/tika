@@ -21,17 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.TikaTest;
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -65,13 +64,14 @@ public class GeoParserTest extends TikaTest {
         GeoParserConfig config = new GeoParserConfig();
         context.set(GeoParserConfig.class, config);
 
-        InputStream s = new ByteArrayInputStream(text.getBytes(UTF_8));
         /* if it's not available no tests to run */
         if (!((GeoParser) geoparser).isAvailable(config)) {
             return;
         }
 
-        geoparser.parse(s, new BodyContentHandler(), metadata, context);
+        try (TikaInputStream tis = TikaInputStream.get(text.getBytes(UTF_8))) {
+            geoparser.parse(tis, new BodyContentHandler(), metadata, context);
+        }
 
         assertNotNull(metadata.get("Geographic_NAME"));
         assertNotNull(metadata.get("Geographic_LONGITUDE"));
@@ -93,8 +93,9 @@ public class GeoParserTest extends TikaTest {
         ParseContext context = new ParseContext();
         GeoParserConfig config = new GeoParserConfig();
         context.set(GeoParserConfig.class, config);
-        geoparser.parse(new ByteArrayInputStream(text.getBytes(UTF_8)), new BodyContentHandler(),
-                metadata, context);
+        try (TikaInputStream tis = TikaInputStream.get(text.getBytes(UTF_8))) {
+            geoparser.parse(tis, new BodyContentHandler(), metadata, context);
+        }
         assertNull(metadata.get("Geographic_NAME"));
         assertNull(metadata.get("Geographic_LONGITUDE"));
         assertNull(metadata.get("Geographic_LATITUDE"));
@@ -103,13 +104,13 @@ public class GeoParserTest extends TikaTest {
 
     @Test
     public void testConfig() throws Exception {
-        TikaConfig config = new TikaConfig(
-                getResourceAsStream("/org/apache/tika/config/TIKA-3078-geo.topic.GeoParser.xml"));
-        Parser p = config.getParser();
+        Parser p = TikaLoader.load(
+                        getConfigPath(GeoParserTest.class, "TIKA-3078-geo.topic.GeoParser.json"))
+                .loadParsers();
         GeoParser geoParser = (GeoParser) findParser(p, GeoParser.class);
         assertNotNull(geoParser);
         assertEquals("http://localhost/gazetteerRestEndpoint",
-                geoParser.getGazetteerRestEndpoint());
-        assertEquals(new URI("file:/ner/model/url").toURL(), geoParser.getNerModelUrl());
+                geoParser.getDefaultConfig().getGazetteerRestEndpoint());
+        assertEquals(new URI("file:/ner/model/url").toURL(), geoParser.getDefaultConfig().getNerModelUrl());
     }
 }

@@ -18,7 +18,6 @@ package org.apache.tika.parser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -40,14 +39,17 @@ public class RegexCaptureParserTest {
                 "Title: the quick brown fox\n" +
                 "Author: jumped over\n" +
                 "Created: 10/20/2024";
-        RegexCaptureParser parser = new RegexCaptureParser();
+
         Map<String, String> regexes = new HashMap<>();
         regexes.put("title", "^Title: ([^\r\n]+)");
-        parser.setCaptureMap(regexes);
 
-        try (InputStream stream =
+        RegexCaptureParserConfig config = new RegexCaptureParserConfig();
+        config.setCaptureMap(regexes);
+        RegexCaptureParser parser = new RegexCaptureParser(config);
+
+        try (TikaInputStream tis =
                      TikaInputStream.get(output.getBytes(StandardCharsets.UTF_8))) {
-            parser.parse(stream, contentHandler, m, new ParseContext());
+            parser.parse(tis, contentHandler, m, new ParseContext());
         }
         assertEquals("the quick brown fox", m.get("title"));
     }

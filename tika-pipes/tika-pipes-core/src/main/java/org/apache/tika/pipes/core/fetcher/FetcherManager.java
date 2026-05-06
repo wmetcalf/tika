@@ -66,12 +66,32 @@ public class FetcherManager extends AbstractComponentManager<Fetcher, FetcherFac
     public static FetcherManager load(PluginManager pluginManager, TikaJsonConfig tikaJsonConfig,
                                      boolean allowRuntimeModifications)
             throws TikaConfigException, IOException {
+        return load(pluginManager, tikaJsonConfig, allowRuntimeModifications, null);
+    }
+
+    /**
+     * Loads a FetcherManager with optional support for runtime modifications and a custom config store.
+     *
+     * @param pluginManager the plugin manager
+     * @param tikaJsonConfig the configuration
+     * @param allowRuntimeModifications if true, allows calling {@link #saveFetcher(ExtensionConfig)}
+     *                                  to add fetchers at runtime
+     * @param configStore custom config store implementation, or null to use default in-memory store
+     * @return a FetcherManager
+     */
+    public static FetcherManager load(PluginManager pluginManager, TikaJsonConfig tikaJsonConfig,
+                                     boolean allowRuntimeModifications,
+                                     org.apache.tika.pipes.core.config.ConfigStore configStore)
+            throws TikaConfigException, IOException {
         FetcherManager manager = new FetcherManager(pluginManager, allowRuntimeModifications);
         JsonNode fetchersNode = tikaJsonConfig.getRootNode().get(CONFIG_KEY);
 
         // Validate configuration and collect fetcher configs without instantiating
         Map<String, ExtensionConfig> configs = manager.validateAndCollectConfigs(pluginManager, fetchersNode);
 
+        if (configStore != null) {
+            return new FetcherManager(pluginManager, configs, allowRuntimeModifications, configStore);
+        }
         return new FetcherManager(pluginManager, configs, allowRuntimeModifications);
     }
 
@@ -82,6 +102,12 @@ public class FetcherManager extends AbstractComponentManager<Fetcher, FetcherFac
     private FetcherManager(PluginManager pluginManager, Map<String, ExtensionConfig> fetcherConfigs,
                           boolean allowRuntimeModifications) {
         super(pluginManager, fetcherConfigs, allowRuntimeModifications);
+    }
+
+    private FetcherManager(PluginManager pluginManager, Map<String, ExtensionConfig> fetcherConfigs,
+                          boolean allowRuntimeModifications,
+                          org.apache.tika.pipes.core.config.ConfigStore configStore) {
+        super(pluginManager, fetcherConfigs, allowRuntimeModifications, configStore);
     }
 
     @Override
@@ -130,9 +156,10 @@ public class FetcherManager extends AbstractComponentManager<Fetcher, FetcherFac
     }
 
     /**
-     * Dynamically adds a fetcher configuration at runtime.
+     * Dynamically adds or updates a fetcher configuration at runtime.
      * The fetcher will not be instantiated until it is first requested via {@link #getFetcher(String)}.
      * This allows for dynamic configuration without the overhead of immediate instantiation.
+     * If a fetcher with the same ID already exists, it will be replaced and the cached instance cleared.
      * <p>
      * This method is only available if the FetcherManager was loaded with
      * {@link #load(PluginManager, TikaJsonConfig, boolean)} with allowRuntimeModifications=true.
@@ -140,11 +167,30 @@ public class FetcherManager extends AbstractComponentManager<Fetcher, FetcherFac
      * Only authorized/authenticated users should be allowed to modify fetchers. BE CAREFUL.
      *
      * @param config the extension configuration for the fetcher
-     * @throws TikaConfigException if the fetcher type is unknown, if a fetcher with the same ID
-     *                             already exists, or if runtime modifications are not allowed
+     * @throws TikaConfigException if the fetcher type is unknown or if runtime modifications are not allowed
      * @throws IOException if there is an error accessing the plugin manager
      */
     public void saveFetcher(ExtensionConfig config) throws TikaConfigException, IOException {
         saveComponent(config);
+    }
+
+    /**
+     * Deletes a fetcher configuration by ID.
+     *
+     * @param fetcherId the fetcher ID to delete
+     * @throws TikaConfigException if runtime modifications are not allowed or fetcher not found
+     */
+    public void deleteFetcher(String fetcherId) throws TikaConfigException {
+        deleteComponent(fetcherId);
+    }
+
+    /**
+     * Gets the configuration for a specific fetcher by ID.
+     *
+     * @param fetcherId the fetcher ID
+     * @return the fetcher configuration, or null if not found
+     */
+    public ExtensionConfig getConfig(String fetcherId) {
+        return getComponentConfig(fetcherId);
     }
 }

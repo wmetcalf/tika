@@ -21,15 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
 public class RFC822DetectionTest {
 
-    private static final MimeTypes MIME_TYPES = TikaConfig.getDefaultConfig().getMimeRepository();
+    private static final MimeTypes MIME_TYPES = MimeTypes.getDefaultMimeTypes();
 
     @Test
     public void testBasic() throws Exception {
@@ -71,9 +71,9 @@ public class RFC822DetectionTest {
 
     private void assertMime(String expected, String txt) throws IOException {
 
-        MediaType mediaType =
-                MIME_TYPES.detect(UnsynchronizedByteArrayInputStream.builder()
-                        .setByteArray(txt.getBytes(StandardCharsets.UTF_8)).get(), new Metadata());
-        assertEquals(expected, mediaType.toString(), txt);
+        try (TikaInputStream tis = TikaInputStream.get(txt.getBytes(StandardCharsets.UTF_8))) {
+            MediaType mediaType = MIME_TYPES.detect(tis, new Metadata(), new ParseContext());
+            assertEquals(expected, mediaType.toString(), txt);
+        }
     }
 }

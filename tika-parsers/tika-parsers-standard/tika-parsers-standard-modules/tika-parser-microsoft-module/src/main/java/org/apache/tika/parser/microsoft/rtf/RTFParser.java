@@ -25,9 +25,12 @@ import org.apache.commons.io.input.TaggedInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.Field;
+import org.apache.tika.config.ConfigDeserializer;
+import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.TikaComponent;
+import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -53,23 +56,42 @@ public class RTFParser implements Parser {
     private static int EMB_OBJ_MAX_BYTES = 20 * 1024 * 1024; //20MB
     //get rid of this once we get rid of the other static maxbytes...
     private static volatile boolean USE_STATIC = false;
-    @Field
+
+    /**
+     * Configuration class for JSON deserialization.
+     */
+    public static class Config {
+        public int memoryLimitInKb = EMB_OBJ_MAX_BYTES / 1024;
+        public boolean ignoreListMarkup = false;
+    }
+
     private int memoryLimitInKb = EMB_OBJ_MAX_BYTES / 1024;
-    @Field
     private boolean ignoreListMarkup = false;
+
+    public RTFParser() {
+    }
+
+    public RTFParser(Config config) {
+        this.memoryLimitInKb = config.memoryLimitInKb;
+        this.ignoreListMarkup = config.ignoreListMarkup;
+    }
+
+    public RTFParser(JsonConfig jsonConfig) throws TikaConfigException {
+        this(ConfigDeserializer.buildConfig(jsonConfig, Config.class));
+    }
 
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
     }
 
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         metadata.set(Metadata.CONTENT_TYPE, "application/rtf");
-        TaggedInputStream tagged = new TaggedInputStream(stream);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        TaggedInputStream tagged = new TaggedInputStream(tis);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         try {
-            parseInline(stream, xhtml, metadata, context);
+            parseInline(tis, xhtml, metadata, context);
         } catch (IOException e) {
             tagged.throwIfCauseOf(e);
             throw new TikaException("Error parsing an RTF document", e);
@@ -98,7 +120,7 @@ public class RTFParser implements Parser {
         ert.extract(is);
     }
 
-    public int getMemoryLimitInKb() {
+    private int getMemoryLimitInKb() {
         //there's a race condition here, but it shouldn't matter.
         if (USE_STATIC) {
             if (EMB_OBJ_MAX_BYTES < 0) {
@@ -107,11 +129,5 @@ public class RTFParser implements Parser {
             return EMB_OBJ_MAX_BYTES / 1024;
         }
         return memoryLimitInKb;
-    }
-
-    @Field
-    public void setMemoryLimitInKb(int memoryLimitInKb) {
-        this.memoryLimitInKb = memoryLimitInKb;
-        USE_STATIC = false;
     }
 }

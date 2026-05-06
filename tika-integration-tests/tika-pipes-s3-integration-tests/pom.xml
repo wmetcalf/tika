@@ -21,7 +21,7 @@
   <parent>
     <artifactId>tika-integration-tests</artifactId>
     <groupId>org.apache.tika</groupId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -55,7 +55,7 @@
     </dependency>
     <dependency>
       <groupId>org.testcontainers</groupId>
-      <artifactId>junit-jupiter</artifactId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -79,13 +79,23 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <environmentVariables>
+            <!-- Temporary fix for Docker API version mismatch with testcontainers/MinIO -->
+            <DOCKER_API_VERSION>1.44</DOCKER_API_VERSION>
+          </environmentVariables>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>src/test/resources/*.yml</exclude>
-            <exclude>src/test/resources/s3/*.json</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>src/test/resources/*.yml</inputExclude>
+            <inputExclude>src/test/resources/s3/*.json</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>

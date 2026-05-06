@@ -30,15 +30,13 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.TikaConfig;
+import org.apache.tika.config.ConfigValidator;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.pipes.api.FetchEmitTuple;
-import org.apache.tika.pipes.api.HandlerConfig;
 import org.apache.tika.pipes.api.emitter.EmitKey;
 import org.apache.tika.pipes.api.fetcher.FetchKey;
-import org.apache.tika.pipes.api.pipesiterator.PipesIteratorBaseConfig;
 import org.apache.tika.pipes.pipesiterator.PipesIteratorBase;
 import org.apache.tika.plugins.ExtensionConfig;
 
@@ -78,8 +76,8 @@ public class KafkaPipesIterator extends PipesIteratorBase {
     }
 
     private void checkConfig(KafkaPipesIteratorConfig config) throws TikaConfigException {
-        TikaConfig.mustNotBeEmpty("bootstrapServers", config.getBootstrapServers());
-        TikaConfig.mustNotBeEmpty("topic", config.getTopic());
+        ConfigValidator.mustNotBeEmpty("bootstrapServers", config.getBootstrapServers());
+        ConfigValidator.mustNotBeEmpty("topic", config.getTopic());
     }
 
     private void safePut(Properties props, String key, Object val) {
@@ -99,10 +97,8 @@ public class KafkaPipesIterator extends PipesIteratorBase {
 
     @Override
     protected void enqueue() throws InterruptedException, TimeoutException {
-        PipesIteratorBaseConfig baseConfig = config.getBaseConfig();
-        String fetcherId = baseConfig.fetcherId();
-        String emitterId = baseConfig.emitterId();
-        HandlerConfig handlerConfig = baseConfig.handlerConfig();
+        String fetcherId = config.getFetcherId();
+        String emitterId = config.getEmitterId();
 
         long start = System.currentTimeMillis();
         int count = 0;
@@ -117,10 +113,9 @@ public class KafkaPipesIterator extends PipesIteratorBase {
                     LOGGER.debug("adding ({}) {} in {} ms", count, r.key(), elapsed);
                 }
                 ParseContext parseContext = new ParseContext();
-                parseContext.set(HandlerConfig.class, handlerConfig);
                 tryToAdd(new FetchEmitTuple(r.key(), new FetchKey(fetcherId, r.key()),
                         new EmitKey(emitterId, r.key()), new Metadata(), parseContext,
-                        baseConfig.onParseException()));
+                        FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT));
                 ++count;
             }
         } while ((emitMax < 0 || count < emitMax) && !records.isEmpty());

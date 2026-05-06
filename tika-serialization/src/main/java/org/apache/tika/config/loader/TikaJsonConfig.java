@@ -69,31 +69,30 @@ import org.apache.tika.exception.TikaConfigException;
  * {
  *   // Core Tika components (validated by TikaLoader)
  *   "parsers": [
- *     { "pdf-parser": { "_decorate": {...}, "ocrStrategy": "AUTO", ... } },
+ *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocrStrategy": "AUTO", ... } },
  *     { "html-parser": { ... } },
- *     { "default-parser": {} }
+ *     { "default-parser": { "exclude": ["some-parser"] } }
+ *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocrStrategy": "AUTO" } },
+ *     "html-parser",                    // String shorthand for no-config components
+ *     { "default-parser": { "exclude": ["ocr-parser"] } }
  *   ],
  *   "detectors": [
- *     { "mime-magic-detector": {} },
- *     { "zip-container-detector": { "maxDepth": 10 } }
+ *     "poifs-container-detector",       // String shorthand
+ *     { "default-detector": { "spoolTypes": ["application/zip", "application/pdf"] } }
  *   ],
  *
  *   // Pipes components (validated by validateKeys())
  *   "plugin-roots": ["/path/to/plugins"],
  *   "fetchers": [...],
- *   "emitters": [...],
- *
- *   // Custom configurations (for testing or extensions)
- *   "other-configs": {
- *     "test-config": { ... },
- *     "my-custom-config": { ... },
- *     "anything": { ... }
- *   }
+ *   "emitters": [...]
  * }
  * </pre>
  *
  * <p>All components use array format for explicit ordering.
- * Parsers support decoration via "_decorate" field.
+ * Parsers support decoration via "_mime-include" and "_mime-exclude" fields.
+ * Components without configuration can use string shorthand: "component-name"
+ * instead of { "component-name": {} }.
+ * Parsers support mime filtering via "_mime-include" and "_mime-exclude" fields.
  * Special "default-parser" entry enables SPI fallback for unlisted parsers.
  */
 public class TikaJsonConfig {
@@ -104,7 +103,7 @@ public class TikaJsonConfig {
      */
     private static final Set<String> KNOWN_KEYS = Set.of(
             // Globals
-            "maxJsonStringFieldLength",
+            "metadata-list",
             "service-loader",
             "xml-reader-utils",
             // Core Tika component keys
@@ -112,9 +111,11 @@ public class TikaJsonConfig {
             "detectors",
             "encoding-detectors",
             "metadata-filters",
+            "content-handler-factory",
             "renderers",
             "translator",
             "auto-detect-parser",
+            "parse-context",
             "server",
 
             // Pipes/plugin keys
@@ -127,7 +128,7 @@ public class TikaJsonConfig {
     );
 
     private static final ObjectMapper OBJECT_MAPPER =
-            PolymorphicObjectMapperFactory.getMapper();
+            TikaObjectMapperFactory.getMapper();
 
     private final JsonNode rootNode;
     private final Map<String, Map<String, JsonNode>> componentsByType;
@@ -292,15 +293,18 @@ public class TikaJsonConfig {
             List<Map.Entry<String, JsonNode>> components = new ArrayList<>();
 
             for (JsonNode arrayItem : typeNode) {
-                if (!arrayItem.isObject()) {
-                    continue;
+                if (arrayItem.isTextual()) {
+                    // String shorthand: "component-name" -> treat as { "component-name": {} }
+                    String componentName = arrayItem.asText();
+                    components.add(Map.entry(componentName, OBJECT_MAPPER.createObjectNode()));
+                } else if (arrayItem.isObject()) {
+                    // Object syntax: { "component-name": {...config...} }
+                    for (Map.Entry<String, JsonNode> componentEntry : arrayItem.properties()) {
+                        components.add(Map.entry(componentEntry.getKey(), componentEntry.getValue()));
+                        break; // Only take the first field
+                    }
                 }
-
-                // Each array item should have exactly one field: { "component-name": {...config...} }
-                for (Map.Entry<String, JsonNode> componentEntry : arrayItem.properties()) {
-                    components.add(Map.entry(componentEntry.getKey(), componentEntry.getValue()));
-                    break; // Only take the first field
-                }
+                // Skip other types (null, numbers, arrays, etc.)
             }
 
             if (!components.isEmpty()) {
@@ -339,12 +343,10 @@ public class TikaJsonConfig {
     }
 
     /**
-     * Validates that all top-level configuration keys are known or custom extensions.
+     * Validates that all top-level configuration keys are known.
      * <p>
      * This catches typos like "parser" instead of "parsers" or "pipes-reporter"
      * instead of "pipes-reporters".
-     * <p>
-     * The "other-configs" node is allowed for custom configurations.
      *
      * @throws TikaConfigException if unknown keys are found
      */
@@ -359,11 +361,6 @@ public class TikaJsonConfig {
         while (fieldNames.hasNext()) {
             String key = fieldNames.next();
 
-            // Ignore custom configs node
-            if (key.equals("other-configs")) {
-                continue;
-            }
-
             // Must be a known key
             if (!KNOWN_KEYS.contains(key)) {
                 unknownKeys.add(key);
@@ -373,8 +370,7 @@ public class TikaJsonConfig {
         if (!unknownKeys.isEmpty()) {
             throw new TikaConfigException(
                     "Unknown configuration key(s): " + unknownKeys + ". " +
-                    "Valid keys: " + KNOWN_KEYS + " " +
-                    "(or use 'other-configs' node for custom keys)");
+                    "Valid keys: " + KNOWN_KEYS);
         }
     }
 

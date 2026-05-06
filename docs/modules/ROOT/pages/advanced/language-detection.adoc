@@ -1,0 +1,336 @@
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+= Language Detection
+
+Tika includes two language detection implementations:
+
+* **CharSoupLanguageDetector** (`tika-langdetect-charsoup`) — a built-in hash-based
+  detector with zero runtime dependencies beyond `tika-core`. This is the
+  recommended detector for new deployments.
+* **OpenNLPDetector** (`tika-langdetect-opennlp`) — based on Apache OpenNLP's
+  language detection models.
+
+Both implement the `org.apache.tika.language.detect.LanguageDetector` SPI interface
+and are loaded automatically via Tika's service discovery.
+
+== Architecture: CharSoupLanguageDetector
+
+The built-in detector uses a simple but effective architecture based on
+character n-gram language identification (<<cavnar1994>>):
+
+1. **Preprocessing** — truncate, strip URLs/emails, NFC normalize
+2. **Feature extraction** — character n-grams, word unigrams, word suffixes and
+   prefixes, with script-aware boundary detection, hashed via FNV-1a (<<fnv>>) into
+   a fixed-size bucket vector using the feature hashing trick (<<weinberger2009>>).
+   The general model uses bigrams, trigrams, 3-char suffixes, 3-char prefixes, word
+   unigrams, and CJK character unigrams; the short-text model uses bigrams, trigrams,
+   4-grams, 5-grams, and word unigrams (no suffixes/prefixes).
+3. **Classification** — multinomial logistic regression / softmax
+   (<<bishop2006>>) with INT8 quantized weights (<<jacob2018>>)
+
+=== Feature Extraction
+
+The `ScriptAwareFeatureExtractor` (used by the general model) produces the
+following features from preprocessed text:
+
+* **Character bigrams** — adjacent character pairs with word-boundary sentinels
+  (`_`). For example, `"hello"` produces `_h`, `he`, `el`, `ll`, `lo`, `o_`.
+* **Character trigrams** — overlapping character triples including boundary
+  trigrams at word start (`_ab`) and end (`ab_`).
+* **3-char word suffixes** — the last three characters of each word (words of
+  3+ codepoints). Suffixes are highly discriminative for inflected languages.
+* **3-char word prefixes** — the first three characters of each word (words of
+  3+ codepoints). Complements suffixes for prefix-heavy morphological systems.
+* **Whole-word unigrams** — full word tokens hashed as features (2–30 codepoints).
+  Captures function words and short words that are highly discriminative for many
+  languages (e.g., "the", "de", "и").
+* **CJK character unigrams** — individual Han, Hiragana, and Katakana characters
+  emitted as features. CJK scripts pack much more information per character than
+  alphabetic scripts, making unigrams valuable.
+* **CJK space bridging** — when CJK characters are separated by whitespace
+  (common in tokenized corpora), the extractor bridges the gap and still
+  produces bigrams across the space. This prevents tokenization artifacts from
+  degrading CJK language detection.
+* **Japanese script family** — Han, Hiragana, and Katakana are treated as a
+  single script "family" for boundary detection. Japanese text freely mixes all
+  three scripts within words and phrases, so script transitions within this
+  family do not create word boundaries.
+
+All features are hashed to bucket indices via FNV-1a. The current model uses
+16,384 buckets.
+
+=== Preprocessing Pipeline
+
+Text goes through the following steps (shared between training and inference):
+
+[source]
+----
+raw text
+  → truncate to 100K chars
+  → strip URLs (https?://...) and emails (user@host)
+  → NFC Unicode normalization
+  → skip transparent characters (see below)
+  → case fold via Character.toLowerCase()
+  → extract features (bigrams, word unigrams, CJK unigrams)
+  → FNV-1a hash each feature into bucket vector
+----
+
+=== Transparent Character Handling
+
+Certain codepoints are treated as _transparent_ — they are skipped entirely so that
+base letters on either side form a contiguous bigram. This is critical for correct
+Arabic and Hebrew processing:
+
+* **Unicode nonspacing marks (Mn)** — Arabic harakat (fatha, damma, kasra, shadda,
+  sukun, tanwin, superscript alef) and Hebrew niqqud. Without this, diacritics
+  break words into isolated single-letter fragments because `Character.isLetter()`
+  returns `false` for `Mn` codepoints.
+
+* **Arabic Tatweel / Kashida (U+0640)** — a typographic stretching character classified
+  as a letter but carrying no linguistic information. "كتب" and "كـتـب" produce
+  identical bigrams.
+
+* **ZWNJ (U+200C) and ZWJ (U+200D)** — Zero Width Non-Joiner / Joiner, used
+  in Persian, Arabic, Urdu, and Kurdish to control cursive joining. These are not
+  word boundaries; bigrams span across them.
+
+A fast guard (`cp < 0x0300`) short-circuits the check for ASCII and Latin text,
+adding zero overhead to the common case.
+
+== Models
+
+CharSoupLanguageDetector ships with two complementary models:
+
+=== General Model (`langdetect.bin`)
+
+The general model covers *203 languages* trained on Wikipedia dumps as the
+primary source, supplemented by
+https://research.google/blog/madlad-400-a-multilingual-and-document-level-large-audited-dataset/[MADLAD-400]
+for languages with insufficient Wikipedia coverage. It uses 16,384 hash buckets
+and `ScriptAwareFeatureExtractor`: character bigrams, character trigrams, 3-char
+word suffixes, 3-char word prefixes, whole-word unigrams, and CJK character unigrams.
+
+=== Short-Text Model (`langdetect-short.bin`)
+
+The short-text model is optimized for inputs under ~200 characters — document
+titles, metadata fields, subject lines, captions, and similar short strings where
+the general model loses confidence. It covers 123 carefully selected languages
+(those that generalize well at short lengths and are not excessively confusable
+with each other) and uses 32,768 hash buckets with `ResearchFeatureExtractor`
+(bigrams + trigrams + 4-grams + word unigrams). The richer n-gram features
+compensate for the reduced token count at short text lengths.
+
+=== Automatic Model Selection
+
+By default, `CharSoupLanguageDetector` selects the model automatically per chunk
+using two gates (evaluated in `AUTOMATIC` strategy mode):
+
+1. **Length gate** — if the chunk is shorter than 200 characters, use the
+   short-text model.
+2. **Feature-density gate** — if the n-gram emission count from the general
+   extractor is below 200, use the short-text model regardless of character
+   length. This catches degenerate inputs such as a long string of whitespace
+   followed by a single word, where character length alone would incorrectly
+   route to the general model.
+
+If the short-text model binary is absent from the classpath, both gates fall
+back to the general model transparently.
+
+=== Overriding Model Selection
+
+The selection strategy can be overridden at construction time or per-document
+via `ParseContext`:
+
+[source,java]
+----
+// Always use the short-text model (e.g. for a title-only pipeline)
+CharSoupDetectorConfig cfg = CharSoupDetectorConfig.fromMap(
+    Map.of("strategy", "SHORT_TEXT"));
+CharSoupLanguageDetector detector = new CharSoupLanguageDetector(cfg);
+
+// Always use the general model (e.g. for full-document body text)
+CharSoupDetectorConfig cfg = CharSoupDetectorConfig.fromMap(
+    Map.of("strategy", "STANDARD"));
+
+// Per-document override via ParseContext
+ParseContext context = new ParseContext();
+context.set(CharSoupDetectorConfig.class, CharSoupDetectorConfig.fromMap(
+    Map.of("strategy", "SHORT_TEXT")));
+detector.reset(context);
+----
+
+The three strategies are:
+
+[cols="1,3"]
+|===
+| Strategy | Behaviour
+
+| `AUTOMATIC` (default)
+| Use length and feature-density gates to choose between models per chunk.
+
+| `SHORT_TEXT`
+| Always use the short-text model (no-op if the binary is absent).
+
+| `STANDARD`
+| Always use the general model regardless of input length.
+|===
+
+The thresholds can also be tuned via `CharSoupDetectorConfig`:
+
+[source,java]
+----
+CharSoupDetectorConfig cfg = CharSoupDetectorConfig.fromMap(Map.of(
+    "strategy",          "AUTOMATIC",
+    "lengthThreshold",   300,   // chars; default 200
+    "featureThreshold",  300    // n-gram emissions; default 200
+));
+----
+
+Or via Tika's JSON configuration mechanism if you are using `SelfConfiguring`
+component loading.
+
+== Training the Models
+
+Training is fully reproducible from source. For step-by-step instructions,
+corpus download scripts, training commands, and detailed benchmark comparisons,
+see xref:advanced/language-detection-build.adoc[Building the Language Detector].
+
+== Model Format (LDM1)
+
+The binary model format is:
+
+[source]
+----
+4 bytes   magic: 0x4C444D31 ("LDM1")
+4 bytes   numBuckets (int32 big-endian)
+4 bytes   numClasses (int32 big-endian)
+
+For each class:
+  2 bytes   label length (uint16)
+  N bytes   label (UTF-8)
+
+numClasses × 4 bytes   per-class scales (float32)
+numClasses × 4 bytes   per-class biases (float32)
+numBuckets × numClasses bytes   weight matrix (int8, bucket-major)
+----
+
+The weight matrix is stored in **bucket-major** order: for each bucket, all class
+weights are contiguous. This layout is optimal for sparse inference, where only
+non-zero buckets are visited.
+
+The general model is stored at
+`org/apache/tika/langdetect/charsoup/langdetect.bin` and the short-text model
+at `org/apache/tika/langdetect/charsoup/langdetect-short.bin`. Both are loaded
+statically by `CharSoupLanguageDetector`; the short-text model load is gracefully
+skipped if the resource is absent.
+
+=== Memory-Mapped Loading
+
+For deployment scenarios that benefit from off-heap memory (e.g., multiple JVM
+instances sharing the same model), the `CharSoupModel.loadMapped(Path)` method
+loads the model via `MappedByteBuffer`. A companion `saveSplit(Path, Path)`
+method writes the raw weights and metadata as separate files for true zero-copy
+loading.
+
+For the default classpath resources (general model ~3.2 MB, short-text model
+~3.8 MB), heap loading is used and the performance difference is negligible.
+
+== WordTokenizer (tika-eval integration)
+
+The same preprocessing pipeline is exposed as a general-purpose word tokenizer
+via `org.apache.tika.langdetect.charsoup.WordTokenizer`. This replaces the former
+Lucene-based tokenizer in `tika-eval`:
+
+* `tokenize(String)` — alphabetic and ideographic tokens only (CJK bigrams)
+* `tokenizeAlphanumeric(String, Consumer)` — also emits digit-only runs as tokens
+
+The alphanumeric variant is used by `tika-eval` so it can still distinguish
+alphabetic token count from total (alphanumeric) token count. The alpha-only
+variant is a separate code path with zero per-character overhead from the
+numeric check, keeping the language detection hot path fast.
+
+== References
+
+The language detector draws on several well-established techniques.
+
+[bibliography%unordered]
+- [[[cavnar1994]]] W. B. Cavnar and J. M. Trenkle,
+  "N-Gram-Based Text Categorization,"
+  in _Proceedings of the Third Annual Symposium on Document Analysis and
+  Information Retrieval (SDAIR-94)_, Las Vegas, NV, 1994, pp. 161–175. +
+  The foundational paper establishing character n-gram profiles as an effective
+  and language-independent text classification method. +
+  https://dsspace.uwindsor.ca/bitstream/handle/10680/1765/10-1.1.53.9367.pdf
+
+- [[[weinberger2009]]] K. Weinberger, A. Dasgupta, J. Attenberg, J. Langford,
+  and A. Smola,
+  "Feature Hashing for Large Scale Multitask Learning,"
+  in _Proceedings of the 26th International Conference on Machine Learning
+  (ICML)_, Montreal, Canada, 2009, pp. 1113–1120. +
+  Provides the theoretical justification for hashing features into a fixed-size
+  bucket vector instead of maintaining an explicit vocabulary. +
+  https://arxiv.org/abs/0902.2206
+
+- [[[fnv]]] G. Fowler, L. C. Noll, K.-P. Vo, and D. Eastlake,
+  "The FNV Non-Cryptographic Hash Algorithm,"
+  IETF Internet-Draft, 2012. +
+  The specific hash function used for feature hashing. FNV-1a provides
+  excellent distribution for short inputs (2–4 byte bigrams) with minimal
+  computation. +
+  https://datatracker.ietf.org/doc/html/draft-eastlake-fnv-17
+
+- [[[niu2011]]] F. Niu, B. Recht, C. Ré, and S. J. Wright,
+  "HOGWILD!: A Lock-Free Approach to Parallelizing Stochastic Gradient
+  Descent,"
+  in _Advances in Neural Information Processing Systems (NeurIPS)_, vol. 24,
+  2011, pp. 693–701. +
+  Proves that lock-free asynchronous SGD converges for sparse optimization
+  problems. This is the theoretical basis for the multi-threaded SGD phase. +
+  https://arxiv.org/abs/1106.5730
+
+- [[[loshchilov2019]]] I. Loshchilov and F. Hutter,
+  "Decoupled Weight Decay Regularization,"
+  in _International Conference on Learning Representations (ICLR)_, 2019. +
+  Describes the AdamW optimizer: Adam with decoupled weight decay, used for
+  the initial training phase. +
+  https://arxiv.org/abs/1711.05101
+
+- [[[bishop2006]]] C. M. Bishop,
+  _Pattern Recognition and Machine Learning_,
+  Springer, 2006, ISBN 978-0-387-31073-2, §4.3.4. +
+  Standard reference for multinomial logistic regression (softmax
+  classification), the model used for the final prediction layer.
+
+- [[[goldhahn2012]]] D. Goldhahn, T. Eckart, and U. Quasthoff,
+  "Building Large Monolingual Dictionaries at the Leipzig Corpora Collection:
+  From 100 to 200 Languages,"
+  in _Proceedings of the Eighth International Conference on Language Resources
+  and Evaluation (LREC)_, Istanbul, Turkey, 2012, pp. 759–765. +
+  The Leipzig Corpora Collection was used in early model versions (v1/v2).
+  Current models (v7+) use Wikipedia dumps as the primary corpus. +
+  https://aclanthology.org/L12-1154/
+
+- [[[jacob2018]]] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam, and D. Kalenichenko,
+  "Quantization and Training of Neural Networks for Efficient
+  Integer-Arithmetic-Only Inference,"
+  in _Proceedings of the IEEE Conference on Computer Vision and Pattern
+  Recognition (CVPR)_, 2018, pp. 2704–2713. +
+  Establishes the principles of INT8 quantization with per-channel scale factors
+  that we apply to compress the weight matrix from float32 to int8, reducing
+  model size by ~4× with negligible accuracy loss. +
+  https://arxiv.org/abs/1712.05877

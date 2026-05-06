@@ -17,15 +17,16 @@
 package org.apache.custom.detect;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import org.apache.tika.detect.Detector;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 
 public class MyCustomDetector implements Detector {
     @Override
-    public MediaType detect(InputStream input, Metadata metadata) throws IOException {
+    public MediaType detect(TikaInputStream tis, Metadata metadata, ParseContext parseContext) throws IOException {
         return MediaType.OCTET_STREAM;
     }
 }

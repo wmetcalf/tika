@@ -30,7 +30,8 @@ public enum Cols {
     //content
     CONTENT_LENGTH, NUM_UNIQUE_TOKENS, NUM_TOKENS, NUM_UNIQUE_ALPHABETIC_TOKENS, NUM_ALPHABETIC_TOKENS, //alphabetic or ideographic tokens
     COMMON_TOKENS_LANG, //which language was used for the common tokens metric?
-    NUM_UNIQUE_COMMON_TOKENS, NUM_COMMON_TOKENS, TOP_N_TOKENS, LANG_ID_1, LANG_ID_PROB_1, LANG_ID_2, OOV, LANG_ID_PROB_2, TOKEN_ENTROPY_RATE, TOKEN_LENGTH_SUM, TOKEN_LENGTH_MEAN,
+    NUM_UNIQUE_COMMON_TOKENS, NUM_COMMON_TOKENS, TOP_N_TOKENS, LANG_ID_1, LANG_ID_PROB_1, LANG_ID_2,
+    OOV, LANGUAGENESS, LANG_ID_PROB_2, TOKEN_ENTROPY_RATE, TOKEN_LENGTH_SUM, TOKEN_LENGTH_MEAN,
     TOKEN_LENGTH_STD_DEV, UNICODE_CHAR_BLOCKS, NUM_PAGES, //number of pages a document alleges it has
     NUM_OCR_PAGES, CONTENT_TRUNCATED_AT_MAX_LEN, // was the string truncated at AbstractProfiler.MAX_STRING_LENGTH
 
@@ -50,6 +51,7 @@ public enum Cols {
 
 
     MIME_STRING,//string representation of mime type
+    BASE_MIME,//mime type without parameters (charset, delimiter, etc.)
 
     DIR_NAME_A,//for comparisons in REF_PAIR_NAMES
     DIR_NAME_B,

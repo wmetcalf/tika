@@ -21,26 +21,29 @@
   <parent>
     <groupId>org.apache.tika</groupId>
     <artifactId>tika-pipes</artifactId>
-    <version>4.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
   <artifactId>tika-pipes-plugins</artifactId>
-  <name>Apache Tika emitters</name>
+  <name>Apache Tika Plugins</name>
   <url>https://tika.apache.org/</url>
   <packaging>pom</packaging>
 
   <modules>
+    <module>tika-pipes-atlassian-jwt</module>
     <module>tika-pipes-az-blob</module>
     <module>tika-pipes-csv</module>
     <module>tika-pipes-file-system</module>
     <module>tika-pipes-gcs</module>
+    <module>tika-pipes-google-drive</module>
     <module>tika-pipes-http</module>
     <module>tika-pipes-jdbc</module>
     <module>tika-pipes-json</module>
     <module>tika-pipes-kafka</module>
     <module>tika-pipes-microsoft-graph</module>
+    <module>tika-pipes-es</module>
     <module>tika-pipes-opensearch</module>
     <module>tika-pipes-s3</module>
     <module>tika-pipes-solr</module>
@@ -85,10 +88,10 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
         <configuration>
-          <excludes>
-            <exclude>tika-emitter-fs/target/**</exclude>
-            <exclude>tika-pipes-csv/src/test/resources/test-simple.csv</exclude>
-          </excludes>
+          <inputExcludes>
+            <inputExclude>tika-emitter-fs/target/**</inputExclude>
+            <inputExclude>tika-pipes-csv/src/test/resources/test-simple.csv</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
     </plugins>

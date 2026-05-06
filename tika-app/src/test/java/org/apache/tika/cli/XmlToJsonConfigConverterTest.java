@@ -87,13 +87,10 @@ public class XmlToJsonConfigConverterTest {
         // Convert XML to JSON
         XmlToJsonConfigConverter.convert(xmlPath, jsonPath);
 
-        // Print JSON for debugging
         String json = new String(Files.readAllBytes(jsonPath), StandardCharsets.UTF_8);
-        System.out.println("Generated JSON:");
-        System.out.println(json);
 
-        // Verify exclude is at the correct level (not under _decorate)
-        assertTrue(json.contains("\"exclude\""), "Should have exclude array");
+        // Verify exclude is at the correct level (with underscore prefix)
+        assertTrue(json.contains("\"_exclude\""), "Should have _exclude array");
         assertFalse(json.contains("\"_decorate\""), "_decorate should not be used for parser excludes");
         assertTrue(json.contains("\"jsoup-parser\""), "Should exclude jsoup-parser");
         assertTrue(json.contains("\"pdf-parser\""), "Should exclude pdf-parser");
@@ -218,13 +215,10 @@ public class XmlToJsonConfigConverterTest {
         // Convert XML to JSON (this will log the INFO message about redundant exclusions)
         XmlToJsonConfigConverter.convert(xmlPath, jsonPath);
 
-        // Print the generated JSON
         String json = new String(Files.readAllBytes(jsonPath), StandardCharsets.UTF_8);
-        System.out.println("Generated JSON with redundant exclusions:");
-        System.out.println(json);
 
         // Verify the JSON still contains the exclusions (we don't remove them, just inform)
-        assertTrue(json.contains("\"exclude\""), "Should still have exclude array");
+        assertTrue(json.contains("\"_exclude\""), "Should still have _exclude array");
         assertTrue(json.contains("\"pdf-parser\""), "Should have pdf-parser configured");
         assertTrue(json.contains("\"jsoup-parser\""), "Should have jsoup-parser configured");
 
@@ -271,8 +265,6 @@ public class XmlToJsonConfigConverterTest {
         XmlToJsonConfigConverter.convert(xmlPath, jsonPath);
 
         String json = new String(Files.readAllBytes(jsonPath), StandardCharsets.UTF_8);
-        System.out.println("Tesseract arbitrary settings conversion:");
-        System.out.println(json);
 
         // Verify conversion: list of space-delimited pairs -> map
         assertTrue(json.contains("\"otherTesseractConfig\""),
@@ -298,10 +290,7 @@ public class XmlToJsonConfigConverterTest {
         // Convert XML to JSON
         XmlToJsonConfigConverter.convert(xmlPath, jsonPath);
 
-        // Print the generated JSON for debugging
         String json = new String(Files.readAllBytes(jsonPath), StandardCharsets.UTF_8);
-        System.out.println("Generated JSON with list and map types:");
-        System.out.println(json);
 
         // Verify otherTesseractSettings (list) is converted to otherTesseractConfig (map)
         // This is a special case where space-delimited key-value pairs are parsed

@@ -64,7 +64,7 @@ public abstract class AbstractImageParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
         String mediaTypeString = metadata.get(Metadata.CONTENT_TYPE);
@@ -75,18 +75,17 @@ public abstract class AbstractImageParser implements Parser {
         Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
         if (ocrMediaType == null ||
                 ocrParser == null || !ocrParser.getSupportedTypes(context).contains(ocrMediaType)) {
-            extractMetadata(stream, handler, metadata, context);
-            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+            extractMetadata(tis, handler, metadata, context);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
             xhtml.endDocument();
             return;
         }
 
         TemporaryResources tmpResources = new TemporaryResources();
-        TikaInputStream tis = TikaInputStream.get(stream, tmpResources, metadata);
         Exception metadataException = null;
         try {
-            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
             Path path = tis.getPath();
             try (InputStream pathStream = Files.newInputStream(path)) {
@@ -97,15 +96,32 @@ public abstract class AbstractImageParser implements Parser {
                 metadataException = e;
             }
 
-            try (InputStream pathStream = Files.newInputStream(path)) {
+            try (TikaInputStream pathStream = TikaInputStream.get(path)) {
                 //specify ocr content type
+                String originalParserOverride =
+                        metadata.get(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE);
+                String originalContentType = metadata.get(Metadata.CONTENT_TYPE);
                 metadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
                         ocrMediaType.toString());
                 //need to use bodycontenthandler to filter out re-dumping of metadata
                 //in xhtmlhandler
-                ocrParser.parse(pathStream,
-                        new EmbeddedContentHandler(new BodyContentHandler(xhtml)), metadata,
-                        context);
+                try {
+                    ocrParser.parse(pathStream,
+                            new EmbeddedContentHandler(new BodyContentHandler(xhtml)), metadata,
+                            context);
+                } finally {
+                    if (originalParserOverride == null) {
+                        metadata.remove(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE.getName());
+                    } else {
+                        metadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
+                                originalParserOverride);
+                    }
+                    if (originalContentType == null) {
+                        metadata.remove(Metadata.CONTENT_TYPE);
+                    } else {
+                        metadata.set(Metadata.CONTENT_TYPE, originalContentType);
+                    }
+                }
             }
             xhtml.endDocument();
         } finally {

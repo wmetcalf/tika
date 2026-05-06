@@ -30,7 +30,6 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.apache.commons.compress.utils.IOUtils;
-import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -58,43 +57,39 @@ public class WACZParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         EmbeddedDocumentExtractor embeddedDocumentExtractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        if (stream instanceof TikaInputStream) {
-            ZipFile zip = (ZipFile) ((TikaInputStream) stream).getOpenContainer();
-            if (zip == null && ((TikaInputStream)stream).hasFile()) {
-                zip = ZipFile.builder().setFile(((TikaInputStream) stream).getFile()).get();
-            }
-            if (zip != null) {
-                try {
-                    processZip(zip, xhtml, metadata, embeddedDocumentExtractor);
-                } finally {
-                    zip.close();
-                }
-            } else {
-                processStream(stream, xhtml, metadata, embeddedDocumentExtractor);
+        ZipFile zip = (ZipFile) tis.getOpenContainer();
+        if (zip == null && tis.hasFile()) {
+            zip = ZipFile.builder().setFile(tis.getFile()).get();
+        }
+        if (zip != null) {
+            try {
+                processZip(zip, xhtml, metadata, embeddedDocumentExtractor, context);
+            } finally {
+                zip.close();
             }
         } else {
-            processStream(stream, xhtml, metadata, embeddedDocumentExtractor);
+            processStream(tis, xhtml, metadata, embeddedDocumentExtractor, context);
         }
         xhtml.endDocument();
     }
 
-    private void processStream(InputStream stream, XHTMLContentHandler xhtml, Metadata metadata,
-                               EmbeddedDocumentExtractor ex) throws SAXException, IOException {
-        try (ZipArchiveInputStream zais = new ZipArchiveInputStream(
-                CloseShieldInputStream.wrap(stream))) {
+    private void processStream(TikaInputStream tis, XHTMLContentHandler xhtml, Metadata metadata,
+                               EmbeddedDocumentExtractor ex, ParseContext context) throws SAXException, IOException {
+        tis.setCloseShield();
+        try (ZipArchiveInputStream zais = new ZipArchiveInputStream(tis)) {
             ZipArchiveEntry zae = zais.getNextEntry();
             while (zae != null) {
                 String name = zae.getName();
                 if (name.startsWith("archive/")) {
                     name = name.substring(8);
-                    processWARC(zais, zae, name, xhtml, metadata, ex);
+                    processWARC(zais, zae, name, xhtml, metadata, ex, context);
                 } else if ("datapackage.json".equals(name)) {
                     //no-op
                     processDataPackage(zais, zae, xhtml, metadata);
@@ -103,6 +98,8 @@ public class WACZParser implements Parser {
 
                 zae = zais.getNextEntry();
             }
+        } finally {
+            tis.removeCloseShield();
         }
     }
 
@@ -114,13 +111,14 @@ public class WACZParser implements Parser {
 
     private void processWARC(InputStream zais, ZipArchiveEntry zae,
                              String name, XHTMLContentHandler xhtml, Metadata parentMetadata,
-                             EmbeddedDocumentExtractor ex) throws IOException, SAXException {
-        Metadata metadata = new Metadata();
+                             EmbeddedDocumentExtractor ex, ParseContext context) throws IOException, SAXException {
+        Metadata metadata = Metadata.newInstance(context);
+        metadata.set(TikaCoreProperties.INTERNAL_PATH, zae.getName());
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         metadata.set(Metadata.CONTENT_LENGTH, Long.toString(zae.getSize()));
         try (TikaInputStream tis = TikaInputStream.get(getMaybeGzipInputStream(TikaInputStream.get(zais)))) {
             if (ex.shouldParseEmbedded(metadata)) {
-                ex.parseEmbedded(tis, xhtml, metadata, true);
+                ex.parseEmbedded(tis, xhtml, metadata, context, true);
             }
         }
     }
@@ -142,7 +140,7 @@ public class WACZParser implements Parser {
     }
 
     private void processZip(ZipFile zip, XHTMLContentHandler xhtml, Metadata metadata,
-                            EmbeddedDocumentExtractor ex) throws IOException, SAXException {
+                            EmbeddedDocumentExtractor ex, ParseContext context) throws IOException, SAXException {
 
         Enumeration<ZipArchiveEntry> zaeEnum = zip.getEntries();
         while (zaeEnum.hasMoreElements()) {
@@ -151,7 +149,7 @@ public class WACZParser implements Parser {
             if (name.startsWith("archive/")) {
                 name = name.substring(8);
                 processWARC(TikaInputStream.get(zip.getInputStream(zae)), zae, name, xhtml,
-                        metadata, ex);
+                        metadata, ex, context);
             } else if ("datapackage.json".equals(name)) {
                 //no-op
                 processDataPackage(TikaInputStream.get(zip.getInputStream(zae)), zae, xhtml,

@@ -22,17 +22,16 @@ import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.Param;
+import org.apache.tika.config.Initializable;
 import org.apache.tika.exception.TikaConfigException;
-import org.apache.tika.parser.external.ExternalParser;
+import org.apache.tika.utils.ProcessUtils;
 import org.apache.tika.utils.StringUtils;
 
-public class DWGParserConfig implements Serializable {
+public class DWGParserConfig implements Serializable, Initializable {
 
     private static final long serialVersionUID = -7623524257255755725L;
     private String dwgReadExecutable = "";
@@ -43,13 +42,14 @@ public class DWGParserConfig implements Serializable {
     // we need to remove non UTF chars and Nan's (dwgread outputs these as nan)
     private String cleanDwgReadRegexToReplace = "[^\\x20-\\x7e]";
     private String cleanDwgReadReplaceWith = "";
-    @SuppressWarnings("unused") 
+    @SuppressWarnings("unused")
     private boolean hasDwgRead;
     private static final Logger LOG = LoggerFactory.getLogger(DWGParserConfig.class);
 
-    public void initialize(Map<String, Param> params) throws TikaConfigException {
-        hasDwgRead = hasDwgRead();
 
+    public void initialize() throws TikaConfigException {
+        //TODO -- not sure if the behavior is try to find dwgread and if not back off the the DWGParser(?)
+        hasDwgRead = hasDwgRead();
     }
 
     public boolean hasDwgRead() throws TikaConfigException {
@@ -62,7 +62,7 @@ public class DWGParserConfig implements Serializable {
 
         // Try running DWGRead from there, and see if it exists + works
         String[] checkCmd = { dwgRead };
-        boolean hasDwgRead = ExternalParser.check(checkCmd);
+        boolean hasDwgRead = ProcessUtils.checkCommand(checkCmd);
         LOG.debug("hasDwgRead (path: " + Arrays.toString(checkCmd) + "): " + hasDwgRead);
         return hasDwgRead;
     }
@@ -112,8 +112,8 @@ public class DWGParserConfig implements Serializable {
         this.cleanDwgReadOutputBatchSize = cleanDwgReadOutputBatchSize;
     }
 
-    public void setDwgReadtimeout(long dwgReadtimeout) {
-        this.dwgReadTimeout = dwgReadtimeout;
+    public void setDwgReadTimeout(long dwgReadTimeout) {
+        this.dwgReadTimeout = dwgReadTimeout;
     }
 
     public void setCleanDwgReadRegexToReplace(String cleanDwgReadRegexToReplace) {
@@ -124,4 +124,28 @@ public class DWGParserConfig implements Serializable {
         this.cleanDwgReadReplaceWith = cleanDwgReadReplaceWith;
     }
 
+    /**
+     * RuntimeConfig blocks modification of security-sensitive path fields at runtime.
+     * When a config is obtained from ParseContext (i.e. user-provided at parse time),
+     * it should be deserialized as a RuntimeConfig to prevent path injection.
+     * <p>
+     * This class is deserialized by ConfigDeserializer (in tika-serialization) which uses
+     * Jackson to populate fields via setters. If the JSON contains any path fields, the
+     * overridden setters will throw TikaConfigException.
+     */
+    public static class RuntimeConfig extends DWGParserConfig {
+
+        public RuntimeConfig() {
+            super();
+        }
+
+        @Override
+        public void setDwgReadExecutable(String dwgReadExecutable) {
+            if (!StringUtils.isBlank(dwgReadExecutable)) {
+                throw new IllegalArgumentException(
+                        "Cannot modify dwgReadExecutable at runtime. " +
+                                "Paths must be configured at parser initialization time.");
+            }
+        }
+    }
 }
