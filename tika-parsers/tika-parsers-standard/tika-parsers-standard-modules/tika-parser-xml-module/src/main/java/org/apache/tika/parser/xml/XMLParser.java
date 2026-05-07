@@ -95,15 +95,26 @@ public class XMLParser implements Parser {
         }
     }
 
+    // Skip rasterization for SVGs above this size to avoid OOM in Batik
+    private static final long SVG_RASTER_MAX_BYTES = 4L * 1024 * 1024; // 4 MB
+
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
                                    Metadata metadata, ParseContext context) {
         try {
+            // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
+            if (java.nio.file.Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
+                return;
+            }
             org.apache.tika.parser.Parser ocrParser =
                 EmbeddedDocumentUtil.getStatelessParser(context);
-            if (ocrParser == null) return;
+            if (ocrParser == null) {
+                return;
+            }
             org.apache.tika.mime.MediaType pngOcrType =
                 org.apache.tika.mime.MediaType.image("ocr-png");
-            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) return;
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
+                return;
+            }
 
             org.apache.batik.transcoder.image.PNGTranscoder transcoder =
                 new org.apache.batik.transcoder.image.PNGTranscoder();
@@ -117,7 +128,9 @@ public class XMLParser implements Parser {
                 new org.apache.batik.transcoder.TranscoderInput(svgPath.toUri().toString()),
                 new org.apache.batik.transcoder.TranscoderOutput(pngOut));
             byte[] pngBytes = pngOut.toByteArray();
-            if (pngBytes.length == 0) return;
+            if (pngBytes.length == 0) {
+                return;
+            }
 
             try (org.apache.tika.io.TikaInputStream pngStream =
                     org.apache.tika.io.TikaInputStream.get(pngBytes)) {
@@ -130,8 +143,9 @@ public class XMLParser implements Parser {
                         new BodyContentHandler(xhtml)),
                     ocrMeta, context);
             }
-        } catch (Exception e) {
-            // non-fatal: SVG rasterization fails for complex/malformed files
+        } catch (Throwable e) {
+            // non-fatal: catch Error subclasses (OOM, StackOverflow) too — Batik can
+            // throw these on malformed SVGs with href (SVG 2.0) image references
         }
     }
 
