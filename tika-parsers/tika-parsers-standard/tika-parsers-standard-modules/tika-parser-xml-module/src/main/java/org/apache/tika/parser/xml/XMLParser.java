@@ -98,33 +98,39 @@ public class XMLParser implements Parser {
     }
 
     // Skip rasterization for SVGs above this size to avoid OOM in Batik
-    private static final long SVG_RASTER_MAX_BYTES = 4L * 1024 * 1024; // 4 MB
+    private static final long SVG_RASTER_MAX_BYTES = 512L * 1024; // 512 KB
 
     /**
-     * Rewrite SVG 2.0 bare {@code href} attributes on {@code <image>} elements to
-     * {@code xlink:href} so Batik 1.x can render them without a JVM crash.
-     * Returns the original path unchanged if no rewrite is needed.
+     * Sanitize an SVG for Batik 1.x rasterization:
+     * <ul>
+     *   <li>Rewrites SVG 2.0 bare {@code href} on {@code <image>} to {@code xlink:href}.</li>
+     *   <li>Strips inline data URI image content (replaces with empty string) to prevent
+     *       Batik from crashing when decoding large embedded images.</li>
+     * </ul>
+     * Returns the original path unchanged if no edits were needed.
      */
     private static Path normalizeSvgHrefs(Path svgPath) throws IOException {
         byte[] raw = Files.readAllBytes(svgPath);
         String content = new String(raw, StandardCharsets.UTF_8);
 
-        // Bail out early if there are no bare href= on image elements
-        if (!content.contains("<image") || !content.contains(" href=")) {
-            return svgPath;
-        }
-
-        // Ensure the xlink namespace is declared on the root svg element
         String fixed = content;
+
+        // 1. Ensure xlink namespace is declared (Batik 1.x requires it)
         if (!fixed.contains("xmlns:xlink")) {
             fixed = fixed.replaceFirst(
-                "(<svg\\b[^>]*?)(>|/>)",
-                "$1 xmlns:xlink=\"http://www.w3.org/1999/xlink\"$2");
+                "(<svg\\b)([^>]*)(>)",
+                "$1$2 xmlns:xlink=\"http://www.w3.org/1999/xlink\"$3");
         }
-        // Replace bare href= with xlink:href= inside <image ...> tags
-        // Simple approach: replace the attribute globally — safe because xlink:href=
-        // is already handled and we only care about Batik's image loading.
+
+        // 2. Convert bare href= → xlink:href= (SVG 2.0 → SVG 1.1)
         fixed = fixed.replace(" href=", " xlink:href=");
+
+        // 3. Strip data URI content from image hrefs — Batik crashes while decoding
+        //    large or malformed inline images embedded as base64 data URIs.
+        //    Keep the <image> element so layout is preserved; just remove the data.
+        fixed = fixed.replaceAll(
+            "(xlink:href|href)=\"data:[^\"]*\"",
+            "$1=\"\"");
 
         if (fixed.equals(content)) {
             return svgPath;
