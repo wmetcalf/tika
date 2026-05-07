@@ -18,18 +18,28 @@ package org.apache.tika.parser.image;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.XHTMLContentHandler;
 
 
 @TikaComponent
@@ -51,5 +61,76 @@ public class HeifParser extends AbstractImageParser {
         new ImageMetadataExtractor(metadata).parseHeif(stream);
     }
 
+    /**
+     * Override the AbstractImageParser dispatch so we can rasterize via heif-convert
+     * and feed the result to TesseractOCRParser. AbstractImageParser would look for an
+     * OCR parser supporting "ocr-image/heic" — TesseractOCRParser only registers
+     * "ocr-image/png" etc., so the standard path silently drops OCR for HEIC/HEIF.
+     */
+    @Override
+    public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                      ParseContext context) throws IOException, SAXException, TikaException {
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+        xhtml.startDocument();
 
+        // Metadata extraction (Exif, IPTC, XMP)
+        try (InputStream is = Files.newInputStream(tis.getPath())) {
+            extractMetadata(is, new EmbeddedContentHandler(xhtml), metadata, context);
+        } catch (Exception e) {
+            // non-fatal: metadata extraction failure should not abort OCR
+        }
+
+        // Rasterize via heif-convert and run Tesseract OCR
+        tryHeifOcr(tis.getPath(), xhtml, metadata, context);
+
+        xhtml.endDocument();
+    }
+
+    private static void tryHeifOcr(Path heifPath, XHTMLContentHandler xhtml,
+                                    Metadata metadata, ParseContext context) {
+        try {
+            Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
+            if (ocrParser == null) return;
+            MediaType pngOcrType = MediaType.image("ocr-png");
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) return;
+
+            Path tmpPng = Files.createTempFile("tika-heif-", ".png");
+            try {
+                Process proc = new ProcessBuilder(
+                        "heif-convert", "-q", "90",
+                        heifPath.toString(), tmpPng.toString())
+                    .redirectErrorStream(true)
+                    .start();
+                boolean finished = proc.waitFor(30, TimeUnit.SECONDS);
+                if (!finished) { proc.destroyForcibly(); return; }
+                if (proc.exitValue() != 0) return;
+
+                // heif-convert may number output for multi-frame files (output-1.png)
+                Path actualPng = tmpPng;
+                if (!Files.exists(tmpPng) || Files.size(tmpPng) == 0) {
+                    String base = tmpPng.toString().replaceFirst("\\.png$", "");
+                    actualPng = Path.of(base + "-1.png");
+                }
+                if (!Files.exists(actualPng) || Files.size(actualPng) == 0) return;
+
+                byte[] pngBytes = Files.readAllBytes(actualPng);
+                try (TikaInputStream pngStream = TikaInputStream.get(pngBytes)) {
+                    Metadata ocrMeta = Metadata.newInstance(context);
+                    ocrMeta.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
+                            pngOcrType.toString());
+                    ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
+                    ocrParser.parse(pngStream,
+                            new EmbeddedContentHandler(new BodyContentHandler(xhtml)),
+                            ocrMeta, context);
+                }
+            } finally {
+                Files.deleteIfExists(tmpPng);
+                String base = tmpPng.toString().replaceFirst("\\.png$", "");
+                for (int i = 1; i <= 10; i++)
+                    Files.deleteIfExists(Path.of(base + "-" + i + ".png"));
+            }
+        } catch (Exception e) {
+            // non-fatal
+        }
+    }
 }
