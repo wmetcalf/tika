@@ -16,13 +16,20 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.geom.Dimension2D;
 import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Set;
 import java.util.function.Supplier;
+import javax.imageio.ImageIO;
 
 import org.apache.poi.hemf.record.emf.HemfComment;
 import org.apache.poi.hemf.record.emf.HemfRecord;
@@ -41,9 +48,11 @@ import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Property;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
@@ -73,6 +82,9 @@ public class EMFParser implements Parser {
     private static final MediaType WMF_MEDIA_TYPE = MediaType.image("wmf");
 
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(MEDIA_TYPE);
+
+    /** Maximum pixel dimension when rasterizing for OCR. */
+    private static final int OCR_RASTER_MAX_PX = 1200;
 
     private static void handleEmbedded(byte[] data,
                                        EmbeddedDocumentExtractor embeddedDocumentExtractor,
@@ -139,6 +151,9 @@ public class EMFParser implements Parser {
                 xhtml.endElement("p");
             }
 
+            // Rasterize and OCR: catches raster-only content that vector text records miss
+            tryMetafileOcr(rasterizeEmf(ex), xhtml, metadata, context);
+
         } catch (RecordFormatException e) { //POI's hemfparser can throw these for "parse
             // exceptions"
             throw new TikaException(e.getMessage(), e);
@@ -146,6 +161,61 @@ public class EMFParser implements Parser {
             throw new TikaException(e.getMessage(), e);
         }
         xhtml.endDocument();
+    }
+
+    /**
+     * Rasterize an EMF to a BufferedImage at up to OCR_RASTER_MAX_PX on the longest side.
+     * Returns null if the size is invalid or rendering fails.
+     */
+    private static BufferedImage rasterizeEmf(HemfPicture emf) {
+        try {
+            Dimension2D size = emf.getSize();
+            double pw = size.getWidth(), ph = size.getHeight();
+            if (pw <= 0 || ph <= 0) return null;
+            double scale = Math.min((double) OCR_RASTER_MAX_PX / pw, (double) OCR_RASTER_MAX_PX / ph);
+            int w = Math.max(1, (int) (pw * scale)), h = Math.max(1, (int) (ph * scale));
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = img.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, w, h);
+            emf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+            g.dispose();
+            return img;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Encode {@code raster} as PNG and run it through Tesseract (if configured).
+     * Uses the same ocr-image/png dispatch that AbstractImageParser uses for JPEG/PNG.
+     * No-op if the OCR parser is absent or not configured.
+     */
+    static void tryMetafileOcr(BufferedImage raster, XHTMLContentHandler xhtml,
+                                Metadata metadata, ParseContext context) {
+        if (raster == null) return;
+        try {
+            Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
+            if (ocrParser == null) return;
+            MediaType pngOcrType = MediaType.image("ocr-png");
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) return;
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            if (!ImageIO.write(raster, "png", baos)) return;
+
+            try (TikaInputStream pngStream = TikaInputStream.get(baos.toByteArray())) {
+                Metadata ocrMeta = Metadata.newInstance(context);
+                ocrMeta.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, pngOcrType.toString());
+                ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
+                ocrParser.parse(pngStream,
+                        new EmbeddedContentHandler(new BodyContentHandler(xhtml)),
+                        ocrMeta, context);
+            }
+        } catch (Exception e) {
+            // non-fatal: OCR is best-effort
+        }
     }
 
     private void handleExtTextOut(HemfText.EmfExtTextOutA record, ParseState parseState,

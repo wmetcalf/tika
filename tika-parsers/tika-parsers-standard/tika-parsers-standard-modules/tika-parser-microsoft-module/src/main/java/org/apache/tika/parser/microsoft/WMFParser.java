@@ -16,6 +16,12 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.geom.Dimension2D;
+import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.Collections;
@@ -50,6 +56,9 @@ public class WMFParser implements Parser {
     private static final MediaType MEDIA_TYPE = MediaType.image("wmf");
 
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(MEDIA_TYPE);
+
+    /** Maximum pixel dimension when rasterizing for OCR. */
+    private static final int OCR_RASTER_MAX_PX = 1200;
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -95,6 +104,10 @@ public class WMFParser implements Parser {
                     xhtml.endElement("p");
                 }
             }
+
+            // Rasterize and OCR: catches raster-only content that vector text records miss
+            EMFParser.tryMetafileOcr(rasterizeWmf(picture), xhtml, metadata, context);
+
         } catch (RecordFormatException e) { //POI's hwmfparser can \ throw these for "parse
             // exceptions"
             throw new TikaException(e.getMessage(), e);
@@ -108,4 +121,28 @@ public class WMFParser implements Parser {
         xhtml.endDocument();
     }
 
+    /**
+     * Rasterize a WMF to a BufferedImage at up to OCR_RASTER_MAX_PX on the longest side.
+     * Returns null if the size is invalid or rendering fails.
+     */
+    private static BufferedImage rasterizeWmf(HwmfPicture wmf) {
+        try {
+            Dimension2D size = wmf.getSize();
+            double pw = size.getWidth(), ph = size.getHeight();
+            if (pw <= 0 || ph <= 0) return null;
+            double scale = Math.min((double) OCR_RASTER_MAX_PX / pw, (double) OCR_RASTER_MAX_PX / ph);
+            int w = Math.max(1, (int) (pw * scale)), h = Math.max(1, (int) (ph * scale));
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = img.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, w, h);
+            wmf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+            g.dispose();
+            return img;
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }
