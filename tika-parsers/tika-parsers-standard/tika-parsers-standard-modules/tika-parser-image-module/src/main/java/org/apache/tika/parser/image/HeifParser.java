@@ -62,10 +62,11 @@ public class HeifParser extends AbstractImageParser {
     }
 
     /**
-     * Override the AbstractImageParser dispatch so we can rasterize via heif-convert
-     * and feed the result to TesseractOCRParser. AbstractImageParser would look for an
-     * OCR parser supporting "ocr-image/heic" — TesseractOCRParser only registers
-     * "ocr-image/png" etc., so the standard path silently drops OCR for HEIC/HEIF.
+     * Override AbstractImageParser to rasterize via heif-convert and OCR via Tesseract.
+     * AbstractImageParser would look for a parser supporting "ocr-image/heic" but
+     * TesseractOCRParser only registers ocr-image/png etc., so the standard path
+     * silently skips OCR for HEIC/HEIF. We convert to PNG ourselves and reuse the
+     * same ocr-image/png dispatch used by EMFParser and SVGParser.
      */
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
@@ -73,11 +74,11 @@ public class HeifParser extends AbstractImageParser {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
-        // Metadata extraction (Exif, IPTC, XMP)
+        // Metadata extraction (Exif, IPTC, XMP) — non-fatal
         try (InputStream is = Files.newInputStream(tis.getPath())) {
             extractMetadata(is, new EmbeddedContentHandler(xhtml), metadata, context);
         } catch (Exception e) {
-            // non-fatal: metadata extraction failure should not abort OCR
+            // metadata failure must not abort OCR
         }
 
         // Rasterize via heif-convert and run Tesseract OCR
@@ -90,9 +91,13 @@ public class HeifParser extends AbstractImageParser {
                                     Metadata metadata, ParseContext context) {
         try {
             Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
-            if (ocrParser == null) return;
+            if (ocrParser == null) {
+                return;
+            }
             MediaType pngOcrType = MediaType.image("ocr-png");
-            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) return;
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
+                return;
+            }
 
             Path tmpPng = Files.createTempFile("tika-heif-", ".png");
             try {
@@ -102,16 +107,23 @@ public class HeifParser extends AbstractImageParser {
                     .redirectErrorStream(true)
                     .start();
                 boolean finished = proc.waitFor(30, TimeUnit.SECONDS);
-                if (!finished) { proc.destroyForcibly(); return; }
-                if (proc.exitValue() != 0) return;
+                if (!finished) {
+                    proc.destroyForcibly();
+                    return;
+                }
+                if (proc.exitValue() != 0) {
+                    return;
+                }
 
-                // heif-convert may number output for multi-frame files (output-1.png)
+                // heif-convert may produce numbered output for multi-frame files
                 Path actualPng = tmpPng;
                 if (!Files.exists(tmpPng) || Files.size(tmpPng) == 0) {
                     String base = tmpPng.toString().replaceFirst("\\.png$", "");
                     actualPng = Path.of(base + "-1.png");
                 }
-                if (!Files.exists(actualPng) || Files.size(actualPng) == 0) return;
+                if (!Files.exists(actualPng) || Files.size(actualPng) == 0) {
+                    return;
+                }
 
                 byte[] pngBytes = Files.readAllBytes(actualPng);
                 try (TikaInputStream pngStream = TikaInputStream.get(pngBytes)) {
@@ -126,8 +138,9 @@ public class HeifParser extends AbstractImageParser {
             } finally {
                 Files.deleteIfExists(tmpPng);
                 String base = tmpPng.toString().replaceFirst("\\.png$", "");
-                for (int i = 1; i <= 10; i++)
+                for (int i = 1; i <= 10; i++) {
                     Files.deleteIfExists(Path.of(base + "-" + i + ".png"));
+                }
             }
         } catch (Exception e) {
             // non-fatal
