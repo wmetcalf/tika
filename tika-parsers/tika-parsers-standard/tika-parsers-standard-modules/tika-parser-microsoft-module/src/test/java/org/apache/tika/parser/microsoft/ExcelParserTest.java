@@ -600,6 +600,12 @@ public class ExcelParserTest extends TikaTest {
         // Check metadata flags are set
         assertEquals("true", m.get(Office.HAS_DATA_CONNECTIONS));
         assertEquals("true", m.get(Office.HAS_WEB_QUERIES));
+        assertContains("web_query", List.of(m.getValues(Office.OFFICE_LINK_TYPE)));
+        assertContains("db_connection", List.of(m.getValues(Office.OFFICE_LINK_TYPE)));
+        assertContains("text_file_import", List.of(m.getValues(Office.OFFICE_LINK_TYPE)));
+        assertContains("http://example.com/data.html",
+                List.of(m.getValues(Office.OFFICE_LINK_URL)));
+        assertContains("relationship", List.of(m.getValues(Office.OFFICE_LINK_CONTEXT)));
 
         String xml = getXML("testDataConnections.xlsx").xml;
         // Test web query extraction

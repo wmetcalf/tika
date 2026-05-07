@@ -45,6 +45,7 @@ import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.EMFParser;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor;
 import org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFFeatureExtractor;
@@ -162,7 +163,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 metadata.set(Office.HAS_ATTACHED_TEMPLATE, true);
                 for (PackageRelationship rel : templateRels) {
                     if (rel.getTargetMode() == TargetMode.EXTERNAL) {
-                        emitExternalRef(xhtml, "attachedTemplate", rel.getTargetURI().toString());
+                        emitExternalRef(xhtml, "attachedTemplate", rel.getTargetURI().toString(),
+                                documentPart, rel);
                     }
                 }
             }
@@ -178,7 +180,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 metadata.set(Office.HAS_SUBDOCUMENTS, true);
                 for (PackageRelationship rel : subDocRels) {
                     if (rel.getTargetMode() == TargetMode.EXTERNAL) {
-                        emitExternalRef(xhtml, "subDocument", rel.getTargetURI().toString());
+                        emitExternalRef(xhtml, "subDocument", rel.getTargetURI().toString(),
+                                documentPart, rel);
                     }
                 }
             }
@@ -230,16 +233,30 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
     /**
      * Emits an external reference as an anchor element.
      */
-    private void emitExternalRef(XHTMLContentHandler xhtml, String refType, String url)
+    private void emitExternalRef(XHTMLContentHandler xhtml, String refType, String url,
+                                 PackagePart sourcePart, PackageRelationship relationship)
             throws SAXException {
         if (url == null || url.isEmpty()) {
             return;
         }
+        OfficeLinkMetadataUtil.addLink(metadata,
+                OfficeLinkMetadataUtil.normalizeType(refType), url, null, null,
+                getSourcePartName(sourcePart), "relationship",
+                relationship == null ? "" : relationship.getRelationshipType(),
+                relationship == null ? "" : relationship.getId());
         org.xml.sax.helpers.AttributesImpl attrs = new org.xml.sax.helpers.AttributesImpl();
         attrs.addAttribute("", "class", "class", "CDATA", "external-ref-" + refType);
         attrs.addAttribute("", "href", "href", "CDATA", url);
         xhtml.startElement("a", attrs);
         xhtml.endElement("a");
+    }
+
+    private String getSourcePartName(PackagePart sourcePart) {
+        if (sourcePart == null || sourcePart.getPartName() == null) {
+            return "";
+        }
+        String name = sourcePart.getPartName().getName();
+        return name.startsWith("/") ? name.substring(1) : name;
     }
 
     private void handleDocumentPart(PackagePart documentPart, XHTMLContentHandler xhtml)

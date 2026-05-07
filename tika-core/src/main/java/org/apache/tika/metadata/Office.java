@@ -189,6 +189,27 @@ public interface Office {
 
     Property COMMENT_PERSONS = Property.internalTextBag("msoffice:comment-person-display-name");
 
+    Property OFFICE_LINK_URL = Property.internalTextBag("msoffice:link:url");
+
+    Property OFFICE_LINK_TYPE = Property.internalTextBag("msoffice:link:type");
+
+    Property OFFICE_LINK_TEXT = Property.internalTextBag("msoffice:link:text");
+
+    Property OFFICE_LINK_OCR_TEXT = Property.internalTextBag("msoffice:link:ocr-text");
+
+    Property OFFICE_LINK_SOURCE = Property.internalTextBag("msoffice:link:source");
+
+    Property OFFICE_LINK_CONTEXT = Property.internalTextBag("msoffice:link:context");
+
+    Property OFFICE_LINK_RELATIONSHIP_TYPE =
+            Property.internalTextBag("msoffice:link:relationship-type");
+
+    Property OFFICE_LINK_ID = Property.internalTextBag("msoffice:link:id");
+
+    Property OFFICE_LINK_TRIGGER = Property.internalTextBag("msoffice:link:trigger");
+
+    Property OFFICE_LINK_ACTION_TYPE = Property.internalTextBag("msoffice:link:action-type");
+
     Property HAS_HIDDEN_SLIDES = Property.internalBoolean("msoffice:ppt:has-hidden-slides");
 
     Property NUM_HIDDEN_SLIDES = Property.internalInteger("msoffice:ppt:num-hidden-slides");

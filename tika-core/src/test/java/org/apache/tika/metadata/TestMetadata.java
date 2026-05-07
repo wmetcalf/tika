@@ -303,6 +303,28 @@ public class TestMetadata extends TikaTest {
         assertEquals(Property.PropertyType.BAG, Barcode.BARCODE_IS_MIRRORED.getPropertyType());
     }
 
+    @Test
+    public void testImageHashMetadataKeys() {
+        assertEquals("image:phash", ImageHash.PHASH.getName());
+        assertEquals("image:colorhash", ImageHash.COLORHASH.getName());
+    }
+
+    @Test
+    public void testOfficeLinkMetadataKeys() {
+        assertEquals("msoffice:link:url", Office.OFFICE_LINK_URL.getName());
+        assertEquals("msoffice:link:type", Office.OFFICE_LINK_TYPE.getName());
+        assertEquals("msoffice:link:text", Office.OFFICE_LINK_TEXT.getName());
+        assertEquals("msoffice:link:ocr-text", Office.OFFICE_LINK_OCR_TEXT.getName());
+        assertEquals("msoffice:link:source", Office.OFFICE_LINK_SOURCE.getName());
+        assertEquals("msoffice:link:context", Office.OFFICE_LINK_CONTEXT.getName());
+        assertEquals("msoffice:link:relationship-type",
+                Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName());
+        assertEquals("msoffice:link:id", Office.OFFICE_LINK_ID.getName());
+        assertEquals("msoffice:link:trigger", Office.OFFICE_LINK_TRIGGER.getName());
+        assertEquals("msoffice:link:action-type", Office.OFFICE_LINK_ACTION_TYPE.getName());
+        assertTrue(Office.OFFICE_LINK_URL.isMultiValuePermitted());
+    }
+
     /**
      * Tests for getting and setting date
      * based properties

@@ -16,6 +16,7 @@
  */
 package org.apache.tika.parser.image;
 
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -23,6 +24,7 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import javax.imageio.ImageIO;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +36,7 @@ import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Barcode;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -47,6 +50,7 @@ public abstract class AbstractImageParser implements Parser {
 
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
     private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
+    private boolean imageHashingEnabled = false;
 
     /**
      *
@@ -106,6 +110,18 @@ public abstract class AbstractImageParser implements Parser {
         }
     }
 
+    private void addImageHashMetadata(Path imagePath, Metadata metadata) throws IOException {
+        if (!imageHashingEnabled || imagePath == null) {
+            return;
+        }
+        BufferedImage image = ImageIO.read(imagePath.toFile());
+        if (image == null) {
+            return;
+        }
+        metadata.set(ImageHash.PHASH, ImageHashExtractor.computePhash(image));
+        metadata.set(ImageHash.COLORHASH, ImageHashExtractor.computeColorHash(image));
+    }
+
     private String normalizeBarcodeFormat(String format) {
         if (format == null) {
             return null;
@@ -121,7 +137,7 @@ public abstract class AbstractImageParser implements Parser {
 
     void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {
         ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
-        if (config == null || !config.isEnabled()) {
+        if ((config == null || !config.isEnabled()) && !imageHashingEnabled) {
             return;
         }
         tis.enableRewind();
@@ -129,10 +145,18 @@ public abstract class AbstractImageParser implements Parser {
 
     Path getBarcodePath(TikaInputStream tis, ParseContext context) throws IOException {
         ZXingCPPConfig config = context.get(ZXingCPPConfig.class);
-        if (config == null || !config.isEnabled()) {
+        if ((config == null || !config.isEnabled()) && !imageHashingEnabled) {
             return null;
         }
         return tis.getPath();
+    }
+
+    public boolean isImageHashingEnabled() {
+        return imageHashingEnabled;
+    }
+
+    public void setImageHashingEnabled(boolean imageHashingEnabled) {
+        this.imageHashingEnabled = imageHashingEnabled;
     }
 
     @Override
@@ -150,6 +174,7 @@ public abstract class AbstractImageParser implements Parser {
             prepareBarcodePathLookup(tis, context);
             extractMetadata(tis, handler, metadata, context);
             Path barcodePath = getBarcodePath(tis, context);
+            addImageHashMetadata(barcodePath, metadata);
             addBarcodeMetadata(barcodePath, metadata, context);
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
@@ -167,6 +192,7 @@ public abstract class AbstractImageParser implements Parser {
             try (InputStream pathStream = Files.newInputStream(path)) {
                 extractMetadata(pathStream, new EmbeddedContentHandler(xhtml), metadata, context);
                 Path barcodePath = getBarcodePath(tis, context);
+                addImageHashMetadata(barcodePath, metadata);
                 addBarcodeMetadata(barcodePath, metadata, context);
             } catch (SecurityException e) {
                 throw e;

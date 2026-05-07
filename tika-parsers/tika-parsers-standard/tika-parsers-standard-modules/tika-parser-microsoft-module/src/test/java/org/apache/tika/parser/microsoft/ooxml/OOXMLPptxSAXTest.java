@@ -40,6 +40,7 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.PasswordProvider;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
  * Tests for the PPTX parser.
@@ -189,6 +190,38 @@ public class OOXMLPptxSAXTest extends TikaTest {
         assertContains("And then some Gothic text:", xml);
         assertContains("\uD800\uDF32\uD800\uDF3f\uD800\uDF44\uD800\uDF39\uD800\uDF43\uD800\uDF3A",
                 xml);
+    }
+
+    @Test
+    public void testPowerPointHoverActionMetadata() throws Exception {
+        Metadata metadata = new Metadata();
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(
+                        new XHTMLContentHandler(new BodyContentHandler(), metadata), metadata);
+
+        handler.externalRef("hlinkHover", "http://hover.example.com/phishing");
+
+        assertEquals("hover", metadata.getValues(Office.OFFICE_LINK_TRIGGER)[0]);
+        assertEquals("external_url", metadata.getValues(Office.OFFICE_LINK_ACTION_TYPE)[0]);
+        assertEquals("hover_hyperlink", metadata.getValues(Office.OFFICE_LINK_TYPE)[0]);
+    }
+
+    @Test
+    public void testRunPropertyHyperlinkMetadataText() throws Exception {
+        Metadata metadata = new Metadata();
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(
+                        new XHTMLContentHandler(new BodyContentHandler(), metadata), metadata);
+        RunProperties linkProperties = new RunProperties();
+        linkProperties.setHlinkClickUrl("http://example.com/run-link");
+
+        handler.run(linkProperties, "click text");
+        handler.run(new RunProperties(), " after");
+
+        assertEquals("http://example.com/run-link",
+                metadata.getValues(Office.OFFICE_LINK_URL)[0]);
+        assertEquals("click text", metadata.getValues(Office.OFFICE_LINK_TEXT)[0]);
+        assertEquals("click", metadata.getValues(Office.OFFICE_LINK_TRIGGER)[0]);
     }
 
     @Test

@@ -57,6 +57,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParser;
 import org.apache.tika.parser.microsoft.OfficeParser.POIFSDocumentType;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
@@ -268,13 +269,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         if (rel.getTargetMode() != TargetMode.INTERNAL) {
             // External target - emit as external reference for security analysis
             String type = rel.getRelationshipType();
+            String sourcePath = sourceURI != null ? sourceURI.getPath() : "";
             if (OLE_OBJECT_REL_TYPE.equals(type)) {
-                emitExternalRef(xhtml, "externalOleObject", targetURI.toString());
+                emitExternalRef(xhtml, parentMetadata, "externalOleObject", targetURI.toString(),
+                        sourcePath, type, rel.getId());
                 parentMetadata.set(Office.HAS_EXTERNAL_OLE_OBJECTS, true);
             } else if (PackageRelationshipTypes.IMAGE_PART.equals(type)) {
-                emitExternalRef(xhtml, "externalImage", targetURI.toString());
+                emitExternalRef(xhtml, parentMetadata, "externalImage", targetURI.toString(),
+                        sourcePath, type, rel.getId());
             } else {
-                emitExternalRef(xhtml, "externalResource", targetURI.toString());
+                emitExternalRef(xhtml, parentMetadata, "externalResource", targetURI.toString(),
+                        sourcePath, type, rel.getId());
             }
             return;
         }
@@ -504,11 +509,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      * Emits an external reference as an anchor element with appropriate class.
      * Used for detecting external resources that could be security risks.
      */
-    private void emitExternalRef(XHTMLContentHandler xhtml, String refType, String url)
+    private void emitExternalRef(XHTMLContentHandler xhtml, Metadata metadata, String refType,
+                                 String url, String source, String relationshipType, String id)
             throws SAXException {
         if (url == null || url.isEmpty()) {
             return;
         }
+        OfficeLinkMetadataUtil.addLink(metadata,
+                OfficeLinkMetadataUtil.normalizeType(refType), url, null, null,
+                source, "relationship", relationshipType, id);
         AttributesImpl attrs = new AttributesImpl();
         attrs.addAttribute("", "class", "class", "CDATA", "external-ref-" + refType);
         attrs.addAttribute("", "href", "href", "CDATA", url);

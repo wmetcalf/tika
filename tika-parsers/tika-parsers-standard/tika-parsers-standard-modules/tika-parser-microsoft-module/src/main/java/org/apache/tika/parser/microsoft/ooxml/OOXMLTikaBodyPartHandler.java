@@ -23,6 +23,7 @@ import java.math.BigInteger;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
@@ -31,6 +32,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.WordExtractor;
 import org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFStylesShim;
@@ -74,6 +76,10 @@ public class OOXMLTikaBodyPartHandler
     private final java.util.List<String> pendingCommentIds = new java.util.ArrayList<>();
     private final java.util.Set<String> emittedCommentIds = new java.util.HashSet<>();
     private final Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap = new HashMap<>();
+    private String activeHyperlinkUrl = null;
+    private String activeHyperlinkType = null;
+    private String activeRunHyperlinkUrl = null;
+    private final StringBuilder activeHyperlinkText = new StringBuilder();
 
     public OOXMLTikaBodyPartHandler(XHTMLContentHandler xhtml) {
         this(xhtml, null);
@@ -120,17 +126,23 @@ public class OOXMLTikaBodyPartHandler
 
     @Override
     public void run(RunProperties runProperties, String contents) throws SAXException {
+        updateRunHyperlinkState(runProperties.getHlinkClickUrl());
         formattingTags.applyFormatting(runProperties);
         xhtml.characters(contents);
+        if (isCollectingLinkMetadata() && contents != null) {
+            activeHyperlinkText.append(contents);
+        }
     }
 
     @Override
     public void hyperlinkStart(String link) throws SAXException {
+        startCollectingHyperlink(link, "hyperlink");
         formattingTags.openHyperlink(link);
     }
 
     @Override
     public void hyperlinkEnd() throws SAXException {
+        flushActiveHyperlink();
         formattingTags.closeHyperlink();
     }
 
@@ -173,6 +185,7 @@ public class OOXMLTikaBodyPartHandler
 
     @Override
     public void endParagraph() throws SAXException {
+        flushRunHyperlink();
         formattingTags.closeAll();
         if (pDepth == 1 && tableDepth == 0) {
             xhtml.endElement(paragraphTag);
@@ -403,7 +416,8 @@ public class OOXMLTikaBodyPartHandler
         if (metadata != null) {
             metadata.set(Office.HAS_FIELD_HYPERLINKS, true);
         }
-        hyperlinkStart(link);
+        startCollectingHyperlink(link, "field_hyperlink");
+        formattingTags.openHyperlink(link);
     }
 
     @Override
@@ -419,12 +433,66 @@ public class OOXMLTikaBodyPartHandler
             } else {
                 metadata.set(Office.HAS_FIELD_HYPERLINKS, true);
             }
+            OfficeLinkMetadataUtil.addLink(metadata,
+                    OfficeLinkMetadataUtil.normalizeType(fieldType), url, null, null,
+                    "", "external-ref", "", "",
+                    OfficeLinkMetadataUtil.normalizeTrigger(fieldType),
+                    OfficeLinkMetadataUtil.normalizeActionType(fieldType, url));
         }
         AttributesImpl attr = new AttributesImpl();
         attr.addAttribute("", "class", "class", "CDATA", "external-ref-" + fieldType);
         attr.addAttribute("", "href", "href", "CDATA", url);
         xhtml.startElement("a", attr);
         xhtml.endElement("a");
+    }
+
+    private void startCollectingHyperlink(String link, String type) {
+        if (link == null || link.startsWith("#")) {
+            return;
+        }
+        activeHyperlinkUrl = link;
+        activeHyperlinkType = type;
+        activeHyperlinkText.setLength(0);
+    }
+
+    private void flushActiveHyperlink() {
+        if (activeHyperlinkUrl == null) {
+            return;
+        }
+        OfficeLinkMetadataUtil.addLink(metadata,
+                OfficeLinkMetadataUtil.normalizeType(activeHyperlinkType), activeHyperlinkUrl,
+                activeHyperlinkText.toString().trim(), null, "", "text", "", "",
+                OfficeLinkMetadataUtil.normalizeTrigger(activeHyperlinkType),
+                OfficeLinkMetadataUtil.normalizeActionType(activeHyperlinkType, activeHyperlinkUrl));
+        activeHyperlinkUrl = null;
+        activeHyperlinkType = null;
+        activeHyperlinkText.setLength(0);
+    }
+
+    private void updateRunHyperlinkState(String hyperlinkUrl) {
+        if (hyperlinkUrl != null && hyperlinkUrl.startsWith("#")) {
+            hyperlinkUrl = null;
+        }
+        if (!Objects.equals(hyperlinkUrl, activeRunHyperlinkUrl)) {
+            flushRunHyperlink();
+            activeRunHyperlinkUrl = hyperlinkUrl;
+        }
+    }
+
+    private void flushRunHyperlink() {
+        if (activeRunHyperlinkUrl == null) {
+            activeHyperlinkText.setLength(0);
+            return;
+        }
+        OfficeLinkMetadataUtil.addLink(metadata, "hyperlink", activeRunHyperlinkUrl,
+                activeHyperlinkText.toString().trim(), null, "", "text", "", "",
+                "click", "external_url");
+        activeRunHyperlinkUrl = null;
+        activeHyperlinkText.setLength(0);
+    }
+
+    private boolean isCollectingLinkMetadata() {
+        return activeHyperlinkUrl != null || activeRunHyperlinkUrl != null;
     }
 
     @Override

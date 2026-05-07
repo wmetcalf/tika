@@ -773,6 +773,14 @@ public class OOXMLDocxSAXTest extends TikaTest {
                 getRecursiveMetadata("testAttachedTemplate.docx");
         Metadata m = metadataList.get(0);
         assertEquals("true", m.get(Office.HAS_ATTACHED_TEMPLATE));
+        assertContains("attached_template",
+                List.of(m.getValues(Office.OFFICE_LINK_TYPE)));
+        assertContains("word/document.xml",
+                List.of(m.getValues(Office.OFFICE_LINK_SOURCE)));
+        assertContains("relationship",
+                List.of(m.getValues(Office.OFFICE_LINK_CONTEXT)));
+        assertTrue(List.of(m.getValues(Office.OFFICE_LINK_URL)).stream()
+                .anyMatch(u -> u.contains("example.com/templates")));
 
         String xml = getXML("testAttachedTemplate.docx").xml;
         assertContains("class=\"external-ref-attachedTemplate\"", xml);

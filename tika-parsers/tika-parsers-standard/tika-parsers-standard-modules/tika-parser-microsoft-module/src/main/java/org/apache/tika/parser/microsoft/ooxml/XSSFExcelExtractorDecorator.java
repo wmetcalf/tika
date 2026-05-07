@@ -56,6 +56,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.TikaExcelDataFormatter;
 import org.apache.tika.sax.XHTMLContentHandler;
@@ -470,6 +471,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         if (url == null || url.isEmpty()) {
             return;
         }
+        OfficeLinkMetadataUtil.addLink(metadata,
+                OfficeLinkMetadataUtil.normalizeType(refType), url, null, null,
+                "", "relationship", "", "");
         org.xml.sax.helpers.AttributesImpl attrs = new org.xml.sax.helpers.AttributesImpl();
         attrs.addAttribute("", "class", "class", "CDATA", "external-ref-" + refType);
         attrs.addAttribute("", "href", "href", "CDATA", url);

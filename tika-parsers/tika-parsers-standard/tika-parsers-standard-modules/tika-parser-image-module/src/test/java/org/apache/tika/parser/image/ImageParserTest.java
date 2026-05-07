@@ -35,6 +35,7 @@ import org.apache.tika.TikaTest;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Barcode;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -248,6 +249,34 @@ public class ImageParserTest extends TikaTest {
         try (TikaInputStream tis = getResourceAsStream("/test-documents/testBMP.bmp")) {
             parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
+    }
+
+    @Test
+    public void testImageHashesDisabledByDefault() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+
+        assertEquals(null, metadata.get(ImageHash.PHASH));
+        assertEquals(null, metadata.get(ImageHash.COLORHASH));
+    }
+
+    @Test
+    public void testImageHashesEnabled() throws Exception {
+        ImageParser hashingParser = new ImageParser();
+        hashingParser.setImageHashingEnabled(true);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            hashingParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+
+        assertEquals("b68fc4b2746d8986", metadata.get(ImageHash.PHASH));
+        assertEquals("1f0e0310000000", metadata.get(ImageHash.COLORHASH));
     }
 
     @Test
