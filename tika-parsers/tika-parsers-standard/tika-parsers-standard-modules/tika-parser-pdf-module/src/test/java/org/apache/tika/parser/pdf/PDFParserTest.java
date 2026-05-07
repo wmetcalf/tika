@@ -1144,6 +1144,12 @@ public class PDFParserTest extends TikaTest {
         assertContains("Left column line 1 Left column line 2 ", text);
     }
 
+    @Test
+    public void testDefaultOcrDPI() {
+        PDFParserConfig config = new PDFParserConfig();
+        assertEquals(300, config.getOcrDPI());
+    }
+
     // Moved to tika-parsers-standard-package PDFParserTest.testInitializationOfNonPrimitivesViaJsonConfig
 
     @Test

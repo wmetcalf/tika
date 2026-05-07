@@ -117,13 +117,7 @@ public class PDFParserConfig implements Serializable {
     //content from elsewhere in the document.
     private boolean ifXFAExtractOnlyXFA = false;
 
-    private OcrConfig ocr = defaultOcrConfig();
-
-    private static OcrConfig defaultOcrConfig() {
-        OcrConfig ocr = new OcrConfig();
-        ocr.setDpi(600);
-        return ocr;
-    }
+    private OcrConfig ocr = new OcrConfig();
 
     /**
      * Should the entire document be rendered?
