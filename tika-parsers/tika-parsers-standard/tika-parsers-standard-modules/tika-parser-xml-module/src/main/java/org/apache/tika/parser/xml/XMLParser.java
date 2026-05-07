@@ -16,7 +16,9 @@
  */
 package org.apache.tika.parser.xml;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -27,11 +29,14 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.TextContentHandler;
@@ -63,6 +68,9 @@ public class XMLParser implements Parser {
             metadata.set(Metadata.CONTENT_TYPE, "application/xml");
         }
 
+        boolean isSvg = "image/svg+xml".equals(metadata.get(Metadata.CONTENT_TYPE));
+        Path svgPath = isSvg ? tis.getPath() : null;
+
         final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         xhtml.startElement("p");
@@ -79,8 +87,51 @@ public class XMLParser implements Parser {
             throw new TikaException("XML parse error", e);
         } finally {
             tis.removeCloseShield();
+            if (svgPath != null) {
+                trySvgOcr(svgPath, xhtml, metadata, context);
+            }
             xhtml.endElement("p");
             xhtml.endDocument();
+        }
+    }
+
+    private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
+                                   Metadata metadata, ParseContext context) {
+        try {
+            org.apache.tika.parser.Parser ocrParser =
+                EmbeddedDocumentUtil.getStatelessParser(context);
+            if (ocrParser == null) return;
+            org.apache.tika.mime.MediaType pngOcrType =
+                org.apache.tika.mime.MediaType.image("ocr-png");
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) return;
+
+            org.apache.batik.transcoder.image.PNGTranscoder transcoder =
+                new org.apache.batik.transcoder.image.PNGTranscoder();
+            transcoder.addTranscodingHint(
+                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, 1200f);
+            transcoder.addTranscodingHint(
+                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, 1200f);
+
+            ByteArrayOutputStream pngOut = new ByteArrayOutputStream();
+            transcoder.transcode(
+                new org.apache.batik.transcoder.TranscoderInput(svgPath.toUri().toString()),
+                new org.apache.batik.transcoder.TranscoderOutput(pngOut));
+            byte[] pngBytes = pngOut.toByteArray();
+            if (pngBytes.length == 0) return;
+
+            try (org.apache.tika.io.TikaInputStream pngStream =
+                    org.apache.tika.io.TikaInputStream.get(pngBytes)) {
+                Metadata ocrMeta = Metadata.newInstance(context);
+                ocrMeta.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
+                    pngOcrType.toString());
+                ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
+                ocrParser.parse(pngStream,
+                    new org.apache.tika.sax.EmbeddedContentHandler(
+                        new BodyContentHandler(xhtml)),
+                    ocrMeta, context);
+            }
+        } catch (Exception e) {
+            // non-fatal: SVG rasterization fails for complex/malformed files
         }
     }
 
