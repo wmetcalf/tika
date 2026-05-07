@@ -18,6 +18,8 @@ package org.apache.tika.parser.xml;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
@@ -98,11 +100,46 @@ public class XMLParser implements Parser {
     // Skip rasterization for SVGs above this size to avoid OOM in Batik
     private static final long SVG_RASTER_MAX_BYTES = 4L * 1024 * 1024; // 4 MB
 
+    /**
+     * Rewrite SVG 2.0 bare {@code href} attributes on {@code <image>} elements to
+     * {@code xlink:href} so Batik 1.x can render them without a JVM crash.
+     * Returns the original path unchanged if no rewrite is needed.
+     */
+    private static Path normalizeSvgHrefs(Path svgPath) throws IOException {
+        byte[] raw = Files.readAllBytes(svgPath);
+        String content = new String(raw, StandardCharsets.UTF_8);
+
+        // Bail out early if there are no bare href= on image elements
+        if (!content.contains("<image") || !content.contains(" href=")) {
+            return svgPath;
+        }
+
+        // Ensure the xlink namespace is declared on the root svg element
+        String fixed = content;
+        if (!fixed.contains("xmlns:xlink")) {
+            fixed = fixed.replaceFirst(
+                "(<svg\\b[^>]*?)(>|/>)",
+                "$1 xmlns:xlink=\"http://www.w3.org/1999/xlink\"$2");
+        }
+        // Replace bare href= with xlink:href= inside <image ...> tags
+        // Simple approach: replace the attribute globally — safe because xlink:href=
+        // is already handled and we only care about Batik's image loading.
+        fixed = fixed.replace(" href=", " xlink:href=");
+
+        if (fixed.equals(content)) {
+            return svgPath;
+        }
+        Path tmp = Files.createTempFile("tika-svg-norm-", ".svg");
+        Files.write(tmp, fixed.getBytes(StandardCharsets.UTF_8));
+        return tmp;
+    }
+
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
                                    Metadata metadata, ParseContext context) {
+        Path renderPath = svgPath;
         try {
             // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
-            if (java.nio.file.Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
+            if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
                 return;
             }
             org.apache.tika.parser.Parser ocrParser =
@@ -116,6 +153,9 @@ public class XMLParser implements Parser {
                 return;
             }
 
+            // Rewrite SVG 2.0 href → xlink:href so Batik does not crash
+            renderPath = normalizeSvgHrefs(svgPath);
+
             org.apache.batik.transcoder.image.PNGTranscoder transcoder =
                 new org.apache.batik.transcoder.image.PNGTranscoder();
             transcoder.addTranscodingHint(
@@ -125,7 +165,7 @@ public class XMLParser implements Parser {
 
             ByteArrayOutputStream pngOut = new ByteArrayOutputStream();
             transcoder.transcode(
-                new org.apache.batik.transcoder.TranscoderInput(svgPath.toUri().toString()),
+                new org.apache.batik.transcoder.TranscoderInput(renderPath.toUri().toString()),
                 new org.apache.batik.transcoder.TranscoderOutput(pngOut));
             byte[] pngBytes = pngOut.toByteArray();
             if (pngBytes.length == 0) {
@@ -144,8 +184,11 @@ public class XMLParser implements Parser {
                     ocrMeta, context);
             }
         } catch (Throwable e) {
-            // non-fatal: catch Error subclasses (OOM, StackOverflow) too — Batik can
-            // throw these on malformed SVGs with href (SVG 2.0) image references
+            // non-fatal: catch Error subclasses (OOM, StackOverflow) too
+        } finally {
+            if (!renderPath.equals(svgPath)) {
+                try { Files.deleteIfExists(renderPath); } catch (IOException ignored) { }
+            }
         }
     }
 
