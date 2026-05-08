@@ -151,6 +151,17 @@ class RTFObjDataParser {
                 return ret;
             }
 
+            // Extract the OLE2 root storage CLSID — identifies the embedding application and,
+            // combined with emb_class, can flag known exploit CLSIDs (e.g. StdOleLink, Equation.3).
+            org.apache.poi.hpsf.ClassID clsid = root.getStorageClsid();
+            if (clsid != null) {
+                String clsidStr = clsid.toString();
+                if (clsidStr != null && !clsidStr.isEmpty()
+                        && !clsidStr.equals("{00000000-0000-0000-0000-000000000000}")) {
+                    metadata.set(RTFMetadata.EMB_CLSID, clsidStr);
+                }
+            }
+
             if (root.hasEntry("Package")) {
                 Entry ooxml = root.getEntry("Package");
                 UnsynchronizedByteArrayOutputStream out = UnsynchronizedByteArrayOutputStream.builder().get();
@@ -276,6 +287,11 @@ class RTFObjDataParser {
         metadata.set(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, fileNameToUse);
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, FilenameUtils.getName(fileNameToUse));
         metadata.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, pathToUse);
+        // Surface the source path in the rtf_meta namespace so it passes through extractMetadata()
+        // filtering (which drops X-TIKA: keys).  Useful for detecting executables dropped to temp paths.
+        if (!pathToUse.isEmpty()) {
+            metadata.set(RTFMetadata.EMB_SOURCE_PATH, pathToUse);
+        }
 
         return objBytes;
     }

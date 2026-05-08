@@ -48,4 +48,15 @@ public interface RTFMetadata {
     Property CONTAINS_ENCAPSULATED_HTML = Property.internalBoolean(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "contains_encapsulated_html");
 
+    /** CLSID (binary GUID) of the OLE2 embedded object root storage, formatted as {xxxxxxxx-...}. */
+    Property EMB_CLSID = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_clsid");
+
+    /**
+     * Original source path of an OLE Package object (the path on the system that created it).
+     * For Package embeds this is typically a full absolute path like C:\path\to\file.exe.
+     */
+    Property EMB_SOURCE_PATH = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_source_path");
+
 }

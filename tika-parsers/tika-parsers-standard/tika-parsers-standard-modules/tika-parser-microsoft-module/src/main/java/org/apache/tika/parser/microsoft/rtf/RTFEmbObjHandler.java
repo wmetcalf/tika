@@ -154,6 +154,19 @@ class RTFEmbObjHandler {
         hi = -1;
     }
 
+    /**
+     * Fix 3b: Write a pre-decoded byte directly into the OLE output stream.
+     * Used when a {@code \'HH} RTF hex escape appears inside an {@code \objdata}
+     * stream: the decoded byte is written as a complete OLE byte, and any pending
+     * nibble (hi) is discarded so the next raw hex character starts a fresh pair.
+     * This matches MS Word's behaviour — it does not mix {@code \'HH} nibbles with
+     * the surrounding hex stream.
+     */
+    protected void writeDecodedByte(int b) throws IOException {
+        hi = -1;
+        os.write(b);
+    }
+
     protected void setPictBitmap(boolean isPictBitmap) {
         this.isPictBitmap = isPictBitmap;
     }

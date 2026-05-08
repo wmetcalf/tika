@@ -557,18 +557,20 @@ final class TextExtractor {
             // escape:
             ansiSkip--;
         } else {
-            // Unescape:
-            addOutputByte(16 * hexValue(hex1) + hexValue(hex2));
-            // Fix 3b (TODO): When \'HH appears inside an \objdata hex stream the RTF
-            // spec says the decoded byte should be fed into the OLE hex decoder and the
-            // nibble accumulator (RTFEmbObjHandler.hi) should be reset to -1 so that
-            // the next hex character from the outer \objdata stream begins a fresh byte
-            // pair (MS Word behaviour).  Implementing this fully requires knowing at
-            // parseHexChar time whether we are inside \objdata (groupState.objdata flag)
-            // and routing the decoded byte to embObjHandler.onByte() rather than
-            // addOutputByte().  Skipped here because it touches the core byte-dispatch
-            // state machine and needs dedicated testing; the \binN nibble reset above
-            // (Fix 3a) covers the most common corruption vector.
+            int decodedByte = 16 * hexValue(hex1) + hexValue(hex2);
+            if (groupState.objdata) {
+                // Fix 3b: \'HH inside \objdata — feed the decoded byte directly to the OLE
+                // accumulator and reset the nibble state so the next outer hex pair is fresh.
+                // This matches MS Word: it does not mix \'HH nibbles into the surrounding
+                // hex stream.
+                try {
+                    embObjHandler.writeDecodedByte(decodedByte);
+                } catch (IOException e) {
+                    // non-fatal; the OLE data may still be partially usable
+                }
+            } else {
+                addOutputByte(decodedByte);
+            }
         }
     }
 
