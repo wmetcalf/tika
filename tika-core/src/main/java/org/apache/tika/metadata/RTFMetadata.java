@@ -79,8 +79,9 @@ public interface RTFMetadata {
 
     /**
      * Set to {@code true} when the {@code \objdata} hex stream for this embedded object
-     * contained one or more {@code \uN} RTF unicode escape sequences.  Unicode escapes have
-     * no meaning inside a binary OLE hex stream and are used solely to corrupt or hide data.
+     * contained one or more RTF unicode escape sequences (backslash-u followed by a decimal).
+     * Unicode escapes have no meaning inside a binary OLE hex stream and are used solely to
+     * corrupt or hide data.
      */
     Property EMB_UNICODE_IN_OBJDATA = Property.internalBoolean(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "unicode_in_objdata");
