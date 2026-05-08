@@ -1300,6 +1300,10 @@ final class TextExtractor {
             groupState.sv = true;
         } else if (equals("object")) {
             pushText();
+            // Fix 2b: flush any buffered \objdata from the previous \object group before
+            // starting a new one.  Without this, only the last \object in the document is
+            // extracted; earlier objects are silently discarded.
+            embObjHandler.flushLastObjData();
             embObjHandler.setInObject(true);
             groupState.object = true;
         } else if (equals("objdata")) {
