@@ -156,10 +156,12 @@ public class XMLParser implements Parser {
                 return;
             }
 
-            // Skip rasterization when called from an embedded-extraction pass (e.g.
-            // EmbeddedFileExtractor) that sets Parser.class but not TesseractOCRConfig.
-            // This prevents rasterizing the same SVG a second time unnecessarily.
-            if (context.get(org.apache.tika.parser.ocr.TesseractOCRConfig.class) == null) {
+            // Skip rasterization when called from an embedded-extraction pass.
+            // EmbeddedFileExtractor (and similar) explicitly registers an
+            // EmbeddedDocumentExtractor in the context; the primary parse pass via
+            // RecursiveParserWrapper does not. Rasterizing the same SVG a second time
+            // wastes memory and can cause OOM on large files.
+            if (context.get(org.apache.tika.extractor.EmbeddedDocumentExtractor.class) != null) {
                 return;
             }
 
