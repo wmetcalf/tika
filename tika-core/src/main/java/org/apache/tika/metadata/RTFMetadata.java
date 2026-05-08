@@ -48,6 +48,15 @@ public interface RTFMetadata {
     Property CONTAINS_ENCAPSULATED_HTML = Property.internalBoolean(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "contains_encapsulated_html");
 
+    /**
+     * Set to {@code true} when the RTF version header is non-standard (i.e. not {@code \rtf1}).
+     * The RTF spec defines only version 1; non-standard values like {@code \rtf9737} are used
+     * to confuse parsers that reject non-version-1 documents while still being accepted by
+     * MS Word.
+     */
+    Property MALFORMED_RTF_HEADER = Property.internalBoolean(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "malformed_rtf_header");
+
     /** CLSID (binary GUID) of the OLE2 embedded object root storage, formatted as {xxxxxxxx-...}. */
     Property EMB_CLSID = Property.internalText(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_clsid");

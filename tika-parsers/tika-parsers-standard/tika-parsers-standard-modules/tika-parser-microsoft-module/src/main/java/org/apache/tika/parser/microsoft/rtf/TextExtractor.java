@@ -900,7 +900,9 @@ final class TextExtractor {
                 // valid RTF; the only action here is to record that the version word was
                 // seen.  Text output direction is now governed by groupState.ignore and
                 // nextMetaData rather than by inHeader alone, so no state flip is needed.
-                // (Intentional no-op — falls through to font-table / body processing.)
+                if (param != 1) {
+                    metadata.set(RTFMetadata.MALFORMED_RTF_HEADER, true);
+                }
             } else if (equals("ansicpg")) {
                 // ANSI codepage
                 Charset cs = ANSICPG_MAP.get(param);
