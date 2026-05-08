@@ -59,4 +59,30 @@ public interface RTFMetadata {
     Property EMB_SOURCE_PATH = Property.internalText(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_source_path");
 
+    /**
+     * Number of decoy {@code \objdata} blocks that were discarded before the surviving
+     * (last-occurrence) block for this embedded object.  A non-zero value indicates that the
+     * document deliberately hid the real OLE payload behind dummy data to defeat parsers
+     * that extract only the first occurrence.
+     */
+    Property EMB_OBJDATA_DECOY_COUNT = Property.internalInteger(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "objdata_decoy_count");
+
+    /**
+     * Set to {@code true} when the {@code \objdata} hex stream for this embedded object
+     * contained one or more {@code \'HH} RTF hex escapes.  In a legitimate document the
+     * OLE data is pure ASCII hex; injected {@code \'HH} escapes are used to corrupt
+     * single-pass decoders and hide the real payload.
+     */
+    Property EMB_HEX_ESCAPE_IN_OBJDATA = Property.internalBoolean(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "hex_escape_in_objdata");
+
+    /**
+     * Set to {@code true} when the {@code \objdata} hex stream for this embedded object
+     * contained one or more {@code \uN} RTF unicode escape sequences.  Unicode escapes have
+     * no meaning inside a binary OLE hex stream and are used solely to corrupt or hide data.
+     */
+    Property EMB_UNICODE_IN_OBJDATA = Property.internalBoolean(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "unicode_in_objdata");
+
 }

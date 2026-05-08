@@ -1031,6 +1031,11 @@ final class TextExtractor {
                 final char utf16CodeUnit = (char) (param & 0xffff);
                 addOutputChar(utf16CodeUnit);
             }
+            // \uN inside \objdata is obfuscation: unicode escapes have no meaning in a
+            // binary OLE hex stream — flag it on the embedded object's metadata.
+            if (groupState.objdata) {
+                embObjHandler.markUnicodeInObjdata();
+            }
 
             // After seeing a unicode escape we must
             // skip the next ucSkip ansi chars (the

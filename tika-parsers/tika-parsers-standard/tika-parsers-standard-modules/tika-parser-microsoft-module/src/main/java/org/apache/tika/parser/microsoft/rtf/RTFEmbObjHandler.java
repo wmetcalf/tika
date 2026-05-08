@@ -88,6 +88,11 @@ class RTFEmbObjHandler {
     private byte[] lastObjDataBytes = null;
     private Metadata lastObjDataMeta = null;
 
+    // Obfuscation-detection counters/flags — reset per \object group in flushLastObjData().
+    private int decoyCount = 0;
+    private boolean hexEscapeInObjdata = false;
+    private boolean unicodeInObjdata = false;
+
     protected RTFEmbObjHandler(ContentHandler handler, Metadata metadata, ParseContext context,
                                int memoryLimitInKb) {
         this.handler = handler;
@@ -105,8 +110,13 @@ class RTFEmbObjHandler {
     protected void startObjData() {
         // Discard any previously buffered \objdata bytes: the new occurrence wins
         // (last-occurrence semantics matching MS Word behaviour, Fix 2).
+        if (lastObjDataBytes != null) {
+            decoyCount++;
+        }
         lastObjDataBytes = null;
         lastObjDataMeta = null;
+        hexEscapeInObjdata = false;
+        unicodeInObjdata = false;
         state = EMB_STATE.OBJDATA;
         metadata = Metadata.newInstance(context);
     }
@@ -163,8 +173,14 @@ class RTFEmbObjHandler {
      * the surrounding hex stream.
      */
     protected void writeDecodedByte(int b) throws IOException {
+        hexEscapeInObjdata = true;
         hi = -1;
         os.write(b);
+    }
+
+    /** Called by TextExtractor when a {@code \uN} unicode escape is seen inside {@code \objdata}. */
+    protected void markUnicodeInObjdata() {
+        unicodeInObjdata = true;
     }
 
     protected void setPictBitmap(boolean isPictBitmap) {
@@ -251,12 +267,32 @@ class RTFEmbObjHandler {
      */
     protected void flushLastObjData() throws IOException, SAXException, TikaException {
         if (lastObjDataBytes == null) {
+            decoyCount = 0;
+            hexEscapeInObjdata = false;
+            unicodeInObjdata = false;
             return;
         }
         byte[] bytes = lastObjDataBytes;
         Metadata savedMeta = lastObjDataMeta;
         lastObjDataBytes = null;
         lastObjDataMeta = null;
+
+        // Stamp obfuscation signals onto the surviving object's metadata.
+        if (decoyCount > 0) {
+            savedMeta.set(RTFMetadata.EMB_OBJDATA_DECOY_COUNT, decoyCount);
+        }
+        if (hexEscapeInObjdata) {
+            savedMeta.set(RTFMetadata.EMB_HEX_ESCAPE_IN_OBJDATA, true);
+        }
+        if (unicodeInObjdata) {
+            savedMeta.set(RTFMetadata.EMB_UNICODE_IN_OBJDATA, true);
+        }
+
+        // Reset for the next \object group.
+        decoyCount = 0;
+        hexEscapeInObjdata = false;
+        unicodeInObjdata = false;
+
         RTFObjDataParser objParser = new RTFObjDataParser(memoryLimitInKb);
         try {
             byte[] objBytes = objParser.parse(bytes, savedMeta, unknownFilenameCount);
