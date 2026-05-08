@@ -112,6 +112,8 @@ class RTFEmbObjHandler {
         // (last-occurrence semantics matching MS Word behaviour, Fix 2).
         if (lastObjDataBytes != null) {
             decoyCount++;
+        } else {
+            decoyCount = 0;  // first \objdata in this group; clear any residual from an exception path
         }
         lastObjDataBytes = null;
         lastObjDataMeta = null;

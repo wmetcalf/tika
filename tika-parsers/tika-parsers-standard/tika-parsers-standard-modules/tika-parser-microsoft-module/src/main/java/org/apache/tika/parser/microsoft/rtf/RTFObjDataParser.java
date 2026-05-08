@@ -204,7 +204,7 @@ class RTFObjDataParser {
                     UnsynchronizedByteArrayOutputStream out = UnsynchronizedByteArrayOutputStream.builder().get();
                     is.reset();
                     BoundedInputStream bis = new BoundedInputStream(memoryLimitInKb * 1024, is);
-                    IOUtils.copy(is, out);
+                    IOUtils.copy(bis, out);  // fix: read from bis, not is, to enforce memory limit
                     if (bis.hasHitBound()) {
                         throw new TikaMemoryLimitException(memoryLimitInKb * 1024 + 1,
                                 memoryLimitInKb * 1024);
@@ -369,8 +369,8 @@ class RTFObjDataParser {
      * each canonical form and flag a mismatch.
      */
     private static void checkClassNameObfuscation(String className, Metadata metadata) {
-        String[] canonical = {"OLE2Link", "OLE10Native", "Equation.3", "Equation.2",
-                              "Package", "pbrush"};
+        // pbrush/PBrush are both used legitimately; exclude to avoid false positives.
+        String[] canonical = {"OLE2Link", "OLE10Native", "Equation.3", "Equation.2", "Package"};
         String lower = className.toLowerCase(Locale.ROOT);
         for (String c : canonical) {
             if (lower.equals(c.toLowerCase(Locale.ROOT)) && !className.equals(c)) {

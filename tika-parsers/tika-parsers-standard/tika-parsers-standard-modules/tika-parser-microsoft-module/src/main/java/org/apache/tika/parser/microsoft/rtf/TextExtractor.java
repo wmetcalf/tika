@@ -1312,7 +1312,14 @@ final class TextExtractor {
             // Fix 2b: flush any buffered \objdata from the previous \object group before
             // starting a new one.  Without this, only the last \object in the document is
             // extracted; earlier objects are silently discarded.
-            embObjHandler.flushLastObjData();
+            // Wrap non-fatally: if flushLastObjData throws (e.g. a SAXException from a
+            // downstream handler), setInObject and groupState.object must still be set so
+            // the group tracking for the new \object is not corrupted.
+            try {
+                embObjHandler.flushLastObjData();
+            } catch (Exception e) {
+                EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
+            }
             embObjHandler.setInObject(true);
             groupState.object = true;
         } else if (equals("objdata")) {
