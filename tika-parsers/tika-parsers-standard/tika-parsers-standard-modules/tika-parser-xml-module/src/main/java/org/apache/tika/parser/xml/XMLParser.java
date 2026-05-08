@@ -102,8 +102,10 @@ public class XMLParser implements Parser {
         }
     }
 
-    // Skip rasterization for SVGs above this size to avoid OOM in Batik
-    private static final long SVG_RASTER_MAX_BYTES = 512L * 1024; // 512 KB
+    // Skip rasterization for SVGs above this size to avoid OOM in Batik.
+    // Data URI images are stripped before rendering so the main crash vector is handled;
+    // 10 MB covers legitimate AI-generated art, data visualisations, and complex diagrams.
+    private static final long SVG_RASTER_MAX_BYTES = 10L * 1024 * 1024; // 10 MB
 
     /**
      * Sanitize an SVG for Batik 1.x rasterization:
