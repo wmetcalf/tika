@@ -259,6 +259,10 @@ class RTFObjDataParser {
 
         try {
             long unicodeLen = readUInt(is);
+            if (unicodeLen > memoryLimitInKb * 512L) {
+                // attacker-controlled value would cause OOM; skip the unicode path
+                unicodeLen = 0;
+            }
 
             for (int i = 0; i < unicodeLen; i++) {
                 int lo = is.read();
@@ -370,7 +374,8 @@ class RTFObjDataParser {
      */
     private static void checkClassNameObfuscation(String className, Metadata metadata) {
         // pbrush/PBrush are both used legitimately; exclude to avoid false positives.
-        String[] canonical = {"OLE2Link", "OLE10Native", "Equation.3", "Equation.2", "Package"};
+        String[] canonical = {"OLE2Link", "OLE10Native", "Equation.3", "Equation.2", "Package",
+                              "StdOleLink", "Word.Document.8", "Excel.Sheet.8", "PowerPoint.Show.8"};
         String lower = className.toLowerCase(Locale.ROOT);
         for (String c : canonical) {
             if (lower.equals(c.toLowerCase(Locale.ROOT)) && !className.equals(c)) {

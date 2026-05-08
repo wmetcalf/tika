@@ -512,7 +512,11 @@ final class TextExtractor {
         }
 
         // Fix 2: emit the last \objdata occurrence (last-occurrence wins semantics).
-        embObjHandler.flushLastObjData();
+        try {
+            embObjHandler.flushLastObjData();
+        } catch (Exception e) {
+            EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
+        }
     }
 
     private void parseControlToken(PushbackInputStream in)
@@ -563,11 +567,7 @@ final class TextExtractor {
                 // accumulator and reset the nibble state so the next outer hex pair is fresh.
                 // This matches MS Word: it does not mix \'HH nibbles into the surrounding
                 // hex stream.
-                try {
-                    embObjHandler.writeDecodedByte(decodedByte);
-                } catch (IOException e) {
-                    // non-fatal; the OLE data may still be partially usable
-                }
+                embObjHandler.writeDecodedByte(decodedByte);
             } else {
                 addOutputByte(decodedByte);
             }

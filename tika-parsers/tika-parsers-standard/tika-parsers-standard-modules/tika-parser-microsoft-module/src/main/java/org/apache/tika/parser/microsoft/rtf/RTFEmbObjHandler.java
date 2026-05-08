@@ -175,9 +175,9 @@ class RTFEmbObjHandler {
      * the surrounding hex stream.
      */
     protected void writeDecodedByte(int b) throws IOException {
+        os.write(b);
         hexEscapeInObjdata = true;
         hi = -1;
-        os.write(b);
     }
 
     /** Called by TextExtractor when a RTF unicode escape (backslash-u) is seen inside {@code \objdata}. */
