@@ -156,12 +156,12 @@ public class XMLParser implements Parser {
                 return;
             }
 
-            // Skip rasterization when called from an embedded-extraction pass.
-            // EmbeddedFileExtractor (and similar) explicitly registers an
-            // EmbeddedDocumentExtractor in the context; the primary parse pass via
-            // RecursiveParserWrapper does not. Rasterizing the same SVG a second time
-            // wastes memory and can cause OOM on large files.
-            if (context.get(org.apache.tika.extractor.EmbeddedDocumentExtractor.class) != null) {
+            // Only rasterize in the primary parse pass (where EmbeddedLimits is set by
+            // ParserRunner). EmbeddedFileExtractor's second pass does not set EmbeddedLimits,
+            // so this guard prevents rasterizing the same SVG a second time unnecessarily.
+            // Note: EmbeddedDocumentExtractor is not usable as the marker because
+            // RecursiveParserWrapper also sets it in the primary pass context.
+            if (context.get(org.apache.tika.config.EmbeddedLimits.class) == null) {
                 return;
             }
 
