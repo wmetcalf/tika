@@ -47,6 +47,7 @@ import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.TextContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.utils.ImageHashUtils;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -147,6 +148,29 @@ public class XMLParser implements Parser {
         return tmp;
     }
 
+    /**
+     * Rasterize {@code svgPath} to PNG bytes at the given max dimension.
+     * Returns null if Batik fails for any reason (including OOM).
+     */
+    private static byte[] rasterizeSvg(Path svgPath, float maxDim) {
+        try {
+            org.apache.batik.transcoder.image.PNGTranscoder t =
+                new org.apache.batik.transcoder.image.PNGTranscoder();
+            t.addTranscodingHint(
+                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, maxDim);
+            t.addTranscodingHint(
+                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, maxDim);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            t.transcode(
+                new org.apache.batik.transcoder.TranscoderInput(svgPath.toUri().toString()),
+                new org.apache.batik.transcoder.TranscoderOutput(out));
+            byte[] bytes = out.toByteArray();
+            return bytes.length > 0 ? bytes : null;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
                                    Metadata metadata, ParseContext context) {
         Path renderPath = svgPath;
@@ -159,8 +183,6 @@ public class XMLParser implements Parser {
             // Only rasterize in the primary parse pass (where EmbeddedLimits is set by
             // ParserRunner). EmbeddedFileExtractor's second pass does not set EmbeddedLimits,
             // so this guard prevents rasterizing the same SVG a second time unnecessarily.
-            // Note: EmbeddedDocumentExtractor is not usable as the marker because
-            // RecursiveParserWrapper also sets it in the primary pass context.
             if (context.get(org.apache.tika.config.EmbeddedLimits.class) == null) {
                 return;
             }
@@ -168,55 +190,53 @@ public class XMLParser implements Parser {
             // Rewrite SVG 2.0 href → xlink:href so Batik does not crash
             renderPath = normalizeSvgHrefs(svgPath);
 
-            org.apache.batik.transcoder.image.PNGTranscoder transcoder =
-                new org.apache.batik.transcoder.image.PNGTranscoder();
-            transcoder.addTranscodingHint(
-                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, 1200f);
-            transcoder.addTranscodingHint(
-                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, 1200f);
+            // Full-resolution raster for OCR and phash (1200px max).
+            // If Batik fails here (OOM on complex SVGs), fall through to the
+            // lower-res phash fallback below.
+            byte[] pngBytes = rasterizeSvg(renderPath, 1200f);
+            if (pngBytes != null) {
+                // Phash/colorhash from the full-res render
+                try {
+                    BufferedImage raster = ImageIO.read(new ByteArrayInputStream(pngBytes));
+                    ImageHashUtils.setHashes(raster, metadata);
+                } catch (Exception ignored) { }
 
-            ByteArrayOutputStream pngOut = new ByteArrayOutputStream();
-            transcoder.transcode(
-                new org.apache.batik.transcoder.TranscoderInput(renderPath.toUri().toString()),
-                new org.apache.batik.transcoder.TranscoderOutput(pngOut));
-            byte[] pngBytes = pngOut.toByteArray();
-            if (pngBytes.length == 0) {
-                return;
-            }
-
-            // Compute perceptual hashes from the rasterized PNG (always, regardless of OCR)
-            try {
-                BufferedImage raster = ImageIO.read(new ByteArrayInputStream(pngBytes));
-                ImageHashUtils.setHashes(raster, metadata);
-            } catch (Exception e) {
-                // non-fatal
-            }
-
-            // OCR dispatch — only if Tesseract (or equivalent) is configured
-            org.apache.tika.parser.Parser ocrParser =
-                EmbeddedDocumentUtil.getStatelessParser(context);
-            if (ocrParser == null) {
-                return;
-            }
-            org.apache.tika.mime.MediaType pngOcrType =
-                org.apache.tika.mime.MediaType.image("ocr-png");
-            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
-                return;
+                // OCR dispatch — only if Tesseract (or equivalent) is configured
+                org.apache.tika.parser.Parser ocrParser =
+                    EmbeddedDocumentUtil.getStatelessParser(context);
+                org.apache.tika.mime.MediaType pngOcrType =
+                    org.apache.tika.mime.MediaType.image("ocr-png");
+                if (ocrParser != null
+                        && ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
+                    try (org.apache.tika.io.TikaInputStream pngStream =
+                            org.apache.tika.io.TikaInputStream.get(pngBytes)) {
+                        Metadata ocrMeta = Metadata.newInstance(context);
+                        ocrMeta.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
+                            pngOcrType.toString());
+                        ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
+                        ocrParser.parse(pngStream,
+                            new org.apache.tika.sax.EmbeddedContentHandler(
+                                new BodyContentHandler(xhtml)),
+                            ocrMeta, context);
+                    } catch (Exception ignored) { }
+                }
             }
 
-            try (org.apache.tika.io.TikaInputStream pngStream =
-                    org.apache.tika.io.TikaInputStream.get(pngBytes)) {
-                Metadata ocrMeta = Metadata.newInstance(context);
-                ocrMeta.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE,
-                    pngOcrType.toString());
-                ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
-                ocrParser.parse(pngStream,
-                    new org.apache.tika.sax.EmbeddedContentHandler(
-                        new BodyContentHandler(xhtml)),
-                    ocrMeta, context);
+            // Fallback: if phash still unset (1200px rasterization failed), try 512px.
+            // This keeps phash in the Tika fork for complex/large SVGs where high-res
+            // Batik rendering fails, rather than delegating to the application layer.
+            if (metadata.get(ImageHash.PHASH) == null) {
+                byte[] fallback = rasterizeSvg(renderPath, 512f);
+                if (fallback != null) {
+                    try {
+                        BufferedImage img = ImageIO.read(new ByteArrayInputStream(fallback));
+                        ImageHashUtils.setHashes(img, metadata);
+                    } catch (Exception ignored) { }
+                }
             }
+
         } catch (Throwable e) {
-            // non-fatal: catch Error subclasses (OOM, StackOverflow) too
+            // non-fatal
         } finally {
             if (!renderPath.equals(svgPath)) {
                 try { Files.deleteIfExists(renderPath); } catch (IOException ignored) { }
