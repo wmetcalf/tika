@@ -30,7 +30,9 @@ import java.util.Set;
 
 import javax.imageio.ImageIO;
 
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
@@ -114,6 +116,7 @@ public class XMLParser implements Parser {
      *   <li>Rewrites SVG 2.0 bare {@code href} on {@code <image>} to {@code xlink:href}.</li>
      *   <li>Strips inline data URI image content (replaces with empty string) to prevent
      *       Batik from crashing when decoding large embedded images.</li>
+     *   <li>Strips external xlink:href values from {@code <use>} elements (SSRF protection).</li>
      * </ul>
      * Returns the original path unchanged if no edits were needed.
      */
@@ -139,6 +142,12 @@ public class XMLParser implements Parser {
         fixed = fixed.replaceAll(
             "(xlink:href|href)=\"data:[^\"]*\"",
             "$1=\"\"");
+
+        // 4. Strip external xlink:href values from <use> elements (SSRF protection for Batik).
+        //    Local fragment refs (#id) are preserved; only external URLs are cleared.
+        fixed = fixed.replaceAll(
+            "(<use\\b[^>]*?)xlink:href=\"(?!#)[^\"]+\"",
+            "$1xlink:href=\"\"");
 
         if (fixed.equals(content)) {
             return svgPath;
@@ -246,6 +255,157 @@ public class XMLParser implements Parser {
 
     protected ContentHandler getContentHandler(ContentHandler handler, Metadata metadata,
                                                ParseContext context) {
+        if ("image/svg+xml".equals(metadata.get(Metadata.CONTENT_TYPE))) {
+            return new SvgEnrichingHandler(new TextContentHandler(handler, true), metadata);
+        }
         return new TextContentHandler(handler, true);
+    }
+
+    /**
+     * SAX ContentHandler that wraps a TextContentHandler for SVG content and extracts
+     * security-relevant features into metadata: foreignObject presence, event handler
+     * attributes, external href/src references, and zero-width characters.
+     */
+    private static final class SvgEnrichingHandler implements ContentHandler {
+
+        private static final String XLINK_NS = "http://www.w3.org/1999/xlink";
+
+        private static final Set<String> EVENT_ATTRS;
+        static {
+            EVENT_ATTRS = new HashSet<>(Arrays.asList(
+                "onclick", "onload", "onerror", "onmouseover", "onmouseenter",
+                "onmouseleave", "onmouseout", "onmousedown", "onmouseup", "ondblclick",
+                "onfocus", "onblur", "onsubmit", "oninput", "onkeydown", "onkeyup",
+                "onkeypress", "onbegin", "onend", "onunload", "onabort"
+            ));
+        }
+
+        // Zero-width / invisible characters to detect
+        private static final String ZERO_WIDTH_CHARS = "​‌‍⁠﻿­";
+
+        private final ContentHandler delegate;
+        private final Metadata metadata;
+
+        SvgEnrichingHandler(ContentHandler delegate, Metadata metadata) {
+            this.delegate = delegate;
+            this.metadata = metadata;
+        }
+
+        private static String getHref(Attributes attrs) {
+            String v = attrs.getValue("href");
+            if (v != null) {
+                return v;
+            }
+            v = attrs.getValue(XLINK_NS, "href");
+            if (v != null) {
+                return v;
+            }
+            return attrs.getValue("xlink:href");
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes atts)
+                throws SAXException {
+            String local = localName != null && !localName.isEmpty() ? localName : qName;
+
+            // Feature 1: foreignObject detection
+            if ("foreignObject".equals(local)) {
+                metadata.set("svg:hasForeignObject", "true");
+            }
+
+            // Feature 2: event handler attribute extraction
+            int n = atts.getLength();
+            for (int i = 0; i < n; i++) {
+                String attrName = atts.getLocalName(i);
+                if (attrName == null || attrName.isEmpty()) {
+                    attrName = atts.getQName(i);
+                }
+                if (EVENT_ATTRS.contains(attrName)) {
+                    metadata.set("svg:hasEventHandlers", "true");
+                    String val = atts.getValue(i);
+                    if (val != null && !val.isEmpty()) {
+                        char[] chars = val.toCharArray();
+                        delegate.characters(chars, 0, chars.length);
+                    }
+                }
+            }
+
+            // Feature 3: external href/src extraction
+            if ("use".equals(local)) {
+                String href = getHref(atts);
+                if (href != null && !href.isEmpty() && !href.startsWith("#")) {
+                    metadata.add("svg:externalUseRef", href);
+                }
+            } else if ("a".equals(local)) {
+                String href = getHref(atts);
+                if (href != null && !href.isEmpty() && !href.startsWith("#")) {
+                    metadata.add("svg:link", href);
+                }
+            } else if ("script".equals(local)) {
+                String src = atts.getValue("src");
+                if (src != null && !src.isEmpty()) {
+                    metadata.add("svg:externalScript", src);
+                }
+            }
+
+            delegate.startElement(uri, localName, qName, atts);
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            // Feature 4: zero-width character detection
+            for (int i = start; i < start + length; i++) {
+                if (ZERO_WIDTH_CHARS.indexOf(ch[i]) >= 0) {
+                    metadata.set("svg:hasZeroWidthChars", "true");
+                    break;
+                }
+            }
+            delegate.characters(ch, start, length);
+        }
+
+        @Override
+        public void setDocumentLocator(Locator locator) {
+            delegate.setDocumentLocator(locator);
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            delegate.startDocument();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            delegate.endDocument();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) throws SAXException {
+            delegate.startPrefixMapping(prefix, uri);
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            delegate.endPrefixMapping(prefix);
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            delegate.endElement(uri, localName, qName);
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
+            delegate.ignorableWhitespace(ch, start, length);
+        }
+
+        @Override
+        public void processingInstruction(String target, String data) throws SAXException {
+            delegate.processingInstruction(target, data);
+        }
+
+        @Override
+        public void skippedEntity(String name) throws SAXException {
+            delegate.skippedEntity(name);
+        }
     }
 }
