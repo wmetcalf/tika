@@ -156,6 +156,13 @@ public class XMLParser implements Parser {
                 return;
             }
 
+            // Skip rasterization when called from an embedded-extraction pass (e.g.
+            // EmbeddedFileExtractor) that sets Parser.class but not TesseractOCRConfig.
+            // This prevents rasterizing the same SVG a second time unnecessarily.
+            if (context.get(org.apache.tika.parser.ocr.TesseractOCRConfig.class) == null) {
+                return;
+            }
+
             // Rewrite SVG 2.0 href → xlink:href so Batik does not crash
             renderPath = normalizeSvgHrefs(svgPath);
 
