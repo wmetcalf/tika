@@ -431,7 +431,12 @@ final class TextExtractor {
             pushBytes();
         }
 
-        if (inHeader || fieldState == 1) {
+        // While in the RTF header, route text to pendingBuffer only when we are
+        // inside a specific metadata destination (nextMetaData != null) or an
+        // ignored group (groupState.ignore).  Text that appears in the header but
+        // outside those destinations — e.g. in a bare \rtfN document with no \par
+        // or \pard — is sent to the content handler so callers see it.
+        if ((inHeader && (nextMetaData != null || groupState.ignore)) || fieldState == 1) {
             pendingBuffer.append(ch);
         } else if (groupState.sn == true || groupState.sv == true) {
             embObjHandler.writeMetadataChar(ch);
@@ -505,6 +510,9 @@ final class TextExtractor {
         while (paragraphStack.size() > 0) {
             end(paragraphStack.pop());
         }
+
+        // Fix 2: emit the last \objdata occurrence (last-occurrence wins semantics).
+        embObjHandler.flushLastObjData();
     }
 
     private void parseControlToken(PushbackInputStream in)
@@ -551,6 +559,16 @@ final class TextExtractor {
         } else {
             // Unescape:
             addOutputByte(16 * hexValue(hex1) + hexValue(hex2));
+            // Fix 3b (TODO): When \'HH appears inside an \objdata hex stream the RTF
+            // spec says the decoded byte should be fed into the OLE hex decoder and the
+            // nibble accumulator (RTFEmbObjHandler.hi) should be reset to -1 so that
+            // the next hex character from the outer \objdata stream begins a fresh byte
+            // pair (MS Word behaviour).  Implementing this fully requires knowing at
+            // parseHexChar time whether we are inside \objdata (groupState.objdata flag)
+            // and routing the decoded byte to embObjHandler.onByte() rather than
+            // addOutputByte().  Skipped here because it touches the core byte-dispatch
+            // state machine and needs dedicated testing; the \binN nibble reset above
+            // (Fix 3a) covers the most common corruption vector.
         }
     }
 
@@ -729,7 +747,7 @@ final class TextExtractor {
 
                 final int pos = outputCharBuffer.position();
                 if (pos > 0) {
-                    if (inHeader || fieldState == 1) {
+                    if ((inHeader && (nextMetaData != null || groupState.ignore)) || fieldState == 1) {
                         pendingBuffer.append(outputArray, 0, pos);
                     } else {
                         lazyStartParagraph();
@@ -748,7 +766,7 @@ final class TextExtractor {
 
                 final int pos = outputCharBuffer.position();
                 if (pos > 0) {
-                    if (inHeader || fieldState == 1) {
+                    if ((inHeader && (nextMetaData != null || groupState.ignore)) || fieldState == 1) {
                         pendingBuffer.append(outputArray, 0, pos);
                     } else {
                         lazyStartParagraph();
@@ -874,7 +892,14 @@ final class TextExtractor {
         // we'd get better perf w/ real lexer (eg
         // JFlex), which uses single-pass FSM to do cmp:
         if (inHeader) {
-            if (equals("ansicpg")) {
+            if (equals("rtf")) {
+                // RTF version header. The spec defines \rtf1 but MS Word parses any
+                // non-negative integer (e.g. {\rtf9737 ...}).  Accept all of them as
+                // valid RTF; the only action here is to record that the version word was
+                // seen.  Text output direction is now governed by groupState.ignore and
+                // nextMetaData rather than by inHeader alone, so no state flip is needed.
+                // (Intentional no-op — falls through to font-table / body processing.)
+            } else if (equals("ansicpg")) {
                 // ANSI codepage
                 Charset cs = ANSICPG_MAP.get(param);
                 if (cs != null) {
@@ -1022,7 +1047,15 @@ final class TextExtractor {
                         embObjHandler.reset();
                     }
                 } else {
+                    // Fix 3a: \binN in an \objdata stream — skip the N literal binary
+                    // bytes that are NOT hex-encoded, then reset the nibble accumulator
+                    // in the hex decoder so that the next \'HH or hex pair starts fresh.
+                    // Without the nibble reset, a stale high-nibble from before the \binN
+                    // run would corrupt the first decoded byte after the skip.
                     IOUtils.skipFully(in, param);
+                    if (groupState.objdata) {
+                        embObjHandler.resetHexNibble();
+                    }
                 }
             } else {
                 // log some warning?

@@ -78,6 +78,16 @@ class RTFEmbObjHandler {
     private Metadata metadata;
     private EMB_STATE state = EMB_STATE.NADA;
 
+    // Fix 2: last-occurrence \objdata wins.
+    // Malware RTF documents sometimes contain decoy \objdata blocks before the real
+    // payload.  MS Word processes only the last \objdata occurrence.  We buffer the
+    // accumulated bytes from each completed \objdata group here instead of immediately
+    // extracting them; the previous buffer is discarded on each new \objdata start.
+    // After the full document has been tokenised, flushLastObjData() is called once to
+    // extract the surviving (last) block.
+    private byte[] lastObjDataBytes = null;
+    private Metadata lastObjDataMeta = null;
+
     protected RTFEmbObjHandler(ContentHandler handler, Metadata metadata, ParseContext context,
                                int memoryLimitInKb) {
         this.handler = handler;
@@ -93,6 +103,10 @@ class RTFEmbObjHandler {
     }
 
     protected void startObjData() {
+        // Discard any previously buffered \objdata bytes: the new occurrence wins
+        // (last-occurrence semantics matching MS Word behaviour, Fix 2).
+        lastObjDataBytes = null;
+        lastObjDataMeta = null;
         state = EMB_STATE.OBJDATA;
         metadata = Metadata.newInstance(context);
     }
@@ -129,6 +143,15 @@ class RTFEmbObjHandler {
 
     protected void writeMetadataChar(char c) {
         sb.append(c);
+    }
+
+    /**
+     * Fix 3a: Reset the hex-nibble accumulator.
+     * Called after a {@code \binN} skip inside an {@code \objdata} stream so that
+     * the next hex pair starts on a fresh byte boundary.
+     */
+    protected void resetHexNibble() {
+        hi = -1;
     }
 
     protected void setPictBitmap(boolean isPictBitmap) {
@@ -182,13 +205,11 @@ class RTFEmbObjHandler {
 
         byte[] bytes = os.toByteArray();
         if (state == EMB_STATE.OBJDATA) {
-            RTFObjDataParser objParser = new RTFObjDataParser(memoryLimitInKb);
-            try {
-                byte[] objBytes = objParser.parse(bytes, metadata, unknownFilenameCount);
-                extractObj(objBytes, handler, metadata);
-            } catch (IOException e) {
-                EmbeddedDocumentUtil.recordException(e, metadata);
-            }
+            // Fix 2: buffer instead of extracting immediately.  A new \objdata start
+            // (startObjData) will discard these bytes; only the last occurrence is
+            // extracted via flushLastObjData() after the document is fully parsed.
+            lastObjDataBytes = bytes;
+            lastObjDataMeta = metadata;
         } else if (state == EMB_STATE.PICT) {
             String filePath = metadata.get(RTFMetadata.RTF_PICT_META_PREFIX + "wzDescription");
             if (filePath != null && filePath.length() > 0) {
@@ -207,6 +228,29 @@ class RTFEmbObjHandler {
             //swallow...no start for pict or embed?!
         }
         reset();
+    }
+
+    /**
+     * Fix 2: Extract the last accumulated \objdata block.
+     * Called by TextExtractor once the entire document has been parsed so that
+     * only the final \objdata occurrence (the real payload, not any decoys) is
+     * processed.  Non-fatal: exceptions are recorded in metadata.
+     */
+    protected void flushLastObjData() throws IOException, SAXException, TikaException {
+        if (lastObjDataBytes == null) {
+            return;
+        }
+        byte[] bytes = lastObjDataBytes;
+        Metadata savedMeta = lastObjDataMeta;
+        lastObjDataBytes = null;
+        lastObjDataMeta = null;
+        RTFObjDataParser objParser = new RTFObjDataParser(memoryLimitInKb);
+        try {
+            byte[] objBytes = objParser.parse(bytes, savedMeta, unknownFilenameCount);
+            extractObj(objBytes, handler, savedMeta);
+        } catch (IOException e) {
+            EmbeddedDocumentUtil.recordException(e, savedMeta);
+        }
     }
 
     private void extractObj(byte[] bytes, ContentHandler handler, Metadata metadata)
