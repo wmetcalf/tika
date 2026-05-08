@@ -49,6 +49,17 @@ public interface RTFMetadata {
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "contains_encapsulated_html");
 
     /**
+     * Set to {@code true} when the embedded OLE object's class name (from the RTF Object Data
+     * header) has non-canonical casing for a known class name.  The canonical forms are
+     * case-sensitive: {@code OLE2Link}, {@code OLE10Native}, {@code Equation.3}, {@code Package}.
+     * Attackers write e.g. {@code OLE2LInk} or {@code EQUATION.3} to confuse strict parsers
+     * while MS Word's OLE subsystem still dispatches by CLSID.  When the CLSID is also present
+     * ({@code rtf_meta:emb_clsid}), the canonical identity can be confirmed independently.
+     */
+    Property EMB_CLASS_OBFUSCATED = Property.internalBoolean(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_class_obfuscated");
+
+    /**
      * Set to {@code true} when the RTF version header is non-standard (i.e. not {@code \rtf1}).
      * The RTF spec defines only version 1; non-standard values like {@code \rtf9737} are used
      * to confuse parsers that reject non-version-1 documents while still being accepted by

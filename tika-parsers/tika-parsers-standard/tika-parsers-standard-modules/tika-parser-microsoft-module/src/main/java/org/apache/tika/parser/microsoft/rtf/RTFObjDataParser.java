@@ -98,6 +98,7 @@ class RTFObjDataParser {
 
         if (className.length() > 0) {
             metadata.add(RTFMetadata.EMB_CLASS, className);
+            checkClassNameObfuscation(className, metadata);
         }
         if (topicName.length() > 0) {
             metadata.add(RTFMetadata.EMB_TOPIC, topicName);
@@ -357,5 +358,25 @@ class RTFObjDataParser {
 
         return new byte[(int) len];
 
+    }
+
+    /**
+     * Flag when a known OLE class name is present with non-canonical casing.
+     * Canonical forms (exactly as the OLE spec / MS Office writes them):
+     *   OLE2Link, OLE10Native, Equation.3, Equation.2, Package, pbrush
+     * Attackers write e.g. OLE2LInk or EQUATION.3 to confuse strict parsers while
+     * MS Word still dispatches by CLSID.  We compare case-insensitively against
+     * each canonical form and flag a mismatch.
+     */
+    private static void checkClassNameObfuscation(String className, Metadata metadata) {
+        String[] canonical = {"OLE2Link", "OLE10Native", "Equation.3", "Equation.2",
+                              "Package", "pbrush"};
+        String lower = className.toLowerCase(Locale.ROOT);
+        for (String c : canonical) {
+            if (lower.equals(c.toLowerCase(Locale.ROOT)) && !className.equals(c)) {
+                metadata.set(RTFMetadata.EMB_CLASS_OBFUSCATED, true);
+                return;
+            }
+        }
     }
 }
