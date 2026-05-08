@@ -16,6 +16,8 @@
  */
 package org.apache.tika.parser.xml;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +27,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+
+import javax.imageio.ImageIO;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -43,6 +47,7 @@ import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.TextContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.ImageHashUtils;
 import org.apache.tika.utils.XMLReaderUtils;
 
 /**
@@ -148,16 +153,6 @@ public class XMLParser implements Parser {
             if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
                 return;
             }
-            org.apache.tika.parser.Parser ocrParser =
-                EmbeddedDocumentUtil.getStatelessParser(context);
-            if (ocrParser == null) {
-                return;
-            }
-            org.apache.tika.mime.MediaType pngOcrType =
-                org.apache.tika.mime.MediaType.image("ocr-png");
-            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
-                return;
-            }
 
             // Rewrite SVG 2.0 href → xlink:href so Batik does not crash
             renderPath = normalizeSvgHrefs(svgPath);
@@ -175,6 +170,26 @@ public class XMLParser implements Parser {
                 new org.apache.batik.transcoder.TranscoderOutput(pngOut));
             byte[] pngBytes = pngOut.toByteArray();
             if (pngBytes.length == 0) {
+                return;
+            }
+
+            // Compute perceptual hashes from the rasterized PNG (always, regardless of OCR)
+            try {
+                BufferedImage raster = ImageIO.read(new ByteArrayInputStream(pngBytes));
+                ImageHashUtils.setHashes(raster, metadata);
+            } catch (Exception e) {
+                // non-fatal
+            }
+
+            // OCR dispatch — only if Tesseract (or equivalent) is configured
+            org.apache.tika.parser.Parser ocrParser =
+                EmbeddedDocumentUtil.getStatelessParser(context);
+            if (ocrParser == null) {
+                return;
+            }
+            org.apache.tika.mime.MediaType pngOcrType =
+                org.apache.tika.mime.MediaType.image("ocr-png");
+            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
                 return;
             }
 

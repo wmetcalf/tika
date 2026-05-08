@@ -45,6 +45,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.ImageHashUtils;
 
 /**
  * This parser offers a very rough capability to extract text if there
@@ -105,8 +106,10 @@ public class WMFParser implements Parser {
                 }
             }
 
-            // Rasterize and OCR: catches raster-only content that vector text records miss
-            EMFParser.tryMetafileOcr(rasterizeWmf(picture), xhtml, metadata, context);
+            // Rasterize for OCR and perceptual hashing
+            BufferedImage raster = rasterizeWmf(picture);
+            EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
+            ImageHashUtils.setHashes(raster, metadata);
 
         } catch (RecordFormatException e) { //POI's hwmfparser can \ throw these for "parse
             // exceptions"

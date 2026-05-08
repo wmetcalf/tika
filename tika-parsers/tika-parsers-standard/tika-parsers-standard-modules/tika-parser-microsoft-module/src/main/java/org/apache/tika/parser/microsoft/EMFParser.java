@@ -55,6 +55,7 @@ import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.ImageHashUtils;
 
 /**
  * Extracts files embedded in EMF and offers a
@@ -151,8 +152,10 @@ public class EMFParser implements Parser {
                 xhtml.endElement("p");
             }
 
-            // Rasterize and OCR: catches raster-only content that vector text records miss
-            tryMetafileOcr(rasterizeEmf(ex), xhtml, metadata, context);
+            // Rasterize for OCR and perceptual hashing
+            BufferedImage raster = rasterizeEmf(ex);
+            tryMetafileOcr(raster, xhtml, metadata, context);
+            ImageHashUtils.setHashes(raster, metadata);
 
         } catch (RecordFormatException e) { //POI's hemfparser can throw these for "parse
             // exceptions"
