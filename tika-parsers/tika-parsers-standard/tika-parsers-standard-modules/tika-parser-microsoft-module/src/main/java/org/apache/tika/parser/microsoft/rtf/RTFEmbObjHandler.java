@@ -178,7 +178,7 @@ class RTFEmbObjHandler {
         os.write(b);
     }
 
-    /** Called by TextExtractor when a {@code \uN} unicode escape is seen inside {@code \objdata}. */
+    /** Called by TextExtractor when a RTF unicode escape (backslash-u) is seen inside {@code \objdata}. */
     protected void markUnicodeInObjdata() {
         unicodeInObjdata = true;
     }
