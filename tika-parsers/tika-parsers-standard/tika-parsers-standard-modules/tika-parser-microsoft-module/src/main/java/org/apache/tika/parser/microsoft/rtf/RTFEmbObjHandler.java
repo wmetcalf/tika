@@ -102,7 +102,11 @@ class RTFEmbObjHandler {
         this.memoryLimitInKb = memoryLimitInKb;
     }
 
+    private static final java.util.logging.Logger DIAG_LOG =
+            java.util.logging.Logger.getLogger(RTFEmbObjHandler.class.getName());
+
     protected void startPict() {
+        DIAG_LOG.info("RTFEmbObjHandler.startPict() called, inObject=" + inObject);
         state = EMB_STATE.PICT;
         metadata = Metadata.newInstance(context);
     }
@@ -216,6 +220,7 @@ class RTFEmbObjHandler {
     }
 
     protected void writeBytes(InputStream is, int len) throws IOException, TikaException {
+        DIAG_LOG.info("RTFEmbObjHandler.writeBytes() len=" + len + " state=" + state);
         if (len < 0) {
             throw new TikaException("Requesting I read < 0 bytes ?!");
         }
@@ -238,6 +243,7 @@ class RTFEmbObjHandler {
     protected void handleCompletedObject() throws IOException, SAXException, TikaException {
 
         byte[] bytes = os.toByteArray();
+        DIAG_LOG.info("RTFEmbObjHandler.handleCompletedObject() state=" + state + " bytes=" + bytes.length);
         if (state == EMB_STATE.OBJDATA) {
             // Fix 2: buffer instead of extracting immediately.  A new \objdata start
             // (startObjData) will discard these bytes; only the last occurrence is
