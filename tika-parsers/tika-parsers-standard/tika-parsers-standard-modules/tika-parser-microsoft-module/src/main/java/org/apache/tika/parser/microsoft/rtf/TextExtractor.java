@@ -1029,12 +1029,14 @@ final class TextExtractor {
         // in the header can be unicode escaped as well:
         if (equals("u")) {
             // Unicode escape
-            if (!groupState.ignore || groupState.sv || groupState.sn) {
+            // Suppress text output when inside \objdata: a RTF unicode escape there is obfuscation noise,
+            // not document content, and addOutputChar would inject attacker-controlled
+            // codepoints into the extracted text.
+            if (!groupState.objdata && (!groupState.ignore || groupState.sv || groupState.sn)) {
                 final char utf16CodeUnit = (char) (param & 0xffff);
                 addOutputChar(utf16CodeUnit);
             }
-            // RTF unicode escapes inside \objdata are obfuscation: they have no meaning in a
-            // binary OLE hex stream — flag it on the embedded object's metadata.
+            // Flag the obfuscation signal on the embedded object's metadata.
             if (groupState.objdata) {
                 embObjHandler.markUnicodeInObjdata();
             }

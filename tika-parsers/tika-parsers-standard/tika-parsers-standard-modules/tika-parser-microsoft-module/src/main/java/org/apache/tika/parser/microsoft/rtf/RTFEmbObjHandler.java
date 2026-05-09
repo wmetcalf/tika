@@ -175,6 +175,9 @@ class RTFEmbObjHandler {
      * the surrounding hex stream.
      */
     protected void writeDecodedByte(int b) throws IOException {
+        if (state != EMB_STATE.OBJDATA) {
+            return;
+        }
         os.write(b);
         hexEscapeInObjdata = true;
         hi = -1;
