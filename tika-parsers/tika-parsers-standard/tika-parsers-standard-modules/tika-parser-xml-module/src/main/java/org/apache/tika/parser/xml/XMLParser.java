@@ -20,6 +20,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,11 +30,14 @@ import java.util.HashSet;
 import java.util.Set;
 
 import javax.imageio.ImageIO;
+import javax.xml.parsers.SAXParserFactory;
 
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
 
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
@@ -169,10 +173,28 @@ public class XMLParser implements Parser {
                 org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, maxDim);
             t.addTranscodingHint(
                 org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, maxDim);
+
+            // Harden against XXE: use a pre-configured SAX reader with external entities
+            // disabled. Passing a raw file URI lets Batik's own parser resolve DOCTYPE
+            // entities; the XMLReader path blocks that without needing a custom UserAgent.
+            SAXParserFactory spf = SAXParserFactory.newInstance();
+            spf.setNamespaceAware(true);
+            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            spf.setFeature(
+                "http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            spf.setXIncludeAware(false);
+            XMLReader xmlReader = spf.newSAXParser().getXMLReader();
+            // Belt-and-suspenders: null entity resolver returns empty for any surviving ref
+            xmlReader.setEntityResolver((publicId, systemId) ->
+                new InputSource(new StringReader("")));
+
+            org.apache.batik.transcoder.TranscoderInput input =
+                new org.apache.batik.transcoder.TranscoderInput(xmlReader);
+            input.setURI(svgPath.toUri().toString());
+
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            t.transcode(
-                new org.apache.batik.transcoder.TranscoderInput(svgPath.toUri().toString()),
-                new org.apache.batik.transcoder.TranscoderOutput(out));
+            t.transcode(input, new org.apache.batik.transcoder.TranscoderOutput(out));
             byte[] bytes = out.toByteArray();
             return bytes.length > 0 ? bytes : null;
         } catch (Throwable e) {

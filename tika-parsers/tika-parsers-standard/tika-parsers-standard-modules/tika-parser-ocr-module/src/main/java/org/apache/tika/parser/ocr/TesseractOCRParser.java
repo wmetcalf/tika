@@ -293,7 +293,10 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             ContentHandler baseHandler = getContentHandler(config.isInlineContent(), handler, metadata, parseContext);
             XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, parseContext);
             xhtml.startDocument();
+            long ocrStart = System.nanoTime();
             parse(tikaStream, tmpOCROutputFile, xhtml, metadata, parseContext, config);
+            metadata.set("X-Tika-OCR-Duration-Ms",
+                Long.toString((System.nanoTime() - ocrStart) / 1_000_000L));
             xhtml.endDocument();
         }
     }
