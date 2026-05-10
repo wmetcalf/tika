@@ -46,6 +46,8 @@ import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import javax.imageio.ImageIO;
 
 import org.apache.commons.io.IOUtils;
@@ -287,6 +289,26 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             //trigger the spooling to a tmp file if the stream wasn't
             //already a TikaInputStream that contained a file
             tikaStream.getPath();
+
+            // Per-job OCR cache: skip Tesseract if this image was already OCR'd.
+            OcrResultCache ocrCache = parseContext.get(OcrResultCache.class);
+            String imageHash = (ocrCache != null) ? sha256Hex(tikaStream.getPath()) : null;
+            if (ocrCache != null && imageHash != null && ocrCache.contains(imageHash)) {
+                String cachedText = ocrCache.get(imageHash);
+                ContentHandler baseHandler = getContentHandler(
+                    config.isInlineContent(), handler, metadata, parseContext);
+                XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, parseContext);
+                xhtml.startDocument();
+                if (cachedText != null && !cachedText.isEmpty()) {
+                    xhtml.startElement("p");
+                    xhtml.characters(cachedText.toCharArray(), 0, cachedText.length());
+                    xhtml.endElement("p");
+                }
+                xhtml.endDocument();
+                metadata.set("X-Tika-OCR-Duration-Ms", "0");
+                return;
+            }
+
             //this is the text output file name specified on the tesseract
             //commandline.  The actual output file name will have a suffix added.
             File tmpOCROutputFile = tmp.createTemporaryFile();
@@ -298,6 +320,37 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             metadata.set("X-Tika-OCR-Duration-Ms",
                 Long.toString((System.nanoTime() - ocrStart) / 1_000_000L));
             xhtml.endDocument();
+
+            // Populate cache from Tesseract's plain-text output file.
+            if (ocrCache != null && imageHash != null && !config.getPageSegMode().equals("0")) {
+                String ext = config.getOutputType().toString().toLowerCase(Locale.US);
+                if ("txt".equals(ext)) {
+                    File outFile = new File(tmpOCROutputFile.getAbsolutePath() + ".txt");
+                    if (outFile.exists()) {
+                        try {
+                            String text = new String(Files.readAllBytes(outFile.toPath()), UTF_8).trim();
+                            ocrCache.put(imageHash, text);
+                        } catch (IOException ignored) {
+                            // Cache population is best-effort; OCR already succeeded.
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static String sha256Hex(Path path) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(Files.readAllBytes(path));
+            byte[] digest = md.digest();
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException | IOException e) {
+            return null;
         }
     }
 
