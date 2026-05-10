@@ -42,12 +42,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import javax.imageio.ImageIO;
 
 import org.apache.commons.io.IOUtils;
@@ -339,16 +339,19 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         }
     }
 
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
     private static String sha256Hex(Path path) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             md.update(Files.readAllBytes(path));
             byte[] digest = md.digest();
-            StringBuilder sb = new StringBuilder(64);
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
+            char[] out = new char[digest.length * 2];
+            for (int i = 0; i < digest.length; i++) {
+                out[i * 2]     = HEX[(digest[i] >> 4) & 0xf];
+                out[i * 2 + 1] = HEX[digest[i] & 0xf];
             }
-            return sb.toString();
+            return new String(out);
         } catch (NoSuchAlgorithmException | IOException e) {
             return null;
         }
