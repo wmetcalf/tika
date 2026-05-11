@@ -309,6 +309,13 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 return;
             }
 
+            // Downscale high-resolution images before passing to Tesseract.
+            // Tesseract accuracy does not improve above ~300 DPI; feeding a 4000px
+            // scan instead of a 2000px version can increase OCR time 4-9x with no
+            // benefit. Downscale in-memory and spool to a new temp file when the
+            // image exceeds MAX_OCR_DIM on its longest edge.
+            TikaInputStream ocrStream = downscaleForOcr(tikaStream, tmp);
+
             //this is the text output file name specified on the tesseract
             //commandline.  The actual output file name will have a suffix added.
             File tmpOCROutputFile = tmp.createTemporaryFile();
@@ -316,7 +323,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, parseContext);
             xhtml.startDocument();
             long ocrStart = System.nanoTime();
-            parse(tikaStream, tmpOCROutputFile, xhtml, metadata, parseContext, config);
+            parse(ocrStream, tmpOCROutputFile, xhtml, metadata, parseContext, config);
             metadata.set("X-Tika-OCR-Duration-Ms",
                 Long.toString((System.nanoTime() - ocrStart) / 1_000_000L));
             xhtml.endDocument();
@@ -354,6 +361,44 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             return new String(out);
         } catch (NoSuchAlgorithmException | IOException e) {
             return null;
+        }
+    }
+
+    // Images larger than this on their longest edge are downscaled before OCR.
+    // Tesseract accuracy does not benefit from resolutions above ~300 DPI
+    // (~2000px for a typical A4 scan); feeding full-resolution images wastes 4-9x time.
+    private static final int MAX_OCR_DIM = 2000;
+
+    /**
+     * If the spooled image in {@code tis} exceeds {@link #MAX_OCR_DIM} on its
+     * longest edge, writes a downscaled PNG to a new temp file and returns a
+     * TikaInputStream wrapping it (registered with {@code tmp} for cleanup).
+     * Returns the original stream unchanged when downscaling is not needed or
+     * when the image cannot be decoded by ImageIO.
+     */
+    private static TikaInputStream downscaleForOcr(TikaInputStream tis,
+                                                    TemporaryResources tmp) {
+        try {
+            Path src = tis.getPath();
+            BufferedImage img = ImageIO.read(src.toFile());
+            if (img == null) return tis;
+            int w = img.getWidth();
+            int h = img.getHeight();
+            if (w <= MAX_OCR_DIM && h <= MAX_OCR_DIM) return tis;
+            double scale = (double) MAX_OCR_DIM / Math.max(w, h);
+            int nw = (int) (w * scale);
+            int nh = (int) (h * scale);
+            BufferedImage scaled = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = scaled.createGraphics();
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.drawImage(img, 0, 0, nw, nh, null);
+            g.dispose();
+            File dest = tmp.createTemporaryFile();
+            ImageIO.write(scaled, "png", dest);
+            return TikaInputStream.get(dest.toPath());
+        } catch (IOException e) {
+            return tis;
         }
     }
 
