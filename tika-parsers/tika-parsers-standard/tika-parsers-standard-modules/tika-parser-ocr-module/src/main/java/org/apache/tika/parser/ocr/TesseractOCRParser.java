@@ -309,20 +309,20 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 return;
             }
 
+            // Feature flags from per-job OcrResultCache (0/false = use built-in defaults).
+            boolean skipBlank = (ocrCache != null) ? ocrCache.isSkipBlank() : true;
+            int maxDim = (ocrCache != null && ocrCache.getMaxImageDim() > 0)
+                ? ocrCache.getMaxImageDim() : MAX_OCR_DIM;
+
             // Skip OCR on blank/uniform images using phash + colorhash already
-            // computed by the upstream image parser. Avoids running Tesseract on
-            // solid-white, solid-black, or otherwise contentless pages that cannot
-            // contain text. See isBlankByHashes() for the three-condition test.
-            if (isBlankByHashes(metadata.get("image:phash"), metadata.get("image:colorhash"))) {
+            // computed by the upstream image parser.
+            if (skipBlank && isBlankByHashes(
+                    metadata.get("image:phash"), metadata.get("image:colorhash"))) {
                 return;
             }
 
             // Downscale high-resolution images before passing to Tesseract.
-            // Tesseract accuracy does not improve above ~300 DPI; feeding a 4000px
-            // scan instead of a 2000px version can increase OCR time 4-9x with no
-            // benefit. Downscale in-memory and spool to a new temp file when the
-            // image exceeds MAX_OCR_DIM on its longest edge.
-            TikaInputStream ocrStream = downscaleForOcr(tikaStream, tmp);
+            TikaInputStream ocrStream = downscaleForOcr(tikaStream, tmp, maxDim);
 
             //this is the text output file name specified on the tesseract
             //commandline.  The actual output file name will have a suffix added.
@@ -397,27 +397,27 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         return true;
     }
 
-    // Images larger than this on their longest edge are downscaled before OCR.
-    // Tesseract accuracy does not benefit from resolutions above ~300 DPI
-    // (~2000px for a typical A4 scan); feeding full-resolution images wastes 4-9x time.
+    // Default max image dimension for OCR downscaling when not set via OcrResultCache.
     private static final int MAX_OCR_DIM = 2000;
 
     /**
-     * If the spooled image in {@code tis} exceeds {@link #MAX_OCR_DIM} on its
-     * longest edge, writes a downscaled PNG to a new temp file and returns a
+     * If the spooled image in {@code tis} exceeds {@code maxDim} on its longest
+     * edge, writes a bilinear-scaled PNG to a new temp file and returns a
      * TikaInputStream wrapping it (registered with {@code tmp} for cleanup).
      * Returns the original stream unchanged when downscaling is not needed or
      * when the image cannot be decoded by ImageIO.
      */
     private static TikaInputStream downscaleForOcr(TikaInputStream tis,
-                                                    TemporaryResources tmp) {
+                                                    TemporaryResources tmp,
+                                                    int maxDim) {
+        if (maxDim <= 0) return tis;
         try {
             Path src = tis.getPath();
             BufferedImage img = ImageIO.read(src.toFile());
             if (img == null) return tis;
             int w = img.getWidth();
             int h = img.getHeight();
-            if (w <= MAX_OCR_DIM && h <= MAX_OCR_DIM) return tis;
+            if (w <= maxDim && h <= maxDim) return tis;
             double scale = (double) MAX_OCR_DIM / Math.max(w, h);
             int nw = (int) (w * scale);
             int nh = (int) (h * scale);

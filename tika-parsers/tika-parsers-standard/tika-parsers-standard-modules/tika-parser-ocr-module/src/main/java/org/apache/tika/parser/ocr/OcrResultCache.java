@@ -19,13 +19,34 @@ package org.apache.tika.parser.ocr;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-job OCR result cache, keyed on SHA-256 of image bytes.
- * Place in ParseContext before calling RecursiveParserWrapper so that
- * TesseractOCRParser can skip re-running Tesseract on duplicate image content.
+ * Per-job OCR result cache and feature-flag carrier, placed in ParseContext
+ * before calling RecursiveParserWrapper. TesseractOCRParser reads this to:
+ * - Skip re-running Tesseract on duplicate image bytes (keyed by SHA-256).
+ * - Apply optional blank-image skip via phash/colorhash detection.
+ * - Downscale images wider/taller than maxImageDim before OCR.
  */
 public final class OcrResultCache {
 
     private final ConcurrentHashMap<String, String> map = new ConcurrentHashMap<>();
+
+    /** 0 = disabled; images larger than this are downscaled before OCR. */
+    private final int maxImageDim;
+
+    /** When true, images flagged blank by phash/colorhash skip Tesseract entirely. */
+    private final boolean skipBlank;
+
+    public OcrResultCache(int maxImageDim, boolean skipBlank) {
+        this.maxImageDim = maxImageDim;
+        this.skipBlank = skipBlank;
+    }
+
+    public int getMaxImageDim() {
+        return maxImageDim;
+    }
+
+    public boolean isSkipBlank() {
+        return skipBlank;
+    }
 
     public boolean contains(String sha256Hex) {
         return map.containsKey(sha256Hex);
