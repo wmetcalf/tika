@@ -318,6 +318,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             // computed by the upstream image parser.
             if (skipBlank && isBlankByHashes(
                     metadata.get("image:phash"), metadata.get("image:colorhash"))) {
+                metadata.set("X-Tika-OCR-Skipped-Reason", "blank_image");
                 return;
             }
 
