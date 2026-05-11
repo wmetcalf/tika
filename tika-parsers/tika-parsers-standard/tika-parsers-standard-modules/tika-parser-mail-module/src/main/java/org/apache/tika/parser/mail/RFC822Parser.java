@@ -127,8 +127,10 @@ public class RFC822Parser implements Parser {
                 new MimeStreamParser(config, null, new DefaultBodyDescriptorBuilder());
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
 
+        // Allow per-parse override of extractAllAlternatives via ParseContext.
+        Config runtimeConfig = context.get(RFC822Parser.Config.class, defaultConfig);
         MailContentHandler mch = new MailContentHandler(xhtml, localDetector, metadata, context,
-                config.isStrictParsing(), defaultConfig.isExtractAllAlternatives());
+                config.isStrictParsing(), runtimeConfig.isExtractAllAlternatives());
         parser.setContentHandler(mch);
         parser.setContentDecoding(true);
         parser.setNoRecurse();
