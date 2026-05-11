@@ -309,6 +309,14 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 return;
             }
 
+            // Skip OCR on blank/uniform images using phash + colorhash already
+            // computed by the upstream image parser. Avoids running Tesseract on
+            // solid-white, solid-black, or otherwise contentless pages that cannot
+            // contain text. See isBlankByHashes() for the three-condition test.
+            if (isBlankByHashes(metadata.get("image:phash"), metadata.get("image:colorhash"))) {
+                return;
+            }
+
             // Downscale high-resolution images before passing to Tesseract.
             // Tesseract accuracy does not improve above ~300 DPI; feeding a 4000px
             // scan instead of a 2000px version can increase OCR time 4-9x with no
@@ -362,6 +370,31 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         } catch (NoSuchAlgorithmException | IOException e) {
             return null;
         }
+    }
+
+    /**
+     * Returns true when the image is blank/uniform and OCR can be skipped safely.
+     * Port of ClippyShot's _is_blank_signature() — three conditions must all hold:
+     *
+     * 1. popcount(phash) &lt;= 1: DCT structure is absent (uniform image).
+     * 2. colorhash[0]=='f' OR colorhash[1]=='f': dominant achromatic bin (black or gray).
+     * 3. colorhash[2..13] all '0': no saturated hue content.
+     *
+     * Together these catch all-white/all-black/solid-gray pages without
+     * false-positiving on low-density content (sparse grid lines, etc.).
+     */
+    static boolean isBlankByHashes(String phash, String colorhash) {
+        if (phash == null || colorhash == null || colorhash.length() < 14) return false;
+        try {
+            if (Long.bitCount(Long.parseUnsignedLong(phash, 16)) > 1) return false;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (colorhash.charAt(0) != 'f' && colorhash.charAt(1) != 'f') return false;
+        for (int i = 2; i < 14; i++) {
+            if (colorhash.charAt(i) != '0') return false;
+        }
+        return true;
     }
 
     // Images larger than this on their longest edge are downscaled before OCR.
