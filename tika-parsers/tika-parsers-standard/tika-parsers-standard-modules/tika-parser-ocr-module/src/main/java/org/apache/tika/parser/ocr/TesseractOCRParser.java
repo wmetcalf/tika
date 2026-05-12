@@ -375,17 +375,40 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
     /**
      * Returns true when the image is blank/uniform and OCR can be skipped safely.
-     * Port of ClippyShot's _is_blank_signature() — three conditions must all hold:
      *
-     * 1. popcount(phash) &lt;= 1: DCT structure is absent (uniform image).
-     * 2. colorhash[0]=='f' OR colorhash[1]=='f': dominant achromatic bin (black or gray).
-     * 3. colorhash[2..13] all '0': no saturated hue content.
+     * Two detection paths:
      *
-     * Together these catch all-white/all-black/solid-gray pages without
-     * false-positiving on low-density content (sparse grid lines, etc.).
+     * Path A — strict (phash + colorhash): port of ClippyShot's _is_blank_signature().
+     *   1. popcount(phash) &lt;= 1: no DCT structure (perfectly uniform image).
+     *   2. colorhash[0]=='f' OR colorhash[1]=='f': dominant achromatic bin.
+     *   3. colorhash[2..13] all '0': no saturated hue content.
+     *   Catches solid-white and solid-black pages without false-positiving on
+     *   sparse content (grid lines, etc.) whose pHash retains real structure.
+     *
+     * Path B — colorhash-only (single maxed bin): catches near-uniform images
+     *   where exactly ONE colorhash bin is non-zero and equals 'f' (~94% of
+     *   pixels in a single tone), regardless of phash. When an image is this
+     *   uniformly single-toned, phash pop near 32 reflects boundary-case DCT
+     *   comparisons on a near-uniform signal, not real content. Confirmed safe
+     *   on a PDF corpus where all such images produced zero OCR output.
      */
     static boolean isBlankByHashes(String phash, String colorhash) {
-        if (phash == null || colorhash == null || colorhash.length() < 14) return false;
+        if (colorhash == null || colorhash.length() < 14) return false;
+
+        // Path B: exactly one colorhash bin maxed, all others zero — single-tone image
+        int nonZero = 0;
+        boolean hasMaxed = false;
+        for (int i = 0; i < 14; i++) {
+            char c = colorhash.charAt(i);
+            if (c != '0') {
+                nonZero++;
+                if (c == 'f') hasMaxed = true;
+            }
+        }
+        if (nonZero == 1 && hasMaxed) return true;
+
+        // Path A: strict phash + colorhash check
+        if (phash == null) return false;
         try {
             if (Long.bitCount(Long.parseUnsignedLong(phash, 16)) > 1) return false;
         } catch (NumberFormatException e) {
