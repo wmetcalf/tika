@@ -54,6 +54,7 @@ import org.apache.poi.hssf.record.HeaderRecord;
 import org.apache.poi.hssf.record.HyperlinkRecord;
 import org.apache.poi.hssf.record.LabelRecord;
 import org.apache.poi.hssf.record.LabelSSTRecord;
+import org.apache.poi.hssf.record.NameRecord;
 import org.apache.poi.hssf.record.NoteRecord;
 import org.apache.poi.hssf.record.NumberRecord;
 import org.apache.poi.hssf.record.ProtectRecord;
@@ -64,6 +65,13 @@ import org.apache.poi.hssf.record.SSTRecord;
 import org.apache.poi.hssf.record.StringRecord;
 import org.apache.poi.hssf.record.TextObjectRecord;
 import org.apache.poi.hssf.record.chart.SeriesTextRecord;
+import org.apache.poi.ss.formula.ptg.AbstractFunctionPtg;
+import org.apache.poi.ss.formula.ptg.BoolPtg;
+import org.apache.poi.ss.formula.ptg.IntPtg;
+import org.apache.poi.ss.formula.ptg.MissingArgPtg;
+import org.apache.poi.ss.formula.ptg.NumberPtg;
+import org.apache.poi.ss.formula.ptg.Ptg;
+import org.apache.poi.ss.formula.ptg.StringPtg;
 import org.apache.poi.hssf.record.common.UnicodeString;
 import org.apache.poi.hssf.record.crypto.Biff8EncryptionKey;
 import org.apache.poi.hssf.usermodel.HSSFPictureData;
@@ -237,6 +245,15 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
             }
             parentMetadata.set(Office.HAS_VERY_HIDDEN_SHEETS, true);
         }
+        if (listener.hasMacroSheets) {
+            parentMetadata.set(Office.HAS_XLS4_MACROS, true);
+            for (String name : listener.macroSheetNames) {
+                parentMetadata.add(Office.XLS4_MACRO_SHEET_NAMES, name);
+            }
+        }
+        if (listener.hasXls4AutoExec) {
+            parentMetadata.set(Office.HAS_XLS4_AUTO_EXEC, true);
+        }
     }
 
     // ======================================================================
@@ -313,6 +330,11 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
         private boolean hasHiddenColumn = false;
         private boolean hasHiddenRow = false;
         private boolean hasProtectedSheet = false;
+        // XLS4 macro sheet tracking
+        private boolean currentSheetIsMacroSheet = false;
+        private boolean hasMacroSheets = false;
+        private boolean hasXls4AutoExec = false;
+        private final List<String> macroSheetNames = new ArrayList<>();
 
         /**
          * Construct a new listener instance outputting parsed data to
@@ -378,6 +400,7 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                 hssfRequest.addListener(formatListener, ColumnInfoRecord.sid);
                 hssfRequest.addListener(formatListener, RowRecord.sid);
                 hssfRequest.addListener(formatListener, NoteRecord.sid);
+                hssfRequest.addListener(formatListener, NameRecord.sid);
                 if (extractor.officeParserConfig.isIncludeHeadersAndFooters()) {
                     hssfRequest.addListener(formatListener, HeaderRecord.sid);
                     hssfRequest.addListener(formatListener, FooterRecord.sid);
@@ -457,6 +480,14 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         }
                     } else if (bof.getType() == BOFRecord.TYPE_WORKSHEET) {
                         newSheet();
+                    } else if (bof.getType() == BOFRecord.TYPE_EXCEL_4_MACRO) {
+                        newSheet();
+                        currentSheetIsMacroSheet = true;
+                        hasMacroSheets = true;
+                        // Record the sheet name now that currentSheetIndex is updated
+                        if (currentSheetIndex >= 0 && currentSheetIndex < sheetNames.size()) {
+                            macroSheetNames.add(sheetNames.get(currentSheetIndex));
+                        }
                     }
                     break;
 
@@ -465,6 +496,7 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         processSheet();
                     }
                     currentSheet = null;
+                    currentSheetIsMacroSheet = false;
                     break;
 
                 case BoundSheetRecord.sid: // Worksheet index record
@@ -484,7 +516,15 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
 
                 case FormulaRecord.sid: // Cell value from a formula
                     FormulaRecord formula = (FormulaRecord) record;
-                    if (formula.hasCachedResultString()) {
+                    if (currentSheetIsMacroSheet) {
+                        // XLS4 macro sheets: emit the formula expression, not the cached value.
+                        // The formula encodes macro commands (EXEC, CALL, RUN, FORMULA, etc.);
+                        // the cached result is irrelevant for static analysis.
+                        String macroFormula = renderXls4Formula(formula.getParsedExpression());
+                        if (!macroFormula.isEmpty()) {
+                            addTextCell(record, macroFormula);
+                        }
+                    } else if (formula.hasCachedResultString()) {
                         // The String itself should be the next record
                         stringFormulaRecord = formula;
                     } else {
@@ -605,6 +645,18 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         hasHiddenRow = true;
                     }
                     break;
+                case NameRecord.sid:
+                    // XLS4 macro Auto_Open / Auto_Close defined names indicate
+                    // auto-execution on workbook open/close — a primary malware vector.
+                    NameRecord nameRecord = (NameRecord) record;
+                    if (nameRecord.isBuiltInName()) {
+                        byte builtIn = nameRecord.getBuiltInName();
+                        if (builtIn == NameRecord.BUILTIN_AUTO_OPEN
+                                || builtIn == NameRecord.BUILTIN_AUTO_CLOSE) {
+                            hasXls4AutoExec = true;
+                        }
+                    }
+                    break;
             }
 
             previousSid = record.getSid();
@@ -672,6 +724,62 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                     addCell(record, new TextCell(text));
                 }
             }
+        }
+
+        /**
+         * Build a human-readable formula string from an XLS4 macro FormulaRecord's
+         * Ptg token array. Focus on surfacing function names and string arguments
+         * which carry the actual payload (URLs, file paths, command strings).
+         *
+         * Ported from the PTG-parsing approach in oletools/olevba (BSD licence).
+         * We walk the Ptg array collecting tokens rather than fully evaluating
+         * the RPN stack, which is sufficient for static IOC extraction.
+         */
+        private static String renderXls4Formula(Ptg[] ptgs) {
+            if (ptgs == null || ptgs.length == 0) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Ptg ptg : ptgs) {
+                if (ptg instanceof AbstractFunctionPtg) {
+                    AbstractFunctionPtg func = (AbstractFunctionPtg) ptg;
+                    if (sb.length() > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append(func.getName());
+                } else if (ptg instanceof StringPtg) {
+                    String val = ((StringPtg) ptg).getValue();
+                    if (sb.length() > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append('"').append(val).append('"');
+                } else if (ptg instanceof NumberPtg) {
+                    if (sb.length() > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append(((NumberPtg) ptg).getValue());
+                } else if (ptg instanceof IntPtg) {
+                    if (sb.length() > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append(((IntPtg) ptg).getValue());
+                } else if (ptg instanceof BoolPtg) {
+                    if (sb.length() > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append(((BoolPtg) ptg).getValue());
+                } else if (!(ptg instanceof MissingArgPtg)) {
+                    // For cell refs, operators, etc. use the default string form
+                    String s = ptg.toFormulaString();
+                    if (s != null && !s.isBlank()) {
+                        if (sb.length() > 0) {
+                            sb.append(' ');
+                        }
+                        sb.append(s);
+                    }
+                }
+            }
+            return sb.toString().trim();
         }
 
         private void newSheet() {

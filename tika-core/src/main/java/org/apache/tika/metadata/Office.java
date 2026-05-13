@@ -173,6 +173,15 @@ public interface Office {
 
     Property HAS_DATA_CONNECTIONS = Property.internalBoolean("msoffice:excel:has-data-connections");
 
+    /** True when the workbook contains at least one Excel 4.0 macro sheet (BOF type 0x40). */
+    Property HAS_XLS4_MACROS = Property.internalBoolean("msoffice:excel:has-xls4-macros");
+
+    /** Names of XLS4 macro sheets (sheet names whose BOF type is 0x40). */
+    Property XLS4_MACRO_SHEET_NAMES = Property.internalTextBag("msoffice:excel:xls4-macro-sheet-names");
+
+    /** True when at least one XLS4 Auto_Open or Auto_Close defined name was found. */
+    Property HAS_XLS4_AUTO_EXEC = Property.internalBoolean("msoffice:excel:has-xls4-auto-exec");
+
     Property HAS_EXTERNAL_LINKS = Property.internalBoolean("msoffice:excel:has-external-links");
 
     Property HAS_WEB_QUERIES = Property.internalBoolean("msoffice:excel:has-web-queries");
