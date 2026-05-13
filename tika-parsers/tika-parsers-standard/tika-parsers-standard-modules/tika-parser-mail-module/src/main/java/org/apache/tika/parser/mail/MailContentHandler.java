@@ -195,6 +195,32 @@ class MailContentHandler implements ContentHandler {
             }
             submd.set(Metadata.CONTENT_DISPOSITION, contentDisposition.toString());
         }
+
+        // Content-Location: used by MHT/MHTML (multipart/related) as the resource filename.
+        // MHT image/CSS parts have no Content-Disposition — only Content-Location and Content-ID.
+        // Without this, every embedded image in an MHT gets a synthetic "embedded-N" name.
+        String contentLocation = body.getContentLocation();
+        if (!StringUtils.isBlank(contentLocation)) {
+            submd.set(Metadata.MESSAGE_RAW_HEADER_PREFIX + "Content-Location", contentLocation);
+            // Use as resource name only when a more specific name hasn't been set already.
+            if (StringUtils.isBlank(submd.get(TikaCoreProperties.RESOURCE_NAME_KEY))) {
+                // Strip path — keep only the basename so cid references are stable.
+                String locName = contentLocation;
+                int slash = locName.lastIndexOf('/');
+                if (slash >= 0 && slash < locName.length() - 1) {
+                    locName = locName.substring(slash + 1);
+                }
+                submd.set(TikaCoreProperties.RESOURCE_NAME_KEY, locName);
+            }
+        }
+
+        // Content-ID: the <unique@domain> identifier used in cid: src= references in the HTML body.
+        String contentId = body.getContentId();
+        if (!StringUtils.isBlank(contentId)) {
+            // Strip angle brackets and store as-is; analysts can correlate with cid: URLs.
+            submd.set(Metadata.MESSAGE_RAW_HEADER_PREFIX + "Content-ID",
+                    contentId.replaceAll("^<|>$", ""));
+        }
     }
 
     private void tryToAddDate(String value, Property property, Metadata metadata) {
