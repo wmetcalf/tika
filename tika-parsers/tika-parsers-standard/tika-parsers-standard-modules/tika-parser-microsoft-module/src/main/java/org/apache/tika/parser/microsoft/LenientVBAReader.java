@@ -82,7 +82,7 @@ public final class LenientVBAReader {
             int offset = entry.getValue();
             try {
                 byte[] raw = readStream(vbaDir, name);
-                if (raw == null || offset >= raw.length) {
+                if (raw == null || offset < 3 || offset >= raw.length) {
                     continue;
                 }
                 byte[] src = decompress(raw, offset);
@@ -114,7 +114,7 @@ public final class LenientVBAReader {
             if (recLen < 0 || recLen > dir.length - pos) {
                 // Oversized / invalid record — Mac-Word writes non-standard reference
                 // entries here.  Skip byte-by-byte until we find a plausible record.
-                pos -= 5; // back up, advance by one byte and retry
+                pos -= 4; // back up past the 2-byte record ID, retry from next byte
                 continue;
             }
 
@@ -201,14 +201,16 @@ public final class LenientVBAReader {
             } else {
                 // Compressed chunk: process flag groups.
                 // Each compressed chunk decompresses to at most 4096 bytes (MS-OVBA §2.4.1.3.2).
-                int decompressedStart = out.size();
-                while (i < chunkEnd && (out.size() - decompressedStart) < 4096) {
+                // Use a fixed-size local buffer to avoid O(n²) toByteArray() calls.
+                byte[] chunkBuf = new byte[4096];
+                int chunkOut = 0;
+
+                while (i < chunkEnd && chunkOut < 4096) {
                     int flagByte = compressed[i++] & 0xFF;
-                    for (int bit = 0; bit < 8 && i < chunkEnd
-                            && (out.size() - decompressedStart) < 4096; bit++) {
+                    for (int bit = 0; bit < 8 && i < chunkEnd && chunkOut < 4096; bit++) {
                         if ((flagByte & (1 << bit)) == 0) {
                             // RawToken
-                            out.write(compressed[i++] & 0xFF);
+                            chunkBuf[chunkOut++] = compressed[i++];
                         } else {
                             // CopyToken
                             if (i + 2 > chunkEnd) {
@@ -220,35 +222,29 @@ public final class LenientVBAReader {
 
                             // Compute copy-token bit count per MS-OVBA §2.4.1.3.19.1:
                             //   bit_count = max(4, ceil(log2(decompressedChunkSize)))
-                            // In integer arithmetic: ceil(log2(n)) = 32 - nlz(n-1) for n≥1.
-                            int decompressedLen = out.size() - decompressedStart;
-                            int bc = (decompressedLen <= 1) ? 4
+                            // In integer arithmetic: ceil(log2(n)) = 32 - nlz(n-1) for n>=1.
+                            int bc = (chunkOut <= 1) ? 4
                                     : Math.max(4,
-                                            32 - Integer.numberOfLeadingZeros(decompressedLen - 1));
+                                            32 - Integer.numberOfLeadingZeros(chunkOut - 1));
                             int lm = 0xFFFF >> bc;
                             int om = ~lm & 0xFFFF;
                             int length = (copyToken & lm) + 3;
                             int offset = ((copyToken & om) >>> (16 - bc)) + 1;
 
-                            // Copy from already-decompressed output (supports overlap).
-                            // readPos is relative to the full output buffer start.
-                            int readStart = out.size() - offset;
+                            // Copy from already-decompressed chunk buffer (supports overlap).
+                            int readStart = chunkOut - offset;
                             if (readStart < 0) {
-                                // Back-reference points before the buffer — skip token.
+                                // Back-reference before chunk start — skip token.
                                 continue;
                             }
-                            for (int j = 0; j < length
-                                    && (out.size() - decompressedStart) < 4096; j++) {
-                                // Re-read each time so overlapping copies work correctly.
-                                byte[] current = out.toByteArray();
-                                int readPos = current.length - offset;
-                                if (readPos >= 0) {
-                                    out.write(current[readPos] & 0xFF);
-                                }
+                            for (int j = 0; j < length && chunkOut < 4096; j++) {
+                                chunkBuf[chunkOut] = chunkBuf[readStart + j];
+                                chunkOut++;
                             }
                         }
                     }
                 }
+                out.write(chunkBuf, 0, chunkOut);
                 i = chunkEnd; // ensure we move past the chunk
             }
 
@@ -284,6 +280,9 @@ public final class LenientVBAReader {
     private static byte[] readStream(DirectoryNode dir, String name) {
         try {
             DocumentEntry de = (DocumentEntry) dir.getEntry(name);
+            if (de.getSize() > MAX_STREAM_BYTES) {
+                return null;
+            }
             byte[] data = new byte[de.getSize()];
             try (DocumentInputStream dis = new DocumentInputStream(de)) {
                 int read = 0;

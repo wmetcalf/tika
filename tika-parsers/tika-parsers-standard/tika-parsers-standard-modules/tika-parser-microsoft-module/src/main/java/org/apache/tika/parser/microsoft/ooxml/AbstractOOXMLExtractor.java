@@ -405,9 +405,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 // Propagate autoLoad flag — this OLE object executes on open.
                 if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
                     parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
-                    metadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLASS_OBFUSCATED,
-                            embeddedPartMetadata.getProgId() != null
-                            && !embeddedPartMetadata.getProgId().isEmpty());
                 }
                 byte[] data = ole.getDataBuffer();
                 if (data != null) {

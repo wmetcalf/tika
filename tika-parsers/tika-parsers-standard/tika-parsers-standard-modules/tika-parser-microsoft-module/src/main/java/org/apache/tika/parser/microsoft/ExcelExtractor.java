@@ -65,13 +65,6 @@ import org.apache.poi.hssf.record.SSTRecord;
 import org.apache.poi.hssf.record.StringRecord;
 import org.apache.poi.hssf.record.TextObjectRecord;
 import org.apache.poi.hssf.record.chart.SeriesTextRecord;
-import org.apache.poi.ss.formula.ptg.AbstractFunctionPtg;
-import org.apache.poi.ss.formula.ptg.BoolPtg;
-import org.apache.poi.ss.formula.ptg.IntPtg;
-import org.apache.poi.ss.formula.ptg.MissingArgPtg;
-import org.apache.poi.ss.formula.ptg.NumberPtg;
-import org.apache.poi.ss.formula.ptg.Ptg;
-import org.apache.poi.ss.formula.ptg.StringPtg;
 import org.apache.poi.hssf.record.common.UnicodeString;
 import org.apache.poi.hssf.record.crypto.Biff8EncryptionKey;
 import org.apache.poi.hssf.usermodel.HSSFPictureData;
@@ -80,6 +73,13 @@ import org.apache.poi.poifs.filesystem.DirectoryNode;
 import org.apache.poi.poifs.filesystem.DocumentInputStream;
 import org.apache.poi.poifs.filesystem.Entry;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.apache.poi.ss.formula.ptg.AbstractFunctionPtg;
+import org.apache.poi.ss.formula.ptg.BoolPtg;
+import org.apache.poi.ss.formula.ptg.IntPtg;
+import org.apache.poi.ss.formula.ptg.MissingArgPtg;
+import org.apache.poi.ss.formula.ptg.NumberPtg;
+import org.apache.poi.ss.formula.ptg.Ptg;
+import org.apache.poi.ss.formula.ptg.StringPtg;
 import org.apache.poi.ss.usermodel.DateUtil;
 import org.xml.sax.SAXException;
 
@@ -746,7 +746,15 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                     if (sb.length() > 0) {
                         sb.append(' ');
                     }
-                    sb.append(func.getName());
+                    // getName() throws IllegalStateException for unknown function indexes
+                    // in attacker-crafted BIFF8 — catch and surface as an IOC token.
+                    String funcName;
+                    try {
+                        funcName = func.getName();
+                    } catch (IllegalStateException ex) {
+                        funcName = "#UNKNOWN_FUNC[" + func.getFunctionIndex() + "]";
+                    }
+                    sb.append(funcName);
                 } else if (ptg instanceof StringPtg) {
                     String val = ((StringPtg) ptg).getValue();
                     if (sb.length() > 0) {
