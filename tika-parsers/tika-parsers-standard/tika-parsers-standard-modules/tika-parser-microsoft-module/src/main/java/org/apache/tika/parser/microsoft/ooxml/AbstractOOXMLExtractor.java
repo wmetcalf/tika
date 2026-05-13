@@ -292,6 +292,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         }
         EmbeddedPartMetadata embeddedPartMetadata = embeddedPartMetadataMap.get(rel.getId());
         String type = rel.getRelationshipType();
+        updateParentMetadata(parentMetadata, embeddedPartMetadata);
         if (OLE_OBJECT_REL_TYPE.equals(type) &&
                 TYPE_OLE_OBJECT.equals(target.getContentType())) {
             handleEmbeddedOLE(target, xhtml, sourceDesc + rel.getId(), parentMetadata,
@@ -374,6 +375,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (packageEntryName != null) {
                 //OLE 2.0
                 updateMetadata(metadata, embeddedPartMetadata);
+                updateParentMetadata(parentMetadata, embeddedPartMetadata);
 
                 tis = TikaInputStream.get(fs.createDocumentInputStream(packageEntryName));
                 if (embeddedExtractor.shouldParseEmbedded(metadata)) {
@@ -403,9 +405,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     metadata.add(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, ole.getFileName());
                 }
                 // Propagate autoLoad flag — this OLE object executes on open.
-                if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
-                    parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
-                }
+                updateParentMetadata(parentMetadata, embeddedPartMetadata);
                 byte[] data = ole.getDataBuffer();
                 if (data != null) {
                     tis = TikaInputStream.get(data);
@@ -441,9 +441,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                             Integer.toString(data.length));
                     // Synthetic name so the worker can save the file for hashing.
                     m2.set(TikaCoreProperties.RESOURCE_NAME_KEY, rel + ".bin");
-                    if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
-                        parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
-                    }
+                    updateParentMetadata(parentMetadata, embeddedPartMetadata);
                     if (embeddedExtractor.shouldParseEmbedded(m2)) {
                         embeddedExtractor.parseEmbedded(tis, xhtml, m2, context, true);
                     }
@@ -475,6 +473,21 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, embeddedPartMetadata.getFullName());
     }
 
+    private void updateParentMetadata(Metadata parentMetadata,
+                                      EmbeddedPartMetadata embeddedPartMetadata) {
+        if (embeddedPartMetadata == null) {
+            return;
+        }
+        if (embeddedPartMetadata.isAutoLoad()) {
+            parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
+        }
+        if (embeddedPartMetadata.isSuspiciousProgId()
+                && !StringUtils.isBlank(embeddedPartMetadata.getProgId())) {
+            parentMetadata.add(Office.OOXML_OLE_SUSPICIOUS_PROG_IDS,
+                    embeddedPartMetadata.getProgId());
+        }
+    }
+
     /**
      * Case-insensitive fallback for Ole10Native stream lookup.
      * Returns the OLE1 payload bytes (after the 4-byte length prefix) or null.
@@ -495,7 +508,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 continue;
             }
             // Non-canonical casing → flag obfuscation. Canonical is "\x01Ole10Native".
-            if (!entryName.equals("Ole10Native")) {
+            if (!entryName.equals("\u0001Ole10Native")) {
                 parentMetadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLASS_OBFUSCATED, true);
             }
             org.apache.poi.poifs.filesystem.DocumentEntry de =

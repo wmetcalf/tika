@@ -997,10 +997,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     private void scanSheetForOleObjects(PackagePart sheetPart,
                                         java.util.Map<String, EmbeddedPartMetadata> result)
             throws Exception {
-        javax.xml.parsers.SAXParserFactory spf = javax.xml.parsers.SAXParserFactory.newInstance();
-        spf.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
-        spf.setNamespaceAware(true);
-        javax.xml.parsers.SAXParser sp = spf.newSAXParser();
         org.xml.sax.helpers.DefaultHandler handler = new org.xml.sax.helpers.DefaultHandler() {
             @Override
             public void startElement(String uri, String localName, String qName,
@@ -1027,11 +1023,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         epm.setProgId(progId);
                     }
                     epm.setAutoLoad(isAutoLoad);
+                    epm.setSuspiciousProgId(isSuspiciousProgId);
                 }
             }
         };
         try (java.io.InputStream is = sheetPart.getInputStream()) {
-            sp.parse(is, handler);
+            XMLReaderUtils.parseSAX(is, handler, parseContext);
         }
     }
 
