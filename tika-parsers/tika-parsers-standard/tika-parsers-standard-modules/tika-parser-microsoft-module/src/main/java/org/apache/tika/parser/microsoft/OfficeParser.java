@@ -149,6 +149,27 @@ public class OfficeParser extends AbstractOfficeParser {
                 }
             }
         }
+        // Extract UserForm control properties (ControlTipText, Tag, Caption, Value).
+        // These are stored in binary form resources and invisible in VBA source text —
+        // a common technique to hide URLs or commands from static analysis.
+        try {
+            for (VbaFormParser.FormModuleResult form : VbaFormParser.extractFormVariables(fs)) {
+                String text = form.toText();
+                if (text.isBlank()) continue;
+                Metadata m = Metadata.newInstance(context);
+                m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                        TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
+                m.set(Metadata.CONTENT_TYPE, "text/x-vbasic");
+                m.set(TikaCoreProperties.RESOURCE_NAME_KEY, form.moduleName + ".frm");
+                if (embeddedDocumentExtractor.shouldParseEmbedded(m)) {
+                    try (TikaInputStream tis = TikaInputStream.get(text.getBytes(StandardCharsets.UTF_8))) {
+                        embeddedDocumentExtractor.parseEmbedded(tis, xhtml, m, context, true);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Non-fatal: form binary parsing errors should never fail the overall extraction
+        }
     }
 
     public Set<MediaType> getSupportedTypes(ParseContext context) {
