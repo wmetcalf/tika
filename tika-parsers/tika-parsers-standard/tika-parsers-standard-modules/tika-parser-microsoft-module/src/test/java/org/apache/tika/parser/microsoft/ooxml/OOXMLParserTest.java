@@ -17,10 +17,18 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.DecimalFormatSymbols;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,6 +37,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import org.apache.poi.util.LocaleUtil;
 import org.junit.jupiter.api.AfterAll;
@@ -36,12 +47,16 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.MultiThreadedTikaTest;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.EncryptedDocumentException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
@@ -98,6 +113,28 @@ public class OOXMLParserTest extends MultiThreadedTikaTest {
         assertNotContained("196.0", content);
         assertEquals("false", metadata.get(Office.PROTECTED_WORKSHEET));
 
+    }
+
+    @Test
+    public void testExcelOleObjectAutoLoadAndSuspiciousProgIdOnParentMetadata()
+            throws Exception {
+        Path modified = createModifiedExcelEmbedding(false);
+
+        Metadata parent = parseParentMetadataOnly(modified);
+
+        assertEquals("true", parent.get(Office.OOXML_OLE_AUTO_EXEC));
+        assertTrue(Arrays.asList(parent.getValues(Office.OOXML_OLE_SUSPICIOUS_PROG_IDS))
+                .contains("Evil.Loader"));
+    }
+
+    @Test
+    public void testExcelOleObjectScanUsesHardenedXmlParser() throws Exception {
+        Path source = Path.of("src/main/java/org/apache/tika/parser/microsoft/ooxml/" +
+                "XSSFExcelExtractorDecorator.java");
+        String code = Files.readString(source, StandardCharsets.UTF_8);
+
+        assertTrue(code.contains("XMLReaderUtils.parseSAX(is, handler, parseContext)"));
+        assertFalse(code.contains("SAXParserFactory.newInstance()"));
     }
 
     @Test
@@ -708,6 +745,62 @@ public class OOXMLParserTest extends MultiThreadedTikaTest {
         //TIKA-4474 -- test: files (passed as stream) no longer have limit on record size as they are spooled
         String content = getText("testRecordSizeExceeded.xlsx");
         assertContains("Repetitive content pattern 3 for compression test row 1", content);
+    }
+
+    private Path createModifiedExcelEmbedding(boolean includeExternalDoctype) throws Exception {
+        Path tmp = Files.createTempFile("tika-ooxml-ole-object-", ".xlsx");
+        tmp.toFile().deleteOnExit();
+
+        try (InputStream is = getResourceAsStream("/test-documents/testEXCEL_embeded.xlsx");
+             ZipInputStream zis = new ZipInputStream(is);
+             OutputStream os = Files.newOutputStream(tmp);
+             ZipOutputStream zos = new ZipOutputStream(os)) {
+            assertNotNull(is);
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                ZipEntry newEntry = new ZipEntry(entry.getName());
+                zos.putNextEntry(newEntry);
+                if ("xl/worksheets/sheet1.xml".equals(entry.getName())) {
+                    String xml = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                    xml = xml.replace("<oleObject progId=\"Presentation\" shapeId=\"1025\" r:id=\"rId4\"/>",
+                            "<oleObject progId=\"Evil.Loader\" autoLoad=\"1\" " +
+                                    "shapeId=\"1025\" r:id=\"rId4\"/>");
+                    if (includeExternalDoctype) {
+                        xml = "<!DOCTYPE worksheet SYSTEM \"http://127.0.0.1:9/evil.dtd\">\n" + xml;
+                    }
+                    zos.write(xml.getBytes(StandardCharsets.UTF_8));
+                } else {
+                    zis.transferTo(zos);
+                }
+                zos.closeEntry();
+                zis.closeEntry();
+            }
+        }
+        return tmp;
+    }
+
+    private Metadata parseParentMetadataOnly(Path path) throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        context.set(Locale.class, Locale.US);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext context,
+                                      boolean outputHtml)
+                    throws SAXException {
+                // no-op
+            }
+        });
+        try (TikaInputStream tis = TikaInputStream.get(path)) {
+            AUTO_DETECT_PARSER.parse(tis, new DefaultHandler(), metadata, context);
+        }
+        return metadata;
     }
 
 }

@@ -31,6 +31,8 @@ public class EmbeddedPartMetadata {
     /** True when the OOXML sheet XML has {@code autoLoad="1"} on this oleObject element. */
     private boolean autoLoad;
 
+    private boolean suspiciousProgId;
+
     //This is the rId of the EMF file that is associated with
     //the embedded object
 
@@ -76,5 +78,13 @@ public class EmbeddedPartMetadata {
 
     public void setAutoLoad(boolean autoLoad) {
         this.autoLoad = autoLoad;
+    }
+
+    public boolean isSuspiciousProgId() {
+        return suspiciousProgId;
+    }
+
+    public void setSuspiciousProgId(boolean suspiciousProgId) {
+        this.suspiciousProgId = suspiciousProgId;
     }
 }
