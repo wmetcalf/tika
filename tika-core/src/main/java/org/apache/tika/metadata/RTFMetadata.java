@@ -106,4 +106,21 @@ public interface RTFMetadata {
     Property EMB_UNICODE_IN_OBJDATA = Property.internalBoolean(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "unicode_in_objdata");
 
+    /**
+     * URL extracted from an OLE2Link/StdOleLink moniker embedded in an RTF object.
+     * OLE2Link objects (className=OLE2Link or CLSID {00000300-...}) store a target URL
+     * as a UTF-16LE wide-char string in their CONTENTS stream. This is the primary vector
+     * for template-injection and WSDL-download attacks (CVE-2017-8759, CVE-2017-0199).
+     */
+    Property EMB_OLE2LINK_URL = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_ole2link_url");
+
+    /**
+     * Label field from an OLE10Native embedded object (the display name shown to the user,
+     * typically the dropped filename). Extracted from POI's Ole10Native record when the
+     * embedded POIFS compound document contains an {@code \x01Ole10Native} stream.
+     */
+    Property EMB_LABEL = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_label");
+
 }
