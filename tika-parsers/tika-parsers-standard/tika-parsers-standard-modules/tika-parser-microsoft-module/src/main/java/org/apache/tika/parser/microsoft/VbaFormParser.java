@@ -180,19 +180,42 @@ public final class VbaFormParser {
         for (SiteInfo site : sites) {
             try {
                 switch (site.clsidCacheIndex) {
-                    case 7: case 14: case 57: consumeFormControlSkip(o); break;
-                    case 12: consumeImageControlSkip(o); break;
-                    case 15: case 23: case 24: case 25: case 26: case 27: case 28:
+                    case 7:
+                    case 14:
+                    case 57:
+                        consumeFormControlSkip(o);
+                        break;
+                    case 12:
+                        consumeImageControlSkip(o);
+                        break;
+                    case 15:
+                    case 23:
+                    case 24:
+                    case 25:
+                    case 26:
+                    case 27:
+                    case 28:
                         String[] vc = consumeMorphDataControl(o);
                         site.value   = vc[0];
                         site.caption = vc[1];
                         break;
-                    case 16: consumeSpinButtonControlSkip(o); break;
-                    case 17: consumeCommandButtonControlSkip(o); break;
-                    case 18: consumeTabStripControlSkip(o); break;
-                    case 21: site.caption = consumeLabelControl(o); break;
-                    case 47: consumeScrollBarControlSkip(o); break;
-                    default: break; // unknown type — stop o-stream parsing
+                    case 16:
+                        consumeSpinButtonControlSkip(o);
+                        break;
+                    case 17:
+                        consumeCommandButtonControlSkip(o);
+                        break;
+                    case 18:
+                        consumeTabStripControlSkip(o);
+                        break;
+                    case 21:
+                        site.caption = consumeLabelControl(o);
+                        break;
+                    case 47:
+                        consumeScrollBarControlSkip(o);
+                        break;
+                    default:
+                        break;
                 }
             } catch (Exception e) {
                 LOG.fine("VbaFormParser: o-stream parse error at site " + site.name + ": " + e.getMessage());
@@ -425,7 +448,9 @@ public final class VbaFormParser {
         byte[] uuid = s.readBytes(16);
         // UUID {0BE35203-8F91-11CE-9DE3-00AA004BB851} → StdFont
         ByteBuffer bb = ByteBuffer.wrap(uuid).order(ByteOrder.LITTLE_ENDIAN);
-        int p0 = bb.getInt(); short p1 = bb.getShort(); short p2 = bb.getShort();
+        int p0 = bb.getInt();
+        short p1 = bb.getShort();
+        short p2 = bb.getShort();
         if (p0 == 0x0BE35203 && (p1 & 0xFFFF) == 0x8F91 && (p2 & 0xFFFF) == 0x11CE) {
             // StdFont
             s.checkValue("StdFont version", 1, 1);
@@ -555,22 +580,32 @@ public final class VbaFormParser {
 
     private static final class ImagePropMask {
         final boolean fPicture, fMouseIcon;
-        ImagePropMask(int v) { fPicture = bit(v, 10); fMouseIcon = bit(v, 14); }
+        ImagePropMask(int v) {
+            fPicture = bit(v, 10);
+            fMouseIcon = bit(v, 14);
+        }
     }
 
     private static final class CommandButtonPropMask {
         final boolean fPicture, fMouseIcon;
-        CommandButtonPropMask(int v) { fPicture = bit(v, 7); fMouseIcon = bit(v, 10); }
+        CommandButtonPropMask(int v) {
+            fPicture = bit(v, 7);
+            fMouseIcon = bit(v, 10);
+        }
     }
 
     private static final class SpinButtonPropMask {
         final boolean fMouseIcon;
-        SpinButtonPropMask(int v) { fMouseIcon = bit(v, 13); }
+        SpinButtonPropMask(int v) {
+            fMouseIcon = bit(v, 13);
+        }
     }
 
     private static final class TabStripPropMask {
         final boolean fMouseIcon;
-        TabStripPropMask(int v) { fMouseIcon = bit(v, 24); }
+        TabStripPropMask(int v) {
+            fMouseIcon = bit(v, 24);
+        }
     }
 
     private static final class LabelPropMask {
@@ -596,7 +631,9 @@ public final class VbaFormParser {
 
     private static final class ScrollBarPropMask {
         final boolean fMouseIcon;
-        ScrollBarPropMask(int v) { fMouseIcon = bit(v, 16); }
+        ScrollBarPropMask(int v) {
+            fMouseIcon = bit(v, 16);
+        }
     }
 
     private static boolean bit(int v, int n)  { return ((v >> n) & 1) == 1; }
@@ -615,7 +652,8 @@ public final class VbaFormParser {
         void skip(int n) { pos += n; }
 
         byte readByte() throws IOException {
-            check(1); return data[pos++];
+            check(1);
+            return data[pos++];
         }
         int readU16() throws IOException {
             check(2);
@@ -638,7 +676,11 @@ public final class VbaFormParser {
             return readU32() & 0x7FFFFFFF;
         }
         byte[] readBytes(int n) throws IOException {
-            check(n); byte[] b = new byte[n]; System.arraycopy(data, pos, b, 0, n); pos += n; return b;
+            check(n);
+            byte[] b = new byte[n];
+            System.arraycopy(data, pos, b, 0, n);
+            pos += n;
+            return b;
         }
         /** Advance position to the next 4-byte boundary relative to structStart. */
         void padTo4(int structStart) {
