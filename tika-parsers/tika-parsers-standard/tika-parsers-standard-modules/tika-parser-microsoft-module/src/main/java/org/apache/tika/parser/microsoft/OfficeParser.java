@@ -123,17 +123,27 @@ public class OfficeParser extends AbstractOfficeParser {
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
-            Metadata m = Metadata.newInstance(context);
-            m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
-                    TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
-            m.set(Metadata.CONTENT_TYPE, "text/x-vbasic");
-            EmbeddedDocumentUtil.recordException(e, m);
-            if (embeddedDocumentExtractor.shouldParseEmbedded(m)) {
-                embeddedDocumentExtractor.parseEmbedded(
-                        //pass in space character so that we don't trigger a zero-byte exception
-                        TikaInputStream.get(new byte[]{'\u0020'}), xhtml, m, context, true);
+            // POI's strict reserved-field checks reject some valid VBA projects (notably
+            // those authored by Mac Word, which writes non-standard record IDs in the dir
+            // stream).  Fall back to our lenient reader before giving up.
+            try {
+                macros = LenientVBAReader.readMacros(fs);
+            } catch (Exception ignore) {
+                macros = null;
             }
-            return;
+            if (macros == null || macros.isEmpty()) {
+                Metadata m = Metadata.newInstance(context);
+                m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                        TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
+                m.set(Metadata.CONTENT_TYPE, "text/x-vbasic");
+                EmbeddedDocumentUtil.recordException(e, m);
+                if (embeddedDocumentExtractor.shouldParseEmbedded(m)) {
+                    embeddedDocumentExtractor.parseEmbedded(
+                            //pass in space character so that we don't trigger a zero-byte exception
+                            TikaInputStream.get(new byte[]{'\u0020'}), xhtml, m, context, true);
+                }
+                return;
+            }
         }
         for (Map.Entry<String, String> e : macros.entrySet()) {
             Metadata m = Metadata.newInstance(context);
