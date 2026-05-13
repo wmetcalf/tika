@@ -418,6 +418,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     embeddedExtractor
                             .parseEmbedded(tis, xhtml, metadata, context, true);
                 }
+            } else if (hasOle10NativeLike(root)) {
+                // detectType() missed the Ole10Native stream because the stream name uses
+                // non-canonical casing (e.g. \x01oLE10nAtiVe). Surface an Ole10NativeException
+                // so the case-insensitive fallback catch below extracts the payload.
+                throw new Ole10NativeException("non-canonical Ole10Native stream name");
             } else {
                 handleEmbeddedFile(part, xhtml, rel, embeddedPartMetadata,
                         TikaCoreProperties.EmbeddedResourceType.ATTACHMENT);
@@ -480,10 +485,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (!(e instanceof org.apache.poi.poifs.filesystem.DocumentEntry)) {
                 continue;
             }
-            if (!e.getName().equalsIgnoreCase("Ole10Native")) {
+            // POI entry names include the \x01 control-char prefix for OLE system streams.
+            // Strip a leading control character before case-insensitive comparison.
+            String entryName = e.getName();
+            String nameSuffix = (entryName.length() > 1 && entryName.charAt(0) < 0x20)
+                    ? entryName.substring(1) : entryName;
+            if (!nameSuffix.equalsIgnoreCase("Ole10Native")) {
                 continue;
             }
-            if (!e.getName().equals("Ole10Native")) {
+            // Non-canonical casing → flag obfuscation. Canonical is "\x01Ole10Native".
+            if (!entryName.equals("Ole10Native")) {
                 parentMetadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLASS_OBFUSCATED, true);
             }
             org.apache.poi.poifs.filesystem.DocumentEntry de =
@@ -512,6 +523,20 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             return raw;
         }
         return null;
+    }
+
+    private static boolean hasOle10NativeLike(org.apache.poi.poifs.filesystem.DirectoryNode root) {
+        for (org.apache.poi.poifs.filesystem.Entry e : root) {
+            if (!(e instanceof org.apache.poi.poifs.filesystem.DocumentEntry)) {
+                continue;
+            }
+            String name = e.getName();
+            String suffix = (name.length() > 1 && name.charAt(0) < 0x20) ? name.substring(1) : name;
+            if (suffix.equalsIgnoreCase("Ole10Native")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String getPackageEntryName(DirectoryNode root) {
