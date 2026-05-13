@@ -434,12 +434,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // stream scan — malware uses "\x01oLE10nAtiVe" to evade exact-match detection.
             try {
                 byte[] data = readOle10NativeCaseInsensitive(fs.getRoot(), parentMetadata);
-                if (data != null) {
+                if (data != null && data.length > 0) {
                     tis = TikaInputStream.get(data);
                     Metadata m2 = Metadata.newInstance(context);
                     m2.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
                             TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
                     m2.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, rel);
+                    m2.set(org.apache.tika.metadata.HttpHeaders.CONTENT_LENGTH,
+                            Integer.toString(data.length));
+                    // Synthetic name so the worker can save the file for hashing.
+                    m2.set(TikaCoreProperties.RESOURCE_NAME_KEY, rel + ".bin");
                     if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
                         parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
                     }
