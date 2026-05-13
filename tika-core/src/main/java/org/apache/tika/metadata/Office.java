@@ -173,6 +173,19 @@ public interface Office {
 
     Property HAS_DATA_CONNECTIONS = Property.internalBoolean("msoffice:excel:has-data-connections");
 
+    /**
+     * True when an OOXML embedded OLE object has {@code autoLoad="1"} — it will
+     * auto-execute when the document is opened without any user interaction.
+     * Common in malware droppers that embed executables as OLE Package objects.
+     */
+    Property OOXML_OLE_AUTO_EXEC = Property.internalBoolean("msoffice:ooxml:ole-auto-exec");
+
+    /**
+     * ProgID(s) of OLE objects in OOXML sheets that triggered autoLoad or have
+     * unrecognised / obfuscated ProgIDs (not matching any known Office application).
+     */
+    Property OOXML_OLE_SUSPICIOUS_PROG_IDS = Property.internalTextBag("msoffice:ooxml:ole-suspicious-progids");
+
     /** True when the workbook contains at least one Excel 4.0 macro sheet (BOF type 0x40). */
     Property HAS_XLS4_MACROS = Property.internalBoolean("msoffice:excel:has-xls4-macros");
 

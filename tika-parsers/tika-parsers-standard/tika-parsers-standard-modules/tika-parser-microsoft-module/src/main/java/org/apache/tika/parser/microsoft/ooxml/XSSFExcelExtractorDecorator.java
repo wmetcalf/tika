@@ -960,6 +960,82 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     }
 
     /**
+     * Scan each sheet XML for {@code <oleObject>} elements to capture {@code progId}
+     * and {@code autoLoad} attributes.  {@code autoLoad="1"} means the object
+     * executes immediately on open — a primary mechanism for drive-by PE drops.
+     * Non-standard ProgIDs (not matching known Office applications) are flagged
+     * as suspicious regardless of autoLoad.
+     */
+    @Override
+    protected java.util.Map<String, EmbeddedPartMetadata> getEmbeddedPartMetadataMap() {
+        java.util.Map<String, EmbeddedPartMetadata> result = new java.util.HashMap<>();
+        for (PackagePart sheetPart : sheetParts) {
+            try {
+                scanSheetForOleObjects(sheetPart, result);
+            } catch (Exception ignore) {
+                // non-fatal — metadata extraction failure should not abort parsing
+            }
+        }
+        return result;
+    }
+
+    // Known legitimate ProgIDs that should NOT be flagged as suspicious.
+    // Anything else (random strings, obfuscated names) is flagged.
+    private static final java.util.Set<String> KNOWN_PROGIDS =
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "Word.Document.12", "Word.Document.8", "Word.DocumentMacroEnabled.12",
+                    "Excel.Sheet.12", "Excel.Sheet.8", "Excel.SheetMacroEnabled.12",
+                    "Excel.SheetBinaryMacroEnabled.12", "Excel.Addin", "Excel.Addin.12",
+                    "PowerPoint.Show.12", "PowerPoint.Show.8",
+                    "PowerPoint.ShowMacroEnabled.12",
+                    "Package", "Package2",
+                    "Word.Picture.8", "MSGraph.Chart.8",
+                    "Equation.3", "Equation.2",
+                    "AcroExch.Document", "AcroExch.Document.11"
+            ));
+
+    private void scanSheetForOleObjects(PackagePart sheetPart,
+                                        java.util.Map<String, EmbeddedPartMetadata> result)
+            throws Exception {
+        javax.xml.parsers.SAXParserFactory spf = javax.xml.parsers.SAXParserFactory.newInstance();
+        spf.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        spf.setNamespaceAware(true);
+        javax.xml.parsers.SAXParser sp = spf.newSAXParser();
+        org.xml.sax.helpers.DefaultHandler handler = new org.xml.sax.helpers.DefaultHandler() {
+            @Override
+            public void startElement(String uri, String localName, String qName,
+                                     org.xml.sax.Attributes attrs) {
+                if (!"oleObject".equals(localName) && !"oleObject".equals(qName)) {
+                    return;
+                }
+                String rId = attrs.getValue("r:id");
+                if (rId == null) {
+                    rId = attrs.getValue("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+                }
+                if (rId == null) {
+                    return;
+                }
+                String progId = attrs.getValue("progId");
+                String autoLoad = attrs.getValue("autoLoad");
+                boolean isAutoLoad = "1".equals(autoLoad) || "true".equalsIgnoreCase(autoLoad);
+                boolean isSuspiciousProgId = progId != null && !progId.isEmpty()
+                        && !KNOWN_PROGIDS.contains(progId);
+                if (isAutoLoad || isSuspiciousProgId) {
+                    EmbeddedPartMetadata epm = result.computeIfAbsent(rId,
+                            k -> new EmbeddedPartMetadata(null));
+                    if (progId != null) {
+                        epm.setProgId(progId);
+                    }
+                    epm.setAutoLoad(isAutoLoad);
+                }
+            }
+        };
+        try (java.io.InputStream is = sheetPart.getInputStream()) {
+            sp.parse(is, handler);
+        }
+    }
+
+    /**
      * Turns formatted sheet events into HTML
      */
     protected static class SheetTextAsHTML

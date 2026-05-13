@@ -123,4 +123,12 @@ public interface RTFMetadata {
     Property EMB_LABEL = Property.internalText(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_label");
 
+    /**
+     * Human-readable name resolved from {@link #EMB_CLSID} via the known CLSID→name table.
+     * Set when the root storage CLSID matches a known OLE server
+     * (e.g. "Microsoft Equation Editor 3.0 (CVE-2017-11882/CVE-2018-0802)").
+     */
+    Property EMB_CLSID_NAME = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_clsid_name");
+
 }

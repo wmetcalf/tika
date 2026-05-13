@@ -382,15 +382,32 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 }
             } else if (POIFSDocumentType.OLE10_NATIVE == type) {
                 // TIKA-704: OLE 1.0 embedded document
+                // Note: Ole10Native.createFromEmbeddedOleObject is case-sensitive.
+                // Malware uses obfuscated stream names (e.g. \x01oLE10nAtiVe) to evade it;
+                // the Ole10NativeException catch below handles that case.
                 Ole10Native ole = Ole10Native.createFromEmbeddedOleObject(fs);
                 if (ole.getLabel() != null) {
                     metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, ole.getLabel());
+                    // Resolve CLSID name for the label if available
+                    String progIdFromLabel = org.apache.tika.parser.microsoft.OleClsidNames
+                            .lookup(metadata.get(org.apache.tika.metadata.RTFMetadata.EMB_CLSID));
+                    if (progIdFromLabel != null) {
+                        metadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLSID_NAME,
+                                progIdFromLabel);
+                    }
                 }
                 if (ole.getCommand() != null) {
                     metadata.add(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, ole.getCommand());
                 }
                 if (ole.getFileName() != null) {
                     metadata.add(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, ole.getFileName());
+                }
+                // Propagate autoLoad flag — this OLE object executes on open.
+                if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
+                    parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
+                    metadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLASS_OBFUSCATED,
+                            embeddedPartMetadata.getProgId() != null
+                            && !embeddedPartMetadata.getProgId().isEmpty());
                 }
                 byte[] data = ole.getDataBuffer();
                 if (data != null) {
@@ -408,7 +425,26 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         } catch (FileNotFoundException e) {
             // There was no CONTENTS entry, so skip this part
         } catch (Ole10NativeException e) {
-            // Could not process an OLE 1.0 entry, so skip this part
+            // POI's Ole10Native lookup is case-sensitive.  Fall back to a case-insensitive
+            // stream scan — malware uses "\x01oLE10nAtiVe" to evade exact-match detection.
+            try {
+                byte[] data = readOle10NativeCaseInsensitive(fs.getRoot(), parentMetadata);
+                if (data != null) {
+                    tis = TikaInputStream.get(data);
+                    Metadata m2 = Metadata.newInstance(context);
+                    m2.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                            TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
+                    m2.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, rel);
+                    if (embeddedPartMetadata != null && embeddedPartMetadata.isAutoLoad()) {
+                        parentMetadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
+                    }
+                    if (embeddedExtractor.shouldParseEmbedded(m2)) {
+                        embeddedExtractor.parseEmbedded(tis, xhtml, m2, context, true);
+                    }
+                }
+            } catch (Exception ignore) {
+                // non-fatal
+            }
         } catch (IOException e) {
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
         } finally {
@@ -426,7 +462,56 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         if (! StringUtils.isBlank(embeddedPartMetadata.getProgId())) {
             metadata.set(Office.PROG_ID, embeddedPartMetadata.getProgId());
         }
+        if (embeddedPartMetadata.isAutoLoad()) {
+            // propagate to parent document (passed as parentMetadata by caller)
+            metadata.set(Office.OOXML_OLE_AUTO_EXEC, true);
+        }
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, embeddedPartMetadata.getFullName());
+    }
+
+    /**
+     * Case-insensitive fallback for Ole10Native stream lookup.
+     * Returns the OLE1 payload bytes (after the 4-byte length prefix) or null.
+     */
+    private static byte[] readOle10NativeCaseInsensitive(
+            org.apache.poi.poifs.filesystem.DirectoryNode root, Metadata parentMetadata)
+            throws java.io.IOException {
+        for (org.apache.poi.poifs.filesystem.Entry e : root) {
+            if (!(e instanceof org.apache.poi.poifs.filesystem.DocumentEntry)) {
+                continue;
+            }
+            if (!e.getName().equalsIgnoreCase("Ole10Native")) {
+                continue;
+            }
+            if (!e.getName().equals("Ole10Native")) {
+                parentMetadata.set(org.apache.tika.metadata.RTFMetadata.EMB_CLASS_OBFUSCATED, true);
+            }
+            org.apache.poi.poifs.filesystem.DocumentEntry de =
+                    (org.apache.poi.poifs.filesystem.DocumentEntry) e;
+            byte[] raw = new byte[de.getSize()];
+            try (org.apache.poi.poifs.filesystem.DocumentInputStream dis =
+                         new org.apache.poi.poifs.filesystem.DocumentInputStream(de)) {
+                int read = 0;
+                while (read < raw.length) {
+                    int n = dis.read(raw, read, raw.length - read);
+                    if (n < 0) {
+                        break;
+                    }
+                    read += n;
+                }
+            }
+            if (raw.length > 4) {
+                int len = (raw[0] & 0xFF) | ((raw[1] & 0xFF) << 8)
+                        | ((raw[2] & 0xFF) << 16) | ((raw[3] & 0xFF) << 24);
+                if (len > 0 && len <= raw.length - 4) {
+                    byte[] payload = new byte[len];
+                    System.arraycopy(raw, 4, payload, 0, len);
+                    return payload;
+                }
+            }
+            return raw;
+        }
+        return null;
     }
 
     private String getPackageEntryName(DirectoryNode root) {

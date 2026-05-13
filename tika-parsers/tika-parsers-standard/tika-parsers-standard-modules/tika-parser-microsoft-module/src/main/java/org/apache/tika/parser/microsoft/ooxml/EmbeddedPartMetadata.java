@@ -28,6 +28,9 @@ public class EmbeddedPartMetadata {
 
     private String progId;
 
+    /** True when the OOXML sheet XML has {@code autoLoad="1"} on this oleObject element. */
+    private boolean autoLoad;
+
     //This is the rId of the EMF file that is associated with
     //the embedded object
 
@@ -65,5 +68,13 @@ public class EmbeddedPartMetadata {
 
     public void setProgId(String progId) {
         this.progId = progId;
+    }
+
+    public boolean isAutoLoad() {
+        return autoLoad;
+    }
+
+    public void setAutoLoad(boolean autoLoad) {
+        this.autoLoad = autoLoad;
     }
 }
