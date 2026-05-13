@@ -167,7 +167,7 @@ public class OfficeParser extends AbstractOfficeParser {
                     }
                 }
             }
-        } catch (Exception e) {
+        } catch (Exception ignore) {
             // Non-fatal: form binary parsing errors should never fail the overall extraction
         }
     }
