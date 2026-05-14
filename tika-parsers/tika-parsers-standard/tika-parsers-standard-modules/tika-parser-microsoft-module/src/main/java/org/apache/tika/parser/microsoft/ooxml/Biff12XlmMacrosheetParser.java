@@ -22,43 +22,48 @@ import java.nio.ByteOrder;
 
 import org.apache.poi.xssf.binary.XSSFBParseException;
 import org.apache.poi.xssf.binary.XSSFBParser;
-import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler;
+import org.xml.sax.SAXException;
+
+import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
  * Low-level BIFF12 parser for XLM macro sheets in XLSB files.
  *
- * Replaces the generic {@link org.apache.poi.xssf.binary.XSSFBSheetHandler} for macrosheet
- * processing so that formula bytes can be decoded by {@link Biff12XlmFormulaDecoder}
- * instead of POI's standard formula engine (which does not know XLM function names).
+ * Reads formula-cell records (BrtCellFmlaString/Num/Bool/Error, types 8-11)
+ * from the macrosheet binary stream, decodes the Ptg formula bytes using
+ * {@link Biff12XlmFormulaDecoder}, and emits each formula as a line of text
+ * directly into the supplied {@link XHTMLContentHandler}.
  *
- * For each formula cell record the decoded formula is emitted as the cell value through
- * the supplied {@link XSSFSheetXMLHandler.SheetContentsHandler}.
+ * Writing directly to the XHTML handler avoids {@code SheetTextAsHTML}'s
+ * column-filling logic, which would emit hundreds of empty {@code <td>}
+ * elements for every formula when all cells are in a far-right column.
  */
 class Biff12XlmMacrosheetParser extends XSSFBParser {
 
-    // BIFF12 record type IDs (MS-XLSB §2.4)
+    // BIFF12 record type IDs (MS-XLSB §2.4 / §2.5.97)
     private static final int BRT_ROW_HDR     = 0x0000;
     private static final int BRT_FMLA_STRING = 0x0008;
     private static final int BRT_FMLA_NUM    = 0x0009;
     private static final int BRT_FMLA_BOOL   = 0x000A;
     private static final int BRT_FMLA_ERROR  = 0x000B;
 
-    private final XSSFSheetXMLHandler.SheetContentsHandler handler;
-
+    private final XHTMLContentHandler xhtml;
     private int currentRow = -1;
-    private boolean rowOpen = false;
 
-    Biff12XlmMacrosheetParser(InputStream stream,
-                               XSSFSheetXMLHandler.SheetContentsHandler handler) {
+    Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml) {
         super(stream);
-        this.handler = handler;
+        this.xhtml = xhtml;
     }
 
     @Override
     public void handleRecord(int type, byte[] data) throws XSSFBParseException {
         switch (type) {
             case BRT_ROW_HDR:
-                handleRowHdr(data);
+                if (data.length >= 4) {
+                    currentRow = (int) java.nio.ByteBuffer.wrap(data)
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .getInt();
+                }
                 break;
             case BRT_FMLA_STRING:
             case BRT_FMLA_NUM:
@@ -71,41 +76,21 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
         }
     }
 
-    @Override
-    public void parse() throws XSSFBParseException, IOException {
-        try {
-            super.parse();
-        } finally {
-            endOpenRow();
-        }
-    }
-
     // ── Record handlers ─────────────────────────────────────────────────────
 
-    private void handleRowHdr(byte[] data) {
-        endOpenRow();
-        if (data.length >= 4) {
-            currentRow = (int) java.nio.ByteBuffer.wrap(data)
-                    .order(ByteOrder.LITTLE_ENDIAN)
-                    .getInt();
-        }
-    }
-
     private void handleFormulaCell(int type, byte[] data) {
-        Biff12XlmFormulaDecoder.Buf buf =
-                new Biff12XlmFormulaDecoder.Buf(data);
+        Biff12XlmFormulaDecoder.Buf buf = new Biff12XlmFormulaDecoder.Buf(data);
 
         // col (4 bytes, 0-based)
         long colLong = buf.readU32();
         if (colLong < 0) {
             return;
         }
-        int col = (int) colLong;
 
         // style (4 bytes, skip)
         buf.skip(4);
 
-        // value bytes (depends on record type)
+        // value (type-dependent, skip)
         skipCellValue(type, buf);
 
         // flags (2 bytes, skip)
@@ -126,12 +111,11 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
             return;
         }
 
-        ensureRowOpen();
-
-        String cellRef = Biff12XlmFormulaDecoder.cellAddr(col, currentRow, false, false);
+        int row = currentRow < 0 ? 0 : currentRow;
+        String cellRef = Biff12XlmFormulaDecoder.cellAddr((int) colLong, row, false, false);
         try {
-            handler.cell(cellRef, "=" + formula, null);
-        } catch (Exception e) {
+            xhtml.element("p", cellRef + ": =" + formula);
+        } catch (SAXException e) {
             // Non-fatal — continue with remaining cells
         }
     }
@@ -156,28 +140,6 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
                 break;
             default:
                 break;
-        }
-    }
-
-    private void ensureRowOpen() {
-        if (!rowOpen) {
-            try {
-                handler.startRow(currentRow < 0 ? 0 : currentRow);
-            } catch (Exception e) {
-                // ignore
-            }
-            rowOpen = true;
-        }
-    }
-
-    private void endOpenRow() {
-        if (rowOpen) {
-            try {
-                handler.endRow(currentRow < 0 ? 0 : currentRow);
-            } catch (Exception e) {
-                // ignore
-            }
-            rowOpen = false;
         }
     }
 }

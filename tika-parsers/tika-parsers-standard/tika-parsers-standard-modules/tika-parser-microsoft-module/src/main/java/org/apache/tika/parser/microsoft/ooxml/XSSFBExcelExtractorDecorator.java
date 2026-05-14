@@ -171,14 +171,15 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             xhtml.startElement("table");
             xhtml.startElement("tbody");
 
-            SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
             try (InputStream is = macroPart.getInputStream()) {
                 // Use our BIFF12 XLM-aware parser instead of XSSFBSheetHandler.
                 // XSSFBSheetHandler falls back to evaluated values (0, FALSE) for
                 // XLM function tokens POI does not recognise; Biff12XlmMacrosheetParser
                 // uses Biff12XlmFormulaDecoder which knows the full XLM function table.
+                // Write directly to xhtml (not through SheetTextAsHTML) to avoid
+                // emitting hundreds of empty <td> elements for each far-right column.
                 Biff12XlmMacrosheetParser parser =
-                        new Biff12XlmMacrosheetParser(is, sheetExtractor);
+                        new Biff12XlmMacrosheetParser(is, xhtml);
                 parser.parse();
             } catch (Exception e) {
                 // Non-fatal: record sheet name, continue with remaining sheets.
