@@ -101,9 +101,15 @@ class XlmMacroEmulator {
                 i++;
             }
         }
+        // Diagnostic: report handle state
+        StringBuilder handleDiag = new StringBuilder();
+        for (Map.Entry<Integer, StringBuilder> e : ctx.fileContents.entrySet()) {
+            handleDiag.append(" h").append(e.getKey()).append("=").append(e.getValue().length());
+        }
         ctx.iocs.add(0, "XLM_STATS: cells=" + cells.size()
                 + " cellValues=" + cellValues.size()
-                + " loops=" + loopsExecuted);
+                + " loops=" + loopsExecuted
+                + " handles=[" + handleDiag + "]");
 
         // Emit any still-open file contents
         for (Map.Entry<Integer, StringBuilder> entry : ctx.fileContents.entrySet()) {
