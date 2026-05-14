@@ -55,7 +55,7 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
     }
 
     @Override
-    protected void handleRecord(int type, byte[] data) throws XSSFBParseException {
+    public void handleRecord(int type, byte[] data) throws XSSFBParseException {
         switch (type) {
             case BRT_ROW_HDR:
                 handleRowHdr(data);
