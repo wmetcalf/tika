@@ -1018,13 +1018,6 @@ final class Biff12XlmFormulaDecoder {
                     if ("FWRITELN".equals(name)) {
                         ctx.writeToFile(handle, "\n");
                     }
-                    // Single-entry diagnostic on first write
-                    if (ctx.fileContents.getOrDefault(handle, new StringBuilder()).length() == 1) {
-                        ctx.iocs.add("FWRITE_OK: h=" + handle + " text=" + text
-                                + " total=" + ctx.fileContents.get(handle).length());
-                    }
-                } else if (ctx != null) {
-                    ctx.iocs.add("FWRITE_SKIP: args=" + args.size());
                 }
                 return 0.0;
             }
