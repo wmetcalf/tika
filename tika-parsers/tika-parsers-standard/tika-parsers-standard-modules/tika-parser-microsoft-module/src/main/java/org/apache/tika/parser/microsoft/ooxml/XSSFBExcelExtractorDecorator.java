@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
@@ -45,14 +44,6 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
-
-    // POI's XSSFBReader.WORKSHEET_RELS includes MACRO_SHEET_XML but not MACRO_SHEET_BIN
-    // (binary xlsb macro sheets use a microsoft.com relationship URI, not openxmlformats.org).
-    // We collect and process these separately after the regular sheet loop.
-    private static final String MACRO_SHEET_BIN_REL =
-            XSSFRelation.MACRO_SHEET_BIN.getRelation();
-    private static final String INTL_MACRO_SHEET_BIN_REL =
-            XSSFRelation.INTL_MACRO_SHEET_BIN.getRelation();
 
     public XSSFBExcelExtractorDecorator(ParseContext context, OPCPackage pkg,
                                         Locale locale) {
@@ -153,27 +144,18 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                                               XHTMLContentHandler xhtml)
             throws SAXException, IOException {
 
-        // The XLSB macro-enabled workbook part uses a binary content type that
-        // differs from the XML (.xlsm) MACROS_WORKBOOK content type.
-        List<PackagePart> workbookParts =
-                container.getPartsByContentType(
-                        XSSFRelation.XLSB_BINARY_WORKBOOK.getContentType());
-        if (workbookParts.isEmpty()) {
-            workbookParts = container.getPartsByContentType(
-                    XSSFRelation.MACROS_WORKBOOK.getContentType());
-        }
-        if (workbookParts.isEmpty()) {
-            workbookParts = container.getPartsByContentType(
-                    XSSFRelation.WORKBOOK.getContentType());
-        }
-        if (workbookParts.isEmpty()) {
-            return;
-        }
-        PackagePart workbookPart = workbookParts.get(0);
-
+        // Query the package directly for binary macrosheet parts — simpler and more
+        // reliable than walking workbook relationships.  XLSB uses an Override content
+        // type (application/vnd.ms-excel.macrosheet) for each macrosheet .bin part.
+        // The Default element gives every .bin the workbook content type, so workbook-
+        // based lookup returns too many parts; content-type Override lookup is exact.
         List<PackagePart> macroParts = new ArrayList<>();
-        collectMacroSheetParts(workbookPart, MACRO_SHEET_BIN_REL, macroParts);
-        collectMacroSheetParts(workbookPart, INTL_MACRO_SHEET_BIN_REL, macroParts);
+        macroParts.addAll(
+                container.getPartsByContentType(
+                        XSSFRelation.MACRO_SHEET_BIN.getContentType()));
+        macroParts.addAll(
+                container.getPartsByContentType(
+                        XSSFRelation.INTL_MACRO_SHEET_BIN.getContentType()));
 
         if (macroParts.isEmpty()) {
             return;
@@ -205,25 +187,6 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             xhtml.endElement("tbody");
             xhtml.endElement("table");
             xhtml.endElement("div");
-        }
-    }
-
-    private static void collectMacroSheetParts(PackagePart workbookPart,
-                                               String relType,
-                                               List<PackagePart> out) {
-        try {
-            PackageRelationshipCollection rels =
-                    workbookPart.getRelationshipsByType(relType);
-            for (PackageRelationship rel : rels) {
-                PackagePartName partName =
-                        PackagingURIHelper.createPartName(rel.getTargetURI());
-                PackagePart part = rel.getPackage().getPart(partName);
-                if (part != null) {
-                    out.add(part);
-                }
-            }
-        } catch (InvalidFormatException e) {
-            // Malformed relationship — skip silently.
         }
     }
 
