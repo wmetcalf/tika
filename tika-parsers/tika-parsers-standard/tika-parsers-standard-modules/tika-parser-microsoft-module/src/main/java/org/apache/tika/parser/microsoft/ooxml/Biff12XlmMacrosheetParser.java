@@ -47,11 +47,18 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
     private static final int BRT_FMLA_ERROR  = 0x000B;
 
     private final XHTMLContentHandler xhtml;
+    private final XlmMacroEmulator emulator;
     private int currentRow = -1;
 
     Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml) {
+        this(stream, xhtml, null);
+    }
+
+    Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                               XlmMacroEmulator emulator) {
         super(stream);
         this.xhtml = xhtml;
+        this.emulator = emulator;
     }
 
     @Override
@@ -105,12 +112,17 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
             return;
         }
 
+        // Feed raw bytes to emulator before decoding (emulator needs bytes, not text)
+        int row = currentRow < 0 ? 0 : currentRow;
+        if (emulator != null) {
+            emulator.addMacroCell(row, formulaBytes);
+        }
+
         String formula = Biff12XlmFormulaDecoder.decode(formulaBytes);
         if (formula == null || formula.isEmpty()) {
             return;
         }
 
-        int row = currentRow < 0 ? 0 : currentRow;
         String cellRef = Biff12XlmFormulaDecoder.cellAddr((int) colLong, row, false, false);
         try {
             xhtml.element("p", cellRef + ": =" + formula);

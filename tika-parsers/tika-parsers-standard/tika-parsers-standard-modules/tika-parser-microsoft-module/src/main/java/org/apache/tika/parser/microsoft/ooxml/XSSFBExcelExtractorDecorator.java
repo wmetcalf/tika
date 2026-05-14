@@ -21,6 +21,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
@@ -84,6 +85,12 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             throw new IOException(e);
         }
 
+        // Capture numeric cell values from every worksheet for XLM emulation.
+        // This runs a lightweight second pass on each sheet binary; the main
+        // XHTML pass below is unaffected.
+        Map<String, Double> xlmCellValues = captureWorksheetValues(container);
+
+        int sheetIdx = 0;
         while (iter.hasNext()) {
             InputStream stream = iter.next();
             PackagePart sheetPart = iter.getSheetPart();
@@ -129,34 +136,29 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             processDrawings(sheetPart, xhtml);
             extractHyperLinks(sheetPart, xhtml);
             xhtml.endElement("div");
+            sheetIdx++;
         }
 
         // Process XLM binary macro sheets missed by POI's SheetIterator.
         // POI's WORKSHEET_RELS set covers MACRO_SHEET_XML but not MACRO_SHEET_BIN /
         // INTL_MACRO_SHEET_BIN (different relationship namespace).  We walk the
         // workbook part's relationships directly and feed each macrosheet through
-        // the same XSSFBSheetHandler used for regular sheets.
-        processXlmBinaryMacroSheets(container, styles, strings, xhtml);
+        // Biff12XlmMacrosheetParser (static text) + XlmMacroEmulator (evaluation).
+        processXlmBinaryMacroSheets(container, styles, strings, xhtml, xlmCellValues);
     }
 
     private void processXlmBinaryMacroSheets(OPCPackage container,
                                               XSSFBStylesTable styles,
                                               TikaXSSFBSharedStringsTable strings,
-                                              XHTMLContentHandler xhtml)
+                                              XHTMLContentHandler xhtml,
+                                              Map<String, Double> cellValues)
             throws SAXException, IOException {
 
-        // Query the package directly for binary macrosheet parts — simpler and more
-        // reliable than walking workbook relationships.  XLSB uses an Override content
-        // type (application/vnd.ms-excel.macrosheet) for each macrosheet .bin part.
-        // The Default element gives every .bin the workbook content type, so workbook-
-        // based lookup returns too many parts; content-type Override lookup is exact.
         List<PackagePart> macroParts = new ArrayList<>();
-        macroParts.addAll(
-                container.getPartsByContentType(
-                        XSSFRelation.MACRO_SHEET_BIN.getContentType()));
-        macroParts.addAll(
-                container.getPartsByContentType(
-                        XSSFRelation.INTL_MACRO_SHEET_BIN.getContentType()));
+        macroParts.addAll(container.getPartsByContentType(
+                XSSFRelation.MACRO_SHEET_BIN.getContentType()));
+        macroParts.addAll(container.getPartsByContentType(
+                XSSFRelation.INTL_MACRO_SHEET_BIN.getContentType()));
 
         if (macroParts.isEmpty()) {
             return;
@@ -168,28 +170,59 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             String sheetName = sheetNameFromPart(macroPart);
             xhtml.startElement("div");
             xhtml.element("h1", sheetName);
-            xhtml.startElement("table");
-            xhtml.startElement("tbody");
+
+            XlmMacroEmulator emulator = new XlmMacroEmulator(cellValues);
 
             try (InputStream is = macroPart.getInputStream()) {
-                // Use our BIFF12 XLM-aware parser instead of XSSFBSheetHandler.
-                // XSSFBSheetHandler falls back to evaluated values (0, FALSE) for
-                // XLM function tokens POI does not recognise; Biff12XlmMacrosheetParser
-                // uses Biff12XlmFormulaDecoder which knows the full XLM function table.
-                // Write directly to xhtml (not through SheetTextAsHTML) to avoid
-                // emitting hundreds of empty <td> elements for each far-right column.
                 Biff12XlmMacrosheetParser parser =
-                        new Biff12XlmMacrosheetParser(is, xhtml);
+                        new Biff12XlmMacrosheetParser(is, xhtml, emulator);
                 parser.parse();
             } catch (Exception e) {
-                // Non-fatal: record sheet name, continue with remaining sheets.
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
             }
 
-            xhtml.endElement("tbody");
-            xhtml.endElement("table");
+            // Run emulation and emit resolved IOCs
+            try {
+                emulator.emulate();
+                if (!emulator.iocs.isEmpty()) {
+                    xhtml.startElement("div");
+                    xhtml.element("h2", "XLM Emulation");
+                    for (String ioc : emulator.iocs) {
+                        xhtml.element("p", ioc);
+                    }
+                    xhtml.endElement("div");
+                }
+            } catch (Exception e) {
+                // Non-fatal — static text output already emitted above
+            }
+
             xhtml.endElement("div");
         }
+    }
+
+    private static Map<String, Double> captureWorksheetValues(OPCPackage container) {
+        Map<String, Double> values = new java.util.HashMap<>();
+        // Capture numeric values from each worksheet binary in iteration order.
+        // Sheet index 0 = first worksheet (matches Ref3d/Area3d xtiIndex 0).
+        try {
+            XSSFBReader reader = new XSSFBReader(container);
+            XSSFBReader.SheetIterator iter =
+                    (XSSFBReader.SheetIterator) reader.getSheetsData();
+            int idx = 0;
+            while (iter.hasNext()) {
+                try (InputStream stream = iter.next()) {
+                    XlmWorksheetCellCapture capture =
+                            new XlmWorksheetCellCapture(stream, idx, values);
+                    capture.parse();
+                } catch (Exception ignored) {
+                    // Skip unreadable sheets; other sheets still captured
+                }
+                idx++;
+            }
+        } catch (Exception ignored) {
+            // If the workbook can't be re-read, emulation proceeds with empty map
+        }
+        return values;
     }
 
     private static String sheetNameFromPart(PackagePart part) {

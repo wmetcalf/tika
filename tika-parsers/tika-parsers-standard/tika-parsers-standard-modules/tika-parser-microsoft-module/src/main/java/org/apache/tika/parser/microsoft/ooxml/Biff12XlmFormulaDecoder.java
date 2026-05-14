@@ -24,8 +24,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Decodes BIFF12 (XLSB) Ptg formula token streams for XLM macro sheets.
@@ -598,6 +600,343 @@ final class Biff12XlmFormulaDecoder {
         FUNC_NAMES = Collections.unmodifiableMap(m);
     }
 
+    // ── Fixed-argument function arg-count table ─────────────────────────────
+    // Source: pyxlsb2/ptgs.py (MIT, DataBrewery/pyxlsb2) — second tuple element.
+    // Only FuncPtg (0x21, fixed args) uses this; FuncVarPtg (0x22) carries its
+    // own arg count in the token byte stream.
+    static final Map<Integer, Integer> FIXED_ARG_COUNTS;
+
+    static {
+        Map<Integer, Integer> m = new HashMap<>(256);
+        m.put(0x0002, 1); m.put(0x0003, 1); m.put(0x000F, 1); m.put(0x0010, 1);
+        m.put(0x0011, 1); m.put(0x0012, 1); m.put(0x0014, 1); m.put(0x0015, 1);
+        m.put(0x0016, 1); m.put(0x0017, 1); m.put(0x0018, 1); m.put(0x0019, 1);
+        m.put(0x001A, 1); m.put(0x001B, 2); m.put(0x001E, 2); m.put(0x001F, 3);
+        m.put(0x0020, 1); m.put(0x0021, 1); m.put(0x0026, 1); m.put(0x0027, 2);
+        m.put(0x0028, 3); m.put(0x0029, 3); m.put(0x002A, 3); m.put(0x002B, 3);
+        m.put(0x002C, 3); m.put(0x002D, 3); m.put(0x002F, 3); m.put(0x0030, 2);
+        m.put(0x0035, 1); m.put(0x003D, 3); m.put(0x0041, 3); m.put(0x0042, 3);
+        m.put(0x0043, 1); m.put(0x0044, 1); m.put(0x0045, 1); m.put(0x0047, 1);
+        m.put(0x0048, 1); m.put(0x0049, 1); m.put(0x004B, 1); m.put(0x004C, 1);
+        m.put(0x004D, 1); m.put(0x004F, 2); m.put(0x0050, 2); m.put(0x0053, 1);
+        m.put(0x0056, 1); m.put(0x005A, 1); m.put(0x0061, 2); m.put(0x0062, 1);
+        m.put(0x0063, 1); m.put(0x0069, 1); m.put(0x006A, 1); m.put(0x006C, 2);
+        m.put(0x006F, 1); m.put(0x0070, 1); m.put(0x0071, 1); m.put(0x0072, 1);
+        m.put(0x0075, 2); m.put(0x0076, 1); m.put(0x0077, 4); m.put(0x0079, 1);
+        m.put(0x007E, 1); m.put(0x007F, 1); m.put(0x0080, 1); m.put(0x0081, 1);
+        m.put(0x0082, 1); m.put(0x0083, 1); m.put(0x0085, 1); m.put(0x0086, 1);
+        m.put(0x0087, 1); m.put(0x0088, 2); m.put(0x0089, 2); m.put(0x008A, 2);
+        m.put(0x008C, 1); m.put(0x008D, 1); m.put(0x008E, 3); m.put(0x008F, 4);
+        m.put(0x00A1, 1); m.put(0x00A2, 1); m.put(0x00A3, 1); m.put(0x00A4, 1);
+        m.put(0x00A5, 2); m.put(0x00AC, 1); m.put(0x00AF, 2); m.put(0x00B0, 2);
+        m.put(0x00B1, 3); m.put(0x00B2, 2); m.put(0x00B3, 1); m.put(0x00B8, 1);
+        m.put(0x00BA, 1); m.put(0x00BD, 3); m.put(0x00BE, 1); m.put(0x00C3, 3);
+        m.put(0x00C4, 3); m.put(0x00C6, 1); m.put(0x00C7, 3); m.put(0x00C8, 1);
+        m.put(0x00C9, 1); m.put(0x00CF, 4); m.put(0x00D2, 3); m.put(0x00D3, 1);
+        m.put(0x00D4, 2); m.put(0x00D5, 2); m.put(0x00D6, 1); m.put(0x00D7, 1);
+        m.put(0x00E0, 1); m.put(0x00E5, 1); m.put(0x00E6, 1); m.put(0x00E7, 1);
+        m.put(0x00E8, 1); m.put(0x00E9, 1); m.put(0x00EA, 1); m.put(0x00EB, 3);
+        m.put(0x00F4, 1); m.put(0x00FC, 2); m.put(0x00FE, 1); m.put(0x0100, 1);
+        m.put(0x0101, 1); m.put(0x0105, 1); m.put(0x0109, 3); m.put(0x010A, 3);
+        m.put(0x010F, 1); m.put(0x0111, 4); m.put(0x0112, 2); m.put(0x0113, 2);
+        m.put(0x0114, 2); m.put(0x0115, 3); m.put(0x0116, 3); m.put(0x0117, 1);
+        m.put(0x0118, 3); m.put(0x0119, 3); m.put(0x011A, 3); m.put(0x011B, 1);
+        m.put(0x011C, 1); m.put(0x011D, 2); m.put(0x011E, 4); m.put(0x011F, 3);
+        m.put(0x0120, 2); m.put(0x0121, 4); m.put(0x0122, 3); m.put(0x0123, 3);
+        m.put(0x0124, 3); m.put(0x0125, 4); m.put(0x0126, 1); m.put(0x0127, 3);
+        m.put(0x0128, 1); m.put(0x0129, 3); m.put(0x012A, 1); m.put(0x012B, 2);
+        m.put(0x012C, 3); m.put(0x012D, 3); m.put(0x012E, 4); m.put(0x012F, 2);
+        m.put(0x0130, 2); m.put(0x0131, 2); m.put(0x0132, 2); m.put(0x0133, 2);
+        m.put(0x0134, 2); m.put(0x0135, 3); m.put(0x0136, 2); m.put(0x0137, 2);
+        m.put(0x0138, 2); m.put(0x0139, 2); m.put(0x013A, 2); m.put(0x013B, 2);
+        m.put(0x013C, 4); m.put(0x0145, 2); m.put(0x0146, 2); m.put(0x0147, 2);
+        m.put(0x0148, 2); m.put(0x014B, 2); m.put(0x014C, 2); m.put(0x0151, 2);
+        m.put(0x0156, 1); m.put(0x0157, 1); m.put(0x015A, 2); m.put(0x015B, 1);
+        m.put(0x015D, 1); m.put(0x015E, 4); m.put(0x015F, 3); m.put(0x0160, 1);
+        m.put(0x0161, 2); m.put(0x0168, 1); m.put(0x0170, 1); m.put(0x0171, 1);
+        m.put(0x0172, 1); m.put(0x0173, 1); m.put(0x0174, 1); m.put(0x0175, 1);
+        m.put(0x0176, 1); m.put(0x0177, 1); m.put(0x0178, 1); m.put(0x0179, 1);
+        m.put(0x017A, 1); m.put(0x017E, 3); m.put(0x0181, 1); m.put(0x0188, 1);
+        m.put(0x0189, 1); m.put(0x018C, 2); m.put(0x018D, 2); m.put(0x018E, 2);
+        m.put(0x018F, 1); m.put(0x0190, 1); m.put(0x0191, 1); m.put(0x0192, 1);
+        m.put(0x0193, 1); m.put(0x0194, 1); m.put(0x0195, 1); m.put(0x0196, 1);
+        m.put(0x0197, 1); m.put(0x0198, 1); m.put(0x0199, 1); m.put(0x019A, 1);
+        m.put(0x019E, 4); m.put(0x019F, 1); m.put(0x01A0, 1); m.put(0x01A1, 2);
+        m.put(0x01A4, 1); m.put(0x01A5, 1); m.put(0x01A6, 2); m.put(0x01A8, 1);
+        m.put(0x01A9, 2); m.put(0x01AA, 2); m.put(0x01AB, 2); m.put(0x01AC, 2);
+        m.put(0x01AE, 3); m.put(0x01B6, 3); m.put(0x01B7, 3); m.put(0x01B8, 3);
+        m.put(0x01BB, 2); m.put(0x01BC, 2); m.put(0x01BD, 2); m.put(0x01BE, 2);
+        m.put(0x01BF, 6); m.put(0x01C0, 6); m.put(0x01C1, 2); m.put(0x01C2, 2);
+        m.put(0x01D0, 2); m.put(0x01DC, 2); m.put(0x01DF, 1); m.put(0x01E0, 2);
+        FIXED_ARG_COUNTS = Collections.unmodifiableMap(m);
+    }
+
+    // ── Evaluation context ──────────────────────────────────────────────────
+
+    /** Shared state for XLM formula evaluation (cell values, variables, IOCs). */
+    static final class EvalContext {
+        /** Worksheet cell values: key = "{sheetIdx}:{row}:{col}" → double. */
+        final Map<String, Double> cellValues;
+        /** FOR.CELL variable bindings: variable name → current value. */
+        final Map<String, Object> variables;
+        /** Open file handles: handle-id → accumulated content. */
+        final Map<Integer, StringBuilder> fileContents = new LinkedHashMap<>();
+        /** Open file handle paths. */
+        final Map<Integer, String> filePaths = new LinkedHashMap<>();
+        /** Collected IOC strings (FOPEN paths, EXEC commands, CALL args). */
+        final List<String> iocs = new ArrayList<>();
+        private int nextHandle;
+
+        EvalContext(Map<String, Double> cellValues, Map<String, Object> variables) {
+            this.cellValues = cellValues;
+            this.variables = variables;
+        }
+
+        /**
+         * Resolve a cell/variable reference by its A1 string representation.
+         * Tries the variable map first, then the cell value map.
+         */
+        Object resolveRef(String ref) {
+            Object v = variables.get(ref);
+            if (v != null) {
+                return v;
+            }
+            // NAME[N] reference: if exactly one loop variable is active, use it.
+            if (ref.startsWith("NAME[") && variables.size() == 1) {
+                return variables.values().iterator().next();
+            }
+            return null;
+        }
+
+        int newFileHandle(String path) {
+            int h = nextHandle++;
+            filePaths.put(h, path);
+            fileContents.put(h, new StringBuilder());
+            return h;
+        }
+
+        void writeToFile(int handle, String text) {
+            fileContents.computeIfAbsent(handle, k -> new StringBuilder()).append(text);
+        }
+
+        String getFileContent(int handle) {
+            StringBuilder sb = fileContents.get(handle);
+            return sb != null ? sb.toString() : null;
+        }
+
+        String getFilePath(int handle) {
+            return filePaths.getOrDefault(handle, "handle" + handle);
+        }
+    }
+
+    /**
+     * Sentinel returned by FOR.CELL evaluation to signal the emulator that a
+     * loop should begin.  The emulator detects this object and executes the
+     * loop body (cells up to the matching NEXT()) once per range value.
+     */
+    static final class ForCellSignal {
+        final String varName;
+        final int sheetIdx;
+        final String rangeRef;   // A1:B2 portion after stripping "[N]"
+
+        ForCellSignal(String varName, int sheetIdx, String rangeRef) {
+            this.varName = varName;
+            this.sheetIdx = sheetIdx;
+            this.rangeRef = rangeRef;
+        }
+    }
+
+    // ── Forward-RPN evaluation ──────────────────────────────────────────────
+
+    /**
+     * Evaluate a BIFF12 Ptg token byte array, returning the computed value.
+     * Unlike {@link #decode}, which produces display text, this walks the
+     * token list left-to-right (standard RPN), evaluating literals,
+     * arithmetic, CHAR(), string concatenation, and XLM I/O functions.
+     *
+     * @return computed value (String, Double, Boolean, ForCellSignal, or null)
+     */
+    static Object evaluateFormula(byte[] data, EvalContext ctx) {
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        try {
+            List<PtgNode> tokens = parseTokens(data);
+            Deque<Object> stack = new ArrayDeque<>();
+            for (PtgNode node : tokens) {
+                node.pushValue(stack, ctx);
+            }
+            return stack.isEmpty() ? null : stack.getLast();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ── Value helpers ────────────────────────────────────────────────────────
+
+    static String toStr(Object v) {
+        if (v == null) {
+            return "";
+        }
+        if (v instanceof Boolean) {
+            return (Boolean) v ? "TRUE" : "FALSE";
+        }
+        if (v instanceof Double) {
+            double d = (Double) v;
+            if (d == Math.floor(d) && !Double.isInfinite(d) && Math.abs(d) < 1.0e15) {
+                return String.valueOf((long) d);
+            }
+            return String.valueOf(d);
+        }
+        return String.valueOf(v);
+    }
+
+    static double toNum(Object v) {
+        if (v instanceof Number) {
+            return ((Number) v).doubleValue();
+        }
+        if (v instanceof String) {
+            try {
+                return Double.parseDouble((String) v);
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return 0.0;
+    }
+
+    private static Object applyFunction(String name, List<Object> args, EvalContext ctx) {
+        switch (name) {
+            case "CHAR": {
+                Object arg = args.isEmpty() ? null : args.get(0);
+                // Arg may be a variable reference string (NamePtg → resolveRef returned
+                // the bound value already during pushValue).
+                if (arg instanceof Number) {
+                    int code = ((Number) arg).intValue();
+                    if (code > 0 && code < 65536) {
+                        return String.valueOf((char) code);
+                    }
+                }
+                return "CHAR(" + toStr(arg) + ")";
+            }
+            case "FOPEN": {
+                String path = args.isEmpty() ? "" : toStr(args.get(0));
+                int mode = args.size() > 1 ? (int) toNum(args.get(1)) : 3;
+                if (ctx != null) {
+                    int h = ctx.newFileHandle(path);
+                    ctx.iocs.add("FOPEN: " + path + " (mode " + mode + ")");
+                    return (double) h;
+                }
+                return 0.0;
+            }
+            case "FWRITE":
+            case "FWRITELN": {
+                if (ctx != null && args.size() >= 2) {
+                    int handle = (int) toNum(args.get(0));
+                    String text = toStr(args.get(1));
+                    ctx.writeToFile(handle, text);
+                    if ("FWRITELN".equals(name)) {
+                        ctx.writeToFile(handle, "\n");
+                    }
+                }
+                return 0.0;
+            }
+            case "FCLOSE": {
+                if (ctx != null && !args.isEmpty()) {
+                    int handle = (int) toNum(args.get(0));
+                    String content = ctx.getFileContent(handle);
+                    if (content != null && !content.isEmpty()) {
+                        String path = ctx.getFilePath(handle);
+                        int preview = Math.min(300, content.length());
+                        ctx.iocs.add("FILE_CONTENT[" + path + "]: "
+                                + content.substring(0, preview)
+                                + (content.length() > preview ? "…" : ""));
+                    }
+                }
+                return 0.0;
+            }
+            case "EXEC": {
+                String cmd = args.isEmpty() ? "" : toStr(args.get(0));
+                if (ctx != null) {
+                    ctx.iocs.add("EXEC: " + cmd);
+                }
+                return Boolean.FALSE;
+            }
+            case "CALL": {
+                if (ctx != null) {
+                    String desc = args.stream().map(Biff12XlmFormulaDecoder::toStr)
+                            .collect(Collectors.joining(", "));
+                    ctx.iocs.add("CALL: " + desc);
+                }
+                return 0.0;
+            }
+            case "ALERT": {
+                String msg = args.isEmpty() ? "" : toStr(args.get(0));
+                if (ctx != null) {
+                    ctx.iocs.add("ALERT: " + msg);
+                }
+                return Boolean.FALSE;
+            }
+            case "FOR.CELL": {
+                // FOR.CELL(varName, range, step)
+                String varName = args.isEmpty() ? "" : toStr(args.get(0));
+                String rangeRaw = args.size() > 1 ? toStr(args.get(1)) : "";
+                int sheetIdx = 0;
+                String rangeRef = rangeRaw;
+                if (rangeRaw.startsWith("[")) {
+                    int close = rangeRaw.indexOf(']');
+                    if (close > 0) {
+                        try {
+                            sheetIdx = Integer.parseInt(rangeRaw.substring(1, close));
+                        } catch (NumberFormatException ignored) {
+                            // use default 0
+                        }
+                        rangeRef = rangeRaw.substring(close + 1);
+                    }
+                }
+                return new ForCellSignal(varName, sheetIdx, rangeRef);
+            }
+            case "REGISTER": {
+                if (ctx != null && !args.isEmpty()) {
+                    ctx.iocs.add("REGISTER: " + toStr(args.get(0)));
+                }
+                return 0.0;
+            }
+            case "EVALUATE": {
+                // EVALUATE returns a value we can't compute statically
+                return args.isEmpty() ? "" : args.get(0);
+            }
+            case "LOWER":
+                return args.isEmpty() ? "" : toStr(args.get(0)).toLowerCase(java.util.Locale.ROOT);
+            case "UPPER":
+                return args.isEmpty() ? "" : toStr(args.get(0)).toUpperCase(java.util.Locale.ROOT);
+            case "LEN":
+                return (double) toStr(args.isEmpty() ? "" : args.get(0)).length();
+            case "TRIM":
+                return args.isEmpty() ? "" : toStr(args.get(0)).trim();
+            case "CODE": {
+                String s = args.isEmpty() ? "" : toStr(args.get(0));
+                return s.isEmpty() ? 0.0 : (double) s.charAt(0);
+            }
+            case "NEXT":
+            case "RETURN":
+            case "HALT":
+            case "BREAK":
+                return Boolean.FALSE;
+            case "TRUE":
+                return Boolean.TRUE;
+            case "FALSE":
+                return Boolean.FALSE;
+            default: {
+                // Unknown function: return a text representation so the
+                // caller can still see WHAT was called.
+                String argStr = args.stream().map(Biff12XlmFormulaDecoder::toStr)
+                        .collect(Collectors.joining(", "));
+                return name + "(" + argStr + ")";
+            }
+        }
+    }
+
     private Biff12XlmFormulaDecoder() {
     }
 
@@ -923,10 +1262,18 @@ final class Biff12XlmFormulaDecoder {
 
     abstract static class PtgNode {
         abstract String stringify(Deque<PtgNode> stack);
+
+        /** Forward-RPN evaluation: push a computed value onto the value stack. */
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            // Default: evaluate via stringify and push the text result
+            Deque<PtgNode> tmp = new ArrayDeque<>();
+            tmp.add(this);
+            stack.addLast(stringify(tmp));
+        }
     }
 
     static final class LiteralNode extends PtgNode {
-        private final String value;
+        final String value;
 
         LiteralNode(String value) {
             this.value = value;
@@ -936,6 +1283,43 @@ final class Biff12XlmFormulaDecoder {
         String stringify(Deque<PtgNode> stack) {
             return value;
         }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            // Quoted string literal
+            if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
+                stack.addLast(value.substring(1, value.length() - 1).replace("\"\"", "\""));
+                return;
+            }
+            if ("TRUE".equals(value)) {
+                stack.addLast(Boolean.TRUE);
+                return;
+            }
+            if ("FALSE".equals(value)) {
+                stack.addLast(Boolean.FALSE);
+                return;
+            }
+            if (value.startsWith("#")) {
+                stack.addLast(value);
+                return;
+            }
+            // Try as number
+            try {
+                stack.addLast(Double.parseDouble(value));
+                return;
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+            // Cell/variable reference — try context lookup
+            if (ctx != null) {
+                Object resolved = ctx.resolveRef(value);
+                if (resolved != null) {
+                    stack.addLast(resolved);
+                    return;
+                }
+            }
+            stack.addLast(value);
+        }
     }
 
     static final class TransparentNode extends PtgNode {
@@ -944,6 +1328,11 @@ final class Biff12XlmFormulaDecoder {
             // Pass through — pop the next token and return its string
             PtgNode next = removeLast(stack);
             return next != null ? next.stringify(stack) : "";
+        }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            // Flow-control marker; transparent in value evaluation
         }
     }
 
@@ -958,6 +1347,11 @@ final class Biff12XlmFormulaDecoder {
         String stringify(Deque<PtgNode> stack) {
             PtgNode next = removeLast(stack);
             return spaces + (next != null ? next.stringify(stack) : "");
+        }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            // Whitespace is irrelevant for value evaluation
         }
     }
 
@@ -976,6 +1370,33 @@ final class Biff12XlmFormulaDecoder {
             String l = ln != null ? ln.stringify(stack) : "?";
             return l + op + r;
         }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            Object r = stack.isEmpty() ? "" : stack.removeLast();
+            Object l = stack.isEmpty() ? "" : stack.removeLast();
+            switch (op) {
+                case "&":
+                    stack.addLast(toStr(l) + toStr(r));
+                    break;
+                case "+":
+                    stack.addLast(toNum(l) + toNum(r));
+                    break;
+                case "-":
+                    stack.addLast(toNum(l) - toNum(r));
+                    break;
+                case "*":
+                    stack.addLast(toNum(l) * toNum(r));
+                    break;
+                case "/": {
+                    double d = toNum(r);
+                    stack.addLast(d == 0.0 ? "#DIV/0!" : toNum(l) / d);
+                    break;
+                }
+                default:
+                    stack.addLast(toStr(l) + op + toStr(r));
+            }
+        }
     }
 
     static final class UnaryPrefix extends PtgNode {
@@ -989,6 +1410,12 @@ final class Biff12XlmFormulaDecoder {
         String stringify(Deque<PtgNode> stack) {
             PtgNode n = removeLast(stack);
             return op + (n != null ? n.stringify(stack) : "?");
+        }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            Object v = stack.isEmpty() ? 0.0 : stack.removeLast();
+            stack.addLast("-".equals(op) ? -toNum(v) : toNum(v));
         }
     }
 
@@ -1004,6 +1431,12 @@ final class Biff12XlmFormulaDecoder {
             PtgNode n = removeLast(stack);
             return (n != null ? n.stringify(stack) : "?") + op;
         }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            Object v = stack.isEmpty() ? 0.0 : stack.removeLast();
+            stack.addLast("%".equals(op) ? toNum(v) / 100.0 : toNum(v));
+        }
     }
 
     static final class ParenNode extends PtgNode {
@@ -1012,33 +1445,30 @@ final class Biff12XlmFormulaDecoder {
             PtgNode n = removeLast(stack);
             return "(" + (n != null ? n.stringify(stack) : "") + ")";
         }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            // Parentheses are structural; value is already on the stack
+        }
     }
 
     static final class FuncNode extends PtgNode {
-        private final int idx;
-        private final int argc; // -1 means look up from table
+        final int idx;
+        final int argc; // -1 = FuncPtg (look up FIXED_ARG_COUNTS); >= 0 = FuncVarPtg
 
         FuncNode(int idx, int argc) {
             this.idx = idx;
             this.argc = argc;
         }
 
+        private int resolvedArgCount() {
+            return argc >= 0 ? argc : FIXED_ARG_COUNTS.getOrDefault(idx, 0);
+        }
+
         @Override
         String stringify(Deque<PtgNode> stack) {
             String name = FUNC_NAMES.getOrDefault(idx, "FUNC[0x" + Integer.toHexString(idx) + "]");
-            int argCount = argc; // variable-arg case
-            // For FuncPtg (fixed-arg), argCount = -1 means we can't easily determine
-            // the arg count without the full spec table. Use 0 as safe default.
-            if (argCount < 0) {
-                argCount = 0;
-            }
-
-            // Special case: UserDefinedFunction — first arg is the function name
-            if (idx == 0x00FF && argCount > 0) {
-                // For UDF, the first arg on the stack is the function name token
-                // We don't have a clean way to extract just the name here,
-                // so pop argc args and format normally
-            }
+            int argCount = resolvedArgCount();
 
             List<String> args = new ArrayList<>(argCount);
             for (int i = 0; i < argCount; i++) {
@@ -1055,6 +1485,20 @@ final class Biff12XlmFormulaDecoder {
             }
             sb.append(")");
             return sb.toString();
+        }
+
+        @Override
+        void pushValue(Deque<Object> stack, EvalContext ctx) {
+            String name = FUNC_NAMES.getOrDefault(idx, "FUNC[0x" + Integer.toHexString(idx) + "]");
+            int argCount = resolvedArgCount();
+
+            // Pop args (pushed left→right, so last-pushed = last arg)
+            List<Object> args = new ArrayList<>(argCount);
+            for (int i = 0; i < argCount; i++) {
+                args.add(0, stack.isEmpty() ? null : stack.removeLast());
+            }
+
+            stack.addLast(applyFunction(name, args, ctx));
         }
     }
 
