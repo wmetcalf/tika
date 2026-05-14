@@ -18,6 +18,8 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
@@ -31,6 +33,7 @@ import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.xssf.binary.XSSFBSheetHandler;
 import org.apache.poi.xssf.binary.XSSFBStylesTable;
 import org.apache.poi.xssf.eventusermodel.XSSFBReader;
+import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -42,6 +45,14 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
+
+    // POI's XSSFBReader.WORKSHEET_RELS includes MACRO_SHEET_XML but not MACRO_SHEET_BIN
+    // (binary xlsb macro sheets use a microsoft.com relationship URI, not openxmlformats.org).
+    // We collect and process these separately after the regular sheet loop.
+    private static final String MACRO_SHEET_BIN_REL =
+            XSSFRelation.MACRO_SHEET_BIN.getRelation();
+    private static final String INTL_MACRO_SHEET_BIN_REL =
+            XSSFRelation.INTL_MACRO_SHEET_BIN.getRelation();
 
     public XSSFBExcelExtractorDecorator(ParseContext context, OPCPackage pkg,
                                         Locale locale) {
@@ -127,6 +138,99 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             extractHyperLinks(sheetPart, xhtml);
             xhtml.endElement("div");
         }
+
+        // Process XLM binary macro sheets missed by POI's SheetIterator.
+        // POI's WORKSHEET_RELS set covers MACRO_SHEET_XML but not MACRO_SHEET_BIN /
+        // INTL_MACRO_SHEET_BIN (different relationship namespace).  We walk the
+        // workbook part's relationships directly and feed each macrosheet through
+        // the same XSSFBSheetHandler used for regular sheets.
+        processXlmBinaryMacroSheets(container, styles, strings, xhtml);
+    }
+
+    private void processXlmBinaryMacroSheets(OPCPackage container,
+                                              XSSFBStylesTable styles,
+                                              TikaXSSFBSharedStringsTable strings,
+                                              XHTMLContentHandler xhtml)
+            throws SAXException, IOException {
+
+        List<PackagePart> workbookParts = container.getPartsByContentType(
+                XSSFRelation.MACROS_WORKBOOK.getContentType());
+        if (workbookParts.isEmpty()) {
+            workbookParts = container.getPartsByContentType(
+                    XSSFRelation.WORKBOOK.getContentType());
+        }
+        if (workbookParts.isEmpty()) {
+            return;
+        }
+        PackagePart workbookPart = workbookParts.get(0);
+
+        List<PackagePart> macroParts = new ArrayList<>();
+        collectMacroSheetParts(workbookPart, MACRO_SHEET_BIN_REL, macroParts);
+        collectMacroSheetParts(workbookPart, INTL_MACRO_SHEET_BIN_REL, macroParts);
+
+        if (macroParts.isEmpty()) {
+            return;
+        }
+
+        metadata.set("msoffice:xlsb:has-xlm-macros", "true");
+
+        for (PackagePart macroPart : macroParts) {
+            String sheetName = sheetNameFromPart(macroPart);
+            xhtml.startElement("div");
+            xhtml.element("h1", sheetName);
+            xhtml.startElement("table");
+            xhtml.startElement("tbody");
+
+            SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
+            try (InputStream is = macroPart.getInputStream()) {
+                // formulasNotResults=true: emit formula text where POI can decode it.
+                // XLM Ptg tokens are often decodable (string literals, cell refs, known
+                // function names); binary-only opcodes fall back to evaluated values.
+                XSSFBSheetHandler handler =
+                        new XSSFBSheetHandler(is, styles, null, strings,
+                                sheetExtractor, formatter, true);
+                handler.parse();
+            } catch (Exception e) {
+                // Non-fatal: record sheet name, continue with remaining sheets.
+                xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+            }
+
+            xhtml.endElement("tbody");
+            xhtml.endElement("table");
+            xhtml.endElement("div");
+        }
+    }
+
+    private static void collectMacroSheetParts(PackagePart workbookPart,
+                                               String relType,
+                                               List<PackagePart> out) {
+        try {
+            PackageRelationshipCollection rels =
+                    workbookPart.getRelationshipsByType(relType);
+            for (PackageRelationship rel : rels) {
+                PackagePartName partName =
+                        PackagingURIHelper.createPartName(rel.getTargetURI());
+                PackagePart part = rel.getPackage().getPart(partName);
+                if (part != null) {
+                    out.add(part);
+                }
+            }
+        } catch (InvalidFormatException e) {
+            // Malformed relationship — skip silently.
+        }
+    }
+
+    private static String sheetNameFromPart(PackagePart part) {
+        String name = part.getPartName().getName();
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        return name;
     }
 
     private static final String RELATION_COMMENTS =
