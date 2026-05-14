@@ -1018,6 +1018,9 @@ final class Biff12XlmFormulaDecoder {
                     if ("FWRITELN".equals(name)) {
                         ctx.writeToFile(handle, "\n");
                     }
+                } else if (ctx != null) {
+                    ctx.iocs.add("FWRITE_SKIP: args=" + args.size()
+                            + " ctx=" + (ctx == null ? "null" : "ok"));
                 }
                 return 0.0;
             }
