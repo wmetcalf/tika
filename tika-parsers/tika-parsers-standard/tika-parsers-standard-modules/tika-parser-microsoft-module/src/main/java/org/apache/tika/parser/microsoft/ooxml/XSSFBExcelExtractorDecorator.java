@@ -88,7 +88,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         // Capture numeric cell values from every worksheet for XLM emulation.
         // This runs a lightweight second pass on each sheet binary; the main
         // XHTML pass below is unaffected.
-        Map<String, Double> xlmCellValues = captureWorksheetValues(container);
+        XlmWorkbookSheetMap xlmSheetMap = XlmWorkbookSheetMap.build(container);
+        Map<String, Double> xlmCellValues = captureWorksheetValues(container, xlmSheetMap);
 
         int sheetIdx = 0;
         while (iter.hasNext()) {
@@ -144,14 +145,15 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         // INTL_MACRO_SHEET_BIN (different relationship namespace).  We walk the
         // workbook part's relationships directly and feed each macrosheet through
         // Biff12XlmMacrosheetParser (static text) + XlmMacroEmulator (evaluation).
-        processXlmBinaryMacroSheets(container, styles, strings, xhtml, xlmCellValues);
+        processXlmBinaryMacroSheets(container, styles, strings, xhtml, xlmCellValues, xlmSheetMap);
     }
 
     private void processXlmBinaryMacroSheets(OPCPackage container,
                                               XSSFBStylesTable styles,
                                               TikaXSSFBSharedStringsTable strings,
                                               XHTMLContentHandler xhtml,
-                                              Map<String, Double> cellValues)
+                                              Map<String, Double> cellValues,
+                                              XlmWorkbookSheetMap sheetMap)
             throws SAXException, IOException {
 
         List<PackagePart> macroParts = new ArrayList<>();
@@ -171,7 +173,7 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             xhtml.startElement("div");
             xhtml.element("h1", sheetName);
 
-            XlmMacroEmulator emulator = new XlmMacroEmulator(cellValues);
+            XlmMacroEmulator emulator = new XlmMacroEmulator(cellValues, sheetMap);
 
             try (InputStream is = macroPart.getInputStream()) {
                 Biff12XlmMacrosheetParser parser =
@@ -200,24 +202,25 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
     }
 
-    private static Map<String, Double> captureWorksheetValues(OPCPackage container) {
+    private static Map<String, Double> captureWorksheetValues(OPCPackage container,
+                                                               XlmWorkbookSheetMap sheetMap) {
         Map<String, Double> values = new java.util.HashMap<>();
-        // Capture numeric values from each worksheet binary in iteration order.
-        // Sheet index 0 = first worksheet (matches Ref3d/Area3d xtiIndex 0).
+        // Capture numeric cell values keyed by "{sheetName}:{row}:{col}".
+        // Using the sheet name (from the iterator) matches the xtiIndex→name resolution
+        // done by XlmWorkbookSheetMap, so Area3d range lookups find the right cells.
         try {
             XSSFBReader reader = new XSSFBReader(container);
             XSSFBReader.SheetIterator iter =
                     (XSSFBReader.SheetIterator) reader.getSheetsData();
-            int idx = 0;
             while (iter.hasNext()) {
+                String sheetName = iter.getSheetName();
                 try (InputStream stream = iter.next()) {
                     XlmWorksheetCellCapture capture =
-                            new XlmWorksheetCellCapture(stream, idx, values);
+                            new XlmWorksheetCellCapture(stream, sheetName, values);
                     capture.parse();
                 } catch (Exception ignored) {
                     // Skip unreadable sheets; other sheets still captured
                 }
-                idx++;
             }
         } catch (Exception ignored) {
             // If the workbook can't be re-read, emulation proceeds with empty map

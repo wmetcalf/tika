@@ -32,7 +32,8 @@ import org.apache.poi.xssf.binary.XSSFBParser;
  * String, boolean and error cells are ignored — the emulator only needs numbers
  * to reconstruct CHAR()-encoded payloads.
  *
- * Keys in the output map: {@code "{sheetIdx}:{row}:{col}"} → double value.
+ * Keys in the output map: {@code "{sheetName}:{row}:{col}"} → double value,
+ * where sheetName is the Excel sheet name (e.g. "Sheet1").
  */
 class XlmWorksheetCellCapture extends XSSFBParser {
 
@@ -42,13 +43,13 @@ class XlmWorksheetCellCapture extends XSSFBParser {
     private static final int BRT_CELL_REAL = 0x0005;
     private static final int BRT_FMLA_NUM  = 0x0009;
 
-    private final int sheetIdx;
+    private final String sheetName;
     private final Map<String, Double> cellValues;
     private int currentRow;
 
-    XlmWorksheetCellCapture(InputStream stream, int sheetIdx, Map<String, Double> cellValues) {
+    XlmWorksheetCellCapture(InputStream stream, String sheetName, Map<String, Double> cellValues) {
         super(stream);
-        this.sheetIdx = sheetIdx;
+        this.sheetName = sheetName;
         this.cellValues = cellValues;
     }
 
@@ -113,7 +114,7 @@ class XlmWorksheetCellCapture extends XSSFBParser {
     }
 
     private void store(int col, double value) {
-        cellValues.put(sheetIdx + ":" + currentRow + ":" + col, value);
+        cellValues.put(sheetName + ":" + currentRow + ":" + col, value);
     }
 
     // ── RK number decoding (MS-XLSB §2.5.122) ───────────────────────────────

@@ -56,13 +56,15 @@ class XlmMacroEmulator {
     private static final int MAX_FILE_CONTENT    = 8192;
 
     private final Map<String, Double> cellValues;
+    private final XlmWorkbookSheetMap sheetMap;
     private final List<MacroCell> cells = new ArrayList<>();
 
     /** Collected IOC strings — populated by {@link #emulate()}. */
     final List<String> iocs = new ArrayList<>();
 
-    XlmMacroEmulator(Map<String, Double> cellValues) {
+    XlmMacroEmulator(Map<String, Double> cellValues, XlmWorkbookSheetMap sheetMap) {
         this.cellValues = cellValues;
+        this.sheetMap = sheetMap;
     }
 
     void addMacroCell(int row, byte[] formulaBytes) {
@@ -131,16 +133,14 @@ class XlmMacroEmulator {
                                     int bodyStart, int nextIdx,
                                     Biff12XlmFormulaDecoder.EvalContext ctx) {
         List<Double> rangeValues = getRangeValues(signal.rangeRef, signal.sheetIdx);
-        // Show first 3 keys of cellValues for diagnosis
-        String sampleKeys = cellValues.keySet().stream()
-                .limit(3).collect(java.util.stream.Collectors.joining("|"));
+        String resolvedSheet = sheetMap.xtiToSheetName.getOrDefault(
+                signal.sheetIdx, String.valueOf(signal.sheetIdx));
         ctx.iocs.add("LOOP_DEBUG: var=" + signal.varName
                 + " range=" + signal.rangeRef
-                + " sheetIdx=" + signal.sheetIdx
+                + " xtiIdx=" + signal.sheetIdx
+                + " resolvedSheet=" + resolvedSheet
                 + " rangeSize=" + rangeValues.size()
-                + " bodyLen=" + (nextIdx - bodyStart)
-                + " cvSize=" + cellValues.size()
-                + " sampleKeys=[" + sampleKeys + "]");
+                + " bodyLen=" + (nextIdx - bodyStart));
         if (rangeValues.isEmpty()) {
             return;
         }
@@ -181,8 +181,10 @@ class XlmMacroEmulator {
     /**
      * Return all numeric cell values from the given range in row-then-column order.
      * rangeRef format: "A1:B2" (A1-style, 1-based).
+     * sheetXtiIdx is the xtiIndex from the Area3dPtg, resolved through the
+     * workbook's BrtExternSheet table to the actual sheet name.
      */
-    private List<Double> getRangeValues(String rangeRef, int sheetIdx) {
+    private List<Double> getRangeValues(String rangeRef, int sheetXtiIdx) {
         int colon = rangeRef.indexOf(':');
         if (colon < 0) {
             return Collections.emptyList();
@@ -193,10 +195,14 @@ class XlmMacroEmulator {
             return Collections.emptyList();
         }
 
+        // Resolve xtiIndex → sheet name via the workbook extern-sheet table
+        String sheetName = sheetMap.xtiToSheetName.getOrDefault(sheetXtiIdx,
+                String.valueOf(sheetXtiIdx));
+
         List<Double> values = new ArrayList<>();
         for (int row = start[0]; row <= end[0]; row++) {
             for (int col = start[1]; col <= end[1]; col++) {
-                Double v = cellValues.get(sheetIdx + ":" + row + ":" + col);
+                Double v = cellValues.get(sheetName + ":" + row + ":" + col);
                 if (v != null) {
                     values.add(v);
                 }
