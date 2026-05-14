@@ -87,6 +87,8 @@ public class EMFParser implements Parser {
     /** Maximum pixel dimension when rasterizing for OCR. */
     private static final int OCR_RASTER_MAX_PX = 1200;
 
+    private boolean imageHashingEnabled = false;
+
     private static void handleEmbedded(byte[] data,
                                        EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                        ContentHandler handler, ParseContext context) throws TikaException, SAXException {
@@ -152,10 +154,14 @@ public class EMFParser implements Parser {
                 xhtml.endElement("p");
             }
 
-            // Rasterize for OCR and perceptual hashing
-            BufferedImage raster = rasterizeEmf(ex);
-            tryMetafileOcr(raster, xhtml, metadata, context);
-            ImageHashUtils.setHashes(raster, metadata);
+            boolean hashEnabled = isImageHashingEnabled(context);
+            if (hashEnabled || hasMetafileOcr(context)) {
+                BufferedImage raster = rasterizeEmf(ex);
+                tryMetafileOcr(raster, xhtml, metadata, context);
+                if (hashEnabled) {
+                    ImageHashUtils.setHashes(raster, metadata);
+                }
+            }
 
         } catch (RecordFormatException e) { //POI's hemfparser can throw these for "parse
             // exceptions"
@@ -164,6 +170,25 @@ public class EMFParser implements Parser {
             throw new TikaException(e.getMessage(), e);
         }
         xhtml.endDocument();
+    }
+
+    public boolean isImageHashingEnabled() {
+        return imageHashingEnabled;
+    }
+
+    public void setImageHashingEnabled(boolean imageHashingEnabled) {
+        this.imageHashingEnabled = imageHashingEnabled;
+    }
+
+    private boolean isImageHashingEnabled(ParseContext context) {
+        OfficeParserConfig config = context.get(OfficeParserConfig.class);
+        return imageHashingEnabled || (config != null && config.isImageHashingEnabled());
+    }
+
+    static boolean hasMetafileOcr(ParseContext context) {
+        Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
+        return ocrParser != null &&
+                ocrParser.getSupportedTypes(context).contains(MediaType.image("ocr-png"));
     }
 
     /**

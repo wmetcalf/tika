@@ -392,7 +392,7 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
                 String emfRId = pictureTracker.getImageDataRId();
                 bodyContentsHandler.embeddedOLERef(refId, progId, emfRId);
             } else if ("Link".equals(type)) {
-                bodyContentsHandler.linkedOLERef(refId);
+                bodyContentsHandler.linkedOLERef(refId, linkedRelationships.get(refId));
             }
         } else if (CR.equals(localName)) {
             runBuffer.append(NEWLINE);

@@ -339,7 +339,7 @@ public class OOXMLTikaBodyPartHandler
             XMLReaderUtils.parseSAX(new ByteArrayInputStream(xml),
                     new EmbeddedContentHandler(
                             new OOXMLWordAndPowerPointTextHandler(
-                                    new OOXMLTikaBodyPartHandler(xhtml),
+                                    new OOXMLTikaBodyPartHandler(xhtml, metadata),
                                     noteRelationships)),
                     parseContext);
         } catch (TikaException | IOException e) {
@@ -379,17 +379,24 @@ public class OOXMLTikaBodyPartHandler
     }
 
     @Override
-    public void linkedOLERef(String relId) throws SAXException {
+    public void linkedOLERef(String relId, String url) throws SAXException {
         if (relId == null) {
             return;
         }
         if (metadata != null) {
             metadata.set(Office.HAS_LINKED_OLE_OBJECTS, true);
+            if (url != null && !url.isEmpty()) {
+                OfficeLinkMetadataUtil.addLink(metadata, "linked_ole", url, null, null,
+                        "", "relationship", "", relId);
+            }
         }
         // Emit as an external reference anchor - linked OLE objects reference external files
         AttributesImpl attributes = new AttributesImpl();
         attributes.addAttribute("", "class", "class", "CDATA", "external-ref-linkedOle");
         attributes.addAttribute("", "id", "id", "CDATA", relId);
+        if (url != null && !url.isEmpty()) {
+            attributes.addAttribute("", "href", "href", "CDATA", url);
+        }
         xhtml.startElement("a", attributes);
         xhtml.endElement("a");
     }

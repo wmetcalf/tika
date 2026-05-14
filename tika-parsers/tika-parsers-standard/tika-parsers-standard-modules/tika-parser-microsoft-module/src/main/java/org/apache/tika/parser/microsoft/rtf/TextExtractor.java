@@ -1186,6 +1186,8 @@ final class TextExtractor {
                     nextMetaData = OfficeOpenXMLExtended.MANAGER;
                 } else if (equals("template")) {
                     nextMetaData = OfficeOpenXMLExtended.TEMPLATE;
+                } else if (equals("operator")) {
+                    nextMetaData = TikaCoreProperties.MODIFIER;
                 } else if (equals("creatim")) {
                     nextMetaData = TikaCoreProperties.CREATED;
                 }
@@ -1497,6 +1499,9 @@ final class TextExtractor {
     // Pop current GroupState
     private void processGroupEnd() throws IOException, SAXException, TikaException {
         if (inHeader) {
+            if (nextMetaData != null) {
+                pushText();
+            }
             if (nextMetaData != null) {
                 if (nextMetaData == TikaCoreProperties.CREATED) {
                     Calendar cal = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT);

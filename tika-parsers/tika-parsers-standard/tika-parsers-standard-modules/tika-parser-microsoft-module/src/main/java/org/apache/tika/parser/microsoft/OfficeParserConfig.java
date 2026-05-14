@@ -31,6 +31,7 @@ public class OfficeParserConfig implements Serializable {
     private boolean includeSlideNotes = true;
     private boolean includeSlideMasterContent = true;
     private boolean concatenatePhoneticRuns = true;
+    private boolean imageHashingEnabled = false;
 
     private boolean preferAlternateContentChoice = true;
 
@@ -182,6 +183,19 @@ public class OfficeParserConfig implements Serializable {
      */
     public void setConcatenatePhoneticRuns(boolean concatenatePhoneticRuns) {
         this.concatenatePhoneticRuns = concatenatePhoneticRuns;
+    }
+
+    public boolean isImageHashingEnabled() {
+        return imageHashingEnabled;
+    }
+
+    /**
+     * Enables perceptual image hash extraction for Office vector renderings.
+     * Disabled by default because it requires rasterizing attacker-controlled
+     * document content.
+     */
+    public void setImageHashingEnabled(boolean imageHashingEnabled) {
+        this.imageHashingEnabled = imageHashingEnabled;
     }
 
     public boolean isIncludeGlossary() {

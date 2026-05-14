@@ -17,15 +17,15 @@
 package org.apache.tika.parser.image;
 
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
-
 import javax.imageio.ImageIO;
 
 import org.xml.sax.ContentHandler;
@@ -43,15 +43,23 @@ import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ImageHashUtils;
+import org.apache.tika.utils.ProcessUtils;
 
 
 @TikaComponent
 public class HeifParser extends AbstractImageParser {
 
+    private static final long HEIF_CONVERT_TIMEOUT_MILLIS = 30_000L;
+    private static final long MAX_RENDERED_PNG_BYTES = 50L * 1024L * 1024L;
+    private static final int MAX_PROCESS_OUTPUT = 8192;
+
     private static final Set<MediaType> SUPPORTED_TYPES = new HashSet<>(
             Arrays.asList(MediaType.image("heif"), MediaType.image("heif-sequence"),
                     MediaType.image("heic"), MediaType.image("heic-sequence")));
+
+    private String heifConvertPath = "heif-convert";
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -85,28 +93,42 @@ public class HeifParser extends AbstractImageParser {
             // metadata failure must not abort OCR
         }
 
-        // Rasterize via heif-convert and run Tesseract OCR
+        // Rasterize via heif-convert only when OCR or image hashing needs a PNG.
         tryHeifOcr(tis.getPath(), xhtml, metadata, context);
 
         xhtml.endDocument();
     }
 
-    private static void tryHeifOcr(Path heifPath, XHTMLContentHandler xhtml,
-                                    Metadata metadata, ParseContext context) {
+    public String getHeifConvertPath() {
+        return heifConvertPath;
+    }
+
+    public void setHeifConvertPath(String heifConvertPath) {
+        if (heifConvertPath != null && heifConvertPath.indexOf('\0') > -1) {
+            throw new IllegalArgumentException("heif-convert path must not contain null bytes");
+        }
+        this.heifConvertPath = heifConvertPath == null || heifConvertPath.isEmpty() ?
+                "heif-convert" : heifConvertPath;
+    }
+
+    private void tryHeifOcr(Path heifPath, XHTMLContentHandler xhtml,
+                            Metadata metadata, ParseContext context) {
+        Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
+        MediaType pngOcrType = MediaType.image("ocr-png");
+        boolean ocrEnabled = ocrParser != null &&
+                ocrParser.getSupportedTypes(context).contains(pngOcrType);
+        if (!isImageHashingEnabled() && !ocrEnabled) {
+            return;
+        }
+
         Path tmpPng = null;
         try {
             tmpPng = Files.createTempFile("tika-heif-", ".png");
-            Process proc = new ProcessBuilder(
-                    "heif-convert", "-q", "90",
-                    heifPath.toString(), tmpPng.toString())
-                .redirectErrorStream(true)
-                .start();
-            boolean finished = proc.waitFor(30, TimeUnit.SECONDS);
-            if (!finished) {
-                proc.destroyForcibly();
-                return;
-            }
-            if (proc.exitValue() != 0) {
+            ProcessBuilder pb = new ProcessBuilder(
+                    heifConvertPath, "-q", "90", heifPath.toString(), tmpPng.toString());
+            FileProcessResult result = ProcessUtils.execute(pb, HEIF_CONVERT_TIMEOUT_MILLIS,
+                    MAX_PROCESS_OUTPUT, MAX_PROCESS_OUTPUT);
+            if (result.isTimeout() || result.getExitValue() != 0) {
                 return;
             }
 
@@ -119,24 +141,22 @@ public class HeifParser extends AbstractImageParser {
             if (!Files.exists(actualPng) || Files.size(actualPng) == 0) {
                 return;
             }
+            if (Files.size(actualPng) > MAX_RENDERED_PNG_BYTES) {
+                return;
+            }
 
             byte[] pngBytes = Files.readAllBytes(actualPng);
 
-            // Compute perceptual hashes from the rasterized PNG (always, regardless of OCR)
-            try {
-                BufferedImage raster = ImageIO.read(new java.io.ByteArrayInputStream(pngBytes));
-                ImageHashUtils.setHashes(raster, metadata);
-            } catch (Exception e) {
-                // non-fatal
+            if (isImageHashingEnabled()) {
+                try {
+                    BufferedImage raster = ImageIO.read(new java.io.ByteArrayInputStream(pngBytes));
+                    ImageHashUtils.setHashes(raster, metadata);
+                } catch (Exception e) {
+                    // non-fatal
+                }
             }
 
-            // OCR dispatch — only if Tesseract (or equivalent) is configured
-            Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
-            if (ocrParser == null) {
-                return;
-            }
-            MediaType pngOcrType = MediaType.image("ocr-png");
-            if (!ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
+            if (!ocrEnabled) {
                 return;
             }
 
@@ -155,9 +175,15 @@ public class HeifParser extends AbstractImageParser {
             if (tmpPng != null) {
                 try { Files.deleteIfExists(tmpPng); } catch (IOException ignored) { }
                 String base = tmpPng.toString().replaceFirst("\\.png$", "");
-                for (int i = 1; i <= 10; i++) {
-                    try { Files.deleteIfExists(Path.of(base + "-" + i + ".png")); }
-                    catch (IOException ignored) { }
+                Path parent = tmpPng.getParent();
+                String prefix = new File(base).getName() + "-";
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(parent,
+                        prefix + "*.png")) {
+                    for (Path path : stream) {
+                        try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+                    }
+                } catch (IOException ignored) {
+                    // best effort cleanup
                 }
             }
         }

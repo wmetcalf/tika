@@ -153,8 +153,15 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                                               XHTMLContentHandler xhtml)
             throws SAXException, IOException {
 
-        List<PackagePart> workbookParts = container.getPartsByContentType(
-                XSSFRelation.MACROS_WORKBOOK.getContentType());
+        // The XLSB macro-enabled workbook part uses a binary content type that
+        // differs from the XML (.xlsm) MACROS_WORKBOOK content type.
+        List<PackagePart> workbookParts =
+                container.getPartsByContentType(
+                        XSSFRelation.XLSB_BINARY_WORKBOOK.getContentType());
+        if (workbookParts.isEmpty()) {
+            workbookParts = container.getPartsByContentType(
+                    XSSFRelation.MACROS_WORKBOOK.getContentType());
+        }
         if (workbookParts.isEmpty()) {
             workbookParts = container.getPartsByContentType(
                     XSSFRelation.WORKBOOK.getContentType());

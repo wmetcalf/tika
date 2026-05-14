@@ -160,12 +160,15 @@ public final class ImageHashUtils {
 
         int width = img.getWidth();
         int height = img.getHeight();
-        int n = width * height;
-        int blackCount = 0;
-        int grayNotBlackCount = 0;
-        int colorfulCount = 0;
-        int[] faintBins = new int[6];
-        int[] brightBins = new int[6];
+        long n = (long) width * (long) height;
+        if (n <= 0) {
+            return null;
+        }
+        long blackCount = 0;
+        long grayNotBlackCount = 0;
+        long colorfulCount = 0;
+        long[] faintBins = new long[6];
+        long[] brightBins = new long[6];
         float[] hsb = new float[3];
 
         for (int y = 0; y < height; y++) {
@@ -197,7 +200,7 @@ public final class ImageHashUtils {
         }
 
         int maxVal = 1 << COLOR_HASH_BINBITS;
-        int colorfulDenominator = Math.max(1, colorfulCount);
+        long colorfulDenominator = Math.max(1L, colorfulCount);
         int[] values = new int[14];
         values[0] = Math.min(maxVal - 1, (int) ((double) blackCount / n * maxVal));
         values[1] = Math.min(maxVal - 1, (int) ((double) grayNotBlackCount / n * maxVal));

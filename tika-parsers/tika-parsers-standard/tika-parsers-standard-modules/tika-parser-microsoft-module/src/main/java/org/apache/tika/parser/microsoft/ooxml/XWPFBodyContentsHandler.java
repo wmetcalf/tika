@@ -91,7 +91,7 @@ public interface XWPFBodyContentsHandler {
      * Called when a linked (vs embedded) OLE object is found.
      * These reference external files and are a security concern.
      */
-    void linkedOLERef(String refId) throws SAXException;
+    void linkedOLERef(String refId, String url) throws SAXException;
 
     void embeddedPicRef(String picFileName, String picDescription) throws SAXException;
 

@@ -23,6 +23,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 
@@ -37,6 +38,13 @@ public class WMFParserTest extends TikaTest {
     @Test
     public void testTextExtractionShiftJISencoding() throws Exception {
         testTextExtraction("testWMF_charset.wmf", 0, "普林斯");
+    }
+
+    @Test
+    public void testImageHashesDisabledByDefault() throws Exception {
+        List<Metadata> metadataList = getRecursiveMetadata("testWMF.wmf");
+        assertEquals(null, metadataList.get(0).get(ImageHash.PHASH));
+        assertEquals(null, metadataList.get(0).get(ImageHash.COLORHASH));
     }
 
     private void testTextExtraction(String fileName, int metaDataItemIndex, String expectedText)

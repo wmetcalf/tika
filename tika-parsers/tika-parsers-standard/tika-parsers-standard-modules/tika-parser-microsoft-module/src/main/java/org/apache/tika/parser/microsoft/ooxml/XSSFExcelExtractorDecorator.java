@@ -390,7 +390,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 try {
                     PackagePart externalLinkPart = workbookPart.getRelatedPart(rel);
                     if (externalLinkPart != null) {
-                        ExternalLinkHandler handler = new ExternalLinkHandler(xhtml);
+                        ExternalLinkHandler handler = new ExternalLinkHandler(xhtml,
+                                loadRelationshipTargets(externalLinkPart));
                         try (InputStream is = externalLinkPart.getInputStream()) {
                             XMLReaderUtils.parseSAX(is, handler, parseContext);
                         }
@@ -481,15 +482,31 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         xhtml.endElement("a");
     }
 
+    private Map<String, String> loadRelationshipTargets(PackagePart part) {
+        Map<String, String> targets = new HashMap<>();
+        try {
+            for (PackageRelationship relationship : part.getRelationships()) {
+                if (relationship.getId() != null && relationship.getTargetURI() != null) {
+                    targets.put(relationship.getId(), relationship.getTargetURI().toString());
+                }
+            }
+        } catch (InvalidFormatException e) {
+            // Malformed relationships should not abort extraction.
+        }
+        return targets;
+    }
+
     /**
      * Handler for parsing externalLink XML to extract external workbook references.
      */
     private class ExternalLinkHandler extends DefaultHandler {
         private final XHTMLContentHandler xhtml;
+        private final Map<String, String> linkedRelationships;
         private boolean foundDdeLink = false;
 
-        ExternalLinkHandler(XHTMLContentHandler xhtml) {
+        ExternalLinkHandler(XHTMLContentHandler xhtml, Map<String, String> linkedRelationships) {
             this.xhtml = xhtml;
+            this.linkedRelationships = linkedRelationships;
         }
 
         @Override
@@ -498,8 +515,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             // Look for externalBook element with r:id attribute
             if ("externalBook".equals(localName)) {
                 String rId = atts.getValue("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
-                // The actual URL is in the relationship, not directly in the XML
-                // For now, we note that there's an external book reference
+                String url = linkedRelationships.get(rId);
+                if (url != null) {
+                    emitExternalRef(xhtml, "externalWorkbook", url);
+                }
             }
             // Look for file element with href attribute (older format)
             if ("file".equals(localName)) {
@@ -511,9 +530,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             // Look for oleLink with r:id (OLE links to external files)
             if ("oleLink".equals(localName)) {
                 String rId = atts.getValue("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
-                if (rId != null) {
-                    emitExternalRef(xhtml, "oleLink", "relationship:" + rId);
-                }
+                    if (rId != null) {
+                        String url = linkedRelationships.get(rId);
+                        emitExternalRef(xhtml, "oleLink",
+                                url == null || url.isEmpty() ? "relationship:" + rId : url);
+                    }
             }
             // DDE links - security risk: can execute commands
             if ("ddeLink".equals(localName)) {

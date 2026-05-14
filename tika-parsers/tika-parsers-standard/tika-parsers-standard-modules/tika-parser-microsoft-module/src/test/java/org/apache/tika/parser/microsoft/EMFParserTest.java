@@ -23,6 +23,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 
@@ -62,6 +63,13 @@ public class EMFParserTest extends TikaTest {
         assertContains("Presentation title 13", txt);
         assertContains("<p>At Contoso", txt);
         assertContains("next-generation", txt);//this is stored in three records -- test that no spaces are interpolated
+    }
+
+    @Test
+    public void testImageHashesDisabledByDefault() throws Exception {
+        List<Metadata> metadataList = getRecursiveMetadata("testEMF.emf");
+        assertEquals(null, metadataList.get(0).get(ImageHash.PHASH));
+        assertEquals(null, metadataList.get(0).get(ImageHash.COLORHASH));
     }
 
 

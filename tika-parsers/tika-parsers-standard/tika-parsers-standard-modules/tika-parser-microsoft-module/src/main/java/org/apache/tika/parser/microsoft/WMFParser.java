@@ -61,6 +61,8 @@ public class WMFParser implements Parser {
     /** Maximum pixel dimension when rasterizing for OCR. */
     private static final int OCR_RASTER_MAX_PX = 1200;
 
+    private boolean imageHashingEnabled = false;
+
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
@@ -106,10 +108,14 @@ public class WMFParser implements Parser {
                 }
             }
 
-            // Rasterize for OCR and perceptual hashing
-            BufferedImage raster = rasterizeWmf(picture);
-            EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
-            ImageHashUtils.setHashes(raster, metadata);
+            boolean hashEnabled = isImageHashingEnabled(context);
+            if (hashEnabled || EMFParser.hasMetafileOcr(context)) {
+                BufferedImage raster = rasterizeWmf(picture);
+                EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
+                if (hashEnabled) {
+                    ImageHashUtils.setHashes(raster, metadata);
+                }
+            }
 
         } catch (RecordFormatException e) { //POI's hwmfparser can \ throw these for "parse
             // exceptions"
@@ -122,6 +128,19 @@ public class WMFParser implements Parser {
             tis.removeCloseShield();
         }
         xhtml.endDocument();
+    }
+
+    public boolean isImageHashingEnabled() {
+        return imageHashingEnabled;
+    }
+
+    public void setImageHashingEnabled(boolean imageHashingEnabled) {
+        this.imageHashingEnabled = imageHashingEnabled;
+    }
+
+    private boolean isImageHashingEnabled(ParseContext context) {
+        OfficeParserConfig config = context.get(OfficeParserConfig.class);
+        return imageHashingEnabled || (config != null && config.isImageHashingEnabled());
     }
 
     /**
