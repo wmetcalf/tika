@@ -131,6 +131,13 @@ class XlmMacroEmulator {
                                     int bodyStart, int nextIdx,
                                     Biff12XlmFormulaDecoder.EvalContext ctx) {
         List<Double> rangeValues = getRangeValues(signal.rangeRef, signal.sheetIdx);
+        ctx.iocs.add("LOOP_DEBUG: var=" + signal.varName
+                + " range=" + signal.rangeRef
+                + " sheetIdx=" + signal.sheetIdx
+                + " rangeSize=" + rangeValues.size()
+                + " bodyLen=" + (nextIdx - bodyStart)
+                + " sampleKey='" + signal.sheetIdx + ":168:77'"
+                + " sampleVal=" + cellValues.get(signal.sheetIdx + ":168:77"));
         if (rangeValues.isEmpty()) {
             return;
         }
