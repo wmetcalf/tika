@@ -789,10 +789,18 @@ final class Biff12XlmFormulaDecoder {
                 String b = cellAddr(c2, (int) r2, !c2Rel, !r2Rel);
                 return new LiteralNode("[" + sheetIdx + "]" + a + ":" + b);
             }
-            case PTG_REF_ERR:    buf.skip(6);  return new LiteralNode("#REF!");
-            case PTG_AREA_ERR:   buf.skip(12); return new LiteralNode("#REF!");
-            case PTG_REF_ERR_3D: buf.skip(8);  return new LiteralNode("#REF!");
-            case PTG_AREA_ERR_3D: buf.skip(14); return new LiteralNode("#REF!");
+            case PTG_REF_ERR:
+                buf.skip(6);
+                return new LiteralNode("#REF!");
+            case PTG_AREA_ERR:
+                buf.skip(12);
+                return new LiteralNode("#REF!");
+            case PTG_REF_ERR_3D:
+                buf.skip(8);
+                return new LiteralNode("#REF!");
+            case PTG_AREA_ERR_3D:
+                buf.skip(14);
+                return new LiteralNode("#REF!");
 
             // ── Names ──────────────────────────────────────────────────────
             case PTG_NAME: {
