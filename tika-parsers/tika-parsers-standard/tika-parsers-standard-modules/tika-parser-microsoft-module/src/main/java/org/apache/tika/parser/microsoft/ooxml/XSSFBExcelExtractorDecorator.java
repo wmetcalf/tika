@@ -213,8 +213,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             XSSFBReader.SheetIterator iter =
                     (XSSFBReader.SheetIterator) reader.getSheetsData();
             while (iter.hasNext()) {
-                String sheetName = iter.getSheetName();
                 try (InputStream stream = iter.next()) {
+                    String sheetName = iter.getSheetName(); // called after next()
                     XlmWorksheetCellCapture capture =
                             new XlmWorksheetCellCapture(stream, sheetName, values);
                     capture.parse();
