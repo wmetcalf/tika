@@ -81,6 +81,7 @@ class XlmMacroEmulator {
                 new Biff12XlmFormulaDecoder.EvalContext(cellValues, new HashMap<>());
 
         int i = 0;
+        int loopsExecuted = 0;
         while (i < cells.size()) {
             MacroCell cell = cells.get(i);
             Object result = evalCell(cell, ctx);
@@ -91,6 +92,7 @@ class XlmMacroEmulator {
                 int nextIdx = findNext(i + 1);
                 if (nextIdx >= 0) {
                     executeForCellLoop(signal, i + 1, nextIdx, ctx);
+                    loopsExecuted++;
                     i = nextIdx + 1;
                 } else {
                     i++;
@@ -99,6 +101,9 @@ class XlmMacroEmulator {
                 i++;
             }
         }
+        ctx.iocs.add(0, "XLM_STATS: cells=" + cells.size()
+                + " cellValues=" + cellValues.size()
+                + " loops=" + loopsExecuted);
 
         // Emit any still-open file contents
         for (Map.Entry<Integer, StringBuilder> entry : ctx.fileContents.entrySet()) {
