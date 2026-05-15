@@ -1319,12 +1319,17 @@ public class WinShortcutParser implements Parser {
             linkInfoTarget = fields.get("EnvironmentVariableTarget");
         }
         if (linkInfoTarget == null) {
-            // Fall back to IDList-derived absolute path rather than a relative path
+            // Fall back to IDList-derived path only if it resolves to a real filesystem
+            // path (contains a drive letter). Virtual paths (ControlPanel\..., etc.) are
+            // not meaningful as a command and are skipped.
             String idp = fields.get("IDListPath");
             if (idp != null) {
                 int bs = idp.indexOf('\\');
-                linkInfoTarget = (bs > 0 && !idp.substring(0, bs).contains(":"))
+                String candidate = (bs > 0 && !idp.substring(0, bs).contains(":"))
                         ? idp.substring(bs + 1) : idp;
+                if (candidate.length() >= 3 && candidate.charAt(1) == ':') {
+                    linkInfoTarget = candidate;
+                }
             }
         }
         if (linkInfoTarget == null) {
@@ -1353,6 +1358,10 @@ public class WinShortcutParser implements Parser {
             int backslash = idListTarget.indexOf('\\');
             if (backslash > 0 && !idListTarget.substring(0, backslash).contains(":")) {
                 idListTarget = idListTarget.substring(backslash + 1);
+            }
+            // Only emit if this is a real filesystem path (drive letter present)
+            if (idListTarget.length() < 3 || idListTarget.charAt(1) != ':') {
+                return;
             }
             StringBuilder alt = new StringBuilder(idListTarget);
             if (args != null && !args.isEmpty()) {
