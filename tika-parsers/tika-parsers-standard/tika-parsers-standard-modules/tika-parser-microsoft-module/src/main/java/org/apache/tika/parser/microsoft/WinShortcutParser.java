@@ -352,6 +352,20 @@ public class WinShortcutParser implements Parser {
             metadata.set(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, targetPath);
         }
 
+        // Synthesize resolved command strings — mirrors wmetcalf/LnkParse3 lnk_command
+        // and lnk_command_alt (MIT).  Two resolution paths per the fork:
+        //
+        // ResolvedCommand (lnk_command): LinkInfo-first resolution.
+        //   Priority: LocalBasePath > EnvironmentVariableTarget > RelativePath,
+        //   preceded by WorkingDir when present (sets execution context).
+        //   Reflects the path Windows actually resolves via LinkInfo + volume tracking.
+        //
+        // AltCommand (lnk_command_alt): IDList-first resolution.
+        //   Uses IDListPath (our shell-namespace traversal) or VistaIDListPath.
+        //   This is what Windows uses when LinkInfo is absent or stale — the IDList
+        //   is the canonical target in modern Windows shortcut resolution.
+        synthesizeCommands(fields);
+
         for (Map.Entry<String, String> e : fields.entrySet()) {
             xhtml.element("p", e.getKey() + ": " + e.getValue());
         }
@@ -1287,6 +1301,52 @@ public class WinShortcutParser implements Parser {
             case VT_DECIMAL: case VT_CLSID:         return 16;
             case VT_UI1:                             return 1;
             default:                                 return -1;
+        }
+    }
+
+    // ── Command synthesis (lnk_command / lnk_command_alt) ────────────────────
+    // Mirrors wmetcalf/LnkParse3 (MIT) lnk_command and lnk_command_alt properties.
+
+    private void synthesizeCommands(Map<String, String> fields) {
+        String args     = fields.get("Arguments");
+        String workDir  = fields.get("WorkingDir");
+        String relPath  = fields.get("RelativePath");
+
+        // lnk_command — LinkInfo-first: LocalBasePath > EnvVar > RelativePath
+        String linkInfoTarget = fields.get("LocalBasePath");
+        if (linkInfoTarget == null) {
+            linkInfoTarget = fields.get("EnvironmentVariableTarget");
+        }
+        if (linkInfoTarget == null) {
+            linkInfoTarget = relPath;
+        }
+        if (linkInfoTarget != null) {
+            StringBuilder cmd = new StringBuilder();
+            if (workDir != null) {
+                cmd.append(workDir).append(" > ");
+            }
+            cmd.append(linkInfoTarget);
+            if (args != null && !args.isEmpty()) {
+                cmd.append(' ').append(args);
+            }
+            fields.put("ResolvedCommand", cmd.toString());
+        }
+
+        // lnk_command_alt — IDList-first: IDListPath or VistaIDListPath
+        String idListTarget = fields.get("VistaIDListPath");
+        if (idListTarget == null) {
+            idListTarget = fields.get("IDListPath");
+        }
+        if (idListTarget != null) {
+            StringBuilder alt = new StringBuilder(idListTarget);
+            if (args != null && !args.isEmpty()) {
+                alt.append(' ').append(args);
+            }
+            String resolved = fields.get("ResolvedCommand");
+            // Only emit AltCommand when it differs from ResolvedCommand
+            if (resolved == null || !alt.toString().equals(resolved)) {
+                fields.put("AltCommand", alt.toString());
+            }
         }
     }
 
