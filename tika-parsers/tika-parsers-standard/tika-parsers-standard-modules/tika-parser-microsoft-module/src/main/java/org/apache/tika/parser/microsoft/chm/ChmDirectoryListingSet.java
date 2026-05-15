@@ -55,6 +55,11 @@ public class ChmDirectoryListingSet {
      * @param chmItspHeader
      * @throws TikaException
      */
+    /** Empty directory listing — used as a safe fallback when structure parsing fails. */
+    public ChmDirectoryListingSet() {
+        setDirectoryListingEntryList(new ArrayList<>());
+    }
+
     public ChmDirectoryListingSet(byte[] data, ChmItsfHeader chmItsHeader,
                                   ChmItspHeader chmItspHeader) throws TikaException {
         setDirectoryListingEntryList(new ArrayList<>());

@@ -22,6 +22,8 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -40,6 +42,8 @@ import org.apache.tika.sax.XHTMLContentHandler;
 
 @TikaComponent
 public class ChmParser implements Parser {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ChmParser.class);
 
     /**
      * Serial version UID
@@ -77,15 +81,14 @@ public class ChmParser implements Parser {
                 .getDirectoryListingEntryList()) {
             final String entryName = entry.getName();
             if (entryName.endsWith(".html") || entryName.endsWith(".htm")) {
-//                AttributesImpl attrs = new AttributesImpl();
-//                attrs.addAttribute("", "name", "name", "String", entryName);
-//                xhtml.startElement("", "document", "document", attrs);
-
-                byte[] data = chmExtractor.extractChmEntry(entry);
-
+                byte[] data;
+                try {
+                    data = chmExtractor.extractChmEntry(entry);
+                } catch (TikaException e) {
+                    LOG.warn("Failed to extract CHM entry '{}': {}", entryName, e.getMessage());
+                    continue;
+                }
                 parsePage(data, htmlParser, xhtml, context);
-
-//                xhtml.endElement("", "", "document");
             }
         }
 

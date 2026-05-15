@@ -16,13 +16,7 @@
  */
 package org.apache.tika.parser.microsoft.chm;
 
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.util.List;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.tika.exception.TikaException;
 
@@ -35,7 +29,6 @@ public class ChmCommons {
     public final static int VERBATIM = 1;
     public final static int ALIGNED_OFFSET = 2;
     public final static int UNCOMPRESSED = 3;
-    private static final Logger LOG = LoggerFactory.getLogger(ChmCommons.class);
 
     /* Prevents initialization */
     private ChmCommons() {
@@ -170,28 +163,6 @@ public class ChmCommons {
     }
 
     /**
-     * Writes byte[][] to the file
-     *
-     * @param buffer
-     * @param fileToBeSaved file name
-     * @throws TikaException
-     */
-    public static void writeFile(byte[][] buffer, String fileToBeSaved) throws TikaException {
-        if (buffer == null || fileToBeSaved == null || ChmCommons.isEmpty(fileToBeSaved)) {
-            return;
-        }
-        try (FileOutputStream output = new FileOutputStream(fileToBeSaved)) {
-            for (byte[] bufferEntry : buffer) {
-                output.write(bufferEntry);
-            }
-        } catch (FileNotFoundException e) {
-            throw new TikaException(e.getMessage());
-        } catch (IOException e) {
-            LOG.warn("problem writing tmp file", e);
-        }
-    }
-
-    /**
      * Reverses the order of given array
      *
      * @param array
@@ -301,33 +272,30 @@ public class ChmCommons {
     }
 
     /*
-     * This method is added because of supporting of Java 5
+     * This method is added because of supporting of Java 5.
+     * Tolerates out-of-bounds 'to' by clamping to array length — malformed CHM
+     * files sometimes have directory entries that reference data slightly past the
+     * end of the file; clamping recovers partial content rather than throwing.
      */
     public static byte[] copyOfRange(byte[] original, int from, int to) throws TikaException {
-        checkCopyOfRangeParams(original, from, to);
-        int newLength = to - from;
-        if (newLength < 0) {
-            throw new IllegalArgumentException(from + " > " + to);
-        }
-
-        byte[] copy = new byte[newLength];
-        System.arraycopy(original, from, copy, 0, Math.min(original.length - from, newLength));
-        return copy;
-    }
-
-    private static void checkCopyOfRangeParams(byte[] original, int from, int to) {
         if (original == null) {
-            throw new NullPointerException("array is null");
+            throw new TikaException("copyOfRange: array is null");
         }
-        if (from < 0) {
-            throw new IllegalArgumentException(from + " should be > 0");
+        if (from < 0 || to < 0) {
+            throw new TikaException("copyOfRange: negative index from=" + from + " to=" + to);
         }
-        if (to < 0) {
-            throw new IllegalArgumentException(to + " should be > 0");
+        if (from > original.length) {
+            return new byte[0];
         }
-        if (to > original.length) {
-            throw new IllegalArgumentException("can't copy beyond array length");
+        // Clamp to array length — don't throw on slightly-off-bounds references
+        int clampedTo = Math.min(to, original.length);
+        int newLength = clampedTo - from;
+        if (newLength <= 0) {
+            return new byte[0];
         }
+        byte[] copy = new byte[newLength];
+        System.arraycopy(original, from, copy, 0, newLength);
+        return copy;
     }
 
     /*

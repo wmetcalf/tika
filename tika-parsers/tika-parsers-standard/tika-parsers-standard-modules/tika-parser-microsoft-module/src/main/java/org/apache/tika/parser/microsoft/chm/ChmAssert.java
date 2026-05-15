@@ -173,8 +173,7 @@ public class ChmAssert {
      */
     public static void assertPositiveInt(int param) throws ChmParsingException {
         if (param <= 0) {
-            throw new ChmParsingException(
-                    "resetTable.getBlockAddress().length should be greater than zero");
+            throw new ChmParsingException("expected positive integer, got: " + param);
         }
     }
 }

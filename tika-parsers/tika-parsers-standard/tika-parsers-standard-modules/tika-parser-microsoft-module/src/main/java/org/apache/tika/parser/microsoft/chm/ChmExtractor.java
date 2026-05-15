@@ -132,6 +132,11 @@ public class ChmExtractor {
 
         } catch (IOException e) {
             LOG.warn("IOException parsing chm file", e);
+        } catch (Exception e) {
+            LOG.warn("Failed to parse chm file structure: {}", e.getMessage());
+        }
+        if (chmDirList == null) {
+            setChmDirList(new ChmDirectoryListingSet());
         }
     }
 
