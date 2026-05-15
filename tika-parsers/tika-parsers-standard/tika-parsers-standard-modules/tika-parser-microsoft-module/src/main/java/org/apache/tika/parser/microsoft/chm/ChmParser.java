@@ -32,9 +32,11 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -90,18 +92,47 @@ public class ChmParser implements Parser {
             htmlParser = new JSoupParser();
         }
 
+        EmbeddedDocumentExtractor embeddedExtractor =
+                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+
         for (DirectoryListingEntry entry : chmExtractor.getChmDirList()
                 .getDirectoryListingEntryList()) {
             final String entryName = entry.getName();
+            if (entry.getLength() <= 0 || ChmCommons.hasSkip(entry)) {
+                continue;
+            }
+            // Strip leading slash for display/metadata
+            String displayName = entryName.startsWith("/") ? entryName.substring(1) : entryName;
+            if (displayName.isEmpty() || displayName.endsWith("/")) {
+                continue;
+            }
+
+            byte[] data;
+            try {
+                data = chmExtractor.extractChmEntry(entry);
+            } catch (TikaException e) {
+                LOG.warn("Failed to extract CHM entry '{}': {}", entryName, e.getMessage());
+                continue;
+            }
+            if (data.length == 0) {
+                continue;
+            }
+
             if (entryName.endsWith(".html") || entryName.endsWith(".htm")) {
-                byte[] data;
-                try {
-                    data = chmExtractor.extractChmEntry(entry);
-                } catch (TikaException e) {
-                    LOG.warn("Failed to extract CHM entry '{}': {}", entryName, e.getMessage());
-                    continue;
-                }
                 parsePage(data, htmlParser, xhtml, context);
+            } else {
+                // Non-HTML embedded file (e.g. PDF, LNK, ZIP dropped inside CHM)
+                Metadata embeddedMeta = new Metadata();
+                embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, displayName);
+                try (TikaInputStream embeddedTis = TikaInputStream.get(data)) {
+                    if (embeddedExtractor.shouldParseEmbedded(embeddedMeta)) {
+                        embeddedExtractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta,
+                                context, true);
+                    }
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse embedded CHM entry '{}': {}", displayName,
+                            e.getMessage());
+                }
             }
         }
 
