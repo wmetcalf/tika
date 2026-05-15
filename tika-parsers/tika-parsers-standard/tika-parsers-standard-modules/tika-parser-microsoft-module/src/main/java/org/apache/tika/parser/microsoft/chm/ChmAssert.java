@@ -50,9 +50,8 @@ public class ChmAssert {
             throw new TikaException("resetTable is null");
         }
 
-        if (resetTable.getBlockAddress().length <= 1) {
-            throw new TikaException(
-                    "resetTable.getBlockAddress().length should be greater than zero");
+        if (resetTable.getBlockAddress().length < 1) {
+            throw new TikaException("resetTable has no block addresses");
         }
 
         if (blockNumber < 0) {
