@@ -1436,7 +1436,9 @@ public class WinShortcutParser implements Parser {
 
     private static String sniffMimeType(byte[] bytes) {
         try (TikaInputStream tis = TikaInputStream.get(bytes)) {
-            return new DefaultDetector().detect(tis, new Metadata()).getBaseType().toString();
+            return new DefaultDetector()
+                    .detect(tis, new Metadata(), new ParseContext())
+                    .getBaseType().toString();
         } catch (Exception e) {
             return "application/octet-stream";
         }
