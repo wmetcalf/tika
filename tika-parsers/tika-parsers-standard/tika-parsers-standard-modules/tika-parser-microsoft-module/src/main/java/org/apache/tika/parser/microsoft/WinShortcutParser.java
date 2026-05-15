@@ -145,6 +145,28 @@ public class WinShortcutParser implements Parser {
     // IDList extension block signature (0xBEEF0004 — File Entry)
     private static final int SIG_BEEF0004 = 0xBEEF0004;
 
+    // Well-known root folder GUIDs for 0x1F shell items (My Computer, Control Panel, etc.)
+    private static final Map<String, String> KNOWN_ROOT_GUIDS = new LinkedHashMap<>();
+    static {
+        KNOWN_ROOT_GUIDS.put("{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "MyComputer");
+        KNOWN_ROOT_GUIDS.put("{26EE0668-A00A-44D7-9371-BEB064C98683}", "ControlPanel");
+        KNOWN_ROOT_GUIDS.put("{21EC2020-3AEA-1069-A2DD-08002B30309D}", "ControlPanel");
+        KNOWN_ROOT_GUIDS.put("{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", "Network");
+        KNOWN_ROOT_GUIDS.put("{645FF040-5081-101B-9F08-00AA002F954E}", "RecycleBin");
+        KNOWN_ROOT_GUIDS.put("{031E4825-7B94-4DC3-B131-E946B44C8DD5}", "Libraries");
+        KNOWN_ROOT_GUIDS.put("{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}", "Desktop");
+        KNOWN_ROOT_GUIDS.put("{4BD8D571-6D19-48D3-BE97-422220080E43}", "Music");
+        KNOWN_ROOT_GUIDS.put("{33E28130-4E1E-4676-835A-98395C3BC3BB}", "Pictures");
+        KNOWN_ROOT_GUIDS.put("{18989B1D-99B5-455B-841C-AB7C74E4DDFC}", "Videos");
+        KNOWN_ROOT_GUIDS.put("{FDD39AD0-238F-46AF-ADB4-6C85480369C7}", "Documents");
+        KNOWN_ROOT_GUIDS.put("{374DE290-123F-4565-9164-39C4925E467B}", "Downloads");
+        KNOWN_ROOT_GUIDS.put("{59031A47-3F72-44A7-89C5-5595FE6B30EE}", "UserProfile");
+        KNOWN_ROOT_GUIDS.put("{1F3427C8-5C10-4210-AA03-2EE45287D668}", "UserPinned");
+        KNOWN_ROOT_GUIDS.put("{76FC4E2D-D6AD-4519-A663-37BD56068185}", "Printers");
+        KNOWN_ROOT_GUIDS.put("{724EF170-A42D-4FEF-9F26-B60E846FBA4F}", "Administrative");
+        KNOWN_ROOT_GUIDS.put("{9B74B6A3-0DFD-4F11-9E78-5F7800F2E772}", "SyncCenter");
+    }
+
     // Windows FILETIME epoch offset (100-ns ticks from 1601-01-01 to 1970-01-01)
     private static final long FILETIME_EPOCH_DIFF_NS100 = 116444736000000000L;
 
@@ -328,8 +350,18 @@ public class WinShortcutParser implements Parser {
         }
         int typeIndicator = buf.get(base + 2) & 0xFF;
 
-        // Root folder (GUID item, type 0x1F) — skip
+        // Root folder (GUID item, type 0x1F) — decode known GUIDs (§2.2 / ShellBag0X1F)
+        // Layout: size(2) + type(1) + sortIndex(1) + CLSID(16)
         if (typeIndicator == 0x1F) {
+            if (base + 20 <= end) {
+                String guid = formatGuid(buf, base + 4);
+                String name = KNOWN_ROOT_GUIDS.get(guid);
+                if (name != null) {
+                    return name;
+                }
+                // Emit the raw GUID for unknown root folders so analysts can look it up
+                return "RootFolder:" + guid;
+            }
             return null;
         }
 
