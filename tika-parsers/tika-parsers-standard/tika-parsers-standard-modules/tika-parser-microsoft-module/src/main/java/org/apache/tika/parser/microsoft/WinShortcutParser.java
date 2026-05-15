@@ -84,14 +84,61 @@ public class WinShortcutParser implements Parser {
     private static final int FLAG_HAS_ICON_LOCATION  = 0x00000040;
     private static final int FLAG_IS_UNICODE         = 0x00000080;
 
-    // ExtraData block signatures
-    private static final int SIG_ENVIRONMENT_VAR  = 0xA0000001;
-    private static final int SIG_TRACKER          = 0xA0000003;
-    private static final int SIG_CONSOLE_FE       = 0xA0000004;
-    private static final int SIG_DARWIN           = 0xA0000006;
-    private static final int SIG_ICON_ENVIRONMENT = 0xA0000007;
-    private static final int SIG_SHIM             = 0xA0000008;
-    private static final int SIG_KNOWN_FOLDER     = 0xA000000B;
+    // ExtraData block signatures (§2.5)
+    private static final int SIG_ENVIRONMENT_VAR    = 0xA0000001;
+    private static final int SIG_CONSOLE            = 0xA0000002;
+    private static final int SIG_TRACKER            = 0xA0000003;
+    private static final int SIG_CONSOLE_FE         = 0xA0000004;
+    private static final int SIG_SPECIAL_FOLDER     = 0xA0000005;
+    private static final int SIG_DARWIN             = 0xA0000006;
+    private static final int SIG_ICON_ENVIRONMENT   = 0xA0000007;
+    private static final int SIG_SHIM               = 0xA0000008;
+    private static final int SIG_PROPERTY_STORE     = 0xA0000009;
+    private static final int SIG_KNOWN_FOLDER       = 0xA000000B;
+    private static final int SIG_VISTA_IDLIST       = 0xA000000C;
+
+    // PropertyStoreDataBlock: GUID that uses string-named properties (D5CDD505...)
+    private static final String NAMED_PROP_GUID = "{D5CDD505-2E9C-101B-9397-08002B2CF9AE}";
+
+    // CSIDL → human-readable name for SpecialFolderDataBlock
+    private static final Map<Integer, String> CSIDL_NAMES = new LinkedHashMap<>();
+    static {
+        CSIDL_NAMES.put(0x00, "Desktop");
+        CSIDL_NAMES.put(0x01, "Internet");
+        CSIDL_NAMES.put(0x02, "Programs");
+        CSIDL_NAMES.put(0x03, "Controls");
+        CSIDL_NAMES.put(0x05, "Personal/MyDocuments");
+        CSIDL_NAMES.put(0x06, "Favorites");
+        CSIDL_NAMES.put(0x07, "Startup");
+        CSIDL_NAMES.put(0x08, "Recent");
+        CSIDL_NAMES.put(0x09, "SendTo");
+        CSIDL_NAMES.put(0x0A, "RecycleBin");
+        CSIDL_NAMES.put(0x0B, "StartMenu");
+        CSIDL_NAMES.put(0x0D, "MyDocuments");
+        CSIDL_NAMES.put(0x0E, "MyMusic");
+        CSIDL_NAMES.put(0x0F, "MyVideo");
+        CSIDL_NAMES.put(0x10, "DesktopDirectory");
+        CSIDL_NAMES.put(0x11, "MyComputer");
+        CSIDL_NAMES.put(0x12, "NetworkNeighborhood");
+        CSIDL_NAMES.put(0x13, "NetHood");
+        CSIDL_NAMES.put(0x14, "Fonts");
+        CSIDL_NAMES.put(0x15, "Templates");
+        CSIDL_NAMES.put(0x1A, "AppData");
+        CSIDL_NAMES.put(0x1C, "LocalAppData");
+        CSIDL_NAMES.put(0x20, "InternetCache");
+        CSIDL_NAMES.put(0x21, "Cookies");
+        CSIDL_NAMES.put(0x22, "History");
+        CSIDL_NAMES.put(0x23, "CommonAppData");
+        CSIDL_NAMES.put(0x24, "Windows");
+        CSIDL_NAMES.put(0x25, "System");
+        CSIDL_NAMES.put(0x26, "ProgramFiles");
+        CSIDL_NAMES.put(0x27, "MyPictures");
+        CSIDL_NAMES.put(0x28, "UserProfile");
+        CSIDL_NAMES.put(0x29, "SystemX86");
+        CSIDL_NAMES.put(0x2A, "ProgramFilesX86");
+        CSIDL_NAMES.put(0x2B, "ProgramFilesCommon");
+        CSIDL_NAMES.put(0x30, "AdminTools");
+    }
 
     // IDList extension block signature (0xBEEF0004 — File Entry)
     private static final int SIG_BEEF0004 = 0xBEEF0004;
@@ -634,29 +681,46 @@ public class WinShortcutParser implements Parser {
             try {
                 switch (sig) {
                     case SIG_ENVIRONMENT_VAR:
-                        parseEnvironmentVarBlock(buf, pos, blockSize, fileLen, fields, "EnvironmentVariableTarget");
+                        parseEnvironmentVarBlock(buf, pos, blockSize, fileLen, fields,
+                                "EnvironmentVariableTarget");
                         break;
-                    case SIG_ICON_ENVIRONMENT:
-                        parseEnvironmentVarBlock(buf, pos, blockSize, fileLen, fields, "IconEnvironmentTarget");
+                    case SIG_CONSOLE:
+                        parseConsoleBlock(buf, pos, blockSize, fileLen, fields);
                         break;
                     case SIG_TRACKER:
                         parseTrackerBlock(buf, pos, blockSize, fileLen, fields);
                         break;
+                    case SIG_CONSOLE_FE:
+                        if (blockSize >= 12) {
+                            fields.put("ConsoleCodePage",
+                                    Integer.toString(buf.getInt(pos + 8)));
+                        }
+                        break;
+                    case SIG_SPECIAL_FOLDER:
+                        parseSpecialFolderBlock(buf, pos, blockSize, fileLen, fields);
+                        break;
                     case SIG_DARWIN:
                         parseDarwinBlock(buf, pos, blockSize, fileLen, fields);
+                        break;
+                    case SIG_ICON_ENVIRONMENT:
+                        parseEnvironmentVarBlock(buf, pos, blockSize, fileLen, fields,
+                                "IconEnvironmentTarget");
                         break;
                     case SIG_SHIM:
                         parseShimBlock(buf, pos, blockSize, fileLen, fields);
                         break;
-                    case SIG_CONSOLE_FE:
-                        if (blockSize >= 12) {
-                            fields.put("ConsoleCodePage", Integer.toString(buf.getInt(pos + 8)));
-                        }
+                    case SIG_PROPERTY_STORE:
+                        parsePropertyStoreBlock(buf, pos, blockSize, fileLen, fields,
+                                warnings);
                         break;
                     case SIG_KNOWN_FOLDER:
                         if (blockSize >= 0x1C && pos + 0x1C <= fileLen) {
                             fields.put("KnownFolderID", formatGuid(buf, pos + 8));
                         }
+                        break;
+                    case SIG_VISTA_IDLIST:
+                        parseVistaIdListBlock(buf, pos, blockSize, fileLen, fields,
+                                warnings);
                         break;
                     default:
                         break;
@@ -750,6 +814,277 @@ public class WinShortcutParser implements Parser {
         }
         if (pos + 96 <= fileLen) {
             fields.put("BirthDroidFileID", formatGuid(buf, pos + 80));
+        }
+    }
+
+    // ── New ExtraData block parsers ──────────────────────────────────────────
+
+    // §2.5.2 — ConsoleDataBlock (0xA0000002, size 0xCC)
+    // Forensically useful: FaceName reveals attacker's terminal font; codepage
+    // indicates locale; FullScreen/QuickEdit indicate the shell configuration.
+    private void parseConsoleBlock(ByteBuffer buf, int pos, int blockSize,
+                                   int fileLen, Map<String, String> fields) {
+        if (blockSize < 0xCC || pos + 0xCC > fileLen) {
+            return;
+        }
+        // FaceName: UTF-16LE, 32 chars, at offset +44
+        String faceName = readFixedW(buf, pos + 44, 32, fileLen);
+        if (faceName != null && !faceName.isEmpty()) {
+            fields.put("ConsoleFaceName", faceName);
+        }
+        int fontSize = buf.getInt(pos + 32);
+        if (fontSize > 0) {
+            fields.put("ConsoleFontSize", Integer.toString(fontSize));
+        }
+        int fontWeight = buf.getInt(pos + 40);
+        fields.put("ConsoleFontWeight", fontWeight >= 700 ? "Bold" : "Normal");
+        int fullScreen = buf.getInt(pos + 112);
+        if (fullScreen != 0) {
+            fields.put("ConsoleFullScreen", "true");
+        }
+    }
+
+    // §2.5.5 — SpecialFolderDataBlock (0xA0000005, size 0x10)
+    // Contains CSIDL constant identifying the Windows special folder target.
+    private void parseSpecialFolderBlock(ByteBuffer buf, int pos, int blockSize,
+                                         int fileLen, Map<String, String> fields) {
+        if (blockSize < 0x10 || pos + 0x10 > fileLen) {
+            return;
+        }
+        int csidl  = buf.getInt(pos + 8);
+        String name = CSIDL_NAMES.getOrDefault(csidl,
+                String.format(Locale.ROOT, "0x%02X", csidl));
+        fields.put("SpecialFolderID", name + " (" + csidl + ")");
+    }
+
+    // §2.5.11 — VistaAndAboveIDListDataBlock (0xA000000C)
+    // Contains an IDList identical to the main IDList — walk it with the same
+    // logic to produce an alternate target path on Vista+ (Matmaus upstream).
+    private void parseVistaIdListBlock(ByteBuffer buf, int pos, int blockSize,
+                                       int fileLen, Map<String, String> fields,
+                                       List<String> warnings) {
+        if (blockSize < 10 || pos + 8 > fileLen) {
+            return;
+        }
+        // IDList starts at offset +8; size = blockSize - 8
+        int idListStart = pos + 8;
+        int idListEnd   = pos + blockSize;
+        List<String> path = new ArrayList<>();
+        int itemStart = idListStart;
+        while (itemStart + 2 < idListEnd && itemStart + 2 <= fileLen) {
+            int itemSize = Short.toUnsignedInt(buf.getShort(itemStart));
+            if (itemSize == 0) {
+                break;
+            }
+            int itemEnd = itemStart + itemSize;
+            if (itemEnd > idListEnd || itemEnd > fileLen) {
+                break;
+            }
+            if (itemSize >= 3) {
+                try {
+                    String comp = parseShellItem(buf, itemStart, itemSize, itemEnd, fields);
+                    if (comp != null && !comp.isEmpty()) {
+                        path.add(comp);
+                    }
+                } catch (Exception e) {
+                    warnings.add("VistaIDList item error: " + e.getMessage());
+                }
+            }
+            itemStart = itemEnd;
+        }
+        if (!path.isEmpty()) {
+            fields.put("VistaIDListPath", String.join("\\", path));
+        }
+    }
+
+    // §2.5.9 — PropertyStoreDataBlock (0xA0000009)
+    // Full MS-OLEPS parsing: SerializedPropertyStorage chain with typed values.
+    // Implements the same two naming modes as Matmaus/LnkParse3 upstream:
+    //   - GUID D5CDD505-... → string-named properties
+    //   - All other GUIDs   → integer-named properties
+    private void parsePropertyStoreBlock(ByteBuffer buf, int pos, int blockSize,
+                                         int fileLen, Map<String, String> fields,
+                                         List<String> warnings) {
+        if (blockSize < 12 || pos + blockSize > fileLen) {
+            return;
+        }
+        // Skip block header (size=4, sig=4) → first SerializedPropertyStorage at +8
+        int storeEnd = pos + blockSize;
+        int spos = pos + 8;
+        int storageIdx = 0;
+
+        while (spos + 12 <= storeEnd) {
+            int storageSize = buf.getInt(spos);
+            if (storageSize < 4) {
+                break; // terminal
+            }
+            if (spos + storageSize > storeEnd) {
+                break;
+            }
+            // Version: should be 0x53505331 ("SPS1")
+            int version = buf.getInt(spos + 4);
+            if (version != 0x53505331) {
+                spos += storageSize;
+                storageIdx++;
+                continue;
+            }
+            // FormatID GUID at spos+8 (16 bytes)
+            String formatGuid = formatGuid(buf, spos + 8);
+            boolean namedProps = NAMED_PROP_GUID.equals(formatGuid);
+            String prefix = "PropertyStore[" + formatGuid + "]";
+
+            // Properties start at spos+24
+            int vpos = spos + 24;
+            int storageEndAbs = spos + storageSize;
+
+            while (vpos + 8 <= storageEndAbs) {
+                int valueSize = buf.getInt(vpos);
+                if (valueSize < 4) {
+                    break; // terminal
+                }
+                if (vpos + valueSize > storageEndAbs) {
+                    break;
+                }
+                try {
+                    if (namedProps) {
+                        parseStringNamedProperty(buf, vpos, valueSize, storageEndAbs,
+                                prefix, fields);
+                    } else {
+                        parseIntNamedProperty(buf, vpos, valueSize, storageEndAbs,
+                                prefix, fields);
+                    }
+                } catch (Exception e) {
+                    warnings.add("PropertyStore parse error: " + e.getMessage());
+                }
+                vpos += valueSize;
+            }
+
+            spos += storageSize;
+            storageIdx++;
+        }
+    }
+
+    /**
+     * SerializedPropertyValueStringName — for GUID D5CDD505-...
+     * Layout: valueSize(4) + nameSize(4) + reserved(1) + name(nameSize bytes UTF-16LE)
+     *         + TypedPropertyValue
+     */
+    private void parseStringNamedProperty(ByteBuffer buf, int pos, int valueSize,
+                                          int limit, String prefix,
+                                          Map<String, String> fields) {
+        if (pos + 9 > limit) {
+            return;
+        }
+        int nameSize = buf.getInt(pos + 4);
+        // reserved byte at pos+8 must be 0
+        if (buf.get(pos + 8) != 0 || nameSize < 0 || pos + 9 + nameSize > limit) {
+            return;
+        }
+        String name = "";
+        if (nameSize > 0) {
+            name = new String(buf.array(), pos + 9, nameSize, StandardCharsets.UTF_16LE);
+            int nullIdx = name.indexOf('\0');
+            if (nullIdx >= 0) {
+                name = name.substring(0, nullIdx);
+            }
+        }
+        int typedValueStart = pos + 9 + nameSize;
+        String value = readTypedPropertyValue(buf, typedValueStart, limit);
+        if (value != null && !name.isEmpty()) {
+            fields.put(prefix + "[" + name + "]", value);
+        }
+    }
+
+    /**
+     * SerializedPropertyValueIntegerName — for all other GUIDs.
+     * Layout: valueSize(4) + id(4) + reserved(1) + TypedPropertyValue
+     */
+    private void parseIntNamedProperty(ByteBuffer buf, int pos, int valueSize,
+                                       int limit, String prefix,
+                                       Map<String, String> fields) {
+        if (pos + 9 > limit) {
+            return;
+        }
+        int id = buf.getInt(pos + 4);
+        if (buf.get(pos + 8) != 0) {
+            return;
+        }
+        int typedValueStart = pos + 9;
+        String value = readTypedPropertyValue(buf, typedValueStart, limit);
+        if (value != null) {
+            fields.put(prefix + "[" + id + "]", value);
+        }
+    }
+
+    /**
+     * TypedPropertyValue (MS-OLEPS §2.15):
+     * type(uint16) + padding(uint16, must be 0) + value-bytes
+     *
+     * Decodes the most common VT_* types. Returns null for unknown/empty.
+     */
+    private String readTypedPropertyValue(ByteBuffer buf, int pos, int limit) {
+        if (pos + 4 > limit) {
+            return null;
+        }
+        int vtype = Short.toUnsignedInt(buf.getShort(pos));
+        // padding at pos+2 should be 0
+        if (buf.getShort(pos + 2) != 0) {
+            return null;
+        }
+        int dataPos = pos + 4;
+        switch (vtype) {
+            case 0x0000: // VT_EMPTY
+            case 0x0001: // VT_NULL
+                return null;
+            case 0x0002: // VT_I2 (int16)
+                if (dataPos + 2 > limit) {
+                    return null;
+                }
+                return Integer.toString(buf.getShort(dataPos));
+            case 0x0003: // VT_I4
+            case 0x0016: // VT_INT
+                if (dataPos + 4 > limit) {
+                    return null;
+                }
+                return Integer.toString(buf.getInt(dataPos));
+            case 0x0013: // VT_UI4
+            case 0x0017: // VT_UINT
+                if (dataPos + 4 > limit) {
+                    return null;
+                }
+                return Long.toString(Integer.toUnsignedLong(buf.getInt(dataPos)));
+            case 0x0014: // VT_I8
+                if (dataPos + 8 > limit) {
+                    return null;
+                }
+                return Long.toString(buf.getLong(dataPos));
+            case 0x0015: // VT_UI8
+                if (dataPos + 8 > limit) {
+                    return null;
+                }
+                return Long.toUnsignedString(buf.getLong(dataPos));
+            case 0x000B: // VT_BOOL (VARIANT_BOOL: 0xFFFF=TRUE, 0x0000=FALSE)
+                if (dataPos + 2 > limit) {
+                    return null;
+                }
+                return buf.getShort(dataPos) != 0 ? "true" : "false";
+            case 0x001E: // VT_LPSTR (null-terminated ANSI)
+                return readNullTermA(buf, dataPos, limit);
+            case 0x001F: // VT_LPWSTR (null-terminated UTF-16LE)
+                return readNullTermW(buf, dataPos, limit);
+            case 0x0040: // VT_FILETIME (8 bytes)
+                if (dataPos + 8 > limit) {
+                    return null;
+                }
+                long ft = buf.getLong(dataPos);
+                return ft == 0 ? null : filetimeToIso(ft);
+            case 0x0048: // VT_CLSID (16 bytes GUID)
+                if (dataPos + 16 > limit) {
+                    return null;
+                }
+                return formatGuid(buf, dataPos);
+            default:
+                return null;
         }
     }
 
