@@ -40,6 +40,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
+import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
@@ -1377,34 +1378,29 @@ public class WinShortcutParser implements Parser {
 
     // ── Exploit indicator detection ───────────────────────────────────────────
     //
-    // Scans the raw bytes of the appended payload for known exploit signatures
-    // and sets ExploitCVE / ExploitClass metadata fields.  Detection is done on
-    // raw bytes (lowercased ASCII scan) rather than parsed content so it catches
-    // payloads that are not recognized as HTML/JS by MIME detection.
+    // Two layers:
     //
-    // CVE-2026-21513 — MSHTML htmlfile ActiveX security feature bypass (CVSS 8.8,
-    //   Feb 2026 Patch Tuesday, exploited in the wild by APT28 as a zero-day).
-    //   LNK with appended HTML → htmlfile ActiveXObject → ieframe.dll navigation
-    //   → ShellExecuteExW bypassing MotW + IE ESC.
-    //   Signature: ActiveXObject("htmlfile") + Script.open call pattern.
-    //   Ref: https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-21513
-    //        Akamai: https://www.akamai.com/blog/security-research/inside-the-fix-cve-2026-21513-mshtml-exploit-analysis
+    // 1. Structural (detectStructuralExploits): checks LNK file-structure properties
+    //    rather than payload content.  CVE-2026-21513 is detected here because the
+    //    vulnerable Windows code path is triggered by the LNK structure alone — a
+    //    virtual-folder IDList decoy combined with appended HTML causes Explorer to
+    //    render the HTML via MSHTML without applying MotW or IE ESC restrictions,
+    //    regardless of what the HTML contains.
+    //
+    // 2. Content-based (detectExploitIndicators): raw-byte scan for patterns that
+    //    are meaningful independent of LNK structure (e.g., SmartScreen-bypass path
+    //    patterns, generic MSHTML execution primitives).
+    //
+    // Structural detection runs last and overwrites content-based results when both
+    // match, because structural is always more specific.
 
     private static final List<ExploitSignature> EXPLOIT_SIGNATURES;
     static {
         EXPLOIT_SIGNATURES = new ArrayList<>();
 
-        // CVE-2026-21513: MSHTML htmlfile ActiveX bypass (APT28 zero-day)
-        // Both indicators must be present in the payload.
-        EXPLOIT_SIGNATURES.add(new ExploitSignature(
-                "CVE-2026-21513",
-                "MSHTML htmlfile ActiveX security feature bypass — APT28 zero-day (Feb 2026)",
-                new String[]{"activexobject", "htmlfile", "script.open"}
-        ));
-
-        // CVE-2024-21412: Windows SmartScreen / Internet Shortcut bypass
-        // LNK pointing to a UNC path with .url or .lnk extension to bypass MotW.
-        // Signature: WebDAV/UNC path in arguments with search-ms: or .url reference.
+        // CVE-2024-21412: Windows SmartScreen / Internet Shortcut bypass.
+        // LNK with UNC-path arguments containing a .url reference bypasses MotW.
+        // Signature: search-ms: protocol or .url extension in appended data.
         EXPLOIT_SIGNATURES.add(new ExploitSignature(
                 "CVE-2024-21412",
                 "Windows SmartScreen bypass via crafted Internet Shortcut file",
@@ -1435,6 +1431,49 @@ public class WinShortcutParser implements Parser {
             this.cve = cve;
             this.description = description;
             this.allOf = allOf;
+        }
+    }
+
+    private static String sniffMimeType(byte[] bytes) {
+        try (TikaInputStream tis = TikaInputStream.get(bytes)) {
+            return new DefaultDetector().detect(tis, new Metadata()).getBaseType().toString();
+        } catch (Exception e) {
+            return "application/octet-stream";
+        }
+    }
+
+    // CVE-2026-21513: MSHTML Framework Security Feature Bypass (CVSS 8.8).
+    // The vulnerability lives in the LNK structure, not the script payload:
+    // Explorer renders appended HTML via MSHTML when the IDList resolves only
+    // to a virtual shell-namespace folder (no real filesystem target), bypassing
+    // MotW and IE ESC entirely.  Detecting content keywords would miss variants
+    // and misattribute the root cause — the trigger is structural.
+    //
+    // Structural signature:
+    //   • IDList present, resolves to virtual folder (no drive-letter path)
+    //   • No real target from LinkInfo (LocalBasePath + NetworkShareName both absent)
+    //   • Appended data is text/html
+    //
+    // Ref: MS-SHLLINK §2.1 HasTargetIDList, §2.3 IDList, §2.4 LinkInfo
+    //      Patch: Feb 2026 Patch Tuesday; exploited in the wild by APT28 as zero-day
+    private static void detectStructuralExploits(String appendedMime,
+                                                  Map<String, String> fields,
+                                                  List<String> warnings) {
+        if (!"text/html".equals(appendedMime)) {
+            return;
+        }
+        String idListPath = fields.get("IDListPath");
+        boolean virtualFolderDecoy =
+                idListPath != null
+                && !idListPath.matches(".*[A-Za-z]:\\\\.*")
+                && fields.get("LocalBasePath") == null
+                && fields.get("NetworkShareName") == null;
+        if (virtualFolderDecoy) {
+            fields.put("ExploitCVE", "CVE-2026-21513");
+            fields.put("ExploitClass",
+                    "LNK virtual-folder decoy + appended HTML rendered by MSHTML "
+                    + "without MotW restrictions — MSHTML Framework Security Feature "
+                    + "Bypass (APT28 zero-day, Feb 2026 Patch Tuesday, CVSS 8.8)");
         }
     }
 
@@ -1520,10 +1559,15 @@ public class WinShortcutParser implements Parser {
         byte[] appendedBytes = new byte[remaining];
         System.arraycopy(buf.array(), pos, appendedBytes, 0, remaining);
 
-        // Scan the raw payload for known exploit signatures before MIME detection.
-        // This runs on the bytes directly so it catches obfuscated or non-standard
-        // MIME types that the downstream parser might not flag.
+        String appendedMime = sniffMimeType(appendedBytes);
+        fields.put("AppendedDataMimeType", appendedMime);
+
+        // Content-based scan: generic patterns and CVE-2024-21412.
         detectExploitIndicators(appendedBytes, fields, warnings);
+
+        // Structural check runs last so it overwrites content-based results when
+        // it matches — structural detection is always more specific.
+        detectStructuralExploits(appendedMime, fields, warnings);
 
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
