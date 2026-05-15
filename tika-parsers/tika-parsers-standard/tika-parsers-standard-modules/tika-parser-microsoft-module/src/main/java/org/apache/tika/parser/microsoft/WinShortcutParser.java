@@ -41,6 +41,8 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -182,6 +184,10 @@ public class WinShortcutParser implements Parser {
         Map<String, String> fields = new LinkedHashMap<>();
         List<String> warnings = new ArrayList<>();
 
+        // xhtml must be open before parse so embedded docs (appended data) go inside it
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+        xhtml.startDocument();
+
         int pos = HEADER_SIZE;
         try {
             parseHeader(buf, fields);
@@ -192,7 +198,7 @@ public class WinShortcutParser implements Parser {
             pos = parseLinkInfo(buf, pos, linkFlags, raw.length, fields, warnings);
             pos = parseStringData(buf, pos, linkFlags, unicode, raw.length, fields);
             pos = parseExtraData(buf, pos, raw.length, fields, warnings);
-            parseAppendedData(buf, pos, raw.length, fields, warnings);
+            parseAppendedData(buf, pos, raw.length, fields, warnings, xhtml, context);
         } catch (Exception e) {
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
             warnings.add("parse-error: " + e.getMessage());
@@ -210,8 +216,6 @@ public class WinShortcutParser implements Parser {
             metadata.set(TikaCoreProperties.ORIGINAL_RESOURCE_NAME, targetPath);
         }
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
         for (Map.Entry<String, String> e : fields.entrySet()) {
             xhtml.element("p", e.getKey() + ": " + e.getValue());
         }
@@ -1090,12 +1094,14 @@ public class WinShortcutParser implements Parser {
 
     // ── Appended data (terminal block) ───────────────────────────────────────
     //
-    // wmetcalf/LnkParse3 fork: surfaces raw bytes appended after the ExtraData
-    // terminal block. Upstream (Matmaus) computes a SHA-256 hash instead.
-    // We store the SHA-256 (forensic IOC) and note the byte count.
+    // Bytes past the ExtraData terminal are hashed (forensic IOC per Matmaus
+    // upstream) AND fed through Tika's embedded-document pipeline so their
+    // MIME type is detected and their content is extracted (PDF text, PE
+    // metadata, ZIP contents, etc.).
 
     private void parseAppendedData(ByteBuffer buf, int pos, int fileLen,
-                                   Map<String, String> fields, List<String> warnings) {
+                                   Map<String, String> fields, List<String> warnings,
+                                   ContentHandler xhtml, ParseContext context) {
         if (pos >= fileLen) {
             return;
         }
@@ -1110,7 +1116,10 @@ public class WinShortcutParser implements Parser {
         if (remaining <= 0) {
             return;
         }
+
         fields.put("AppendedDataSize", Integer.toString(remaining));
+
+        // SHA-256 of the appended payload (Matmaus upstream approach)
         try {
             MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
             sha256.update(buf.array(), pos, remaining);
@@ -1122,6 +1131,21 @@ public class WinShortcutParser implements Parser {
             fields.put("AppendedDataSHA256", hex.toString());
         } catch (NoSuchAlgorithmException e) {
             warnings.add("SHA-256 unavailable: " + e.getMessage());
+        }
+
+        // Pass through Tika's embedded-document pipeline for MIME detection + parsing
+        byte[] appendedBytes = new byte[remaining];
+        System.arraycopy(buf.array(), pos, appendedBytes, 0, remaining);
+        EmbeddedDocumentExtractor extractor =
+                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+        Metadata embeddedMeta = new Metadata();
+        embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "lnk-appended-data");
+        try (TikaInputStream embeddedTis = TikaInputStream.get(appendedBytes)) {
+            if (extractor.shouldParseEmbedded(embeddedMeta)) {
+                extractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta, context, true);
+            }
+        } catch (Exception e) {
+            warnings.add("Appended data parse error: " + e.getMessage());
         }
     }
 
