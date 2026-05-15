@@ -21,7 +21,11 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -48,10 +52,10 @@ import org.apache.tika.sax.XHTMLContentHandler;
 /**
  * Parser for Windows Shell Link (LNK) files — MS-SHLLINK specification.
  *
- * Extracts forensically significant fields: target paths, command-line arguments,
- * volume/machine identifiers from LinkInfo and ExtraData (TrackerDataBlock,
- * EnvironmentVariableDataBlock, DarwinDataBlock, ShimDataBlock).  Closely
- * follows the field layout documented in EricZimmerman/Lnk and Matmaus/LnkParse3.
+ * Covers ShellLinkHeader, IDList (with 0xBEEF0004 extension block for creation/access
+ * timestamps and Unicode long filenames per wmetcalf/LnkParse3 fork), LinkInfo,
+ * StringData, ExtraData (TrackerDataBlock, EnvironmentVariableDataBlock, DarwinDataBlock,
+ * ShimDataBlock, KnownFolderDataBlock), and terminal-block appended data (SHA-256).
  *
  * All string fields are emitted without length caps — truncation hides IOCs.
  */
@@ -82,15 +86,15 @@ public class WinShortcutParser implements Parser {
 
     // ExtraData block signatures
     private static final int SIG_ENVIRONMENT_VAR  = 0xA0000001;
-    private static final int SIG_CONSOLE          = 0xA0000002;
     private static final int SIG_TRACKER          = 0xA0000003;
     private static final int SIG_CONSOLE_FE       = 0xA0000004;
-    private static final int SIG_SPECIAL_FOLDER   = 0xA0000005;
     private static final int SIG_DARWIN           = 0xA0000006;
     private static final int SIG_ICON_ENVIRONMENT = 0xA0000007;
     private static final int SIG_SHIM             = 0xA0000008;
-    private static final int SIG_PROPERTY_STORE   = 0xA0000009;
     private static final int SIG_KNOWN_FOLDER     = 0xA000000B;
+
+    // IDList extension block signature (0xBEEF0004 — File Entry)
+    private static final int SIG_BEEF0004 = 0xBEEF0004;
 
     // Windows FILETIME epoch offset (100-ns ticks from 1601-01-01 to 1970-01-01)
     private static final long FILETIME_EPOCH_DIFF_NS100 = 116444736000000000L;
@@ -131,22 +135,27 @@ public class WinShortcutParser implements Parser {
         Map<String, String> fields = new LinkedHashMap<>();
         List<String> warnings = new ArrayList<>();
 
+        int pos = HEADER_SIZE;
         try {
-            int pos = parseHeader(buf, raw.length, fields, warnings);
+            parseHeader(buf, fields);
             int linkFlags = buf.getInt(20);
             boolean unicode = (linkFlags & FLAG_IS_UNICODE) != 0;
 
-            pos = skipIdList(buf, pos, linkFlags, raw.length);
+            pos = parseIdList(buf, pos, linkFlags, raw.length, fields, warnings);
             pos = parseLinkInfo(buf, pos, linkFlags, raw.length, fields, warnings);
             pos = parseStringData(buf, pos, linkFlags, unicode, raw.length, fields);
-            parseExtraData(buf, pos, raw.length, fields, warnings);
+            pos = parseExtraData(buf, pos, raw.length, fields, warnings);
+            parseAppendedData(buf, pos, raw.length, fields, warnings);
         } catch (Exception e) {
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
             warnings.add("parse-error: " + e.getMessage());
         }
 
         // Propagate target path to metadata
-        String targetPath = fields.get("LocalBasePath");
+        String targetPath = fields.get("IDListPath");
+        if (targetPath == null) {
+            targetPath = fields.get("LocalBasePath");
+        }
         if (targetPath == null) {
             targetPath = fields.get("EnvironmentVariableTarget");
         }
@@ -167,16 +176,15 @@ public class WinShortcutParser implements Parser {
 
     // ── ShellLinkHeader §2.1 ─────────────────────────────────────────────────
 
-    private int parseHeader(ByteBuffer buf, int fileLen,
-                            Map<String, String> fields, List<String> warnings) {
-        int linkFlags = buf.getInt(20);
+    private void parseHeader(ByteBuffer buf, Map<String, String> fields) {
+        int linkFlags      = buf.getInt(20);
         int fileAttributes = buf.getInt(24);
-        long creationTime = buf.getLong(28);
-        long accessTime   = buf.getLong(36);
-        long writeTime    = buf.getLong(44);
-        long fileSize     = Integer.toUnsignedLong(buf.getInt(52));
-        int  showCommand  = buf.getInt(60);
-        short hotKey      = buf.getShort(64);
+        long creationTime  = buf.getLong(28);
+        long accessTime    = buf.getLong(36);
+        long writeTime     = buf.getLong(44);
+        long fileSize      = Integer.toUnsignedLong(buf.getInt(52));
+        int  showCommand   = buf.getInt(60);
+        short hotKey       = buf.getShort(64);
 
         if (creationTime != 0) {
             fields.put("CreationTime", filetimeToIso(creationTime));
@@ -190,8 +198,7 @@ public class WinShortcutParser implements Parser {
         if (fileSize > 0) {
             fields.put("FileSize", Long.toString(fileSize));
         }
-        String showCmd = SHOW_COMMANDS.getOrDefault(showCommand, "Normal");
-        fields.put("ShowCommand", showCmd);
+        fields.put("ShowCommand", SHOW_COMMANDS.getOrDefault(showCommand, "Normal"));
         if (hotKey != 0) {
             fields.put("HotKey", decodeHotKey(hotKey));
         }
@@ -199,12 +206,21 @@ public class WinShortcutParser implements Parser {
             fields.put("FileAttributes", decodeFileAttributes(fileAttributes));
         }
 
-        return HEADER_SIZE;
+        // Decode flag names that are useful for analysts
+        List<String> flagNames = decodeLinkFlags(linkFlags);
+        if (!flagNames.isEmpty()) {
+            fields.put("LinkFlags", String.join("|", flagNames));
+        }
     }
 
-    // ── IDList §2.2 ──────────────────────────────────────────────────────────
+    // ── IDList §2.2 with 0xBEEF0004 extension blocks ─────────────────────────
+    //
+    // wmetcalf/LnkParse3 fork: parses Shell Item extension blocks to extract
+    // creation_time, last_access_time, and Unicode secondary_name (LFN) from
+    // each FileSystem (0x30-0x3F type) shell item in the chain.
 
-    private int skipIdList(ByteBuffer buf, int pos, int linkFlags, int fileLen) {
+    private int parseIdList(ByteBuffer buf, int pos, int linkFlags, int fileLen,
+                            Map<String, String> fields, List<String> warnings) {
         if ((linkFlags & FLAG_HAS_TARGET_IDLIST) == 0) {
             return pos;
         }
@@ -212,7 +228,222 @@ public class WinShortcutParser implements Parser {
             return pos;
         }
         int idListSize = Short.toUnsignedInt(buf.getShort(pos));
-        return pos + 2 + idListSize;
+        int idListEnd  = pos + 2 + idListSize;
+        pos += 2;
+
+        List<String> pathComponents = new ArrayList<>();
+        int itemStart = pos;
+
+        while (itemStart + 2 < idListEnd && itemStart + 2 <= fileLen) {
+            int itemSize = Short.toUnsignedInt(buf.getShort(itemStart));
+            if (itemSize == 0) {
+                break; // terminator
+            }
+            int itemEnd = itemStart + itemSize;
+            if (itemEnd > idListEnd || itemEnd > fileLen) {
+                break;
+            }
+
+            try {
+                String component = parseShellItem(buf, itemStart, itemSize, itemEnd, fields);
+                if (component != null && !component.isEmpty()) {
+                    pathComponents.add(component);
+                }
+            } catch (Exception e) {
+                warnings.add("IDList item parse error: " + e.getMessage());
+            }
+
+            itemStart = itemEnd;
+        }
+
+        if (!pathComponents.isEmpty()) {
+            fields.put("IDListPath", String.join("\\", pathComponents));
+        }
+
+        return idListEnd;
+    }
+
+    /**
+     * Parse one Shell Item from the IDList.
+     *
+     * @param base    start offset of the item (includes the 2-byte size field)
+     * @param size    total item size including the size field
+     * @param end     exclusive end offset of the item
+     */
+    private String parseShellItem(ByteBuffer buf, int base, int size, int end,
+                                  Map<String, String> fields) {
+        if (size < 3) {
+            return null;
+        }
+        int typeIndicator = buf.get(base + 2) & 0xFF;
+
+        // Root folder (GUID item, type 0x1F) — skip
+        if (typeIndicator == 0x1F) {
+            return null;
+        }
+
+        // Drive root (0x23, 0x2E, 0x2F, 0x29) — volume letter at offset base+3
+        if (typeIndicator == 0x2F || typeIndicator == 0x2E
+                || typeIndicator == 0x23 || typeIndicator == 0x29) {
+            if (base + 4 <= end) {
+                char ch = (char) (buf.get(base + 3) & 0xFF);
+                if (ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z') {
+                    return ch + ":";
+                }
+            }
+            return null;
+        }
+
+        // File system folder/file (0x30-0x3F)
+        if ((typeIndicator & 0xF0) == 0x30) {
+            return parseShellFsFolder(buf, base, size, end, typeIndicator, fields);
+        }
+
+        // Network location (0x40-0x47) — location string at offset ~14
+        if ((typeIndicator & 0xF0) == 0x40) {
+            if (base + 15 <= end) {
+                String loc = readNullTermA(buf, base + 14, end);
+                return loc;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse a FileSystem shell item (type 0x30-0x3F, ShellFSFolder in LnkParse3).
+     *
+     * Layout (MS-SHLLINK / explorer shell item documentation):
+     *   base+0   uint16  ItemIDSize
+     *   base+2   uint8   TypeIndicator
+     *   base+3   uint8   FileAttributes (FAT-era flags)
+     *   base+4   uint32  FileSize (0 for directories)
+     *   base+8   uint32  ModificationTime (DOS date/time)
+     *   base+12  uint16  FileAttributeFlags
+     *   base+14  char[]  PrimaryName (8.3, null-terminated ANSI or Unicode)
+     *
+     * Extension blocks live between extOffset (last 2 bytes of item) and item end - 2.
+     * 0xBEEF0004 (FileEntry extension) provides: creation_time, last_access_time,
+     * and Unicode long filename (secondary_name / LFN).  Ported from wmetcalf/LnkParse3.
+     */
+    private String parseShellFsFolder(ByteBuffer buf, int base, int size, int end,
+                                      int typeIndicator, Map<String, String> fields) {
+        if (size < 16) {
+            return null;
+        }
+
+        // Whether primary name is Unicode (bit 2 of type indicator)
+        boolean itemUnicode = (typeIndicator & 0x04) != 0;
+
+        // Primary name (8.3 short name)
+        String primaryName = null;
+        if (itemUnicode) {
+            primaryName = readNullTermW(buf, base + 14, end);
+        } else {
+            primaryName = readNullTermA(buf, base + 14, end);
+        }
+
+        // Modification time for this path component
+        int modTimeDos = buf.getInt(base + 8);
+        if (modTimeDos != 0) {
+            String modStr = dosTimeToIso(modTimeDos);
+            if (modStr != null) {
+                fields.put("IDListModTime[" + safeLabel(primaryName) + "]", modStr);
+            }
+        }
+
+        // Extension blocks — offset stored in last 2 bytes of item (relative to item start)
+        if (size >= 4) {
+            int extOffset = Short.toUnsignedInt(buf.getShort(end - 2));
+            if (extOffset > 0 && base + extOffset < end - 2) {
+                String longName = parseBeef0004Extensions(buf, base + extOffset, end - 2,
+                        primaryName, fields);
+                if (longName != null && !longName.isEmpty()) {
+                    return longName;
+                }
+            }
+        }
+
+        return primaryName;
+    }
+
+    /**
+     * Walk extension blocks looking for 0xBEEF0004 (FileEntry).
+     * Ported from wmetcalf/LnkParse3 fork: extension/__init__.py + extension/file_entry.py
+     *
+     * Layout of the extension block area (iterated from extBase to extEnd):
+     *   +0  uint16  ExtensionBlockSize
+     *   +2  uint16  ExtensionBlockVersion
+     *   +4  uint32  ExtensionBlockSignature (0xBEEF0004 for FileEntry)
+     *   +8  uint32  CreationTime  (DOS date/time, 4 bytes)
+     *  +12  uint16  LastAccessDate  }  DOS date (2) and time (2) split
+     *  +14  uint16  LastAccessTime  }
+     *  +16  uint16  unknown
+     *  +18+  LongName (version-gated, UTF-16LE)
+     *
+     * LongName offset from block start:
+     *   Base offset = 18
+     *   version >= 3: +2 bytes unknown
+     *   version >= 7: +18 bytes (file ref 8B + 2 timestamps 8B each = actually 8+4+4 or varies)
+     *   version >= 8: +4 bytes unknown
+     *   version >= 9: +4 bytes unknown
+     */
+    private String parseBeef0004Extensions(ByteBuffer buf, int extBase, int extEnd,
+                                           String primaryName, Map<String, String> fields) {
+        int pos = extBase;
+        while (pos + 8 <= extEnd) {
+            int blockSize = Short.toUnsignedInt(buf.getShort(pos));
+            if (blockSize < 8 || pos + blockSize > extEnd) {
+                break;
+            }
+            int version   = Short.toUnsignedInt(buf.getShort(pos + 2));
+            int sig       = buf.getInt(pos + 4);
+
+            if (sig == SIG_BEEF0004) {
+                // Creation time: DOS format at bytes 8-11 (date+time, each 2 bytes)
+                if (pos + 12 <= extEnd) {
+                    int dosDate = Short.toUnsignedInt(buf.getShort(pos + 10));
+                    int dosTime = Short.toUnsignedInt(buf.getShort(pos + 8));
+                    String creation = dosDateTimeToIso(dosDate, dosTime);
+                    if (creation != null) {
+                        fields.put("IDListCreationTime[" + safeLabel(primaryName) + "]", creation);
+                    }
+                }
+                // Last access time: bytes 12-15
+                if (pos + 16 <= extEnd) {
+                    int dosDate = Short.toUnsignedInt(buf.getShort(pos + 14));
+                    int dosTime = Short.toUnsignedInt(buf.getShort(pos + 12));
+                    String access = dosDateTimeToIso(dosDate, dosTime);
+                    if (access != null) {
+                        fields.put("IDListAccessTime[" + safeLabel(primaryName) + "]", access);
+                    }
+                }
+                // Long name (Unicode LFN) — version-gated per wmetcalf fork
+                String longName = null;
+                if (version >= 3) {
+                    int nameStart = pos + 18;
+                    if (version >= 3) {
+                        nameStart += 2;  // 2 bytes unknown
+                    }
+                    if (version >= 7) {
+                        nameStart += 18; // MFT reference + extra timestamps
+                    }
+                    if (version >= 8) {
+                        nameStart += 4;
+                    }
+                    if (version >= 9) {
+                        nameStart += 4;
+                    }
+                    if (nameStart + 2 <= extEnd) {
+                        longName = readNullTermW(buf, nameStart, extEnd);
+                    }
+                }
+                return longName;
+            }
+
+            pos += blockSize;
+        }
+        return null;
     }
 
     // ── LinkInfo §2.3 ────────────────────────────────────────────────────────
@@ -244,7 +475,6 @@ public class WinShortcutParser implements Parser {
             boolean hasNetwork = (infoFlags & 0x02) != 0;
 
             if (hasLocal) {
-                // Prefer Unicode path when header provides Unicode offset
                 String localPath = null;
                 if (localBaseOffU > 0) {
                     localPath = readNullTermW(buf, pos + localBaseOffU, fileLen);
@@ -267,7 +497,6 @@ public class WinShortcutParser implements Parser {
                     fields.put("CommonPathSuffix", suffix);
                 }
 
-                // VolumeID sub-block
                 if (volIdOff > 0 && pos + volIdOff + 16 <= fileLen) {
                     parseVolumeId(buf, pos + volIdOff, fileLen, fields);
                 }
@@ -296,9 +525,8 @@ public class WinShortcutParser implements Parser {
         if (driveType >= 0 && driveType < DRIVE_TYPES.length) {
             fields.put("DriveType", DRIVE_TYPES[driveType]);
         }
-        fields.put("DriveSerialNumber", String.format(Locale.ROOT,"%08X", driveSerial));
+        fields.put("DriveSerialNumber", String.format(Locale.ROOT, "%08X", driveSerial));
 
-        // Unicode label offset present when labelOff == 0x14
         String label = null;
         if (labelOff == 0x14 && volSize >= 20) {
             int labelOffU = buf.getInt(base + 16);
@@ -316,15 +544,13 @@ public class WinShortcutParser implements Parser {
 
     private void parseNetworkLink(ByteBuffer buf, int base, int fileLen,
                                   Map<String, String> fields) {
-        int size       = buf.getInt(base);
+        int size = buf.getInt(base);
         if (size < 20 || base + size > fileLen) {
             return;
         }
-        int netFlags    = buf.getInt(base + 4);
         int netNameOff  = buf.getInt(base + 8);
         int devNameOff  = buf.getInt(base + 12);
 
-        // Unicode offsets present when NetNameOffset > 20
         int netNameOffU = (netNameOff > 20 && base + 24 <= fileLen) ? buf.getInt(base + 20) : 0;
         int devNameOffU = (netNameOff > 20 && base + 28 <= fileLen) ? buf.getInt(base + 24) : 0;
 
@@ -355,9 +581,9 @@ public class WinShortcutParser implements Parser {
 
     private int parseStringData(ByteBuffer buf, int pos, int linkFlags, boolean unicode,
                                 int fileLen, Map<String, String> fields) {
-        int[] flagsOrder   = {FLAG_HAS_NAME, FLAG_HAS_RELATIVE_PATH,
-                               FLAG_HAS_WORKING_DIR, FLAG_HAS_ARGUMENTS, FLAG_HAS_ICON_LOCATION};
-        String[] keyNames  = {"Name", "RelativePath", "WorkingDir", "Arguments", "IconLocation"};
+        int[] flagsOrder  = {FLAG_HAS_NAME, FLAG_HAS_RELATIVE_PATH,
+                              FLAG_HAS_WORKING_DIR, FLAG_HAS_ARGUMENTS, FLAG_HAS_ICON_LOCATION};
+        String[] keyNames = {"Name", "RelativePath", "WorkingDir", "Arguments", "IconLocation"};
 
         for (int fi = 0; fi < flagsOrder.length; fi++) {
             if ((linkFlags & flagsOrder[fi]) == 0) {
@@ -380,8 +606,7 @@ public class WinShortcutParser implements Parser {
                 if (pos + charCount > fileLen) {
                     break;
                 }
-                // Use cp1252 (Windows default ANSI) per both reference implementations
-                Charset cp1252 = Charset.forName("windows-1252");
+                Charset cp1252 = cp1252();
                 value = new String(buf.array(), pos, charCount, cp1252);
                 pos += charCount;
             }
@@ -394,11 +619,15 @@ public class WinShortcutParser implements Parser {
 
     // ── ExtraData §2.5 ───────────────────────────────────────────────────────
 
-    private void parseExtraData(ByteBuffer buf, int pos, int fileLen,
-                                Map<String, String> fields, List<String> warnings) {
+    private int parseExtraData(ByteBuffer buf, int pos, int fileLen,
+                               Map<String, String> fields, List<String> warnings) {
         while (pos + 8 <= fileLen) {
             int blockSize = buf.getInt(pos);
-            if (blockSize < 4 || pos + blockSize > fileLen) {
+            // Terminal block: size < 4 signals end of ExtraData
+            if (blockSize < 4) {
+                break;
+            }
+            if (pos + blockSize > fileLen) {
                 break;
             }
             int sig = buf.getInt(pos + 4);
@@ -411,7 +640,7 @@ public class WinShortcutParser implements Parser {
                         parseEnvironmentVarBlock(buf, pos, blockSize, fileLen, fields, "IconEnvironmentTarget");
                         break;
                     case SIG_TRACKER:
-                        parseTrackerBlock(buf, pos, blockSize, fileLen, fields, warnings);
+                        parseTrackerBlock(buf, pos, blockSize, fileLen, fields);
                         break;
                     case SIG_DARWIN:
                         parseDarwinBlock(buf, pos, blockSize, fileLen, fields);
@@ -425,26 +654,28 @@ public class WinShortcutParser implements Parser {
                         }
                         break;
                     case SIG_KNOWN_FOLDER:
-                        parseKnownFolderBlock(buf, pos, blockSize, fileLen, fields);
+                        if (blockSize >= 0x1C && pos + 0x1C <= fileLen) {
+                            fields.put("KnownFolderID", formatGuid(buf, pos + 8));
+                        }
                         break;
                     default:
                         break;
                 }
             } catch (Exception e) {
-                warnings.add("ExtraData block " + String.format(Locale.ROOT,"0x%08X", sig) + " error: " + e.getMessage());
+                warnings.add("ExtraData sig " + String.format(Locale.ROOT, "0x%08X", sig)
+                        + " error: " + e.getMessage());
             }
             pos += blockSize;
         }
+        return pos;
     }
 
     // §2.5.1 / §2.5.7 — EnvironmentVariableDataBlock / IconEnvironmentDataBlock
-    // Structure: [8..267] 260-byte ANSI target, [268..787] 520-byte UTF-16LE target
     private void parseEnvironmentVarBlock(ByteBuffer buf, int pos, int blockSize,
                                           int fileLen, Map<String, String> fields, String key) {
         if (blockSize < 0x314 || pos + 0x314 > fileLen) {
             return;
         }
-        // Prefer Unicode (offset 268, 260 UTF-16LE chars = 520 bytes)
         String unicode = readFixedW(buf, pos + 268, 260, fileLen);
         if (unicode != null && !unicode.isEmpty()) {
             fields.put(key, unicode);
@@ -456,8 +687,7 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    // §2.5.6 — DarwinDataBlock (application identifier)
-    // Same 788-byte layout as EnvironmentVariableDataBlock
+    // §2.5.6 — DarwinDataBlock
     private void parseDarwinBlock(ByteBuffer buf, int pos, int blockSize,
                                   int fileLen, Map<String, String> fields) {
         if (blockSize < 0x314 || pos + 0x314 > fileLen) {
@@ -474,18 +704,14 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    // §2.5.8 — ShimDataBlock (shim layer name)
+    // §2.5.8 — ShimDataBlock
     private void parseShimBlock(ByteBuffer buf, int pos, int blockSize,
                                 int fileLen, Map<String, String> fields) {
-        if (blockSize < 8 || pos + 8 > fileLen) {
-            return;
-        }
         int dataLen = blockSize - 8;
-        if (pos + 8 + dataLen > fileLen || dataLen < 2) {
+        if (dataLen < 2 || pos + 8 + dataLen > fileLen) {
             return;
         }
         String shim = new String(buf.array(), pos + 8, dataLen, StandardCharsets.UTF_16LE);
-        // Strip null terminator
         int nullIdx = shim.indexOf('\0');
         if (nullIdx >= 0) {
             shim = shim.substring(0, nullIdx);
@@ -495,41 +721,30 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    // §2.5.3 — TrackerDataBlock (machine ID, volume GUID, file GUID with MAC address)
+    // §2.5.3 — TrackerDataBlock
     private void parseTrackerBlock(ByteBuffer buf, int pos, int blockSize,
-                                   int fileLen, Map<String, String> fields, List<String> warnings) {
-        // Must be exactly 0x60 bytes; payload starts at offset 8
+                                   int fileLen, Map<String, String> fields) {
         if (blockSize != 0x60 || pos + 0x60 > fileLen) {
             return;
         }
-        // MachineID: 16-byte null-terminated ASCII hostname at [+16]
         String machineId = readNullTermA(buf, pos + 16, Math.min(pos + 32, fileLen));
         if (machineId != null && !machineId.isEmpty()) {
             fields.put("MachineID", machineId);
         }
-
-        // DroidVolumeID: 16-byte GUID at [+32]
         if (pos + 48 <= fileLen) {
             fields.put("DroidVolumeID", formatGuid(buf, pos + 32));
         }
-
-        // DroidFileID: 16-byte UUID v1 at [+48] — contains MAC address and creation timestamp
         if (pos + 64 <= fileLen) {
-            String droidFile = formatGuid(buf, pos + 48);
-            fields.put("DroidFileID", droidFile);
-            // Extract embedded MAC address from last 6 bytes of UUID node field
+            fields.put("DroidFileID", formatGuid(buf, pos + 48));
             String mac = extractMac(buf, pos + 48);
             if (mac != null) {
                 fields.put("MACAddress", mac);
             }
-            // Extract UUID v1 timestamp (Zimmerman technique)
             String uuidTs = extractUuidV1Timestamp(buf, pos + 48);
             if (uuidTs != null) {
                 fields.put("DroidFileCreationTime", uuidTs);
             }
         }
-
-        // BirthDroidVolumeID at [+64], BirthDroidFileID at [+80]
         if (pos + 80 <= fileLen) {
             fields.put("BirthDroidVolumeID", formatGuid(buf, pos + 64));
         }
@@ -538,19 +753,45 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    // §2.5.11 — KnownFolderDataBlock
-    private void parseKnownFolderBlock(ByteBuffer buf, int pos, int blockSize,
-                                       int fileLen, Map<String, String> fields) {
-        if (blockSize < 0x1C || pos + 0x1C > fileLen) {
+    // ── Appended data (terminal block) ───────────────────────────────────────
+    //
+    // wmetcalf/LnkParse3 fork: surfaces raw bytes appended after the ExtraData
+    // terminal block. Upstream (Matmaus) computes a SHA-256 hash instead.
+    // We store the SHA-256 (forensic IOC) and note the byte count.
+
+    private void parseAppendedData(ByteBuffer buf, int pos, int fileLen,
+                                   Map<String, String> fields, List<String> warnings) {
+        if (pos >= fileLen) {
             return;
         }
-        // 16-byte GUID at [+8]
-        fields.put("KnownFolderID", formatGuid(buf, pos + 8));
+        // Skip terminal block size field (4 bytes of 0x00000000 or < 4)
+        if (pos + 4 <= fileLen) {
+            int terminal = buf.getInt(pos);
+            if (terminal < 4) {
+                pos += 4;
+            }
+        }
+        int remaining = fileLen - pos;
+        if (remaining <= 0) {
+            return;
+        }
+        fields.put("AppendedDataSize", Integer.toString(remaining));
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            sha256.update(buf.array(), pos, remaining);
+            byte[] digest = sha256.digest();
+            StringBuilder hex = new StringBuilder(64);
+            for (byte b : digest) {
+                hex.append(String.format(Locale.ROOT, "%02x", b & 0xFF));
+            }
+            fields.put("AppendedDataSHA256", hex.toString());
+        } catch (NoSuchAlgorithmException e) {
+            warnings.add("SHA-256 unavailable: " + e.getMessage());
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /** Read null-terminated ANSI (cp1252) string starting at {@code pos}. */
     private String readNullTermA(ByteBuffer buf, int pos, int limit) {
         if (pos < 0 || pos >= limit) {
             return null;
@@ -563,16 +804,9 @@ public class WinShortcutParser implements Parser {
         if (end == pos) {
             return null;
         }
-        Charset cp1252;
-        try {
-            cp1252 = Charset.forName("windows-1252");
-        } catch (Exception e) {
-            cp1252 = StandardCharsets.ISO_8859_1;
-        }
-        return new String(data, pos, end - pos, cp1252);
+        return new String(data, pos, end - pos, cp1252());
     }
 
-    /** Read null-terminated UTF-16LE string starting at {@code pos}. */
     private String readNullTermW(ByteBuffer buf, int pos, int limit) {
         if (pos < 0 || pos + 2 > limit) {
             return null;
@@ -588,7 +822,6 @@ public class WinShortcutParser implements Parser {
         return new String(data, pos, end - pos, StandardCharsets.UTF_16LE);
     }
 
-    /** Read fixed-length ANSI string (null-padded), stripping null terminator. */
     private String readFixedA(ByteBuffer buf, int pos, int maxChars, int fileLen) {
         if (pos < 0 || pos + maxChars > fileLen) {
             return null;
@@ -598,19 +831,9 @@ public class WinShortcutParser implements Parser {
         while (len < maxChars && data[pos + len] != 0) {
             len++;
         }
-        if (len == 0) {
-            return null;
-        }
-        Charset cp1252;
-        try {
-            cp1252 = Charset.forName("windows-1252");
-        } catch (Exception e) {
-            cp1252 = StandardCharsets.ISO_8859_1;
-        }
-        return new String(data, pos, len, cp1252);
+        return len == 0 ? null : new String(data, pos, len, cp1252());
     }
 
-    /** Read fixed-length UTF-16LE string (null-padded), stripping null terminator. */
     private String readFixedW(ByteBuffer buf, int pos, int maxChars, int fileLen) {
         if (pos < 0 || pos + maxChars * 2 > fileLen) {
             return null;
@@ -620,81 +843,101 @@ public class WinShortcutParser implements Parser {
         while (len < maxChars && (data[pos + len * 2] != 0 || data[pos + len * 2 + 1] != 0)) {
             len++;
         }
-        if (len == 0) {
-            return null;
-        }
-        return new String(data, pos, len * 2, StandardCharsets.UTF_16LE);
+        return len == 0 ? null : new String(data, pos, len * 2, StandardCharsets.UTF_16LE);
     }
 
-    /** Format a 16-byte GUID as {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}. */
     private String formatGuid(ByteBuffer buf, int pos) {
-        // GUID on disk: first 3 fields are little-endian, last 2 are big-endian bytes
         int   data1 = buf.getInt(pos);
         short data2 = buf.getShort(pos + 4);
         short data3 = buf.getShort(pos + 6);
         byte[] b = buf.array();
-        return String.format(Locale.ROOT,"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+        return String.format(Locale.ROOT, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
                 data1, Short.toUnsignedInt(data2), Short.toUnsignedInt(data3),
                 b[pos + 8] & 0xFF, b[pos + 9] & 0xFF,
                 b[pos + 10] & 0xFF, b[pos + 11] & 0xFF, b[pos + 12] & 0xFF,
                 b[pos + 13] & 0xFF, b[pos + 14] & 0xFF, b[pos + 15] & 0xFF);
     }
 
-    /**
-     * Extract MAC address from UUID v1 node field.
-     * In a GUID on disk the node (last 6 bytes) is stored big-endian (bytes [10..15]).
-     */
     private String extractMac(ByteBuffer buf, int pos) {
         byte[] b = buf.array();
-        // Check multicast bit — if set the MAC is synthetic (not real hardware)
         if ((b[pos + 10] & 0x01) != 0) {
-            return null;
+            return null; // multicast/synthetic MAC
         }
-        return String.format(Locale.ROOT,"%02X:%02X:%02X:%02X:%02X:%02X",
+        return String.format(Locale.ROOT, "%02X:%02X:%02X:%02X:%02X:%02X",
                 b[pos + 10] & 0xFF, b[pos + 11] & 0xFF, b[pos + 12] & 0xFF,
                 b[pos + 13] & 0xFF, b[pos + 14] & 0xFF, b[pos + 15] & 0xFF);
     }
 
-    /**
-     * Extract the creation timestamp from a UUID v1 node.
-     * UUID v1 timestamp = 100-ns ticks since 1582-10-15; stored split across
-     * time-low (bytes 0-3 LE), time-mid (bytes 4-5 LE), time-hi-and-version (bytes 6-7 LE).
-     * Strip the 4-bit version nibble from time-hi before reassembling.
-     */
     private String extractUuidV1Timestamp(ByteBuffer buf, int pos) {
-        int  timeLow  = buf.getInt(pos);
-        int  timeMid  = Short.toUnsignedInt(buf.getShort(pos + 4));
-        int  timeHiV  = Short.toUnsignedInt(buf.getShort(pos + 6));
-        int  version  = (timeHiV >> 12) & 0xF;
-        if (version != 1) {
-            return null;
+        int  timeLow = buf.getInt(pos);
+        int  timeMid = Short.toUnsignedInt(buf.getShort(pos + 4));
+        int  timeHiV = Short.toUnsignedInt(buf.getShort(pos + 6));
+        if (((timeHiV >> 12) & 0xF) != 1) {
+            return null; // not UUID v1
         }
-        int  timeHi   = timeHiV & 0x0FFF;
-        long ticks100ns = ((long) timeHi << 48) | ((long) timeMid << 32)
+        int  timeHi  = timeHiV & 0x0FFF;
+        long ticks   = ((long) timeHi << 48) | ((long) timeMid << 32)
                 | Integer.toUnsignedLong(timeLow);
-        // UUID epoch is 1582-10-15; convert to Unix epoch
-        long unixTicks100ns = ticks100ns - 122192928000000000L;
-        long unixNanos = unixTicks100ns * 100L;
-        long epochSecs  = unixNanos / 1_000_000_000L;
-        int  nanoAdjust = (int) (unixNanos % 1_000_000_000L);
+        long unixTicks = ticks - 122192928000000000L;
+        long epochSecs = unixTicks / 10_000_000L;
+        int  nanoAdj   = (int) ((unixTicks % 10_000_000L) * 100L);
         try {
-            return Instant.ofEpochSecond(epochSecs, nanoAdjust).toString();
+            return Instant.ofEpochSecond(epochSecs, nanoAdj).toString();
         } catch (Exception e) {
             return null;
         }
     }
 
-    /** Convert Windows FILETIME (100-ns intervals since 1601-01-01) to ISO-8601. */
+    /** Convert Windows FILETIME to ISO-8601. */
     private String filetimeToIso(long filetime) {
-        // Convert to 100-ns ticks since Unix epoch
-        long ticks = filetime - FILETIME_EPOCH_DIFF_NS100;
-        long epochSecs   = ticks / 10_000_000L;
-        int  nanosAdjust = (int) ((ticks % 10_000_000L) * 100L);
+        long ticks    = filetime - FILETIME_EPOCH_DIFF_NS100;
+        long secs     = ticks / 10_000_000L;
+        int  nanoAdj  = (int) ((ticks % 10_000_000L) * 100L);
         try {
-            return Instant.ofEpochSecond(epochSecs, nanosAdjust).toString();
+            return Instant.ofEpochSecond(secs, nanoAdj).toString();
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Convert a 4-byte DOS date+time word (combined) to ISO-8601.
+     * DOS time: bits 31-16 = date (year-1980 in 15-9, month 8-5, day 4-0)
+     *           bits 15-0  = time (hours 15-11, minutes 10-5, seconds/2 4-0)
+     */
+    private String dosTimeToIso(int dosDateTime) {
+        int dosTime = dosDateTime & 0xFFFF;
+        int dosDate = (dosDateTime >> 16) & 0xFFFF;
+        return dosDateTimeToIso(dosDate, dosTime);
+    }
+
+    private String dosDateTimeToIso(int dosDate, int dosTime) {
+        if (dosDate == 0) {
+            return null;
+        }
+        int year    = ((dosDate >> 9) & 0x7F) + 1980;
+        int month   = (dosDate >> 5) & 0x0F;
+        int day     = dosDate & 0x1F;
+        int hours   = (dosTime >> 11) & 0x1F;
+        int minutes = (dosTime >> 5) & 0x3F;
+        int seconds = (dosTime & 0x1F) * 2;
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+            return null;
+        }
+        try {
+            return LocalDateTime.of(year, month, day, hours, minutes, seconds)
+                    .toInstant(ZoneOffset.UTC).toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Sanitize a name for use as a field-name suffix (strip or replace special chars). */
+    private String safeLabel(String name) {
+        if (name == null || name.isEmpty()) {
+            return "?";
+        }
+        return name.replaceAll("[^A-Za-z0-9._\\-]", "_");
     }
 
     private String decodeHotKey(short hotKey) {
@@ -713,14 +956,12 @@ public class WinShortcutParser implements Parser {
         if ((high & 0x01) != 0) {
             sb.append("SHIFT+");
         }
-        if (low >= 0x30 && low <= 0x39) {
-            sb.append((char) low);
-        } else if (low >= 0x41 && low <= 0x5A) {
+        if (low >= 0x30 && low <= 0x39 || low >= 0x41 && low <= 0x5A) {
             sb.append((char) low);
         } else if (low >= 0x70 && low <= 0x87) {
             sb.append('F').append(low - 0x6F);
         } else {
-            sb.append(String.format(Locale.ROOT,"0x%02X", low));
+            sb.append(String.format(Locale.ROOT, "0x%02X", low));
         }
         return sb.toString();
     }
@@ -757,6 +998,38 @@ public class WinShortcutParser implements Parser {
         if ((attrs & 0x4000) != 0) {
             flags.add("Encrypted");
         }
-        return flags.isEmpty() ? String.format(Locale.ROOT,"0x%08X", attrs) : String.join("|", flags);
+        return flags.isEmpty() ? String.format(Locale.ROOT, "0x%08X", attrs)
+                : String.join("|", flags);
+    }
+
+    private List<String> decodeLinkFlags(int flags) {
+        List<String> names = new ArrayList<>();
+        if ((flags & FLAG_HAS_TARGET_IDLIST) != 0) {
+            names.add("HasTargetIDList");
+        }
+        if ((flags & FLAG_HAS_LINK_INFO) != 0) {
+            names.add("HasLinkInfo");
+        }
+        if ((flags & 0x00000200) != 0) {
+            names.add("HasExpString");
+        }
+        if ((flags & 0x00002000) != 0) {
+            names.add("RunAsUser");
+        }
+        if ((flags & 0x00040000) != 0) {
+            names.add("ForceNoLinkTrack");
+        }
+        if ((flags & FLAG_IS_UNICODE) != 0) {
+            names.add("IsUnicode");
+        }
+        return names;
+    }
+
+    private Charset cp1252() {
+        try {
+            return Charset.forName("windows-1252");
+        } catch (Exception e) {
+            return StandardCharsets.ISO_8859_1;
+        }
     }
 }
