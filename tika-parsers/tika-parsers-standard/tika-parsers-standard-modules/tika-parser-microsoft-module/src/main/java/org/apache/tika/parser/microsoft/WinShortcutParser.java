@@ -54,13 +54,37 @@ import org.apache.tika.sax.XHTMLContentHandler;
 /**
  * Parser for Windows Shell Link (LNK) files — MS-SHLLINK specification.
  *
- * Covers ShellLinkHeader, IDList (with 0xBEEF0004 extension blocks and root-GUID
- * decoding), LinkInfo, StringData, all ExtraData block types, and terminal-block
- * appended data (MIME detect + parse + SHA-256).  Property names are resolved
- * through a built-in dictionary for common Windows property GUIDs.
+ * <p>Covers ShellLinkHeader (all fields), IDList traversal with per-item
+ * 0xBEEF0004 FileEntry extension blocks (creation/access timestamps, Unicode LFN),
+ * root-GUID decoding (My Computer, Control Panel, etc.), LinkInfo (local and
+ * network paths, volume identifiers), StringData (all five fields including
+ * Arguments padding/obfuscation detection), and the full ExtraData set:
+ * TrackerDataBlock (MachineID, MAC address, UUID-v1 timestamp), PropertyStore
+ * (MS-OLEPS with typed-value decoder and human-readable property names),
+ * EnvironmentVariable/Icon, ConsoleDataBlock (full field set), SpecialFolder,
+ * Darwin/AppID, Shim, KnownFolder, VistaIDList.  Terminal-block appended data is
+ * SHA-256 hashed and submitted to Tika's embedded-document pipeline for MIME
+ * detection and recursive extraction.</p>
  *
- * Reference: EricZimmerman/Lnk, Matmaus/LnkParse3, wmetcalf/LnkParse3.
- * All string fields emitted without length caps — truncation hides IOCs.
+ * <p>All string fields are emitted without length caps — truncation hides IOCs.</p>
+ *
+ * <p>The MS-SHLLINK field layout, IDList shell-item dispatch table, 0xBEEF0004
+ * extension block structure (including version-gated LFN offsets), ExtraData block
+ * formats, and PropertyStore typed-value decoder were derived from and validated
+ * against the following open-source reference implementations, each available
+ * under the MIT License:</p>
+ * <ul>
+ *   <li>EricZimmerman/Lnk — C# implementation
+ *       (https://github.com/EricZimmerman/Lnk)</li>
+ *   <li>Matmaus/LnkParse3 — Python implementation
+ *       (https://github.com/Matmaus/LnkParse3)</li>
+ *   <li>wmetcalf/LnkParse3 — forensic fork adding 0xBEEF0004 extension-block
+ *       parsing and terminal-block appended-data extraction
+ *       (https://github.com/wmetcalf/LnkParse3)</li>
+ * </ul>
+ * <p>This parser is original Java code written for Apache Tika; no source from
+ * those projects was copied.  The implementations above were used as field-layout
+ * and offset references against the Microsoft Open Specification MS-SHLLINK.</p>
  */
 @TikaComponent
 public class WinShortcutParser implements Parser {
@@ -572,6 +596,9 @@ public class WinShortcutParser implements Parser {
         return null;
     }
 
+    // 0xBEEF0004 FileEntry extension block layout and version-gated LFN offset
+    // computation ported from wmetcalf/LnkParse3 (MIT):
+    // extension/file_entry.py — long_name() version guard logic.
     private String parseBeef0004Extensions(ByteBuffer buf, int extBase, int extEnd,
                                            String primaryName, Map<String, String> fields) {
         int pos = extBase;
@@ -1038,7 +1065,10 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    // §2.5.9 — PropertyStoreDataBlock (full MS-OLEPS)
+    // §2.5.9 — PropertyStoreDataBlock (full MS-OLEPS).
+    // SerializedPropertyStorage chain structure, string-named vs integer-named dispatch,
+    // and TypedPropertyValue decoding cross-validated against Matmaus/LnkParse3 (MIT)
+    // extra/metadata.py and EricZimmerman/Lnk (MIT) ExtensionBlocks/PropertyStore.cs.
     private void parsePropertyStoreBlock(ByteBuffer buf, int pos, int blockSize,
                                          int fileLen, Map<String, String> fields,
                                          List<String> warnings) {
@@ -1261,6 +1291,9 @@ public class WinShortcutParser implements Parser {
     }
 
     // ── Appended data ─────────────────────────────────────────────────────────
+    // SHA-256 hashing approach follows Matmaus/LnkParse3 upstream (MIT) extra/terminal.py.
+    // Raw-byte dump / extra_garbage approach from wmetcalf/LnkParse3 (MIT) —
+    // we use the hash only and submit bytes to Tika's embedded pipeline instead.
 
     private void parseAppendedData(ByteBuffer buf, int pos, int fileLen,
                                    Map<String, String> fields, List<String> warnings,
