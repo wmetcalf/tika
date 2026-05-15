@@ -1312,10 +1312,20 @@ public class WinShortcutParser implements Parser {
         String workDir  = fields.get("WorkingDir");
         String relPath  = fields.get("RelativePath");
 
-        // lnk_command — LinkInfo-first: LocalBasePath > EnvVar > RelativePath
+        // lnk_command — LinkInfo-first: LocalBasePath > EnvVar > IDListPath > RelativePath
+        // IDListPath is preferred over RelativePath since it gives an absolute path.
         String linkInfoTarget = fields.get("LocalBasePath");
         if (linkInfoTarget == null) {
             linkInfoTarget = fields.get("EnvironmentVariableTarget");
+        }
+        if (linkInfoTarget == null) {
+            // Fall back to IDList-derived absolute path rather than a relative path
+            String idp = fields.get("IDListPath");
+            if (idp != null) {
+                int bs = idp.indexOf('\\');
+                linkInfoTarget = (bs > 0 && !idp.substring(0, bs).contains(":"))
+                        ? idp.substring(bs + 1) : idp;
+            }
         }
         if (linkInfoTarget == null) {
             linkInfoTarget = relPath;
@@ -1338,6 +1348,12 @@ public class WinShortcutParser implements Parser {
             idListTarget = fields.get("IDListPath");
         }
         if (idListTarget != null) {
+            // Strip virtual root prefix (MyComputer\, ControlPanel\, etc.) so the
+            // result is a plain filesystem path matching the Windows resolver output.
+            int backslash = idListTarget.indexOf('\\');
+            if (backslash > 0 && !idListTarget.substring(0, backslash).contains(":")) {
+                idListTarget = idListTarget.substring(backslash + 1);
+            }
             StringBuilder alt = new StringBuilder(idListTarget);
             if (args != null && !args.isEmpty()) {
                 alt.append(' ').append(args);
