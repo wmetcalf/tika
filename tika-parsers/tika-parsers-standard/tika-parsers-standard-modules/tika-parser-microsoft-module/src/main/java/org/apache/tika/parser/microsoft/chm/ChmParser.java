@@ -17,10 +17,13 @@
 package org.apache.tika.parser.microsoft.chm;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +52,16 @@ public class ChmParser implements Parser {
      * Serial version UID
      */
     private static final long serialVersionUID = 5938777307516469802L;
+
+    // Matches <PARAM name="..." value="..."> in any case/attribute order.
+    // Group 1 = name attribute value, Group 2 = value attribute value.
+    private static final Pattern PARAM_PATTERN = Pattern.compile(
+            "<[Pp][Aa][Rr][Aa][Mm][^>]*\\bname\\s*=\\s*[\"']([^\"']+)[\"'][^>]*\\bvalue\\s*=\\s*[\"']([^\"']*)[\"'][^>]*/?>",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    // Also handle reversed attribute order (value before name)
+    private static final Pattern PARAM_PATTERN_REV = Pattern.compile(
+            "<[Pp][Aa][Rr][Aa][Mm][^>]*\\bvalue\\s*=\\s*[\"']([^\"']*)[\"'][^>]*\\bname\\s*=\\s*[\"']([^\"']+)[\"'][^>]*/?>",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.unmodifiableSet(
             new HashSet<>(Arrays.asList(MediaType.application("vnd.ms-htmlhelp"),
@@ -97,11 +110,42 @@ public class ChmParser implements Parser {
 
 
     private void parsePage(byte[] byteObject, Parser htmlParser, ContentHandler xhtml,
-                           ParseContext context) throws TikaException, IOException, SAXException { // throws IOException
+                           ParseContext context) throws TikaException, IOException, SAXException {
         Metadata metadata = Metadata.newInstance(context);
-        ContentHandler handler = new EmbeddedContentHandler(new BodyContentHandler(xhtml));// -1
+        ContentHandler handler = new EmbeddedContentHandler(new BodyContentHandler(xhtml));
         try (TikaInputStream tis = TikaInputStream.get(byteObject)) {
             htmlParser.parse(tis, handler, metadata, context);
+        }
+        emitParamValues(byteObject, xhtml);
+    }
+
+    /**
+     * JSoupParser's BodyContentHandler only emits visible text — OBJECT/PARAM attribute
+     * values are stripped.  This method scans the raw HTML bytes for &lt;PARAM&gt; elements
+     * and emits their value attribute as plain text so that ActiveX shortcut commands
+     * (e.g. PowerShell stagers in CHM droppers) are surfaced in the extraction output.
+     */
+    private void emitParamValues(byte[] html, ContentHandler xhtml) throws SAXException {
+        if (html == null || html.length == 0) {
+            return;
+        }
+        String text = new String(html, StandardCharsets.UTF_8);
+        emitParamMatches(PARAM_PATTERN, text, 1, 2, xhtml);
+        emitParamMatches(PARAM_PATTERN_REV, text, 2, 1, xhtml);
+    }
+
+    private void emitParamMatches(Pattern pattern, String text,
+                                  int nameGroup, int valueGroup,
+                                  ContentHandler xhtml) throws SAXException {
+        Matcher m = pattern.matcher(text);
+        while (m.find()) {
+            String name = m.group(nameGroup).trim();
+            String value = m.group(valueGroup).trim();
+            if (!value.isEmpty()) {
+                String line = name + ": " + value;
+                xhtml.characters(line.toCharArray(), 0, line.length());
+                xhtml.characters(new char[]{'\n'}, 0, 1);
+            }
         }
     }
 
