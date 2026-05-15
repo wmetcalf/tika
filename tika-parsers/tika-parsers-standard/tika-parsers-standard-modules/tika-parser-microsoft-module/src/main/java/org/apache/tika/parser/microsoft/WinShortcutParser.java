@@ -1375,6 +1375,114 @@ public class WinShortcutParser implements Parser {
         }
     }
 
+    // ── Exploit indicator detection ───────────────────────────────────────────
+    //
+    // Scans the raw bytes of the appended payload for known exploit signatures
+    // and sets ExploitCVE / ExploitClass metadata fields.  Detection is done on
+    // raw bytes (lowercased ASCII scan) rather than parsed content so it catches
+    // payloads that are not recognized as HTML/JS by MIME detection.
+    //
+    // CVE-2026-21513 — MSHTML htmlfile ActiveX security feature bypass (CVSS 8.8,
+    //   Feb 2026 Patch Tuesday, exploited in the wild by APT28 as a zero-day).
+    //   LNK with appended HTML → htmlfile ActiveXObject → ieframe.dll navigation
+    //   → ShellExecuteExW bypassing MotW + IE ESC.
+    //   Signature: ActiveXObject("htmlfile") + Script.open call pattern.
+    //   Ref: https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-21513
+    //        Akamai: https://www.akamai.com/blog/security-research/inside-the-fix-cve-2026-21513-mshtml-exploit-analysis
+
+    private static final List<ExploitSignature> EXPLOIT_SIGNATURES;
+    static {
+        EXPLOIT_SIGNATURES = new ArrayList<>();
+
+        // CVE-2026-21513: MSHTML htmlfile ActiveX bypass (APT28 zero-day)
+        // Both indicators must be present in the payload.
+        EXPLOIT_SIGNATURES.add(new ExploitSignature(
+                "CVE-2026-21513",
+                "MSHTML htmlfile ActiveX security feature bypass — APT28 zero-day (Feb 2026)",
+                new String[]{"activexobject", "htmlfile", "script.open"}
+        ));
+
+        // CVE-2024-21412: Windows SmartScreen / Internet Shortcut bypass
+        // LNK pointing to a UNC path with .url or .lnk extension to bypass MotW.
+        // Signature: WebDAV/UNC path in arguments with search-ms: or .url reference.
+        EXPLOIT_SIGNATURES.add(new ExploitSignature(
+                "CVE-2024-21412",
+                "Windows SmartScreen bypass via crafted Internet Shortcut file",
+                new String[]{"search-ms:", ".url"}
+        ));
+
+        // Generic: ActiveX in LNK appended HTML (not specific CVE but high-risk pattern)
+        EXPLOIT_SIGNATURES.add(new ExploitSignature(
+                null,
+                "ActiveXObject in LNK appended HTML payload — MSHTML/IE execution technique",
+                new String[]{"activexobject"}
+        ));
+
+        // Generic: execScript (IE-only — strong signal of MSHTML-targeted payload)
+        EXPLOIT_SIGNATURES.add(new ExploitSignature(
+                null,
+                "execScript() in LNK appended payload — IE-only function, MSHTML exploit indicator",
+                new String[]{"execscript("}
+        ));
+    }
+
+    private static final class ExploitSignature {
+        final String cve;
+        final String description;
+        final String[] allOf;
+
+        ExploitSignature(String cve, String description, String[] allOf) {
+            this.cve = cve;
+            this.description = description;
+            this.allOf = allOf;
+        }
+    }
+
+    private void detectExploitIndicators(byte[] payload, Map<String, String> fields,
+                                         List<String> warnings) {
+        if (payload == null || payload.length == 0) {
+            return;
+        }
+        // Build a single lowercased string of the first 64KB for pattern matching.
+        // Limit avoids allocating huge strings for multi-MB padding blobs.
+        int scanLen = Math.min(payload.length, 65536);
+        String lower = new String(payload, 0, scanLen,
+                StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
+
+        List<String> matchedCves = new ArrayList<>();
+        List<String> matchedDescs = new ArrayList<>();
+
+        for (ExploitSignature sig : EXPLOIT_SIGNATURES) {
+            boolean allMatch = true;
+            for (String term : sig.allOf) {
+                if (!lower.contains(term)) {
+                    allMatch = false;
+                    break;
+                }
+            }
+            if (allMatch) {
+                if (sig.cve != null && !matchedCves.contains(sig.cve)) {
+                    matchedCves.add(sig.cve);
+                }
+                matchedDescs.add(sig.description);
+            }
+        }
+
+        if (!matchedCves.isEmpty()) {
+            fields.put("ExploitCVE", String.join(", ", matchedCves));
+        }
+        if (!matchedDescs.isEmpty()) {
+            // Use the most specific description (first match is most specific)
+            fields.put("ExploitClass", matchedDescs.get(0));
+            if (matchedDescs.size() > 1) {
+                // Surface additional indicators as warnings
+                for (String desc : matchedDescs.subList(1, matchedDescs.size())) {
+                    warnings.add("ExploitIndicator: " + desc);
+                }
+            }
+        }
+    }
+
     // ── Appended data ─────────────────────────────────────────────────────────
     // SHA-256 hashing approach follows Matmaus/LnkParse3 upstream (MIT) extra/terminal.py.
     // Raw-byte dump / extra_garbage approach from wmetcalf/LnkParse3 (MIT) —
@@ -1411,6 +1519,12 @@ public class WinShortcutParser implements Parser {
 
         byte[] appendedBytes = new byte[remaining];
         System.arraycopy(buf.array(), pos, appendedBytes, 0, remaining);
+
+        // Scan the raw payload for known exploit signatures before MIME detection.
+        // This runs on the bytes directly so it catches obfuscated or non-standard
+        // MIME types that the downstream parser might not flag.
+        detectExploitIndicators(appendedBytes, fields, warnings);
+
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
         Metadata embeddedMeta = new Metadata();
