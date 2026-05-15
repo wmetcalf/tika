@@ -4616,6 +4616,16 @@
   <mime-type type="application/x-ms-application">
     <glob pattern="*.application"/>
   </mime-type>
+  <mime-type type="application/x-ms-shortcut">
+    <_comment>Windows Shell Link (LNK) — MS-SHLLINK</_comment>
+    <tika:link>https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-shllink</tika:link>
+    <alias type="application/x-windows-shortcut"/>
+    <glob pattern="*.lnk"/>
+    <magic priority="60">
+      <!-- 4C 00 00 00 = LNK header signature; GUID follows -->
+      <match value="\x4c\x00\x00\x00\x01\x14\x02\x00" type="string" offset="0"/>
+    </magic>
+  </mime-type>
   <mime-type type="application/x-ms-compress-szdd">
     <_comment>MS-DOS compression szzd</_comment>
     <tika:link>https://www.nationalarchives.gov.uk/PRONOM/fmt/462</tika:link>
