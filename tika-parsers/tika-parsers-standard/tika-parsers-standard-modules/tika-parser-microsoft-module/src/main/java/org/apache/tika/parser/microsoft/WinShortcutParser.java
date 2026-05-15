@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -295,7 +296,7 @@ public class WinShortcutParser implements Parser {
         if (driveType >= 0 && driveType < DRIVE_TYPES.length) {
             fields.put("DriveType", DRIVE_TYPES[driveType]);
         }
-        fields.put("DriveSerialNumber", String.format("%08X", driveSerial));
+        fields.put("DriveSerialNumber", String.format(Locale.ROOT,"%08X", driveSerial));
 
         // Unicode label offset present when labelOff == 0x14
         String label = null;
@@ -430,7 +431,7 @@ public class WinShortcutParser implements Parser {
                         break;
                 }
             } catch (Exception e) {
-                warnings.add("ExtraData block " + String.format("0x%08X", sig) + " error: " + e.getMessage());
+                warnings.add("ExtraData block " + String.format(Locale.ROOT,"0x%08X", sig) + " error: " + e.getMessage());
             }
             pos += blockSize;
         }
@@ -632,7 +633,7 @@ public class WinShortcutParser implements Parser {
         short data2 = buf.getShort(pos + 4);
         short data3 = buf.getShort(pos + 6);
         byte[] b = buf.array();
-        return String.format("{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+        return String.format(Locale.ROOT,"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
                 data1, Short.toUnsignedInt(data2), Short.toUnsignedInt(data3),
                 b[pos + 8] & 0xFF, b[pos + 9] & 0xFF,
                 b[pos + 10] & 0xFF, b[pos + 11] & 0xFF, b[pos + 12] & 0xFF,
@@ -649,7 +650,7 @@ public class WinShortcutParser implements Parser {
         if ((b[pos + 10] & 0x01) != 0) {
             return null;
         }
-        return String.format("%02X:%02X:%02X:%02X:%02X:%02X",
+        return String.format(Locale.ROOT,"%02X:%02X:%02X:%02X:%02X:%02X",
                 b[pos + 10] & 0xFF, b[pos + 11] & 0xFF, b[pos + 12] & 0xFF,
                 b[pos + 13] & 0xFF, b[pos + 14] & 0xFF, b[pos + 15] & 0xFF);
     }
@@ -719,7 +720,7 @@ public class WinShortcutParser implements Parser {
         } else if (low >= 0x70 && low <= 0x87) {
             sb.append('F').append(low - 0x6F);
         } else {
-            sb.append(String.format("0x%02X", low));
+            sb.append(String.format(Locale.ROOT,"0x%02X", low));
         }
         return sb.toString();
     }
@@ -756,6 +757,6 @@ public class WinShortcutParser implements Parser {
         if ((attrs & 0x4000) != 0) {
             flags.add("Encrypted");
         }
-        return flags.isEmpty() ? String.format("0x%08X", attrs) : String.join("|", flags);
+        return flags.isEmpty() ? String.format(Locale.ROOT,"0x%08X", attrs) : String.join("|", flags);
     }
 }
