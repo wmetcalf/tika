@@ -4616,6 +4616,23 @@
   <mime-type type="application/x-ms-application">
     <glob pattern="*.application"/>
   </mime-type>
+  <mime-type type="application/x-ms-wim">
+    <_comment>Windows Imaging Format (WIM) — MS-WIM container</_comment>
+    <glob pattern="*.wim"/>
+    <magic priority="60">
+      <match value="MSWIM\x00\x00\x00" type="string" offset="0"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/vnd.ms-windows.provisioningpackage">
+    <_comment>Windows Provisioning Package — WIM container with WCD XML policy files</_comment>
+    <sub-class-of type="application/x-ms-wim"/>
+    <glob pattern="*.ppkg"/>
+    <magic priority="70">
+      <!-- MSWIM magic; PPKG is distinguished from generic WIM by PackageConfig XML inside -->
+      <match value="MSWIM\x00\x00\x00" type="string" offset="0"/>
+    </magic>
+    <tika:link>https://docs.microsoft.com/en-us/windows/client-management/provisioning-packages</tika:link>
+  </mime-type>
   <mime-type type="application/x-ms-shortcut">
     <_comment>Windows Shell Link (LNK) — MS-SHLLINK</_comment>
     <tika:link>https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-shllink</tika:link>
