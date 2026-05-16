@@ -137,7 +137,9 @@ public class ICalParser implements Parser {
 
         // Component stack: each entry = {type → props}.
         // VCALENDAR is the outermost; VEVENT/VTODO/etc. are nested inside it.
-        Deque<String[]> typeStack = new ArrayDeque<>();        // [type]
+        // Depth limit prevents heap exhaustion from crafted input with many nested BEGINs.
+        final int maxStackDepth = 64;
+        Deque<String[]> typeStack = new ArrayDeque<>();
         Deque<Map<String, String>> propsStack = new ArrayDeque<>();
 
         EmbeddedDocumentExtractor extractor =
@@ -153,6 +155,9 @@ public class ICalParser implements Parser {
             String nameLower = name.toLowerCase(Locale.ROOT);
 
             if ("begin".equals(nameLower)) {
+                if (typeStack.size() >= maxStackDepth) {
+                    continue; // drop excessively nested components
+                }
                 typeStack.push(new String[]{value.toUpperCase(Locale.ROOT)});
                 propsStack.push(new LinkedHashMap<>());
                 continue;
@@ -191,10 +196,20 @@ public class ICalParser implements Parser {
                     String storeKey = nameLower + (params != null && !params.isEmpty()
                             ? "|" + params : "");
                     compProps.put(storeKey, value);
-                    // Multi-valued properties accumulate; others overwrite
+                    // Multi-valued properties accumulate (capped at 1000 entries each);
+                    // single-valued properties use first-wins semantics.
                     if ("attendee".equals(nameLower) || "exdate".equals(nameLower)
                             || "rdate".equals(nameLower)) {
-                        compProps.merge(nameLower, value, (a, b) -> a + "\n" + b);
+                        compProps.merge(nameLower, value, (a, b) -> {
+                            // Limit accumulation to prevent unbounded string growth
+                            int count = 1;
+                            for (int ci = 0; ci < a.length(); ci++) {
+                                if (a.charAt(ci) == '\n') {
+                                    count++;
+                                }
+                            }
+                            return count < 1000 ? a + "\n" + b : a;
+                        });
                     } else {
                         // Single-valued: put only if not already present (first wins)
                         compProps.putIfAbsent(nameLower, value);
@@ -318,11 +333,23 @@ public class ICalParser implements Parser {
                                 EmbeddedDocumentExtractor extractor,
                                 Set<String> allUrls, StringBuilder exploitDesc)
             throws IOException, SAXException, TikaException {
-        // Look for attach properties with ENCODING=BASE64
+        // Look for attach properties — process only param-suffixed keys to avoid
+        // processing the same attachment twice (bare key + param-suffixed key both exist).
+        boolean bareAttachProcessed = false;
         for (Map.Entry<String, String> e : props.entrySet()) {
             String key = e.getKey();
             if (!key.startsWith("attach")) {
                 continue;
+            }
+            boolean hasParams = key.contains("|");
+            // Process the bare "attach" key only if no param-suffixed key exists
+            if (!hasParams) {
+                if (bareAttachProcessed || props.containsKey(key + "|")
+                        || props.keySet().stream().anyMatch(
+                                k -> k.startsWith("attach|"))) {
+                    continue; // param-suffixed version will handle it
+                }
+                bareAttachProcessed = true;
             }
             String value = e.getValue();
             boolean isB64 = key.contains("encoding=base64")

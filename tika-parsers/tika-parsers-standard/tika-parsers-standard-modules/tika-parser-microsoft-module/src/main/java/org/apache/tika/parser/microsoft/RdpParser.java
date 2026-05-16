@@ -208,6 +208,13 @@ public class RdpParser implements Parser {
     // ── Parsing ───────────────────────────────────────────────────────────────
 
     private static String decode(byte[] raw) {
+        // UTF-32LE BOM (FF FE 00 00) — must be checked BEFORE UTF-16LE (shares FF FE prefix)
+        if (raw.length >= 4
+                && (raw[0] & 0xff) == 0xff && (raw[1] & 0xff) == 0xfe
+                && raw[2] == 0x00 && raw[3] == 0x00) {
+            return new String(raw, 4, raw.length - 4,
+                    Charset.forName("UTF-32LE"));
+        }
         // UTF-16LE BOM (FF FE)
         if (raw.length >= 2 && (raw[0] & 0xff) == 0xff && (raw[1] & 0xff) == 0xfe) {
             return new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16LE);
@@ -215,13 +222,6 @@ public class RdpParser implements Parser {
         // UTF-16BE BOM (FE FF)
         if (raw.length >= 2 && (raw[0] & 0xff) == 0xfe && (raw[1] & 0xff) == 0xff) {
             return new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16BE);
-        }
-        // UTF-32LE BOM (FF FE 00 00)
-        if (raw.length >= 4
-                && (raw[0] & 0xff) == 0xff && (raw[1] & 0xff) == 0xfe
-                && raw[2] == 0x00 && raw[3] == 0x00) {
-            return new String(raw, 4, raw.length - 4,
-                    Charset.forName("UTF-32LE"));
         }
         // UTF-8 BOM (EF BB BF)
         if (raw.length >= 3 && (raw[0] & 0xff) == 0xef

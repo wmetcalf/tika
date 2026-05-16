@@ -103,6 +103,7 @@ public class MscParser implements Parser {
     private static final Map<String, String> CLSID_NAMES;
     static {
         CLSID_NAMES = new HashMap<>();
+        // All keys normalized to uppercase for case-insensitive lookup.
         CLSID_NAMES.put("{C96401CC-0E17-11D3-885B-00C04F72C717}", "MMC Console Root");
         CLSID_NAMES.put("{C96401CD-0E17-11D3-885B-00C04F72C717}", "MMC TaskPad");
         CLSID_NAMES.put("{C96401CE-0E17-11D3-885B-00C04F72C717}", "MMC ListView");
@@ -114,21 +115,15 @@ public class MscParser implements Parser {
         CLSID_NAMES.put("{58221C65-EA27-11CF-ADCF-00AA00A80033}", "Certificate Manager");
         CLSID_NAMES.put("{58221C66-EA27-11CF-ADCF-00AA00A80033}", "Certificate Store");
         CLSID_NAMES.put("{8FC0B734-A0E1-11D1-A7D3-0000F87571E3}", "Device Manager");
-        CLSID_NAMES.put("{d20ea4e1-3957-11d2-a40b-0c5020524153}", "Scheduled Tasks");
+        CLSID_NAMES.put("{D20EA4E1-3957-11D2-A40B-0C5020524153}", "Scheduled Tasks");
         CLSID_NAMES.put("{D20EA4E1-3957-11D2-A40B-0C5020524152}", "Local Users and Groups");
         CLSID_NAMES.put("{E08EAB38-8E2E-11D1-904B-00C04FB6DDBA}", "Shared Folders");
         CLSID_NAMES.put("{80F0AC5E-7801-11D0-B27D-00C04FD8D5B0}", "ADSI Snap-in");
         CLSID_NAMES.put("{A841B6C7-7577-11D0-BB1F-00A024AB2DBB}", "Group Policy Object");
-        CLSID_NAMES.put("{8FC0B734-A0E1-11D1-A7D3-0000F87571E3}", "Device Manager");
         CLSID_NAMES.put("{F5DCA93E-F50D-49C9-BA45-E752340E5492}", "Custom TaskPad");
         CLSID_NAMES.put("{B84F8189-0515-487E-9CAB-C9E818A9E6B1}", "Custom Snap-in");
         CLSID_NAMES.put("{8172431C-597B-43F3-9EC8-50FED33B00E5}", "Custom Extension");
     }
-
-    // Pattern to extract text content of XML elements
-    private static final Pattern TAG_CONTENT =
-            Pattern.compile("<(\\w+)(?:[^>]*)>([\\s\\S]*?)</\\1>",
-                    Pattern.CASE_INSENSITIVE);
 
     // Pattern to extract attribute values from XML tags
     private static final Pattern ATTR_VAL =

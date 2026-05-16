@@ -162,10 +162,10 @@ public class PpkgParser implements Parser {
         List<String> allDataRefs = new ArrayList<>();
         Map<String, String> pkgMeta = new LinkedHashMap<>();
 
-        // Identify metadata resources: flag 0x06 = COMPRESSED|METADATA.
-        // Each image has exactly one metadata resource; it contains the directory tree.
+        // Identify metadata resources: the METADATA flag (0x04) marks directory trees.
+        // Either compressed (0x06) or uncompressed (0x04) metadata resources are valid.
         for (ResHdr rh : lookupTable.values()) {
-            if (rh.flags != 0x06 || rh.size == rh.uncompressed) {
+            if ((rh.flags & 0x04) == 0) {
                 continue;
             }
             byte[] metaRes = decompressResource(raw, rh, chunkSize);
@@ -183,7 +183,7 @@ public class PpkgParser implements Parser {
                 continue;
             }
             long childOff = mbuf.getLong((int) rootOff + 16);
-            if (childOff > 0) {
+            if (childOff > 0 && childOff < metaRes.length) {
                 walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
                         commands, warnings, allDataRefs, pkgMeta, xhtml, context,
                         metadata);
@@ -277,6 +277,10 @@ public class PpkgParser implements Parser {
         if (!compressed) {
             return Arrays.copyOfRange(raw, (int) hdr.offset,
                     (int) (hdr.offset + hdr.size));
+        }
+        // Guard: reject unreasonably large or negative uncompressed sizes.
+        if (hdr.uncompressed <= 0 || hdr.uncompressed > 256 * 1024 * 1024L) {
+            return null;
         }
         // XPRESS chunk decompress
         int uncompLen = (int) hdr.uncompressed;
@@ -452,11 +456,16 @@ public class PpkgParser implements Parser {
                 }
 
                 int matchSrc = outPos - matchOffset;
-                if (matchSrc < 0) {
+                if (matchSrc < 0 || matchSrc >= outLen) {
                     break;
                 }
                 for (int k = 0; k < matchLen && outPos < outLen; k++) {
-                    out[outPos] = out[matchSrc + k];
+                    // matchSrc + k must stay within the output buffer
+                    int srcIdx = matchSrc + k;
+                    if (srcIdx >= outLen) {
+                        break;
+                    }
+                    out[outPos] = out[srcIdx];
                     outPos++;
                 }
             }
@@ -518,6 +527,8 @@ public class PpkgParser implements Parser {
     //   offset 102: filename (UTF-16LE, filename_nbytes bytes, no null in count)
     // Zero-length entry (u64 = 0 at offset 0) terminates a directory listing.
 
+    private static final int WALK_MAX_DEPTH = 64;
+
     private void walkDirectory(byte[] meta, int dirOff, byte[] raw,
                                Map<String, ResHdr> lut, int chunkSize,
                                List<String> commands, List<String> warnings,
@@ -525,7 +536,18 @@ public class PpkgParser implements Parser {
                                XHTMLContentHandler xhtml, ParseContext context,
                                Metadata rootMeta)
             throws IOException, SAXException, TikaException {
-        if (dirOff < 0 || dirOff >= meta.length) {
+        walkDirectory(meta, dirOff, raw, lut, chunkSize, commands, warnings,
+                dataRefs, pkgMeta, xhtml, context, rootMeta, 0);
+    }
+
+    private void walkDirectory(byte[] meta, int dirOff, byte[] raw,
+                               Map<String, ResHdr> lut, int chunkSize,
+                               List<String> commands, List<String> warnings,
+                               List<String> dataRefs, Map<String, String> pkgMeta,
+                               XHTMLContentHandler xhtml, ParseContext context,
+                               Metadata rootMeta, int depth)
+            throws IOException, SAXException, TikaException {
+        if (dirOff < 0 || dirOff >= meta.length || depth > WALK_MAX_DEPTH) {
             return;
         }
         ByteBuffer mbuf = ByteBuffer.wrap(meta).order(ByteOrder.LITTLE_ENDIAN);
@@ -553,7 +575,8 @@ public class PpkgParser implements Parser {
 
             if (isDir && subdirOff > 0 && subdirOff < meta.length) {
                 walkDirectory(meta, (int) subdirOff, raw, lut, chunkSize,
-                        commands, warnings, dataRefs, pkgMeta, xhtml, context, rootMeta);
+                        commands, warnings, dataRefs, pkgMeta, xhtml, context,
+                        rootMeta, depth + 1);
             } else if (!isDir) {
                 ResHdr rh = lut.get(sha1Hex);
                 if (rh != null && (nameLower.endsWith(".xml")
