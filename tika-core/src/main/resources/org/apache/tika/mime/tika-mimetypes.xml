@@ -4633,6 +4633,22 @@
     </magic>
     <tika:link>https://docs.microsoft.com/en-us/windows/client-management/provisioning-packages</tika:link>
   </mime-type>
+  <mime-type type="application/x-rdp">
+    <_comment>Windows Remote Desktop Protocol configuration file</_comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.rdp"/>
+    <magic priority="50">
+      <!-- UTF-8: starts with "full address:s:" -->
+      <match value="full address:s:" type="string" offset="0:256"/>
+    </magic>
+    <magic priority="50">
+      <!-- UTF-16LE BOM + "screen mode id" or "full address" -->
+      <match value="\xff\xfes\x00c\x00r\x00e\x00e\x00n\x00" type="string" offset="0"/>
+    </magic>
+    <magic priority="50">
+      <match value="\xff\xfef\x00u\x00l\x00l\x00 \x00a\x00" type="string" offset="0"/>
+    </magic>
+  </mime-type>
   <mime-type type="application/x-msc">
     <_comment>Microsoft Management Console snap-in file</_comment>
     <glob pattern="*.msc"/>
