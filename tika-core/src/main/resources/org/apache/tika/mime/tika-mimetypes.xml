@@ -4633,6 +4633,13 @@
     </magic>
     <tika:link>https://docs.microsoft.com/en-us/windows/client-management/provisioning-packages</tika:link>
   </mime-type>
+  <mime-type type="application/x-msc">
+    <_comment>Microsoft Management Console snap-in file</_comment>
+    <glob pattern="*.msc"/>
+    <magic priority="60">
+      <match value="MMC_ConsoleFile" type="string" offset="0:256"/>
+    </magic>
+  </mime-type>
   <mime-type type="application/x-ms-shortcut">
     <_comment>Windows Shell Link (LNK) — MS-SHLLINK</_comment>
     <tika:link>https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-shllink</tika:link>
