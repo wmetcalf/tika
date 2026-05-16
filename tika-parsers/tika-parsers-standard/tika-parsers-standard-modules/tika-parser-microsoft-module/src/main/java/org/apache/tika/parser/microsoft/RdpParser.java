@@ -173,6 +173,7 @@ public class RdpParser implements Parser {
         boolean allDrives   = "*".equals(drives);
         boolean hasPcb      = pcb != null;
         boolean hasWebAuthn = "1".equals(fieldValue(fields, "redirectwebauthn"));
+        boolean selfSigned  = "true".equals(metadata.get("rdp:pcb_cert_self_signed"));
 
         if (noAuthCheck || hasPcb) {
             StringBuilder sb = new StringBuilder();
@@ -182,6 +183,9 @@ public class RdpParser implements Parser {
             }
             if (hasPcb) {
                 sb.append(" pcb: attacker pre-supplied certificate blob");
+                if (selfSigned) {
+                    sb.append(" (self-signed — attacker-controlled server)");
+                }
             }
             if (allDrives) {
                 sb.append(" drivestoredirect=* (all drives redirected)");
@@ -284,14 +288,18 @@ public class RdpParser implements Parser {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             X509Certificate cert = (X509Certificate) cf.generateCertificate(
                     new java.io.ByteArrayInputStream(der));
-            rootMeta.set("rdp:pcb_cert_subject",
-                    cert.getSubjectX500Principal().getName());
-            rootMeta.set("rdp:pcb_cert_issuer",
-                    cert.getIssuerX500Principal().getName());
+            String subject = cert.getSubjectX500Principal().getName();
+            String issuer  = cert.getIssuerX500Principal().getName();
+            rootMeta.set("rdp:pcb_cert_subject", subject);
+            rootMeta.set("rdp:pcb_cert_issuer",  issuer);
             rootMeta.set("rdp:pcb_cert_not_before",
                     cert.getNotBefore().toInstant().toString());
             rootMeta.set("rdp:pcb_cert_not_after",
                     cert.getNotAfter().toInstant().toString());
+            // Self-signed: subject DN == issuer DN means chain depth = 1
+            if (subject.equals(issuer)) {
+                rootMeta.set("rdp:pcb_cert_self_signed", "true");
+            }
             // Subject Alternative Names
             try {
                 java.util.Collection<java.util.List<?>> sans =
@@ -307,8 +315,8 @@ public class RdpParser implements Parser {
             } catch (Exception ignored) {
                 // SAN parsing is best-effort
             }
-            xhtml.element("p", "Certificate subject: "
-                    + cert.getSubjectX500Principal().getName());
+            xhtml.element("p", "Certificate subject: " + subject
+                    + (subject.equals(issuer) ? " [SELF-SIGNED]" : ""));
         } catch (CertificateException e) {
             rootMeta.add("rdp:pcb_warning",
                     "X.509 parse failed (may be PKCS#7): " + e.getMessage());
