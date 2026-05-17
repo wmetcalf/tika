@@ -325,7 +325,7 @@ public class RdpParser implements Parser {
             byte[] digest = md.digest(data);
             StringBuilder sb = new StringBuilder(digest.length * 2);
             for (byte b : digest) {
-                sb.append(String.format("%02x", b & 0xff));
+                sb.append(String.format(Locale.ROOT, "%02x", b & 0xff));
             }
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
