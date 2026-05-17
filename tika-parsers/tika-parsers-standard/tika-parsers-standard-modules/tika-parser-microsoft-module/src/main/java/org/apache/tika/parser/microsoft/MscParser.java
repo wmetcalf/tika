@@ -297,6 +297,31 @@ public class MscParser implements Parser {
     }
 
     // ── Binary blob extraction ────────────────────────────────────────────────
+    //
+    // MSC Binary elements are Windows IMAGELIST streams (HIMAGELIST serialized
+    // format, magic "IL" = 0x49 0x4C).  The stream packs all icons side-by-side
+    // into a single DIB/BMP that starts at a fixed offset of 28 bytes into the
+    // IMAGELIST header.  Tika's DefaultDetector does not know IMAGELIST format and
+    // returns application/octet-stream for the full blob, so RedTusk never pHashes
+    // or thumbnails it.  We extract the embedded BMP directly and submit that.
+    //
+    // IMAGELIST header layout (28 bytes):
+    //   0x00: magic "IL" (2 bytes)
+    //   0x02: version (2 bytes, typically 0x0101)
+    //   0x04: flags (2 bytes)
+    //   0x06: cGrow (2 bytes)
+    //   0x08: cCurr — number of images (2 bytes)
+    //   0x0A: cx — image width (2 bytes)
+    //   0x0C: cy — image height (2 bytes)
+    //   0x0E: clrBk — background colour (4 bytes)
+    //   0x12: flags2 (4 bytes)
+    //   0x16: overlayImages (4 bytes)
+    //   0x1A: (end of fixed header) — BMP/DIB data starts here at offset 28
+
+    private static final int IMAGELIST_HEADER_SIZE = 28;
+    // Windows IMAGELIST magic: 'I' 'L' (0x49 0x4C)
+    private static final byte IMAGELIST_MAGIC_0 = 0x49;
+    private static final byte IMAGELIST_MAGIC_1 = 0x4C;
 
     private void parseBinaryBlobs(String xml, byte[] rawXml, Metadata rootMeta,
                                   XHTMLContentHandler xhtml, ParseContext context,
@@ -315,14 +340,24 @@ public class MscParser implements Parser {
                 idx++;
                 continue;
             }
+
+            // SHA-256 always computed on the raw blob
             String sha256 = sha256Hex(data);
             rootMeta.add("msc:binary_sha256", sha256);
 
+            // Extract embedded BMP/DIB from Windows IMAGELIST streams so that
+            // Tika recognises the content as an image for pHash/thumbnail.
+            byte[] imageData = extractImageFromBlob(data);
+            boolean isImageList = imageData != data;
+            if (isImageList) {
+                rootMeta.add("msc:binary_type", "imagelist");
+            }
+
             Metadata embMeta = new Metadata();
             embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY,
-                    "msc-binary-" + idx);
+                    "msc-binary-" + idx + (isImageList ? ".bmp" : ""));
             String mime = "application/octet-stream";
-            try (TikaInputStream tis = TikaInputStream.get(data)) {
+            try (TikaInputStream tis = TikaInputStream.get(imageData)) {
                 mime = new DefaultDetector()
                         .detect(tis, embMeta, context)
                         .getBaseType().toString();
@@ -332,7 +367,7 @@ public class MscParser implements Parser {
             embMeta.set(Metadata.CONTENT_TYPE, mime);
             rootMeta.add("msc:binary_mime", mime);
 
-            try (TikaInputStream tis = TikaInputStream.get(data)) {
+            try (TikaInputStream tis = TikaInputStream.get(imageData)) {
                 if (extractor.shouldParseEmbedded(embMeta)) {
                     extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
                 }
@@ -341,6 +376,32 @@ public class MscParser implements Parser {
             }
             idx++;
         }
+    }
+
+    // Returns the BMP payload from a Windows IMAGELIST blob, or the original
+    // bytes unchanged if the blob is not in IMAGELIST format.
+    //
+    // The IMAGELIST stream stores a BITMAPFILEHEADER at offset 28 with bfSize
+    // set to 54 (header-only stub) rather than the actual file length.  We fix
+    // bfSize in-place so the BMP is recognized as image/bmp by Tika's detector
+    // and subsequently pHashed / thumbnailed by the extraction pipeline.
+    private static byte[] extractImageFromBlob(byte[] data) {
+        if (data.length > IMAGELIST_HEADER_SIZE
+                && data[0] == IMAGELIST_MAGIC_0
+                && data[1] == IMAGELIST_MAGIC_1) {
+            int bmpLen = data.length - IMAGELIST_HEADER_SIZE;
+            byte[] bmp = new byte[bmpLen];
+            System.arraycopy(data, IMAGELIST_HEADER_SIZE, bmp, 0, bmpLen);
+            // Verify BM magic and patch bfSize (bytes 2-5 LE) to actual length
+            if (bmpLen >= 6 && (bmp[0] & 0xff) == 0x42 && (bmp[1] & 0xff) == 0x4D) {
+                bmp[2] = (byte) (bmpLen & 0xff);
+                bmp[3] = (byte) ((bmpLen >> 8) & 0xff);
+                bmp[4] = (byte) ((bmpLen >> 16) & 0xff);
+                bmp[5] = (byte) ((bmpLen >> 24) & 0xff);
+            }
+            return bmp;
+        }
+        return data;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
