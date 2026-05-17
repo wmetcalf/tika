@@ -283,43 +283,65 @@ public class RdpParser implements Parser {
             return;
         }
 
-        // Try to parse as X.509 DER certificate
+        // Parse the full certificate chain without validation.
+        // generateCertificates() reads all certs from PKCS#7/DER — chain[0] is
+        // the leaf (server cert), subsequent entries are intermediates/roots.
         try {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            X509Certificate cert = (X509Certificate) cf.generateCertificate(
-                    new java.io.ByteArrayInputStream(der));
-            String subject = cert.getSubjectX500Principal().getName();
-            String issuer  = cert.getIssuerX500Principal().getName();
-            rootMeta.set("rdp:pcb_cert_subject", subject);
-            rootMeta.set("rdp:pcb_cert_issuer",  issuer);
-            rootMeta.set("rdp:pcb_cert_not_before",
-                    cert.getNotBefore().toInstant().toString());
-            rootMeta.set("rdp:pcb_cert_not_after",
-                    cert.getNotAfter().toInstant().toString());
-            // Self-signed: subject DN == issuer DN means chain depth = 1
-            if (subject.equals(issuer)) {
-                rootMeta.set("rdp:pcb_cert_self_signed", "true");
-            }
-            // Subject Alternative Names
-            try {
-                java.util.Collection<java.util.List<?>> sans =
-                        cert.getSubjectAlternativeNames();
-                if (sans != null) {
-                    for (java.util.List<?> san : sans) {
-                        if (san.size() >= 2) {
-                            rootMeta.add("rdp:pcb_cert_san",
-                                    san.get(1).toString());
-                        }
-                    }
+            java.util.Collection<? extends java.security.cert.Certificate> chain =
+                    cf.generateCertificates(new java.io.ByteArrayInputStream(der));
+            int idx = 0;
+            for (java.security.cert.Certificate c : chain) {
+                if (!(c instanceof X509Certificate)) {
+                    idx++;
+                    continue;
                 }
-            } catch (Exception ignored) {
-                // SAN parsing is best-effort
+                X509Certificate x509 = (X509Certificate) c;
+                String subject = x509.getSubjectX500Principal().getName();
+                String issuer  = x509.getIssuerX500Principal().getName();
+                String prefix  = "rdp:pcb_chain_" + idx + "_";
+                rootMeta.add(prefix + "subject", subject);
+                rootMeta.add(prefix + "issuer",  issuer);
+                rootMeta.add(prefix + "not_before",
+                        x509.getNotBefore().toInstant().toString());
+                rootMeta.add(prefix + "not_after",
+                        x509.getNotAfter().toInstant().toString());
+                // Leaf cert (idx=0): self-signed check and SAN extraction
+                if (idx == 0) {
+                    if (subject.equals(issuer)) {
+                        rootMeta.set("rdp:pcb_cert_self_signed", "true");
+                    }
+                    try {
+                        java.util.Collection<java.util.List<?>> sans =
+                                x509.getSubjectAlternativeNames();
+                        if (sans != null) {
+                            for (java.util.List<?> san : sans) {
+                                if (san.size() >= 2) {
+                                    rootMeta.add("rdp:pcb_cert_san",
+                                            san.get(1).toString());
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {
+                        // SAN parsing is best-effort
+                    }
+                    xhtml.element("p", "Certificate subject: " + subject
+                            + (subject.equals(issuer) ? " [SELF-SIGNED]" : "")
+                            + " issuer: " + issuer);
+                }
+                idx++;
             }
-            xhtml.element("p", "Certificate subject: " + subject
-                    + (subject.equals(issuer) ? " [SELF-SIGNED]" : ""));
+            rootMeta.set("rdp:pcb_chain_depth", Integer.toString(idx));
+            // Convenience aliases for the leaf cert (backward compat)
+            String leafSubject = rootMeta.get("rdp:pcb_chain_0_subject");
+            if (leafSubject != null) {
+                rootMeta.set("rdp:pcb_cert_subject", leafSubject);
+                rootMeta.set("rdp:pcb_cert_issuer",
+                        rootMeta.get("rdp:pcb_chain_0_issuer"));
+            }
         } catch (CertificateException e) {
             rootMeta.add("rdp:pcb_warning",
-                    "X.509 parse failed (may be PKCS#7): " + e.getMessage());
+                    "X.509 chain parse failed: " + e.getMessage());
         }
 
         // Feed raw bytes through embedded pipeline regardless of parse success
