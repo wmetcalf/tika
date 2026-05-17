@@ -129,6 +129,11 @@ public class MscParser implements Parser {
             Pattern.compile("\\b(Command|CommandLine)\\s*=\\s*\"([^\"]+)\"",
                     Pattern.CASE_INSENSITIVE);
 
+    // ShellCommandDefinition block for building full command+params strings
+    private static final Pattern SHELL_CMD_BLOCK = Pattern.compile(
+            "<ShellCommandDefinition[^>]*>(.*?)</ShellCommandDefinition>",
+            Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
     // URL pattern
     private static final Pattern URL_PATTERN =
             Pattern.compile("https?://[^\\s\"'<>\\\\]+",
@@ -171,12 +176,15 @@ public class MscParser implements Parser {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
 
-        Set<String> clsids    = new LinkedHashSet<>();
-        Set<String> commands  = new LinkedHashSet<>();
-        Set<String> urls      = new LinkedHashSet<>();
-        Set<String> strings   = new LinkedHashSet<>();
-        List<String> warnings = new ArrayList<>();
-        boolean grimResource  = false;
+        Set<String> clsids       = new LinkedHashSet<>();
+        Set<String> commands     = new LinkedHashSet<>();
+        Set<String> taskNames    = new LinkedHashSet<>();
+        Set<String> taskDescs    = new LinkedHashSet<>();
+        Set<String> taskCommands = new LinkedHashSet<>();
+        Set<String> urls         = new LinkedHashSet<>();
+        Set<String> strings      = new LinkedHashSet<>();
+        List<String> warnings    = new ArrayList<>();
+        boolean grimResource     = false;
 
         // Extract CLSIDs
         Matcher cm = CLSID_PATTERN.matcher(xml);
@@ -197,6 +205,39 @@ public class MscParser implements Parser {
         for (String cmd : extractTagContent(xml, "CommandLine")) {
             if (!cmd.isEmpty()) {
                 commands.add(cmd);
+            }
+        }
+
+        // Extract <Command> element content (executable without params)
+        for (String cmd : extractTagContent(xml, "Command")) {
+            if (!cmd.isEmpty()) {
+                commands.add(cmd);
+            }
+        }
+
+        // Build full "command params" strings from ShellCommandDefinition blocks
+        Matcher scm = SHELL_CMD_BLOCK.matcher(xml);
+        while (scm.find()) {
+            String block = scm.group(1);
+            List<String> cmdParts = extractTagContent(block, "Command");
+            List<String> paramParts = extractTagContent(block, "Params");
+            String cmdStr = cmdParts.isEmpty() ? "" : cmdParts.get(0).trim();
+            String paramStr = paramParts.isEmpty() ? "" : paramParts.get(0).trim();
+            if (!cmdStr.isEmpty()) {
+                String full = paramStr.isEmpty() ? cmdStr : cmdStr + " " + paramStr;
+                taskCommands.add(full);
+            }
+        }
+
+        // Extract task names and descriptions from ConsoleTaskpad DisplayString blocks
+        for (String name : extractTagContent(xml, "Name")) {
+            if (!name.isEmpty() && name.length() < 512) {
+                taskNames.add(name);
+            }
+        }
+        for (String desc : extractTagContent(xml, "Description")) {
+            if (!desc.isEmpty() && desc.length() < 2048) {
+                taskDescs.add(desc);
             }
         }
 
@@ -231,9 +272,21 @@ public class MscParser implements Parser {
             }
         }
 
-        // Emit commands
+        // Emit commands (individual executables / command lines)
         for (String cmd : commands) {
             metadata.add("msc:command", cmd);
+        }
+        // Emit full task commands (executable + params combined)
+        for (String tc : taskCommands) {
+            metadata.add("msc:task_command", tc);
+        }
+
+        // Emit task names and descriptions
+        for (String name : taskNames) {
+            metadata.add("msc:task_name", name);
+        }
+        for (String desc : taskDescs) {
+            metadata.add("msc:task_description", desc);
         }
 
         // Emit URLs
@@ -253,13 +306,20 @@ public class MscParser implements Parser {
                     "GrimResource: apds.dll XSL redirect to javascript: — "
                     + "MMC COM object model execution bypass (in-the-wild since June 2024)");
         } else {
-            // Check commands for shell execution keywords
-            for (String cmd : commands) {
+            // Check commands and task commands for shell execution keywords
+            Set<String> allCmds = new LinkedHashSet<>(commands);
+            allCmds.addAll(taskCommands);
+            boolean exploitFound = false;
+            for (String cmd : allCmds) {
+                if (exploitFound) {
+                    break;
+                }
                 String lower = cmd.toLowerCase(Locale.ROOT);
                 for (String kw : EXEC_KEYWORDS) {
                     if (lower.contains(kw)) {
                         metadata.set("ExploitClass",
                                 "MSC task command executes shell payload: " + cmd);
+                        exploitFound = true;
                         break;
                     }
                 }
@@ -269,8 +329,17 @@ public class MscParser implements Parser {
         // Write XHTML content body
         xhtml.startElement("div");
         for (String clsid : clsids) {
-            String name = CLSID_NAMES.getOrDefault(clsid, "Unknown");
-            xhtml.element("p", "SnapIn: " + clsid + " (" + name + ")");
+            String snapName = CLSID_NAMES.getOrDefault(clsid, "Unknown");
+            xhtml.element("p", "SnapIn: " + clsid + " (" + snapName + ")");
+        }
+        for (String name : taskNames) {
+            xhtml.element("p", "Task: " + name);
+        }
+        for (String desc : taskDescs) {
+            xhtml.element("p", "Description: " + desc);
+        }
+        for (String tc : taskCommands) {
+            xhtml.element("p", "TaskCommand: " + tc);
         }
         for (String cmd : commands) {
             xhtml.element("p", "CommandLine: " + cmd);
