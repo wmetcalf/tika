@@ -19,6 +19,8 @@ package org.apache.tika.parser.microsoft;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -103,32 +105,50 @@ public class RdpParser implements Parser {
     private static final MediaType RDP_TYPE = MediaType.application("x-rdp");
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(RDP_TYPE);
 
-    // Fields we extract to metadata (lowercase key → rdp: metadata name)
+    // Fields we extract to metadata (lowercase key → rdp: metadata name).
+    // Full set matching wmetcalf/rdp_holiday property_patterns.
     private static final List<String> SURFACE_FIELDS = Arrays.asList(
             "full address",
             "alternate full address",
+            "alternate shell",
             "gatewayhostname",
+            "gatewaycredentialssource",
+            "gatewayprofileusagemethod",
+            "gatewayusagemethod",
             "username",
             "authentication level",
+            "autoreconnection enabled",
             "enablecredsspsupport",
             "enablerdsaadauth",
             "redirectwebauthn",
             "redirectclipboard",
+            "redirectcomports",
+            "redirectlocation",
+            "redirectprinters",
+            "redirectsmartcards",
             "drivestoredirect",
+            "devicestoredirect",
             "camerastoredirect",
             "usbdevicestoredirect",
-            "redirectsmartcards",
+            "disableconnectionsharing",
+            "promptcredentialonce",
             "keyboardhook",
             "audiomode",
             "audiocapturemode",
-            "redirectprinters",
+            "videoplaybackmode",
+            "compression",
+            "screen mode id",
+            "bandwidthautodetect",
+            "networkautodetect",
             "remoteapplicationmode",
             "remoteapplicationprogram",
             "remoteapplicationcmdline",
+            "remoteapplicationexpandcmdline",
+            "remoteapplicationexpandworkingdir",
             "remoteapplicationname",
             "remoteapplicationfile",
-            "bandwidthautodetect",
-            "networkautodetect"
+            "remoteapplicationicon",
+            "signscope"
     );
 
     @Override
@@ -164,6 +184,26 @@ public class RdpParser implements Parser {
         if (pcb != null && "b".equals(pcb[0]) && pcb[1] != null && !pcb[1].isEmpty()) {
             parseCertBlob(pcb[1], metadata, xhtml, context,
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context));
+        }
+
+        // signature:s: — base64-encoded signed scope (RDMS/broker signature).
+        // The raw value and hashes are surfaced for TI correlation.
+        String[] sig = fields.get("signature");
+        if (sig != null && "s".equals(sig[0]) && sig[1] != null && !sig[1].isEmpty()) {
+            metadata.set("rdp:signature_raw", sig[1]);
+            try {
+                byte[] sigBytes = Base64.getDecoder().decode(
+                        sig[1].replaceAll("\\s", ""));
+                metadata.set("rdp:signature_sha256", sha256Hex(sigBytes));
+                metadata.set("rdp:signature_sha1",   sha1Hex(sigBytes));
+            } catch (IllegalArgumentException ignored) {
+                metadata.set("rdp:signature_warning", "base64 decode failed");
+            }
+        }
+        // signscope_but_missing_sig: flag if signscope present without signature
+        String[] ss = fields.get("signscope");
+        if (ss != null && ss[1] != null && !ss[1].isEmpty() && sig == null) {
+            metadata.set("rdp:signscope_but_missing_sig", "true");
         }
 
         // ExploitClass assessment
@@ -269,6 +309,30 @@ public class RdpParser implements Parser {
         return (kv != null && kv[1] != null) ? kv[1] : "";
     }
 
+    // ── Crypto helpers ────────────────────────────────────────────────────────
+
+    private static String sha256Hex(byte[] data) {
+        return digestHex("SHA-256", data);
+    }
+
+    private static String sha1Hex(byte[] data) {
+        return digestHex("SHA-1", data);
+    }
+
+    private static String digestHex(String algorithm, byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance(algorithm);
+            byte[] digest = md.digest(data);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b & 0xff));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return "";
+        }
+    }
+
     // ── Certificate blob parsing ──────────────────────────────────────────────
 
     private void parseCertBlob(String b64, Metadata rootMeta,
@@ -300,12 +364,27 @@ public class RdpParser implements Parser {
                 String subject = x509.getSubjectX500Principal().getName();
                 String issuer  = x509.getIssuerX500Principal().getName();
                 String prefix  = "rdp:pcb_chain_" + idx + "_";
-                rootMeta.add(prefix + "subject", subject);
-                rootMeta.add(prefix + "issuer",  issuer);
+                rootMeta.add(prefix + "subject",     subject);
+                rootMeta.add(prefix + "issuer",      issuer);
+                rootMeta.add(prefix + "serial",      x509.getSerialNumber().toString());
                 rootMeta.add(prefix + "not_before",
                         x509.getNotBefore().toInstant().toString());
                 rootMeta.add(prefix + "not_after",
                         x509.getNotAfter().toInstant().toString());
+                // Cert validity at parse time
+                boolean nowValid = !java.time.Instant.now()
+                        .isBefore(x509.getNotBefore().toInstant())
+                        && !java.time.Instant.now()
+                        .isAfter(x509.getNotAfter().toInstant());
+                rootMeta.add(prefix + "valid_now", Boolean.toString(nowValid));
+                // Fingerprints for TI lookups
+                try {
+                    byte[] encoded = x509.getEncoded();
+                    rootMeta.add(prefix + "fingerprint_sha256", sha256Hex(encoded));
+                    rootMeta.add(prefix + "fingerprint_sha1",   sha1Hex(encoded));
+                } catch (Exception ignored) {
+                    // encoding is best-effort
+                }
                 // Leaf cert (idx=0): self-signed check and SAN extraction
                 if (idx == 0) {
                     if (subject.equals(issuer)) {
