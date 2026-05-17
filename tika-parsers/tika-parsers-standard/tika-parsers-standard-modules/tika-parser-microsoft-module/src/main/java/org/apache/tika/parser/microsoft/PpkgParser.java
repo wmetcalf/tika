@@ -666,14 +666,20 @@ public class PpkgParser implements Parser {
             return;
         }
         String sha256 = sha256Hex(data);
+        String md5 = md5Hex(data);
         rootMeta.add("ppkg:embedded_file_sha256", sha256);
+        rootMeta.add("ppkg:embedded_file_md5", md5);
+        rootMeta.add("ppkg:embedded_file_sha1", sha1Hex);
+        rootMeta.add("ppkg:embedded_file_name", name);
+        rootMeta.add("ppkg:embedded_file_size", Long.toString(data.length));
 
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
         Metadata embMeta = new Metadata();
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
+        String mime = "application/octet-stream";
         try (TikaInputStream tis = TikaInputStream.get(data)) {
-            String mime = new DefaultDetector()
+            mime = new DefaultDetector()
                     .detect(tis, embMeta, context).getBaseType().toString();
             embMeta.set(Metadata.CONTENT_TYPE, mime);
             rootMeta.add("ppkg:embedded_file_mime", mime);
@@ -681,8 +687,20 @@ public class PpkgParser implements Parser {
                 extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
             }
         } catch (Exception e) {
+            rootMeta.add("ppkg:embedded_file_mime", mime);
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         }
+
+        // Structured per-asset record (matches ppkg_happiness copiedDataAssets shape).
+        // Single-line, key=value;... so consumers can split without ambiguity.
+        String asset = "reference=" + name
+                + ";mime_type=" + mime
+                + ";size=" + data.length
+                + ";sha256=" + sha256
+                + ";sha1=" + sha1Hex
+                + ";md5=" + md5;
+        rootMeta.add("ppkg:data_asset", asset);
+        xhtml.element("p", "DataAsset: " + asset);
     }
 
     // ── XML field extraction (regex-free, simple tag scan) ────────────────────
@@ -803,8 +821,16 @@ public class PpkgParser implements Parser {
     }
 
     private static String sha256Hex(byte[] data) {
+        return digestHex("SHA-256", data);
+    }
+
+    private static String md5Hex(byte[] data) {
+        return digestHex("MD5", data);
+    }
+
+    private static String digestHex(String algorithm, byte[] data) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            MessageDigest md = MessageDigest.getInstance(algorithm);
             return bytesToHex(md.digest(data));
         } catch (NoSuchAlgorithmException e) {
             return "";
