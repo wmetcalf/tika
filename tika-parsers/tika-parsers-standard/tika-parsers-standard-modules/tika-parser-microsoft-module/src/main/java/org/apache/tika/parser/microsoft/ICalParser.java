@@ -188,6 +188,11 @@ public class ICalParser implements Parser {
                         xhtml.element("p", "Method: " + value);
                     } else if ("version".equals(nameLower)) {
                         metadata.set("ical:version", value);
+                    } else if ("x-wr-calname".equals(nameLower)) {
+                        metadata.set("ical:calendar_name", value);
+                        xhtml.element("p", "Calendar: " + value);
+                    } else if ("x-wr-caldesc".equals(nameLower)) {
+                        metadata.set("ical:calendar_description", value);
                     }
                 } else {
                     // Properties of a sub-component (VEVENT, VTODO, VALARM, etc.)
@@ -274,25 +279,29 @@ public class ICalParser implements Parser {
                 "Location", allUrls);
         emitText(metadata, xhtml, props, "url",         "ical:event_url",
                 "URL", allUrls);
-        emitField(metadata, props, "dtstart",  "ical:event_dtstart");
-        emitField(metadata, props, "dtend",    "ical:event_dtend");
-        emitField(metadata, props, "dtstamp",  "ical:event_dtstamp");
-        emitField(metadata, props, "created",  "ical:event_created");
-        emitField(metadata, props, "rrule",    "ical:event_rrule");
-        emitField(metadata, props, "uid",      "ical:event_uid");
+        // X-ALT-DESC carries HTML alternate description — primary phishing vector
+        emitText(metadata, xhtml, props, "x-alt-desc", "ical:event_description_html",
+                "HTML Description", allUrls);
+        emitField(metadata, props, "dtstart",       "ical:event_dtstart");
+        emitField(metadata, props, "dtend",         "ical:event_dtend");
+        emitField(metadata, props, "dtstamp",       "ical:event_dtstamp");
+        emitField(metadata, props, "created",       "ical:event_created");
+        emitField(metadata, props, "last-modified", "ical:event_last_modified");
+        emitField(metadata, props, "rrule",         "ical:event_rrule");
+        emitField(metadata, props, "uid",           "ical:event_uid");
+        emitField(metadata, props, "status",        "ical:event_status");
+        emitField(metadata, props, "categories",    "ical:event_categories");
+        emitField(metadata, props, "class",         "ical:event_class");
+        emitField(metadata, props, "sequence",      "ical:event_sequence");
+        emitField(metadata, props, "transp",        "ical:event_transp");
 
-        // Organizer: may have CN parameter embedded in the multi-key map
-        emitEmailField(metadata, props, "organizer", "ical:event_organizer");
-        // Attendees: multiple lines merged with \n
-        String allAttendees = props.get("attendee");
-        if (allAttendees != null) {
-            for (String att : allAttendees.split("\n")) {
-                String formatted = formatEmailField(att);
-                if (!formatted.isEmpty()) {
-                    metadata.add("ical:event_attendee", formatted);
-                }
-            }
+        // Organizer — extract CN from param-suffixed key
+        String organizer = getFieldWithCN(props, "organizer");
+        if (!organizer.isEmpty()) {
+            metadata.add("ical:event_organizer", organizer);
         }
+        // Attendees — structured extraction of CN, ROLE, PARTSTAT from param keys
+        processAttendeesStructured(props, metadata);
     }
 
     private void processVtodo(Map<String, String> props, Metadata metadata,
@@ -302,8 +311,14 @@ public class ICalParser implements Parser {
                 "TODO Summary", allUrls);
         emitText(metadata, xhtml, props, "description", "ical:todo_description",
                 "TODO Description", allUrls);
-        emitField(metadata, props, "due",    "ical:todo_due");
-        emitField(metadata, props, "status", "ical:todo_status");
+        emitField(metadata, props, "due",              "ical:todo_due");
+        emitField(metadata, props, "dtstart",          "ical:todo_dtstart");
+        emitField(metadata, props, "status",           "ical:todo_status");
+        emitField(metadata, props, "categories",       "ical:todo_categories");
+        emitField(metadata, props, "priority",         "ical:todo_priority");
+        emitField(metadata, props, "percent-complete", "ical:todo_percent_complete");
+        emitField(metadata, props, "uid",              "ical:todo_uid");
+        emitField(metadata, props, "last-modified",    "ical:todo_last_modified");
     }
 
     private void processValarm(Map<String, String> props, Metadata metadata,
@@ -430,22 +445,93 @@ public class ICalParser implements Parser {
         }
     }
 
-    private static void emitEmailField(Metadata meta, Map<String, String> props,
-                                        String propName, String metaKey) {
+    /**
+     * Returns "CN <email>" for a property that may have a CN parameter,
+     * falling back to bare email if no CN key found.
+     */
+    private static String getFieldWithCN(Map<String, String> props, String propName) {
         String val = props.get(propName);
         if (val == null || val.isEmpty()) {
-            return;
-        }
-        meta.add(metaKey, formatEmailField(val));
-    }
-
-    private static String formatEmailField(String raw) {
-        if (raw == null || raw.isEmpty()) {
             return "";
         }
-        // Value may be "mailto:x@y.com" or just "x@y.com"
-        // Parameters may have been stripped already
-        return raw.replace("mailto:", "").trim();
+        String email = val.replace("mailto:", "").trim();
+        String cn = null;
+        for (String key : props.keySet()) {
+            if (key.startsWith(propName + "|")) {
+                String params = key.substring(propName.length() + 1);
+                cn = extractParam(params, "cn");
+                break;
+            }
+        }
+        if (cn != null && !cn.isEmpty()) {
+            return email.isEmpty() ? cn : cn + " <" + email + ">";
+        }
+        return email;
+    }
+
+    private static void processAttendeesStructured(Map<String, String> props,
+                                                    Metadata metadata) {
+        boolean foundParamKey = false;
+        for (Map.Entry<String, String> e : props.entrySet()) {
+            String key = e.getKey();
+            if (!key.startsWith("attendee|")) {
+                continue;
+            }
+            foundParamKey = true;
+            String params = key.substring("attendee|".length());
+            String email  = e.getValue().replace("mailto:", "").trim();
+            String cn       = extractParam(params, "cn");
+            String role     = extractParam(params, "role");
+            String partstat = extractParam(params, "partstat");
+            StringBuilder sb = new StringBuilder();
+            if (cn != null && !cn.isEmpty()) {
+                sb.append(cn);
+            }
+            if (!email.isEmpty()) {
+                if (sb.length() > 0) {
+                    sb.append(" <").append(email).append(">");
+                } else {
+                    sb.append(email);
+                }
+            }
+            if (role != null && !role.isEmpty()) {
+                sb.append(" [").append(role).append("]");
+            }
+            if (partstat != null && !partstat.isEmpty()) {
+                sb.append(" (").append(partstat).append(")");
+            }
+            String out = sb.toString().trim();
+            if (!out.isEmpty()) {
+                metadata.add("ical:event_attendee", out);
+            }
+            if (partstat != null && !partstat.isEmpty()) {
+                metadata.add("ical:event_attendee_partstat",
+                        partstat.toUpperCase(Locale.ROOT));
+            }
+        }
+        if (!foundParamKey) {
+            // Bare-key fallback: attendees without any parameters
+            String allAttendees = props.get("attendee");
+            if (allAttendees != null) {
+                for (String att : allAttendees.split("\n")) {
+                    String formatted = att.replace("mailto:", "").trim();
+                    if (!formatted.isEmpty()) {
+                        metadata.add("ical:event_attendee", formatted);
+                    }
+                }
+            }
+        }
+    }
+
+    private static String extractParam(String params, String name) {
+        for (String p : params.split(";")) {
+            int eq = p.indexOf('=');
+            if (eq > 0 && p.substring(0, eq).trim().equalsIgnoreCase(name)) {
+                String v = p.substring(eq + 1).trim();
+                return v.replaceAll("^\"|\"$", ""); // strip optional surrounding quotes
+            }
+        }
+        return null;
     }
 
     // ── RFC 5545 parsing ──────────────────────────────────────────────────────
