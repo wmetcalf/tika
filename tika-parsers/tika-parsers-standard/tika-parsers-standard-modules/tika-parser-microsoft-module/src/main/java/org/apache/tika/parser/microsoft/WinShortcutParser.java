@@ -893,37 +893,48 @@ public class WinShortcutParser implements Parser {
     }
 
     /**
-     * Score how "text-like" a decoded string is. Counts chars that look like
-     * legible content (letters, digits, common punctuation, whitespace, or
-     * non-Latin letters from any Unicode plane) and penalises C0 control bytes
-     * that aren't tab/CR/LF. Higher = more likely to be the correct encoding.
+     * Score how "text-like" a decoded string is, biased heavily toward ASCII.
+     * <p>LNK StringData is virtually always paths, commands, or arguments —
+     * Latin text. We weight ASCII printable bytes (+2) far above generic
+     * "defined Unicode" codepoints (0) so that an ANSI string misread as
+     * UTF-16LE (where every cp1252 pair becomes a CJK-looking codepoint that
+     * <em>technically</em> has {@link Character#isLetterOrDigit} = true) does
+     * not falsely tie with the correct ASCII decode. Embedded NULs (which
+     * appear in every other slot when ANSI bytes are decoded as UTF-16LE) are
+     * a strong negative signal.</p>
+     * <p>For legitimately non-Latin Unicode content (CJK paths, Cyrillic), the
+     * UTF-16LE decode will still beat the cp1252 alternative because cp1252 of
+     * the same bytes hits Latin-1 control range with high frequency.</p>
      */
     private static int textScore(String s) {
         if (s == null || s.isEmpty()) {
             return 0;
         }
-        int good = 0;
-        int bad = 0;
+        int score = 0;
         int len = s.length();
         for (int i = 0; i < len; i++) {
             char c = s.charAt(i);
             if (c == '\t' || c == '\r' || c == '\n') {
-                good++;
+                score += 1;
             } else if (c < 0x20) {
-                bad++;
+                score -= 3;  // NUL contamination from wrong-decode
             } else if (c == 0xFFFD) {
-                bad++;  // replacement char from a failed decode
-            } else if (Character.isLetterOrDigit(c) || Character.isSpaceChar(c)) {
-                good++;
+                score -= 3;
             } else if (c < 0x7f) {
-                good++;  // ASCII punctuation/symbols
+                score += 2;  // ASCII printable — strong positive
+            } else if (c < 0xA0) {
+                score -= 1;  // C1 control range — unlikely in real text
+            } else if (c < 0x100) {
+                score += 1;  // Extended Latin (cp1252 high range) — plausible
+            } else if (Character.isLetterOrDigit(c)) {
+                score += 1;  // non-Latin letter/digit (CJK, Cyrillic, etc.)
             } else if (Character.isDefined(c)) {
-                good++;  // any defined Unicode codepoint (handles CJK)
+                score += 0;  // other defined codepoint — neutral
             } else {
-                bad++;
+                score -= 1;
             }
         }
-        return good - bad;
+        return score;
     }
 
     // ── ExtraData §2.5 ────────────────────────────────────────────────────────
