@@ -4672,8 +4672,19 @@
     <alias type="application/x-url"/>
     <glob pattern="*.url"/>
     <magic priority="60">
+      <!-- ASCII / UTF-8 form -->
       <match value="[InternetShortcut]" type="string" offset="0:64"/>
       <match value="[DEFAULT]" type="string" offset="0:64"/>
+      <!-- UTF-16LE with BOM -->
+      <match value="\xff\xfe[\x00I\x00n\x00t\x00e\x00r\x00n\x00e\x00t\x00" type="string" offset="0"/>
+      <!-- UTF-16BE with BOM -->
+      <match value="\xfe\xff\x00[\x00I\x00n\x00t\x00e\x00r\x00n\x00e\x00t" type="string" offset="0"/>
+      <!-- BOM-less UTF-16LE -->
+      <match value="[\x00I\x00n\x00t\x00e\x00r\x00n\x00e\x00t\x00" type="string" offset="0"/>
+      <!-- BOM-less UTF-16BE -->
+      <match value="\x00[\x00I\x00n\x00t\x00e\x00r\x00n\x00e\x00t" type="string" offset="0"/>
+      <!-- UTF-8 BOM + [InternetShortcut] -->
+      <match value="\xef\xbb\xbf[InternetShortcut]" type="string" offset="0"/>
     </magic>
   </mime-type>
   <mime-type type="application/x-ms-compress-szdd">

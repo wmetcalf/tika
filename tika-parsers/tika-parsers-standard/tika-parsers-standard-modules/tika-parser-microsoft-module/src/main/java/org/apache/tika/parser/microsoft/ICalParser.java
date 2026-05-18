@@ -99,6 +99,27 @@ public class ICalParser implements Parser {
     private static final Set<MediaType> SUPPORTED_TYPES =
             Collections.singleton(ICAL_TYPE);
 
+    // Hard input ceiling for raw bytes — real ICS files are <1 MB; the cap
+    // prevents heap exhaustion (UTF-32 amplification, attendee spam, deep nesting).
+    static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
+
+    // METHOD values that warrant a defender signal when seen on inbound mail.
+    // PUBLISH = unsolicited "subscribe to this calendar" (calendar-spam vector),
+    // CANCEL  = update-trick where attacker uses a CANCEL to override a prior
+    //           benign invite or to slip past content scanners,
+    // COUNTER = unusual on first-encounter mail; can be used to flip event
+    //           details (location, URL) on a prior accepted invite.
+    private static final Set<String> SUSPICIOUS_METHODS = new LinkedHashSet<>(Arrays.asList(
+            "PUBLISH", "CANCEL", "COUNTER"
+    ));
+
+    // Calendar-bombing threshold: real meetings rarely have >50 attendees.
+    private static final int ATTENDEE_BOMB_THRESHOLD = 50;
+
+    // Back-dating threshold: DTSTAMP more than this many days before DTSTART
+    // is suspicious (forged "earlier revision" pattern).
+    private static final long BACKDATE_DAYS_THRESHOLD = 30L;
+
     // MIME types of executable/risky attachments
     private static final Set<String> RISKY_ATTACH_MIME = new LinkedHashSet<>(Arrays.asList(
             "application/x-msdownload",
@@ -123,7 +144,11 @@ public class ICalParser implements Parser {
                       Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        byte[] raw = stream.readAllBytes();
+        // Cap input — real ICS files are <1 MB; 32 MB is a hard ceiling that
+        // prevents heap exhaustion from a crafted file (e.g. UTF-32 amplification,
+        // millions of nested BEGINs, or attendee-spam floods).
+        byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
+        boolean truncated = raw.length == MAX_INPUT_BYTES && stream.read() != -1;
         DecodedIcal decoded = decodeIcal(raw);
         String text = decoded.text;
         metadata.set("ical:source_encoding", decoded.encoding);
@@ -131,6 +156,11 @@ public class ICalParser implements Parser {
             metadata.add("ical:warning",
                     "Source encoded as " + decoded.encoding + " — uncommon for ICS; "
                             + "many email gateways scan ASCII/UTF-8 only and can miss this content");
+        }
+        if (truncated) {
+            metadata.add("ical:warning",
+                    "Input truncated at " + MAX_INPUT_BYTES + " bytes — "
+                            + "any content beyond was not parsed");
         }
 
         List<String> lines = unfoldLines(text);
@@ -141,6 +171,10 @@ public class ICalParser implements Parser {
 
         Set<String> allUrls = new LinkedHashSet<>();
         StringBuilder exploitDesc = new StringBuilder();
+        // Track UIDs seen across components in this file. Same UID in multiple
+        // VEVENTs is the "in-file update chain" shape (attacker sends one ICS
+        // with both an original and an overriding revision).
+        Set<String> seenUids = new LinkedHashSet<>();
 
         // Component stack: each entry = {type → props}.
         // VCALENDAR is the outermost; VEVENT/VTODO/etc. are nested inside it.
@@ -176,7 +210,8 @@ public class ICalParser implements Parser {
                     String compType = typeArr[0];
                     if (!"VCALENDAR".equals(compType)) {
                         processComponent(compType, compProps, metadata, xhtml,
-                                context, extractor, allUrls, exploitDesc);
+                                context, extractor, allUrls, exploitDesc,
+                                seenUids);
                     } else {
                         // VCALENDAR-level props already handled below
                     }
@@ -193,6 +228,14 @@ public class ICalParser implements Parser {
                     } else if ("method".equals(nameLower)) {
                         metadata.set("ical:method", value);
                         xhtml.element("p", "Method: " + value);
+                        String methodUpper = value.trim().toUpperCase(Locale.ROOT);
+                        if (SUSPICIOUS_METHODS.contains(methodUpper)) {
+                            exploitDesc.append(
+                                    "Calendar METHOD=" + methodUpper
+                                  + " — unusual for unsolicited mail "
+                                  + "(PUBLISH=subscription spam, CANCEL=update-bypass, "
+                                  + "COUNTER=event override); ");
+                        }
                     } else if ("version".equals(nameLower)) {
                         metadata.set("ical:version", value);
                     } else if ("x-wr-calname".equals(nameLower)) {
@@ -249,11 +292,12 @@ public class ICalParser implements Parser {
                                    ParseContext context,
                                    EmbeddedDocumentExtractor extractor,
                                    Set<String> allUrls,
-                                   StringBuilder exploitDesc)
+                                   StringBuilder exploitDesc,
+                                   Set<String> seenUids)
             throws IOException, SAXException, TikaException {
         switch (type) {
             case "VEVENT":
-                processVevent(props, metadata, xhtml, allUrls, exploitDesc);
+                processVevent(props, metadata, xhtml, allUrls, exploitDesc, seenUids);
                 break;
             case "VTODO":
                 processVtodo(props, metadata, xhtml, allUrls);
@@ -276,7 +320,7 @@ public class ICalParser implements Parser {
 
     private void processVevent(Map<String, String> props, Metadata metadata,
                                 XHTMLContentHandler xhtml, Set<String> allUrls,
-                                StringBuilder exploitDesc)
+                                StringBuilder exploitDesc, Set<String> seenUids)
             throws IOException, SAXException, TikaException {
         emitText(metadata, xhtml, props, "summary",     "ical:event_summary",
                 "Summary", allUrls);
@@ -308,7 +352,117 @@ public class ICalParser implements Parser {
             metadata.add("ical:event_organizer", organizer);
         }
         // Attendees — structured extraction of CN, ROLE, PARTSTAT from param keys
-        processAttendeesStructured(props, metadata);
+        int attendeeCount = processAttendeesStructured(props, metadata);
+
+        // ── Update / revision signals ─────────────────────────────────────────
+        // 1. SEQUENCE > 0 means this VEVENT is a revision, not the original
+        //    invite. Common attacker shape: send an original benign-looking
+        //    invite, then a SEQUENCE=1 revision with phishing content that
+        //    auto-applies in clients that honour the original.
+        String seqRaw = props.get("sequence");
+        if (seqRaw != null && !seqRaw.isEmpty()) {
+            try {
+                int seq = Integer.parseInt(seqRaw.trim());
+                if (seq > 0) {
+                    metadata.set("ical:event_revision", "true");
+                    exploitDesc.append(
+                            "VEVENT SEQUENCE=" + seq
+                          + " — this is a revision/update, not the original invite "
+                          + "(revisions can silently override prior accepted events); ");
+                }
+            } catch (NumberFormatException ignored) {
+                // malformed sequence — skip
+            }
+        }
+
+        // 2. Same UID appearing in multiple VEVENTs in one ICS file = in-file
+        //    update chain (original + override packaged together).
+        String uid = props.get("uid");
+        if (uid != null && !uid.isEmpty()) {
+            if (!seenUids.add(uid)) {
+                exploitDesc.append(
+                        "Multiple VEVENTs share UID=" + uid
+                      + " — in-file update chain shape "
+                      + "(original event packaged with an overriding revision); ");
+            }
+        }
+
+        // 3. Calendar bombing — implausibly large attendee count for an invite.
+        if (attendeeCount > ATTENDEE_BOMB_THRESHOLD) {
+            metadata.add("ical:warning",
+                    "VEVENT has " + attendeeCount + " ATTENDEEs (>"
+                  + ATTENDEE_BOMB_THRESHOLD + " — possible calendar-bombing)");
+        }
+
+        // 4. DTSTAMP far before DTSTART = forged "earlier revision" timestamp.
+        String dtstamp = props.get("dtstamp");
+        String dtstart = props.get("dtstart");
+        long backdateDays = backdateGapDays(dtstamp, dtstart);
+        if (backdateDays > BACKDATE_DAYS_THRESHOLD) {
+            exploitDesc.append(
+                    "DTSTAMP precedes DTSTART by " + backdateDays
+                  + " days (>" + BACKDATE_DAYS_THRESHOLD
+                  + ") — back-dated event, often used to fake legitimate followup; ");
+        }
+    }
+
+    /**
+     * Returns the number of days DTSTAMP precedes DTSTART (positive when stamp
+     * is earlier than start), or -1 if either timestamp can't be parsed or
+     * the relationship doesn't suggest back-dating.
+     */
+    private static long backdateGapDays(String dtstamp, String dtstart) {
+        if (dtstamp == null || dtstart == null) {
+            return -1;
+        }
+        Long stampEpochSec = parseICalDate(dtstamp);
+        Long startEpochSec = parseICalDate(dtstart);
+        if (stampEpochSec == null || startEpochSec == null) {
+            return -1;
+        }
+        long deltaSec = startEpochSec - stampEpochSec;
+        if (deltaSec <= 0) {
+            return -1;
+        }
+        return deltaSec / 86400L;
+    }
+
+    /**
+     * Parse an iCalendar DATE-TIME or DATE value into epoch seconds. Accepts
+     * the common forms YYYYMMDDTHHMMSSZ, YYYYMMDDTHHMMSS, and YYYYMMDD. Strips
+     * any TZID prefix that may have leaked in. Returns null on parse failure.
+     */
+    private static Long parseICalDate(String raw) {
+        String s = raw.trim();
+        // Strip any leading TZID=...: parameter that may have stuck to the value
+        int colon = s.lastIndexOf(':');
+        if (colon >= 0 && colon < s.length() - 1) {
+            s = s.substring(colon + 1);
+        }
+        // Strip Z
+        boolean hasZ = s.endsWith("Z");
+        if (hasZ) {
+            s = s.substring(0, s.length() - 1);
+        }
+        try {
+            int year, month, day, hour = 0, min = 0, sec = 0;
+            if (s.length() < 8) {
+                return null;
+            }
+            year  = Integer.parseInt(s.substring(0, 4));
+            month = Integer.parseInt(s.substring(4, 6));
+            day   = Integer.parseInt(s.substring(6, 8));
+            if (s.length() >= 15 && s.charAt(8) == 'T') {
+                hour = Integer.parseInt(s.substring(9, 11));
+                min  = Integer.parseInt(s.substring(11, 13));
+                sec  = Integer.parseInt(s.substring(13, 15));
+            }
+            // Simple proleptic Gregorian conversion via java.time
+            return java.time.OffsetDateTime.of(year, month, day, hour, min, sec, 0,
+                    java.time.ZoneOffset.UTC).toEpochSecond();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void processVtodo(Map<String, String> props, Metadata metadata,
@@ -476,8 +630,10 @@ public class ICalParser implements Parser {
         return email;
     }
 
-    private static void processAttendeesStructured(Map<String, String> props,
+    /** Returns the number of attendees emitted (used for calendar-bombing detection). */
+    private static int processAttendeesStructured(Map<String, String> props,
                                                     Metadata metadata) {
+        int count = 0;
         boolean foundParamKey = false;
         for (Map.Entry<String, String> e : props.entrySet()) {
             String key = e.getKey();
@@ -510,6 +666,7 @@ public class ICalParser implements Parser {
             String out = sb.toString().trim();
             if (!out.isEmpty()) {
                 metadata.add("ical:event_attendee", out);
+                count++;
             }
             if (partstat != null && !partstat.isEmpty()) {
                 metadata.add("ical:event_attendee_partstat",
@@ -524,10 +681,12 @@ public class ICalParser implements Parser {
                     String formatted = att.replace("mailto:", "").trim();
                     if (!formatted.isEmpty()) {
                         metadata.add("ical:event_attendee", formatted);
+                        count++;
                     }
                 }
             }
         }
+        return count;
     }
 
     private static String extractParam(String params, String name) {
@@ -592,18 +751,14 @@ public class ICalParser implements Parser {
                     new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16BE),
                     "UTF-16BE (BOM)", true);
         }
-        // BOM-less UTF-16LE: starts with "B\0E\0G\0I\0N\0:\0"
-        if (raw.length >= 14 && raw[0] == 'B' && raw[1] == 0
-                && raw[2] == 'E' && raw[3] == 0 && raw[4] == 'G' && raw[5] == 0
-                && raw[6] == 'I' && raw[7] == 0 && raw[8] == 'N' && raw[9] == 0) {
+        // BOM-less UTF-16LE / UTF-16BE — sniff for "BEGIN" at a small offset
+        // (some files begin with a blank line or whitespace before BEGIN:VCALENDAR).
+        if (sniffBomlessUtf16(raw, true)) {
             return new DecodedIcal(
                     new String(raw, 0, raw.length, StandardCharsets.UTF_16LE),
                     "UTF-16LE (no BOM)", true);
         }
-        // BOM-less UTF-16BE: starts with "\0B\0E\0G\0I\0N\0:"
-        if (raw.length >= 14 && raw[0] == 0 && raw[1] == 'B'
-                && raw[2] == 0 && raw[3] == 'E' && raw[4] == 0 && raw[5] == 'G'
-                && raw[6] == 0 && raw[7] == 'I' && raw[8] == 0 && raw[9] == 'N') {
+        if (sniffBomlessUtf16(raw, false)) {
             return new DecodedIcal(
                     new String(raw, 0, raw.length, StandardCharsets.UTF_16BE),
                     "UTF-16BE (no BOM)", true);
@@ -620,6 +775,67 @@ public class ICalParser implements Parser {
                 suspicious ? "ISO-8859-1 (no VCALENDAR marker — possible exotic encoding)"
                            : "ISO-8859-1",
                 suspicious);
+    }
+
+    /**
+     * Sniff for BOM-less UTF-16-encoded {@code BEGIN} at the start of the buffer.
+     * Real ICS files sometimes start with a blank line or whitespace before the
+     * first line, so allow a small leading-whitespace window (up to 8 UTF-16 code
+     * units of CR/LF/space/tab).
+     *
+     * @param raw     input bytes
+     * @param littleEndian true for UTF-16LE, false for UTF-16BE
+     */
+    private static boolean sniffBomlessUtf16(byte[] raw, boolean littleEndian) {
+        if (raw.length < 14 || (raw.length & 1) != 0) {
+            // Even-length only matters for the heuristic; a UTF-16 stream with an
+            // odd byte count is malformed but we don't need to reject here.
+        }
+        final int maxLeadingWs = 8; // up to 8 UTF-16 code units of leading whitespace
+        int max = Math.min(raw.length - 14, maxLeadingWs * 2);
+        for (int off = 0; off <= max; off += 2) {
+            int hi = littleEndian ? raw[off + 1] & 0xff : raw[off]     & 0xff;
+            int lo = littleEndian ? raw[off]     & 0xff : raw[off + 1] & 0xff;
+            if (off > 0) {
+                // Must be a UTF-16 whitespace code unit: NUL hi byte + space/tab/CR/LF lo
+                if (hi != 0) {
+                    return false;
+                }
+                if (lo != ' ' && lo != '\t' && lo != '\r' && lo != '\n') {
+                    return false;
+                }
+                continue;
+            }
+            // At offset `off`, check that bytes form B E G I N (5 UTF-16 code units)
+            if (matchesBegin(raw, off, littleEndian)) {
+                return true;
+            }
+        }
+        // Also check at each whitespace-skipping offset
+        for (int off = 2; off <= max; off += 2) {
+            if (matchesBegin(raw, off, littleEndian)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesBegin(byte[] raw, int off, boolean littleEndian) {
+        // 5 chars × 2 bytes = 10 bytes for "BEGIN"
+        if (off + 10 > raw.length) {
+            return false;
+        }
+        char[] target = {'B', 'E', 'G', 'I', 'N'};
+        for (int i = 0; i < target.length; i++) {
+            int b0 = raw[off + 2 * i]     & 0xff;
+            int b1 = raw[off + 2 * i + 1] & 0xff;
+            int hi = littleEndian ? b1 : b0;
+            int lo = littleEndian ? b0 : b1;
+            if (hi != 0 || lo != target[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // RFC 5545 §3.1: unfold lines (CRLF or LF followed by SPACE/TAB = continuation)

@@ -587,8 +587,9 @@ public class WinShortcutParser implements Parser {
             if (extOffset > 0 && base + extOffset < end - 2) {
                 longName = parseBeef0004Extensions(buf, base + extOffset, end - 2,
                         primaryName, fields);
-                hasBeef0004 = (base + extOffset + 8 <= end - 2)
-                        && buf.getInt(base + extOffset + 4) == 0xBEEF0004;
+                // Walk the extension chain — a benign block (e.g. 0xBEEF0014) may
+                // precede BEEF0004 within the same item.
+                hasBeef0004 = chainHasBeef0004(buf, base + extOffset, end - 2);
             }
         }
 
@@ -624,8 +625,47 @@ public class WinShortcutParser implements Parser {
             "certutil.exe", "bitsadmin.exe", "wmic.exe", "msbuild.exe",
             "installutil.exe", "regasm.exe", "regsvcs.exe", "msiexec.exe",
             "syncappvpublishingserver.vbs", "msxsl.exe", "ie4uinit.exe",
-            "control.exe", "ftp.exe", "diskshadow.exe"
+            "control.exe", "ftp.exe", "diskshadow.exe",
+            "csc.exe", "regedit.exe", "schtasks.exe", "werfault.exe",
+            "runonce.exe", "runscripthelper.exe", "pcalua.exe", "cdb.exe",
+            "dnscmd.exe", "atbroker.exe", "msdt.exe", "wsl.exe", "bash.exe",
+            "extexport.exe", "extrac32.exe", "explorer.exe", "esentutl.exe",
+            "expand.exe", "finger.exe", "fltmc.exe", "fsutil.exe",
+            "gpscript.exe", "ie4uinit.exe", "infdefaultinstall.exe",
+            "jsc.exe", "ldifde.exe", "makecab.exe", "manage-bde.wsf",
+            "mavinject.exe", "microsoft.workflow.compiler.exe", "mmc.exe",
+            "msdt.exe", "mshta.exe", "msiexec.exe", "msxsl.exe",
+            "odbcconf.exe", "pcalua.exe", "pcwrun.exe", "pktmon.exe",
+            "presentationhost.exe", "print.exe", "psr.exe", "rasautou.exe",
+            "reg.exe", "register-cimprovider.exe", "regini.exe",
+            "regsvcs.exe", "replace.exe", "runscripthelper.exe", "scriptrunner.exe",
+            "setres.exe", "sftp.exe", "ssh.exe",
+            "ttdinject.exe", "tttracer.exe", "vbc.exe", "verclsid.exe",
+            "wab.exe", "wlrmdr.exe", "wmiprvse.exe", "wsreset.exe",
+            "xwizard.exe", "te.exe", "msconfig.exe", "explorer.exe",
+            "appvlp.exe", "bginfo.exe", "cdb.exe", "csi.exe", "devtoolslauncher.exe",
+            "dotnet.exe", "dnx.exe", "dxcap.exe", "msxsl.exe", "ntdsutil.exe",
+            "powerpnt.exe", "rcsi.exe", "sqldumper.exe", "sqltoolsps.exe",
+            "squirrel.exe", "tracker.exe", "update.exe", "vsjitdebugger.exe",
+            "wfc.exe", "windbg.exe", "wsl.exe"
     ));
+
+    /** Walk the extension-block chain to determine whether a BEEF0004 entry exists. */
+    private static boolean chainHasBeef0004(ByteBuffer buf, int extBase, int extEnd) {
+        int pos = extBase;
+        while (pos + 8 <= extEnd) {
+            int blockSize = Short.toUnsignedInt(buf.getShort(pos));
+            if (blockSize < 8 || pos + blockSize > extEnd) {
+                return false;
+            }
+            int sig = buf.getInt(pos + 4);
+            if (sig == SIG_BEEF0004) {
+                return true;
+            }
+            pos += blockSize;
+        }
+        return false;
+    }
 
     private static boolean isExecutableExtension(String pathLower) {
         int dot = pathLower.lastIndexOf('.');

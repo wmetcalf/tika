@@ -20,7 +20,6 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -88,14 +87,19 @@ public class UrlShortcutParser implements Parser {
     private static final int MAX_INPUT_BYTES = 256 * 1024;
 
     // Suspicious URL schemes / patterns that warrant an ExploitClass record.
+    // The UNC variants accept either backslash form (\\host\share) or forward-slash
+    // form (//host/share) which Windows resolves identically.
     private static final Pattern SUSPICIOUS_URL = Pattern.compile(
             "^(file:|smb:|search-ms:|ms-msdt:|ms-officecmd:|ms-appinstaller:"
                     + "|ms-publisher:|javascript:|vbscript:|data:|res://)"
-                    + "|^\\\\\\\\[^\\\\]",   // UNC path \\server\...
+                    + "|^\\\\\\\\[^\\\\]"        // \\server\share
+                    + "|^//[^/]+/",              // //server/share
             Pattern.CASE_INSENSITIVE);
 
     private static final Pattern SECTION_HEADER = Pattern.compile("^\\[([^\\]]+)\\]\\s*$");
     private static final Pattern KEY_VALUE = Pattern.compile("^([^=;#]+)=(.*)$");
+    // Line splitter: handles LF, CRLF, and bare CR (classic-Mac / crafted files).
+    private static final Pattern LINE_BREAK = Pattern.compile("\\r\\n?|\\n");
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -108,8 +112,15 @@ public class UrlShortcutParser implements Parser {
             throws IOException, SAXException, TikaException {
 
         byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
+        // If the file was at least MAX_INPUT_BYTES, treat as truncated and warn.
+        boolean truncated = raw.length == MAX_INPUT_BYTES && stream.read() != -1;
         Decoded decoded = decode(raw);
         metadata.set("url:source_encoding", decoded.encoding);
+        List<String> warnings = new ArrayList<>();
+        if (truncated) {
+            warnings.add("Input truncated at " + MAX_INPUT_BYTES + " bytes — "
+                    + "any content beyond was not parsed");
+        }
 
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
@@ -118,7 +129,7 @@ public class UrlShortcutParser implements Parser {
         Map<String, Map<String, String>> sections = new LinkedHashMap<>();
         String current = "InternetShortcut";  // default if no header
         sections.put(current, new LinkedHashMap<>());
-        for (String rawLine : decoded.text.split("\\r?\\n")) {
+        for (String rawLine : LINE_BREAK.split(decoded.text)) {
             String line = rawLine.trim();
             if (line.isEmpty() || line.startsWith(";") || line.startsWith("#")) {
                 continue;
@@ -157,15 +168,14 @@ public class UrlShortcutParser implements Parser {
         String modified = shortcut.get("modified");
         String idList = shortcut.get("idlist");
 
-        List<String> warnings = new ArrayList<>();
-
         if (url != null && !url.isEmpty()) {
             metadata.set("url:url", url);
             xhtml.element("p", "URL: " + url);
         }
         // URLW is hex-encoded UTF-16LE — decode it.
+        String urlwDecoded = null;
         if (urlw != null && !urlw.isEmpty()) {
-            String urlwDecoded = decodeUrlW(urlw);
+            urlwDecoded = decodeUrlW(urlw);
             metadata.set("url:url_wide_raw", urlw);
             if (urlwDecoded != null) {
                 metadata.set("url:url_wide", urlwDecoded);
@@ -199,28 +209,27 @@ public class UrlShortcutParser implements Parser {
             metadata.set("url:idlist_hex_length", Integer.toString(idList.length()));
         }
 
-        // Threat signals.
+        // Threat signals — use add() so multiple distinct alarms all survive,
+        // never overwrite a prior ExploitClass record.
         if (url != null && SUSPICIOUS_URL.matcher(url).find()) {
-            metadata.set("ExploitClass",
+            metadata.add("ExploitClass",
                     ".url shortcut points at non-HTTP URL: " + url);
         }
-        if (urlw != null && url != null) {
-            String urlwDecoded = decodeUrlW(urlw);
-            if (urlwDecoded != null && !urlwDecoded.equalsIgnoreCase(url)) {
-                metadata.set("ExploitClass",
-                        ".url URL/URLW disagree (parser-confusion / MotW-bypass shape): "
-                                + "URL=" + url + " URLW=" + urlwDecoded);
-            }
-            if (urlwDecoded != null && SUSPICIOUS_URL.matcher(urlwDecoded).find()) {
-                metadata.set("ExploitClass",
-                        ".url URLW points at non-HTTP URL: " + urlwDecoded);
-            }
+        if (urlwDecoded != null && SUSPICIOUS_URL.matcher(urlwDecoded).find()) {
+            metadata.add("ExploitClass",
+                    ".url URLW points at non-HTTP URL: " + urlwDecoded);
+        }
+        if (url != null && urlwDecoded != null
+                && !urlwDecoded.equalsIgnoreCase(url)) {
+            metadata.add("ExploitClass",
+                    ".url URL/URLW disagree (parser-confusion / MotW-bypass shape): "
+                            + "URL=" + url + " URLW=" + urlwDecoded);
         }
         if (iconFile != null
                 && (iconFile.startsWith("\\\\") || iconFile.startsWith("//"))) {
             // UNC IconFile causes Windows to authenticate to the share to fetch
             // the icon — Net-NTLMv2 hash leak vector (CVE-2024-21412 family).
-            metadata.set("ExploitClass",
+            metadata.add("ExploitClass",
                     ".url IconFile is a UNC path (NTLM hash leak vector): " + iconFile);
         }
 
@@ -310,8 +319,4 @@ public class UrlShortcutParser implements Parser {
         return end == 0 ? null : s.substring(0, end);
     }
 
-    // Kept for documentation; not currently used.
-    @SuppressWarnings("unused")
-    private static final List<String> SUSPICIOUS_KEYS = Arrays.asList(
-            "url", "urlw", "iconfile", "modified");
 }

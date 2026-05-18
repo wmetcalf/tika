@@ -110,9 +110,15 @@ public class PpkgParser implements Parser {
                       Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        byte[] raw = stream.readAllBytes();
+        // Cap input — PPKG/WIM files are usually <50 MB; 256 MB is a hard ceiling
+        // that prevents heap exhaustion from a crafted oversize package.
+        byte[] raw = stream.readNBytes(256 * 1024 * 1024);
         if (raw.length < 208) {
             throw new TikaException("File too small to be a WIM/PPKG");
+        }
+        if (raw.length == 256 * 1024 * 1024 && stream.read() != -1) {
+            metadata.add("ppkg:warning",
+                    "Input truncated at 256 MB — any content beyond was not parsed");
         }
         for (int i = 0; i < WIM_MAGIC.length; i++) {
             if (raw[i] != WIM_MAGIC[i]) {
@@ -667,12 +673,9 @@ public class PpkgParser implements Parser {
         }
         String sha256 = sha256Hex(data);
         String md5 = md5Hex(data);
-        rootMeta.add("ppkg:embedded_file_sha256", sha256);
-        rootMeta.add("ppkg:embedded_file_md5", md5);
-        rootMeta.add("ppkg:embedded_file_sha1", sha1Hex);
-        rootMeta.add("ppkg:embedded_file_name", name);
-        rootMeta.add("ppkg:embedded_file_size", Long.toString(data.length));
 
+        // MIME detection FIRST so all parallel arrays add exactly once each
+        // (sha256[N], md5[N], sha1[N], name[N], size[N], mime[N] stay aligned).
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
         Metadata embMeta = new Metadata();
@@ -681,26 +684,61 @@ public class PpkgParser implements Parser {
         try (TikaInputStream tis = TikaInputStream.get(data)) {
             mime = new DefaultDetector()
                     .detect(tis, embMeta, context).getBaseType().toString();
-            embMeta.set(Metadata.CONTENT_TYPE, mime);
-            rootMeta.add("ppkg:embedded_file_mime", mime);
+        } catch (Exception e) {
+            warnings.add("MIME detect error " + name + ": " + e.getMessage());
+        }
+        embMeta.set(Metadata.CONTENT_TYPE, mime);
+
+        rootMeta.add("ppkg:embedded_file_sha256", sha256);
+        rootMeta.add("ppkg:embedded_file_md5", md5);
+        rootMeta.add("ppkg:embedded_file_sha1", sha1Hex);
+        rootMeta.add("ppkg:embedded_file_name", name);
+        rootMeta.add("ppkg:embedded_file_size", Long.toString(data.length));
+        rootMeta.add("ppkg:embedded_file_mime", mime);
+
+        try (TikaInputStream tis = TikaInputStream.get(data)) {
             if (extractor.shouldParseEmbedded(embMeta)) {
                 extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
             }
         } catch (Exception e) {
-            rootMeta.add("ppkg:embedded_file_mime", mime);
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         }
 
         // Structured per-asset record (matches ppkg_happiness copiedDataAssets shape).
-        // Single-line, key=value;... so consumers can split without ambiguity.
-        String asset = "reference=" + name
-                + ";mime_type=" + mime
+        // Reference is percent-encoded to prevent ';' / '=' in attacker-controlled
+        // WIM paths from spoofing record fields downstream.
+        String asset = "reference=" + sanitizeAssetField(name)
+                + ";mime_type=" + sanitizeAssetField(mime)
                 + ";size=" + data.length
                 + ";sha256=" + sha256
                 + ";sha1=" + sha1Hex
                 + ";md5=" + md5;
         rootMeta.add("ppkg:data_asset", asset);
         xhtml.element("p", "DataAsset: " + asset);
+    }
+
+    /**
+     * Percent-encode characters that would break the {@code k=v;k=v;...} record
+     * format used by {@code ppkg:data_asset}: '%', ';', '=', and any control
+     * byte. Attacker-controlled WIM paths are passed through this before being
+     * concatenated into the record so a name like {@code evil.exe;sha256=AAAA}
+     * cannot spoof the trailing hash field.
+     */
+    private static String sanitizeAssetField(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '%' || c == ';' || c == '=' || c < 0x20 || c == 0x7f) {
+                out.append('%')
+                   .append(String.format(Locale.ROOT, "%02X", (int) c));
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     // ── XML field extraction (regex-free, simple tag scan) ────────────────────
