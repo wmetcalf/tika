@@ -210,14 +210,7 @@ public class ICalParser implements Parser {
         List<String> lines = unfoldLines(text);
         List<Map<String, String>> props = parseProperties(lines);
 
-        // Wrap with the Unicode-QR scanner so any block-art QR drawn into
-        // DESCRIPTION/X-ALT-DESC text gets rendered and decoded via ZXing.
-        ContentHandler wrapped = new org.apache.tika.parser.image.UnicodeQRContentHandler(
-                handler, metadata,
-                new org.apache.tika.parser.image.ZXingCPPScanner(),
-                new org.apache.tika.parser.image.ZXingCPPConfig(),
-                context);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(wrapped, metadata);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
 
         Set<String> allUrls = new LinkedHashSet<>();
