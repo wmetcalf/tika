@@ -17,14 +17,13 @@
 package org.apache.tika.parser.microsoft;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.tika.io.TikaInputStream;
-import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ProcessUtils;
 import org.apache.tika.utils.StringUtils;
@@ -36,8 +35,8 @@ import org.apache.tika.utils.StringUtils;
  * shells out to ZXing-CPP, Tesseract, etc. for tasks the JVM library doesn't
  * cover natively.
  *
- * <p>Disabled by default. Enable by setting {@link WorksConfig} in
- * {@link ParseContext} with {@code setEnabled(true)} (or specify a binary
+ * <p>Disabled by default. Enable by setting {@link WorksConfig} in the
+ * {@code ParseContext} with {@code setEnabled(true)} (or specify a binary
  * path via {@code setWpsPath}). When disabled or when {@code wps2text} is not
  * present on PATH, the extractor returns an empty list and {@code
  * OfficeParser} silently falls back to metadata-only extraction.</p>
@@ -81,7 +80,7 @@ public class WorksTextExtractor {
             } else {
                 tmp = Files.createTempFile("tika-works-", ".wps");
                 weCreatedTmp = true;
-                Files.copy(stream, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(stream, tmp, StandardCopyOption.REPLACE_EXISTING);
             }
             return runWps2Text(tmp);
         } finally {
