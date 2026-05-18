@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -217,7 +218,7 @@ public class OfficeParser extends AbstractOfficeParser {
                 tis.setOpenContainer(fs);
                 root = fs.getRoot();
             }
-            parse(root, context, metadata, xhtml);
+            parse(root, context, metadata, xhtml, tis);
             OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
 
             if (officeParserConfig.isExtractMacros()) {
@@ -241,6 +242,17 @@ public class OfficeParser extends AbstractOfficeParser {
 
     protected void parse(DirectoryNode root, ParseContext context, Metadata metadata,
                          XHTMLContentHandler xhtml)
+            throws IOException, SAXException, TikaException {
+        parse(root, context, metadata, xhtml, null);
+    }
+
+    /**
+     * Body-extraction dispatch. The optional {@code originalStream} is passed
+     * through so handlers that need to invoke external CLIs (e.g. wps2text
+     * for legacy MS Works {@code .wps}) can recover the original file path.
+     */
+    protected void parse(DirectoryNode root, ParseContext context, Metadata metadata,
+                         XHTMLContentHandler xhtml, TikaInputStream originalStream)
             throws IOException, SAXException, TikaException {
 
         // Parse summary entries first, to make metadata available early
@@ -275,6 +287,25 @@ public class OfficeParser extends AbstractOfficeParser {
                 break;
             case PROJECT:
                 // We currently can't do anything beyond the metadata
+                break;
+            case WORKS:
+                // Legacy Microsoft Works .wps — POI ships no extractor. Optionally
+                // shell out to libwps's wps2text when WorksConfig is enabled.
+                {
+                    WorksConfig wpsConfig = context.get(WorksConfig.class);
+                    if (wpsConfig != null && wpsConfig.isEnabled()
+                            && originalStream != null) {
+                        try {
+                            WorksTextExtractor extractor = new WorksTextExtractor(wpsConfig);
+                            List<String> lines = extractor.extract(originalStream);
+                            for (String line : lines) {
+                                xhtml.element("p", line);
+                            }
+                        } catch (IOException e) {
+                            // best-effort — metadata still emitted above
+                        }
+                    }
+                }
                 break;
             case VISIO:
                 VisioTextExtractor visioTextExtractor = new VisioTextExtractor(root);
