@@ -124,7 +124,14 @@ public class ICalParser implements Parser {
             throws IOException, SAXException, TikaException {
 
         byte[] raw = stream.readAllBytes();
-        String text = decodeIcal(raw);
+        DecodedIcal decoded = decodeIcal(raw);
+        String text = decoded.text;
+        metadata.set("ical:source_encoding", decoded.encoding);
+        if (decoded.suspicious) {
+            metadata.add("ical:warning",
+                    "Source encoded as " + decoded.encoding + " — uncommon for ICS; "
+                            + "many email gateways scan ASCII/UTF-8 only and can miss this content");
+        }
 
         List<String> lines = unfoldLines(text);
         List<Map<String, String>> props = parseProperties(lines);
@@ -536,22 +543,83 @@ public class ICalParser implements Parser {
 
     // ── RFC 5545 parsing ──────────────────────────────────────────────────────
 
-    private static String decodeIcal(byte[] raw) {
-        // UTF-8 BOM
+    /** Result of {@link #decodeIcal(byte[])} — decoded text plus the detected encoding. */
+    static final class DecodedIcal {
+        final String text;
+        final String encoding;
+        /** True when the source is encoded as something other than UTF-8/ASCII —
+         *  uncommon for legitimate ICS and useful as an evasion signal. */
+        final boolean suspicious;
+
+        DecodedIcal(String text, String encoding, boolean suspicious) {
+            this.text = text;
+            this.encoding = encoding;
+            this.suspicious = suspicious;
+        }
+    }
+
+    static DecodedIcal decodeIcal(byte[] raw) {
+        // UTF-8 BOM (EF BB BF)
         if (raw.length >= 3 && (raw[0] & 0xff) == 0xef
                 && (raw[1] & 0xff) == 0xbb && (raw[2] & 0xff) == 0xbf) {
-            return new String(raw, 3, raw.length - 3, StandardCharsets.UTF_8);
+            return new DecodedIcal(
+                    new String(raw, 3, raw.length - 3, StandardCharsets.UTF_8),
+                    "UTF-8 (BOM)", false);
         }
-        // UTF-16LE BOM
+        // UTF-32LE BOM (FF FE 00 00) — must come BEFORE UTF-16LE BOM check
+        if (raw.length >= 4 && (raw[0] & 0xff) == 0xff && (raw[1] & 0xff) == 0xfe
+                && raw[2] == 0 && raw[3] == 0) {
+            return new DecodedIcal(
+                    new String(raw, 4, raw.length - 4, Charset.forName("UTF-32LE")),
+                    "UTF-32LE (BOM)", true);
+        }
+        // UTF-32BE BOM (00 00 FE FF)
+        if (raw.length >= 4 && raw[0] == 0 && raw[1] == 0
+                && (raw[2] & 0xff) == 0xfe && (raw[3] & 0xff) == 0xff) {
+            return new DecodedIcal(
+                    new String(raw, 4, raw.length - 4, Charset.forName("UTF-32BE")),
+                    "UTF-32BE (BOM)", true);
+        }
+        // UTF-16LE BOM (FF FE)
         if (raw.length >= 2 && (raw[0] & 0xff) == 0xff && (raw[1] & 0xff) == 0xfe) {
-            return new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16LE);
+            return new DecodedIcal(
+                    new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16LE),
+                    "UTF-16LE (BOM)", true);
         }
-        // Try UTF-8 first, fall back to Latin-1
+        // UTF-16BE BOM (FE FF)
+        if (raw.length >= 2 && (raw[0] & 0xff) == 0xfe && (raw[1] & 0xff) == 0xff) {
+            return new DecodedIcal(
+                    new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16BE),
+                    "UTF-16BE (BOM)", true);
+        }
+        // BOM-less UTF-16LE: starts with "B\0E\0G\0I\0N\0:\0"
+        if (raw.length >= 14 && raw[0] == 'B' && raw[1] == 0
+                && raw[2] == 'E' && raw[3] == 0 && raw[4] == 'G' && raw[5] == 0
+                && raw[6] == 'I' && raw[7] == 0 && raw[8] == 'N' && raw[9] == 0) {
+            return new DecodedIcal(
+                    new String(raw, 0, raw.length, StandardCharsets.UTF_16LE),
+                    "UTF-16LE (no BOM)", true);
+        }
+        // BOM-less UTF-16BE: starts with "\0B\0E\0G\0I\0N\0:"
+        if (raw.length >= 14 && raw[0] == 0 && raw[1] == 'B'
+                && raw[2] == 0 && raw[3] == 'E' && raw[4] == 0 && raw[5] == 'G'
+                && raw[6] == 0 && raw[7] == 'I' && raw[8] == 0 && raw[9] == 'N') {
+            return new DecodedIcal(
+                    new String(raw, 0, raw.length, StandardCharsets.UTF_16BE),
+                    "UTF-16BE (no BOM)", true);
+        }
+        // Try UTF-8 first
         String utf8 = new String(raw, StandardCharsets.UTF_8);
         if (utf8.contains("BEGIN:VCALENDAR")) {
-            return utf8;
+            return new DecodedIcal(utf8, "UTF-8", false);
         }
-        return new String(raw, Charset.forName("ISO-8859-1"));
+        // Fall back to ISO-8859-1
+        String latin1 = new String(raw, Charset.forName("ISO-8859-1"));
+        boolean suspicious = !latin1.contains("BEGIN:VCALENDAR");
+        return new DecodedIcal(latin1,
+                suspicious ? "ISO-8859-1 (no VCALENDAR marker — possible exotic encoding)"
+                           : "ISO-8859-1",
+                suspicious);
     }
 
     // RFC 5545 §3.1: unfold lines (CRLF or LF followed by SPACE/TAB = continuation)
