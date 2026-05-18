@@ -133,6 +133,12 @@ public class UrlShortcutParser implements Parser {
             if (kv.matches()) {
                 String key = kv.group(1).trim();
                 String val = kv.group(2).trim();
+                // Strip surrounding quotes — some generators write URL="...".
+                if (val.length() >= 2
+                        && ((val.charAt(0) == '"' && val.charAt(val.length() - 1) == '"')
+                         || (val.charAt(0) == '\'' && val.charAt(val.length() - 1) == '\''))) {
+                    val = val.substring(1, val.length() - 1);
+                }
                 sections.get(current).put(key.toLowerCase(Locale.ROOT), val);
             }
         }
