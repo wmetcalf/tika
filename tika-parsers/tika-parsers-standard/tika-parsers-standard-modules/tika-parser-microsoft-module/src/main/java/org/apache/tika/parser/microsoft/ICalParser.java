@@ -129,6 +129,50 @@ public class ICalParser implements Parser {
             "application/octet-stream"
     ));
 
+    // Multi-day event threshold — meetings rarely span more than ~12 hours;
+    // attackers use multi-day events to keep their payload visible on the
+    // target's calendar across a whole work week ("ACTION REQUIRED: Domain
+    // Expiry" spanning Mon-Fri is the documented Sublime example).
+    private static final long LONG_DURATION_HOURS_THRESHOLD = 12L;
+
+    // Brand-impersonation keyword list — common phishing impersonations seen
+    // in ICS attacks (Sublime Nov 2025 attack-spotlight). Used jointly with a
+    // financial-amount pattern to limit false positives.
+    private static final Set<String> BRAND_IMPERSONATION_KEYWORDS = new LinkedHashSet<>(Arrays.asList(
+            "paypal", "docusign", "microsoft 365", "office 365", "godaddy",
+            "microsoft admin", "microsoft domain", "google workspace",
+            "freeconferencecall", "norton", "mcafee", "geek squad",
+            "bitcoin", "wallet", "remuneration", "payroll bonus",
+            "invoice", "payment receipt", "transaction id", "ref:"
+    ));
+
+    // Phone-number pattern for callback-phishing detection — international or
+    // US format with at least 8 digits.
+    private static final Pattern PHONE_PATTERN = Pattern.compile(
+            "\\+?[1-9][0-9 ().\\-]{8,}[0-9]",
+            Pattern.CASE_INSENSITIVE);
+
+    // Dollar / currency amount pattern (US $, £, €). Pairs with brand
+    // impersonation keywords to flag "fake receipt" callback-phishing.
+    private static final Pattern AMOUNT_PATTERN = Pattern.compile(
+            "(?:\\$|£|€|USD|GBP|EUR)\\s*[0-9][0-9,.]{2,}",
+            Pattern.CASE_INSENSITIVE);
+
+    // Manipulative-language keywords used to drive urgency / engagement.
+    private static final Set<String> URGENCY_KEYWORDS = new LinkedHashSet<>(Arrays.asList(
+            "urgent", "immediately", "expires", "expiry", "expiring",
+            "action required", "act now", "mandatory", "do not ignore",
+            "final notice", "verify your account", "suspended",
+            "service disruption", "credentials expire", "password expir"
+    ));
+
+    // Conference-call infrastructure URLs commonly abused in ICS phishing
+    // because they offer "real" meeting links that bypass URL-reputation checks.
+    private static final Set<String> CONFERENCE_PHISHING_HOSTS = new LinkedHashSet<>(Arrays.asList(
+            "freeconferencecall.com", "join.freeconferencecall.com",
+            "fccdl.in"
+    ));
+
     // URL pattern for extracting URLs from text properties
     private static final Pattern URL_PATTERN =
             Pattern.compile("https?://[^\\s\"'<>\\\\]+",
@@ -397,6 +441,7 @@ public class ICalParser implements Parser {
         // 4. DTSTAMP far before DTSTART = forged "earlier revision" timestamp.
         String dtstamp = props.get("dtstamp");
         String dtstart = props.get("dtstart");
+        String dtend   = props.get("dtend");
         long backdateDays = backdateGapDays(dtstamp, dtstart);
         if (backdateDays > BACKDATE_DAYS_THRESHOLD) {
             exploitDesc.append(
@@ -404,6 +449,169 @@ public class ICalParser implements Parser {
                   + " days (>" + BACKDATE_DAYS_THRESHOLD
                   + ") — back-dated event, often used to fake legitimate followup; ");
         }
+
+        // 5. Implausibly long event duration — phishing invites use multi-day
+        //    spans so the malicious entry stays visible all week.
+        long durationHours = durationHours(dtstart, dtend);
+        if (durationHours > LONG_DURATION_HOURS_THRESHOLD) {
+            metadata.set("ical:event_duration_hours", Long.toString(durationHours));
+            exploitDesc.append(
+                    "VEVENT spans " + durationHours + " hours (>"
+                  + LONG_DURATION_HOURS_THRESHOLD
+                  + ") — long-running event used to keep phishing payload "
+                  + "visible across the work week; ");
+        }
+
+        // 6. Brand impersonation + financial amount in any visible text field.
+        //    Pair-test reduces FPs: brand keyword alone OR amount alone is not
+        //    enough, but seeing both in the same VEVENT is high signal.
+        String haystack = combinedTextHaystack(props);
+        if (!haystack.isEmpty()) {
+            String haystackLower = haystack.toLowerCase(Locale.ROOT);
+            String matchedBrand = firstContains(haystackLower, BRAND_IMPERSONATION_KEYWORDS);
+            boolean hasAmount = AMOUNT_PATTERN.matcher(haystack).find();
+            if (matchedBrand != null && hasAmount) {
+                metadata.add("ical:brand_impersonation", matchedBrand);
+                exploitDesc.append(
+                        "VEVENT content combines brand keyword \""
+                      + matchedBrand + "\" with a currency amount "
+                      + "(callback-phishing / fake-receipt shape); ");
+            } else if (matchedBrand != null) {
+                metadata.add("ical:brand_keyword", matchedBrand);
+            }
+
+            // Callback-phishing phone number in body text.
+            Matcher pm = PHONE_PATTERN.matcher(haystack);
+            if (pm.find()) {
+                String phone = pm.group().trim();
+                metadata.add("ical:event_phone", phone);
+                if (matchedBrand != null) {
+                    exploitDesc.append(
+                            "VEVENT text contains a callback phone number ("
+                          + phone + ") alongside brand keyword \""
+                          + matchedBrand + "\" — callback-phishing pattern; ");
+                }
+            }
+
+            // Manipulative-urgency language.
+            String urgency = firstContains(haystackLower, URGENCY_KEYWORDS);
+            if (urgency != null) {
+                metadata.add("ical:event_urgency_keyword", urgency);
+            }
+        }
+
+        // 7. Conference-call infrastructure abuse — legitimate hosts whose URL
+        //    reputation bypasses gateways, weaponized for callback / credential
+        //    phishing.
+        for (String urlVal : allUrls) {
+            String low = urlVal.toLowerCase(Locale.ROOT);
+            for (String host : CONFERENCE_PHISHING_HOSTS) {
+                if (low.contains(host)) {
+                    metadata.add("ical:conference_host_abused", host);
+                    break;
+                }
+            }
+        }
+
+        // 8. Unicode block-character QR art in DESCRIPTION/X-ALT-DESC. Some
+        //    phishing kits draw a scannable QR code using block-element glyphs
+        //    (▀ ▄ █ ░ ▒) directly in the meeting body so a phone camera can
+        //    grab it off the screen, bypassing image-based QR scanners.
+        for (String key : new String[]{"description", "x-alt-desc", "summary"}) {
+            String text = props.get(key);
+            if (text == null || text.isEmpty()) {
+                continue;
+            }
+            int blockChars = countBlockElementChars(text);
+            if (blockChars >= 200) {
+                // 21x21 QR module grid at 1 codepoint per module = ~441 chars
+                // minimum. Threshold 200 catches Micro-QR and noisier renderings.
+                metadata.set("ical:unicode_qr_in_" + key.replace('-', '_'),
+                        Integer.toString(blockChars));
+                exploitDesc.append(
+                        "VEVENT " + key + " contains a high density of Unicode "
+                      + "block-element glyphs (" + blockChars
+                      + ") — likely an inline QR-code-art payload; ");
+                break;
+            }
+        }
+
+        // 9. Empty (or near-empty) SUMMARY combined with attachments = the
+        //    "no-title meeting with a payload" shape from the QR-in-PDF example.
+        String summary = props.get("summary");
+        boolean hasAttach = props.keySet().stream().anyMatch(k -> k.startsWith("attach"));
+        if (hasAttach && (summary == null || summary.trim().length() < 4)) {
+            exploitDesc.append(
+                    "VEVENT has an attached file but a missing/near-empty SUMMARY "
+                  + "— payload-without-context shape; ");
+        }
+    }
+
+    /** Returns the duration in hours, or -1 if either timestamp can't be parsed. */
+    private static long durationHours(String dtstart, String dtend) {
+        if (dtstart == null || dtend == null) {
+            return -1;
+        }
+        Long startSec = parseICalDate(dtstart);
+        Long endSec   = parseICalDate(dtend);
+        if (startSec == null || endSec == null) {
+            return -1;
+        }
+        long deltaSec = endSec - startSec;
+        if (deltaSec <= 0) {
+            return -1;
+        }
+        return deltaSec / 3600L;
+    }
+
+    /** Concatenates all human-visible text fields for keyword scanning. */
+    private static String combinedTextHaystack(Map<String, String> props) {
+        StringBuilder sb = new StringBuilder();
+        for (String key : new String[]{
+                "summary", "description", "x-alt-desc", "location",
+                "organizer", "comment"}) {
+            String v = props.get(key);
+            if (v != null && !v.isEmpty()) {
+                if (sb.length() > 0) {
+                    sb.append(' ');
+                }
+                sb.append(v);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Count occurrences of Unicode "block element" codepoints (U+2580..U+259F)
+     * plus the closely-related "geometric shapes" used for QR-art ░ ▒ ▓ █.
+     * Also counts full-block full-width spaces sometimes used as the "light"
+     * module. Used to detect inline QR-code art in DESCRIPTION/X-ALT-DESC.
+     */
+    private static int countBlockElementChars(String s) {
+        if (s == null || s.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            // U+2580..U+259F = block elements (▀ ▁ ▂ ▃ ▄ ▅ ▆ ▇ █ ▉ ...)
+            // U+25A0..U+25FF = geometric shapes (■ □ ▢ ▣ ▤ ...) — often used
+            // for the "dark" module in alternative QR art.
+            if (c >= 0x2580 && c <= 0x25FF) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** First keyword from {@code needles} found anywhere in {@code haystackLower}. */
+    private static String firstContains(String haystackLower, Set<String> needles) {
+        for (String n : needles) {
+            if (haystackLower.contains(n)) {
+                return n;
+            }
+        }
+        return null;
     }
 
     /**
@@ -553,6 +761,18 @@ public class ICalParser implements Parser {
                                 || mime.contains("script")) {
                             exploitDesc.append(
                                     "Inline ATTACH with risky MIME type: " + mime + "; ");
+                        }
+                        // HTML attachments inside ICS invites are virtually
+                        // always weaponized — the Sublime "Microsoft Domain
+                        // Renewal" example used this exact shape (HTML phishing
+                        // kit auto-attached to a multi-day calendar event).
+                        if (mime.startsWith("text/html")
+                                || mime.equals("application/xhtml+xml")) {
+                            metadata.set("ical:attach_html", "true");
+                            exploitDesc.append(
+                                    "Inline ATTACH is an HTML file (" + mime
+                                  + ") — calendar invites with attached HTML are "
+                                  + "almost always phishing kits; ");
                         }
                         // Feed through embedded pipeline
                         Metadata embMeta = new Metadata();
