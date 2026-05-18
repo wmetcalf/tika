@@ -265,6 +265,18 @@ public class UrlShortcutParser implements Parser {
             return new Decoded(new String(raw, 2, raw.length - 2, StandardCharsets.UTF_16BE),
                     "UTF-16BE (BOM)");
         }
+        // BOM-less UTF-16LE: starts with "[\0I\0n\0t\0..."
+        if (raw.length >= 8 && raw[0] == '[' && raw[1] == 0
+                && raw[2] != 0 && raw[3] == 0 && raw[4] != 0 && raw[5] == 0) {
+            return new Decoded(new String(raw, 0, raw.length, StandardCharsets.UTF_16LE),
+                    "UTF-16LE (no BOM)");
+        }
+        // BOM-less UTF-16BE: starts with "\0[\0I\0n\0..."
+        if (raw.length >= 8 && raw[0] == 0 && raw[1] == '['
+                && raw[2] == 0 && raw[3] != 0 && raw[4] == 0 && raw[5] != 0) {
+            return new Decoded(new String(raw, 0, raw.length, StandardCharsets.UTF_16BE),
+                    "UTF-16BE (no BOM)");
+        }
         // Try UTF-8 — if the byte stream isn't valid UTF-8 the JVM substitutes
         // U+FFFD; pick cp1252 in that case.
         String utf8 = new String(raw, StandardCharsets.UTF_8);
