@@ -4686,6 +4686,15 @@
       <!-- UTF-8 BOM + [InternetShortcut] -->
       <match value="\xef\xbb\xbf[InternetShortcut]" type="string" offset="0"/>
     </magic>
+    <!-- Lower-priority fallback: Windows accepts headerless .url files with just
+         a bare URL= line at the top. This matches a leading "URL=" prefix; if the
+         body actually has [InternetShortcut] elsewhere the higher-priority match
+         above wins. Low priority so legitimate INI files with a URL= key don't
+         get hijacked unless the .url glob also matches. -->
+    <magic priority="20">
+      <match value="URL=" type="string" offset="0"/>
+      <match value="\xef\xbb\xbfURL=" type="string" offset="0"/>
+    </magic>
   </mime-type>
   <mime-type type="application/x-ms-compress-szdd">
     <_comment>MS-DOS compression szzd</_comment>
