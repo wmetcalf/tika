@@ -815,27 +815,72 @@ public class WinShortcutParser implements Parser {
             }
             int charCount = Short.toUnsignedInt(buf.getShort(pos));
             pos += 2;
-            String value;
-            if (unicode) {
-                int byteLen = charCount * 2;
-                if (pos + byteLen > fileLen) {
-                    break;
-                }
-                value = new String(buf.array(), pos, byteLen, StandardCharsets.UTF_16LE);
-                pos += byteLen;
+            // MS-SHLLINK §2.4 says the IsUnicode flag determines whether the
+            // following COUNT_CHARACTERS units are UTF-16 (charCount*2 bytes) or
+            // ANSI (charCount bytes). Malformed/malicious LNKs lie about the flag,
+            // so we score both decodings and prefer the one with more printable
+            // text. Ties go to the flag-claimed encoding.
+            byte[] data = buf.array();
+            int wantUnicodeBytes = charCount * 2;
+            int wantAnsiBytes    = charCount;
+            boolean canDecodeUnicode = pos + wantUnicodeBytes <= fileLen;
+            boolean canDecodeAnsi    = pos + wantAnsiBytes <= fileLen;
+            if (!canDecodeUnicode && !canDecodeAnsi) {
+                break;
+            }
+            String unicodeStr = canDecodeUnicode
+                    ? new String(data, pos, wantUnicodeBytes, StandardCharsets.UTF_16LE) : "";
+            String ansiStr = canDecodeAnsi
+                    ? new String(data, pos, wantAnsiBytes, cp1252()) : "";
+            int unicodeScore = canDecodeUnicode ? textScore(unicodeStr) : -1;
+            int ansiScore    = canDecodeAnsi    ? textScore(ansiStr)    : -1;
+            boolean actualUnicode;
+            if (unicodeScore > ansiScore) {
+                actualUnicode = true;
+            } else if (ansiScore > unicodeScore) {
+                actualUnicode = false;
             } else {
-                if (pos + charCount > fileLen) {
-                    break;
-                }
-                value = new String(buf.array(), pos, charCount, cp1252());
-                pos += charCount;
+                actualUnicode = unicode;  // tie — trust the flag
+            }
+            // If the flag-claimed encoding is also valid and the loser only beats
+            // it by a small margin, prefer the flag (avoid CJK Unicode → ANSI
+            // misclassification when both look "fine").
+            int margin = Math.abs(unicodeScore - ansiScore);
+            int reqMargin = Math.max(2, Math.min(unicodeStr.length(), ansiStr.length()) / 8);
+            if (margin < reqMargin) {
+                actualUnicode = unicode;
+            }
+            String value;
+            int byteLen;
+            if (actualUnicode) {
+                byteLen = wantUnicodeBytes;
+                value = unicodeStr;
+            } else {
+                byteLen = wantAnsiBytes;
+                value = ansiStr;
+            }
+            pos += byteLen;
+            if (actualUnicode != unicode && !value.isEmpty()) {
+                warnings.add(keyNames[fi] + ": IsUnicode flag=" + unicode
+                        + " but content decodes cleanly as "
+                        + (actualUnicode ? "UTF-16LE" : "ANSI/cp1252")
+                        + " (flag/content mismatch — possible parser-confusion attempt)");
+                fields.put(keyNames[fi] + ".Encoding",
+                        actualUnicode ? "UTF-16LE" : "ANSI/cp1252");
+                fields.put(keyNames[fi] + ".FlagMismatch", "true");
             }
             if (!value.isEmpty()) {
+                // Trim trailing NULs (NUL-padded shorter strings)
+                int trimEnd = value.length();
+                while (trimEnd > 0 && value.charAt(trimEnd - 1) == 0) {
+                    trimEnd--;
+                }
+                if (trimEnd != value.length()) {
+                    value = value.substring(0, trimEnd);
+                }
                 fields.put(keyNames[fi], value);
-                // Detect padding obfuscation: Windows UI truncates at 260 chars,
-                // so malware hides commands beyond that point using whitespace padding
-                if (fi == 3 && charCount > 260) {
-                    String visible = value.substring(0, 260);
+                // Padding obfuscation: Windows UI truncates Arguments at 260 chars
+                if (fi == 3 && value.length() > 260) {
                     String hidden  = value.substring(260);
                     if (!hidden.trim().isEmpty()) {
                         fields.put("Arguments.Hidden", hidden.trim());
@@ -845,6 +890,40 @@ public class WinShortcutParser implements Parser {
             }
         }
         return pos;
+    }
+
+    /**
+     * Score how "text-like" a decoded string is. Counts chars that look like
+     * legible content (letters, digits, common punctuation, whitespace, or
+     * non-Latin letters from any Unicode plane) and penalises C0 control bytes
+     * that aren't tab/CR/LF. Higher = more likely to be the correct encoding.
+     */
+    private static int textScore(String s) {
+        if (s == null || s.isEmpty()) {
+            return 0;
+        }
+        int good = 0;
+        int bad = 0;
+        int len = s.length();
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            if (c == '\t' || c == '\r' || c == '\n') {
+                good++;
+            } else if (c < 0x20) {
+                bad++;
+            } else if (c == 0xFFFD) {
+                bad++;  // replacement char from a failed decode
+            } else if (Character.isLetterOrDigit(c) || Character.isSpaceChar(c)) {
+                good++;
+            } else if (c < 0x7f) {
+                good++;  // ASCII punctuation/symbols
+            } else if (Character.isDefined(c)) {
+                good++;  // any defined Unicode codepoint (handles CJK)
+            } else {
+                bad++;
+            }
+        }
+        return good - bad;
     }
 
     // ── ExtraData §2.5 ────────────────────────────────────────────────────────
