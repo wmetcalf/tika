@@ -559,6 +559,7 @@ public class WinShortcutParser implements Parser {
             return null;
         }
         boolean itemUnicode = (typeIndicator & 0x04) != 0;
+        boolean isFile = (typeIndicator & 0x02) != 0;   // bit 1: file vs folder
 
         String primaryName = null;
         if (itemUnicode) {
@@ -577,17 +578,64 @@ public class WinShortcutParser implements Parser {
         }
 
         // Extension blocks at extOffset (last 2 bytes of item)
+        boolean hasBeef0004 = false;
+        String longName = null;
         if (size >= 4) {
             int extOffset = Short.toUnsignedInt(buf.getShort(end - 2));
             if (extOffset > 0 && base + extOffset < end - 2) {
-                String longName = parseBeef0004Extensions(buf, base + extOffset, end - 2,
+                longName = parseBeef0004Extensions(buf, base + extOffset, end - 2,
                         primaryName, fields);
-                if (longName != null && !longName.isEmpty()) {
-                    return longName;
-                }
+                hasBeef0004 = (base + extOffset + 8 <= end - 2)
+                        && buf.getInt(base + extOffset + 4) == 0xBEEF0004;
             }
         }
+
+        // Defensive signal: ANSI-typed FileSystem item targeting a LoLBin executable
+        // with NO BEEF0004 Unicode LFN extension. Modern Windows always writes the
+        // BEEF0004 block — absence on an executable target indicates a hand-crafted
+        // LNK (common in the 2023-2025 LoLBin-via-LNK phishing campaigns).
+        if (!itemUnicode && isFile && !hasBeef0004
+                && primaryName != null && !primaryName.isEmpty()) {
+            String pLower = primaryName.toLowerCase(Locale.ROOT);
+            if (LOLBIN_NAMES.contains(pLower) || isExecutableExtension(pLower)) {
+                fields.put("idlist:target_ansi_only", "true");
+                fields.put("idlist:target_ansi_only_name", primaryName);
+                String reason = LOLBIN_NAMES.contains(pLower)
+                        ? "hand-crafted LNK targets LoLBin " + primaryName
+                          + " via ANSI-only IDList (no BEEF0004 LFN)"
+                        : "hand-crafted LNK targets executable " + primaryName
+                          + " via ANSI-only IDList (no BEEF0004 LFN)";
+                fields.put("ExploitClass", reason);
+            }
+        }
+
+        if (longName != null && !longName.isEmpty()) {
+            return longName;
+        }
         return primaryName;
+    }
+
+    private static final Set<String> LOLBIN_NAMES = new HashSet<>(Arrays.asList(
+            "cmd.exe", "powershell.exe", "powershell_ise.exe", "pwsh.exe",
+            "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe",
+            "regsvr32.exe", "conhost.exe", "hh.exe", "forfiles.exe",
+            "certutil.exe", "bitsadmin.exe", "wmic.exe", "msbuild.exe",
+            "installutil.exe", "regasm.exe", "regsvcs.exe", "msiexec.exe",
+            "syncappvpublishingserver.vbs", "msxsl.exe", "ie4uinit.exe",
+            "control.exe", "ftp.exe", "diskshadow.exe"
+    ));
+
+    private static boolean isExecutableExtension(String pathLower) {
+        int dot = pathLower.lastIndexOf('.');
+        if (dot < 0) {
+            return false;
+        }
+        String ext = pathLower.substring(dot);
+        return ext.equals(".exe") || ext.equals(".dll") || ext.equals(".scr")
+                || ext.equals(".com") || ext.equals(".bat") || ext.equals(".cmd")
+                || ext.equals(".ps1") || ext.equals(".vbs") || ext.equals(".js")
+                || ext.equals(".jse") || ext.equals(".hta") || ext.equals(".wsf")
+                || ext.equals(".msi") || ext.equals(".msp");
     }
 
     private String parseNetworkShellItem(ByteBuffer buf, int base, int size, int end) {
