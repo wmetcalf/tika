@@ -40,6 +40,13 @@
       <artifactId>tika-parser-html-module</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- UnicodeQRExtractor / UnicodeQRContentHandler — Unicode block-art QR
+         decoding for ICS/MSG/EML/HTML/TXT bodies via ZXing-CPP. -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-parser-image-module</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <!-- needed for msg files -->
     <dependency>
       <groupId>${project.groupId}</groupId>
