@@ -43,6 +43,12 @@ class XSSFStylesShim {
 
     private final Map<Short, String> numberFormats = new HashMap<>();
     private final List<Short> cellXfFormatIds = new ArrayList<>();
+    // Font color resolution chain: each cellXf points at a font by index,
+    // and each font has an optional <color rgb="AARRGGBB"/> (or theme/index).
+    // Color is captured as a 6-char uppercase RGB hex (alpha dropped); null
+    // when no explicit RGB is set.
+    private final List<Integer> cellXfFontIds = new ArrayList<>();
+    private final List<String> fontColors = new ArrayList<>();
 
     XSSFStylesShim(InputStream stylesData, ParseContext parseContext)
             throws IOException, SAXException, TikaException {
@@ -78,6 +84,22 @@ class XSSFStylesShim {
         return fmt;
     }
 
+    /**
+     * Returns the font color (6-char uppercase RGB hex) for a cell style
+     * index, or {@code null} when no explicit RGB color is set on the
+     * resolved font.
+     */
+    String getFontColor(int styleIndex) {
+        if (styleIndex < 0 || styleIndex >= cellXfFontIds.size()) {
+            return null;
+        }
+        int fontId = cellXfFontIds.get(styleIndex);
+        if (fontId < 0 || fontId >= fontColors.size()) {
+            return null;
+        }
+        return fontColors.get(fontId);
+    }
+
     private class StylesHandler extends DefaultHandler {
 
         private static final String NS =
@@ -85,6 +107,9 @@ class XSSFStylesShim {
 
         private boolean inCellXfs;
         private boolean inNumFmts;
+        private boolean inFonts;
+        private boolean inFont;
+        private String currentFontColor;
 
         @Override
         public void startElement(String uri, String localName, String qName,
@@ -124,6 +149,38 @@ class XSSFStylesShim {
                             }
                         }
                         cellXfFormatIds.add(numFmtId);
+                        String fontIdStr = attributes.getValue("fontId");
+                        int fontId = 0;
+                        if (fontIdStr != null) {
+                            try {
+                                fontId = Integer.parseInt(fontIdStr);
+                            } catch (NumberFormatException e) {
+                                // default to 0
+                            }
+                        }
+                        cellXfFontIds.add(fontId);
+                    }
+                    break;
+                case "fonts":
+                    inFonts = true;
+                    break;
+                case "font":
+                    if (inFonts) {
+                        inFont = true;
+                        currentFontColor = null;
+                    }
+                    break;
+                case "color":
+                    if (inFont) {
+                        // <color rgb="FF000000"/> — XLSX stores ARGB; drop alpha.
+                        String rgb = attributes.getValue("rgb");
+                        if (rgb != null && rgb.length() == 8) {
+                            currentFontColor = rgb.substring(2).toUpperCase(
+                                    java.util.Locale.ROOT);
+                        } else if (rgb != null && rgb.length() == 6) {
+                            currentFontColor = rgb.toUpperCase(
+                                    java.util.Locale.ROOT);
+                        }
                     }
                     break;
                 default:
@@ -140,6 +197,13 @@ class XSSFStylesShim {
                 inNumFmts = false;
             } else if ("cellXfs".equals(localName)) {
                 inCellXfs = false;
+            } else if ("fonts".equals(localName)) {
+                inFonts = false;
+            } else if ("font".equals(localName)) {
+                if (inFont) {
+                    fontColors.add(currentFontColor);
+                    inFont = false;
+                }
             }
         }
     }

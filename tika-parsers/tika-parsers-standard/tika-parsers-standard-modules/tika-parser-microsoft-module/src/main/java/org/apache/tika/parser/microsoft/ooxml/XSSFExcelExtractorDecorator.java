@@ -149,6 +149,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         XSSFReader.SheetIterator iter;
         XSSFReader xssfReader;
         XSSFStylesShim stylesShim = null;
+        org.apache.tika.parser.ColorAwareConfig colorAware =
+                parseContext.get(org.apache.tika.parser.ColorAwareConfig.class);
+        boolean colorAwareOn = colorAware != null && colorAware.isEnabled();
+        java.util.List<java.util.List<Integer>> aggregatedColorRows =
+                new java.util.ArrayList<>();
         try {
             xssfReader = new XSSFReader(container);
             iter = (XSSFReader.SheetIterator) xssfReader.getSheetsData();
@@ -181,6 +186,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 break;
             }
             SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
+            sheetExtractor.colorAwareEnabled = colorAwareOn;
             PackagePart sheetPart = null;
             InputStream nextStream;
             try {
@@ -253,7 +259,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             extractHyperLinks(sheetPart, xhtml);
             // All done with this sheet
             xhtml.endElement("div");
+            if (colorAwareOn) {
+                aggregatedColorRows.addAll(sheetExtractor.colorRows);
+            }
         }
+        OOXMLColorQRScanHelper.scan(aggregatedColorRows, parseContext, metadata,
+                "xlsx_color_qr", "XLSX");
 
         //consider adding this back to POI
         try (InputStream wbData = xssfReader.getWorkbookData()) {
@@ -1065,6 +1076,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         private XHTMLContentHandler xhtml;
         private int lastSeenRow = -1;
         private int lastSeenCol = -1;
+        private String pendingFontColor;
+        // Per-sheet color rows: each row is a list of luma values, one per
+        // non-empty cell. Populated only when color-aware mode is enabled.
+        protected final java.util.List<java.util.List<Integer>> colorRows =
+                new java.util.ArrayList<>();
+        protected boolean colorAwareEnabled;
+        private java.util.List<Integer> currentColorRow;
 
         protected SheetTextAsHTML(OfficeParserConfig config, XHTMLContentHandler xhtml) {
             this.includeHeadersFooters = config.isIncludeHeadersAndFooters();
@@ -1089,6 +1107,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // Start the new row
                 xhtml.startElement("tr");
                 lastSeenCol = -1;
+                if (colorAwareEnabled) {
+                    currentColorRow = new java.util.ArrayList<>();
+                }
             } catch (SAXException e) {
                 //swallow
                 throw new RuntimeSAXException(e);
@@ -1102,6 +1123,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             } catch (SAXException e) {
                 throw new RuntimeSAXException(e);
             }
+            if (colorAwareEnabled && currentColorRow != null) {
+                if (!currentColorRow.isEmpty()) {
+                    colorRows.add(currentColorRow);
+                }
+                currentColorRow = null;
+            }
+        }
+
+        @Override
+        public void cellStyle(String fontColorHex) {
+            this.pendingFontColor = fontColorHex;
         }
 
         public void cell(String cellRef, String formattedValue,
@@ -1122,6 +1154,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // Main cell contents
                 if (formattedValue != null) {
                     xhtml.characters(formattedValue);
+                }
+
+                if (colorAwareEnabled && currentColorRow != null && formattedValue != null
+                        && !formattedValue.isEmpty()) {
+                    int luma = lumaForHex(pendingFontColor);
+                    currentColorRow.add(luma);
                 }
 
                 // Comments
@@ -1168,6 +1206,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         @Override
         public void endSheet() {
             // no-op — satisfies both TikaSheetContentsHandler and SheetContentsHandler
+        }
+
+        /** BT.601 luma from a 6-char RGB hex string. Null/invalid → 0 (dark). */
+        private static int lumaForHex(String hex) {
+            if (hex == null || hex.length() != 6) {
+                return 0;
+            }
+            try {
+                int r = Integer.parseInt(hex.substring(0, 2), 16);
+                int g = Integer.parseInt(hex.substring(2, 4), 16);
+                int b = Integer.parseInt(hex.substring(4, 6), 16);
+                return org.apache.tika.parser.image.ColorGridQRDecoder.luma(r, g, b);
+            } catch (NumberFormatException ex) {
+                return 0;
+            }
         }
     }
 

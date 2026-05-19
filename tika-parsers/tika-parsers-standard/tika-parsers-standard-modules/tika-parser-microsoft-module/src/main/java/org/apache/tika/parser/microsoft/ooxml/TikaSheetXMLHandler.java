@@ -67,6 +67,7 @@ class TikaSheetXMLHandler extends DefaultHandler {
     private XssfDataType nextDataType;
     private short formatIndex;
     private String formatString;
+    private String cellFontColor;
 
     private int rowNum;
     private int nextRowNum;
@@ -174,9 +175,20 @@ class TikaSheetXMLHandler extends DefaultHandler {
             this.nextDataType = XssfDataType.NUMBER;
             this.formatIndex = -1;
             this.formatString = null;
+            this.cellFontColor = null;
             cellRef = attributes.getValue("r");
             String cellType = attributes.getValue("t");
             String cellStyleStr = attributes.getValue("s");
+            // Resolve font color for color-aware QR — independent of the
+            // data type / format handling below.
+            if (stylesShim != null && cellStyleStr != null) {
+                try {
+                    int sx = Integer.parseInt(cellStyleStr.trim());
+                    this.cellFontColor = stylesShim.getFontColor(sx);
+                } catch (NumberFormatException ignored) {
+                    // leave color null
+                }
+            }
 
             if ("b".equals(cellType)) {
                 nextDataType = XssfDataType.BOOLEAN;
@@ -331,6 +343,7 @@ class TikaSheetXMLHandler extends DefaultHandler {
         checkForEmptyCellComments(EmptyCellCommentsCheckType.CELL);
         XSSFCommentsShim.CommentData comment = commentsShim != null ?
                 commentsShim.findCellComment(new CellAddress(cellRef)) : null;
+        output.cellStyle(cellFontColor);
         output.cell(cellRef, thisStr, comment);
     }
 

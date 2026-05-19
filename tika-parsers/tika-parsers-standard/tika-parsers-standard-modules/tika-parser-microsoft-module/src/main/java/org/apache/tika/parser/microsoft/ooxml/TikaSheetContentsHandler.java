@@ -28,6 +28,15 @@ interface TikaSheetContentsHandler {
 
     void cell(String cellRef, String formattedValue, XSSFCommentsShim.CommentData comment);
 
+    /**
+     * Fires before {@link #cell} with the resolved font color of the cell
+     * about to be emitted, as a 6-char uppercase RGB hex (or {@code null}
+     * when the cell has no style index or the resolved font has no
+     * explicit color). Used by the color-aware QR scanner.
+     */
+    default void cellStyle(String fontColorHex) {
+    }
+
     default void headerFooter(String text, boolean isHeader, String tagName) {
     }
 
