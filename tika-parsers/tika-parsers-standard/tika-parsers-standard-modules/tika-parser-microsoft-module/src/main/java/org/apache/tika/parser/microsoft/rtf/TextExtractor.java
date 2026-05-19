@@ -462,25 +462,10 @@ final class TextExtractor {
             pushBytes();
         }
 
-        // Color table parsing: ';' inside {\colortbl} terminates one entry.
-        // If R/G/B were set during the entry, capture an RGB hex; else null
-        // (a bare ';' represents the implicit "auto" entry).
+        // While inside {\colortbl}, all chars are skipped (the byte-level
+        // loop already handles the ';' entry terminator and \red/\green/
+        // \blue control-word handlers stash R/G/B values).
         if (groupState.inColorTable) {
-            if (ch == ';') {
-                if (colorTableHasFirst) {
-                    String hex = String.format(java.util.Locale.ROOT, "%02X%02X%02X",
-                            colorTableR, colorTableG, colorTableB);
-                    colorTable.add(hex);
-                } else {
-                    colorTable.add(null);
-                }
-                colorTableR = 0;
-                colorTableG = 0;
-                colorTableB = 0;
-                colorTableHasFirst = false;
-            }
-            // While we're capturing the table, do not let its characters land
-            // in the document text.
             return;
         }
 
@@ -577,6 +562,21 @@ final class TextExtractor {
                 // back in normal text mode.
             } else if (groupState.objdata == true || groupState.pictDepth == 1) {
                 embObjHandler.writeHexChar(b);
+            } else if (groupState.inColorTable && b == ';') {
+                // ';' terminates one \colortbl entry. Finalize it here even
+                // when the rest of the table body is ignored, so the table
+                // index → RGB map is built for later \cfN resolution.
+                if (colorTableHasFirst) {
+                    String hex = String.format(java.util.Locale.ROOT, "%02X%02X%02X",
+                            colorTableR, colorTableG, colorTableB);
+                    colorTable.add(hex);
+                } else {
+                    colorTable.add(null);
+                }
+                colorTableR = 0;
+                colorTableG = 0;
+                colorTableB = 0;
+                colorTableHasFirst = false;
             } else if (b != '\r' && b != '\n' &&
                     (!groupState.ignore || nextMetaData != null || groupState.sn == true ||
                             groupState.sv == true)) {
@@ -1292,17 +1292,22 @@ final class TextExtractor {
 
             if (equals("colortbl")) {
                 // Capture the color table for color-aware QR detection rather
-                // than discarding it. The body of the group is a sequence of
-                // \redN \greenN \blueN; tuples ending in semicolons; the
-                // \red/\green/\blue control words below populate the table.
+                // than fully discarding it. The body of the group is a
+                // sequence of \red \green \blue control words and ';'
+                // entry-terminators; the byte-level loop catches the ';'
+                // and the per-word handler stashes R/G/B values.
+                // Still set ignore=true so text in the group doesn't leak
+                // into the output.
+                groupState.ignore = true;
                 groupState.inColorTable = true;
                 colorTableR = 0;
                 colorTableG = 0;
                 colorTableB = 0;
                 colorTableHasFirst = false;
                 colorTable.clear();
-                // Push a sentinel entry for the implicit "auto" color at index 0.
-                colorTable.add(null);
+                // The first ';' in {\colortbl; ...} is the implicit "auto"
+                // entry at index 0 — the byte-level handler will add a
+                // null for it.
             } else if (equals("stylesheet") || equals("fonttbl")) {
                 groupState.ignore = true;
             } else if (equals("listtable")) {
