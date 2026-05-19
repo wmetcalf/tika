@@ -153,7 +153,11 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         final int qualifying;
         final int darkCount;
         ClusterResult(List<List<ColorGridQRDecoder.Cell>> g, int r, int c, int q, int d) {
-            grid = g; rowCount = r; maxCols = c; qualifying = q; darkCount = d;
+            grid = g;
+            rowCount = r;
+            maxCols = c;
+            qualifying = q;
+            darkCount = d;
         }
     }
 
@@ -183,16 +187,22 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         int maxCols = 0;
         for (List<Glyph> r : rows) {
             r.sort((a, b) -> Float.compare(a.x, b.x));
-            if (r.size() > maxCols) maxCols = r.size();
+            if (r.size() > maxCols) {
+                maxCols = r.size();
+            }
         }
         int needed = (int) Math.ceil(maxCols * 0.7);
         int qualifying = 0;
         for (List<Glyph> r : rows) {
-            if (r.size() >= needed) qualifying++;
+            if (r.size() >= needed) {
+                qualifying++;
+            }
         }
         int darkCount = 0;
         for (Glyph g : glyphs) {
-            if (g.luma < ColorGridQRDecoder.DARK_LUMA_THRESHOLD) darkCount++;
+            if (g.luma < ColorGridQRDecoder.DARK_LUMA_THRESHOLD) {
+                darkCount++;
+            }
         }
         if (rows.size() < ColorGridQRDecoder.MIN_LINES
                 || maxCols < ColorGridQRDecoder.MIN_COLS
