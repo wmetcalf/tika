@@ -141,15 +141,12 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
                 metadata.add("pdf_color_qr:stage", "clusterToGrid-empty");
                 return;
             }
-            metadata.add("pdf_color_qr:stage", "calling-decoder");
             List<List<List<ColorGridQRDecoder.Cell>>> grids = new ArrayList<>();
             grids.add(cr.grid);
-            List<String> decoded = ColorGridQRDecoder.decode(
-                    grids, scanner, zxingConfig, null);
+            List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
+                    ColorGridQRDecoder.decode(grids, scanner, zxingConfig, null);
+            ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             metadata.add("pdf_color_qr:decode_count", String.valueOf(decoded.size()));
-            for (String t : decoded) {
-                metadata.add("pdf_color_qr:decoded", t);
-            }
             if (!decoded.isEmpty()) {
                 metadata.add("ExploitClass",
                         "Decoded " + decoded.size()

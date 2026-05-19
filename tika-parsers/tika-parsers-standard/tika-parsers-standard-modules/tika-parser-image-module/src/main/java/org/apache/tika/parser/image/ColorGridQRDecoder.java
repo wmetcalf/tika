@@ -72,11 +72,11 @@ public final class ColorGridQRDecoder {
      * @param scanner ZXing-CPP subprocess wrapper
      * @return decoded text values
      */
-    public static List<String> decode(List<List<List<Cell>>> grids,
+    public static List<ZXingCPPScanner.Result> decode(List<List<List<Cell>>> grids,
                                       ZXingCPPScanner scanner,
                                       ZXingCPPConfig config,
                                       ParseContext context) {
-        List<String> decoded = new ArrayList<>();
+        List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (grids == null || grids.isEmpty()
                 || scanner == null || !scanner.hasZXingCPP()) {
             return decoded;
@@ -102,7 +102,7 @@ public final class ColorGridQRDecoder {
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();
                     if (t != null && !t.isEmpty()) {
-                        decoded.add(t);
+                        decoded.add(r);
                         hit = true;
                     }
                 }
@@ -124,6 +124,46 @@ public final class ColorGridQRDecoder {
             }
         }
         return decoded;
+    }
+
+    /**
+     * Write each decoded result to the supplied {@link Metadata} as a
+     * {@link org.apache.tika.metadata.Barcode#BARCODE_VALUE} /
+     * {@link org.apache.tika.metadata.Barcode#BARCODE_FORMAT} pair so the
+     * decode lands in the same channel as image-based QR scans.
+     */
+    public static void emitBarcodes(List<ZXingCPPScanner.Result> results,
+                                    org.apache.tika.metadata.Metadata metadata) {
+        if (results == null || metadata == null) {
+            return;
+        }
+        for (ZXingCPPScanner.Result r : results) {
+            String text = r.getText();
+            if (text == null || text.isEmpty()) {
+                continue;
+            }
+            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_VALUE, text);
+            String fmt = r.getFormat();
+            String normalized = fmt == null ? "qrcode" :
+                    fmt.trim().toLowerCase(java.util.Locale.ROOT)
+                       .replaceAll("[^a-z0-9]+", "_")
+                       .replaceAll("^_+|_+$", "");
+            if (normalized.isEmpty()) {
+                normalized = "qrcode";
+            }
+            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_FORMAT, normalized);
+            String pos = r.getPosition();
+            if (pos != null && !pos.isEmpty()) {
+                metadata.add(org.apache.tika.metadata.Barcode.BARCODE_POSITION, pos);
+            }
+            String ecl = r.getErrorCorrectionLevel();
+            if (ecl != null && !ecl.isEmpty()) {
+                metadata.add(org.apache.tika.metadata.Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
+                        ecl);
+            }
+            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_IS_MIRRORED,
+                    Boolean.toString(r.isMirrored()));
+        }
     }
 
     /** Render a 2D Cell grid to a 2-colour bitmap. */

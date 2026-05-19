@@ -92,13 +92,12 @@ final class OOXMLColorQRScanHelper {
         grids.add(grid);
         try {
             ZXingCPPScanner scanner = new ZXingCPPScanner(zcfg);
-            List<String> decoded = ColorGridQRDecoder.decode(grids, scanner, zcfg, null);
+            List<ZXingCPPScanner.Result> decoded =
+                    ColorGridQRDecoder.decode(grids, scanner, zcfg, null);
+            ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             metadata.add(keyPrefix + ":rows", String.valueOf(rows.size()));
             metadata.add(keyPrefix + ":maxcols", String.valueOf(maxCols));
             metadata.add(keyPrefix + ":decode_count", String.valueOf(decoded.size()));
-            for (String t : decoded) {
-                metadata.add(keyPrefix + ":decoded", t);
-            }
             if (!decoded.isEmpty()) {
                 metadata.add("ExploitClass",
                         "Decoded " + decoded.size()

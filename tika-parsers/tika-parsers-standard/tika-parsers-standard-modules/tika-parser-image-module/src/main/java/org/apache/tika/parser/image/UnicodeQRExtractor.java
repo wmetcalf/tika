@@ -153,11 +153,11 @@ public final class UnicodeQRExtractor {
      * Bails on the first successful decode — most calls are interested in
      * "is there a code or not", not enumerating every possible cluster.
      */
-    public static List<String> extractAndDecode(String text,
+    public static List<ZXingCPPScanner.Result> extractAndDecode(String text,
                                                 ZXingCPPScanner scanner,
                                                 ZXingCPPConfig config,
                                                 ParseContext context) {
-        List<String> decoded = new ArrayList<>();
+        List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (text == null || text.isEmpty()
                 || scanner == null || !scanner.hasZXingCPP(config)) {
             return decoded;
@@ -184,7 +184,7 @@ public final class UnicodeQRExtractor {
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();
                     if (t != null && !t.isEmpty()) {
-                        decoded.add(t);
+                        decoded.add(r);
                         hit = true;
                     }
                 }

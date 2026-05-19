@@ -226,11 +226,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         try {
             org.apache.tika.parser.image.ZXingCPPScanner scanner =
                     new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
-            java.util.List<String> decoded =
+            java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
                     HtmlColorQRExtractor.extractAndDecode(document, scanner, zCfg, context);
-            for (String t : decoded) {
-                metadata.add("html_color_qr:decoded", t);
-            }
+            org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             if (!decoded.isEmpty()) {
                 metadata.add("ExploitClass",
                         "Decoded " + decoded.size()

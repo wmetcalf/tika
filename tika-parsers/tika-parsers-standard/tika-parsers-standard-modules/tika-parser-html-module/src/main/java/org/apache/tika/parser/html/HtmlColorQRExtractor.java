@@ -70,11 +70,11 @@ public final class HtmlColorQRExtractor {
      * Scan {@code doc} for CSS-colored QR codes and return the decoded text
      * values. Bails on the first successful decode.
      */
-    public static List<String> extractAndDecode(Document doc,
+    public static List<ZXingCPPScanner.Result> extractAndDecode(Document doc,
                                                 ZXingCPPScanner scanner,
                                                 ZXingCPPConfig config,
                                                 ParseContext context) {
-        List<String> decoded = new ArrayList<>();
+        List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (doc == null || scanner == null || !scanner.hasZXingCPP()) {
             return decoded;
         }
@@ -101,7 +101,7 @@ public final class HtmlColorQRExtractor {
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();
                     if (t != null && !t.isEmpty()) {
-                        decoded.add(t);
+                        decoded.add(r);
                         hit = true;
                     }
                 }

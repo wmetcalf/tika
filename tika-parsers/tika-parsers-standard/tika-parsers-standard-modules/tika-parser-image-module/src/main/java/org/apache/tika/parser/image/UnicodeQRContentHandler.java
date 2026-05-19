@@ -112,11 +112,10 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
                           + " chars — QR scan ran on the prefix only");
                 }
                 if (scanner != null && scanner.hasZXingCPP(config)) {
-                    List<String> decoded = UnicodeQRExtractor.extractAndDecode(
-                            buffer.toString(), scanner, config, context);
-                    for (String text : decoded) {
-                        metadata.add("unicode_qr:decoded", text);
-                    }
+                    List<ZXingCPPScanner.Result> decoded =
+                            UnicodeQRExtractor.extractAndDecode(
+                                    buffer.toString(), scanner, config, context);
+                    ColorGridQRDecoder.emitBarcodes(decoded, metadata);
                     if (!decoded.isEmpty()) {
                         metadata.set("ExploitClass",
                                 "Decoded " + decoded.size()
