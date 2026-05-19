@@ -132,30 +132,69 @@ public final class HtmlColorQRExtractor {
     }
 
     /**
-     * Find candidate clusters: one per {@code <pre>} or {@code <code>} block
-     * with sufficient character grid density.
+     * Find candidate clusters from two HTML rendering modes:
+     * <ul>
+     *   <li>{@code <pre>} / {@code <code>} blocks — each char is one cell,
+     *       its color drives dark/light classification.</li>
+     *   <li>{@code <table>} grids — each {@code <td>} (or {@code <th>}) is
+     *       one cell, taking its color from {@code bgcolor=""} or style.
+     *       Common in HTML phishing-kit QR rendering because Outlook /
+     *       Gmail rendering preserves table cell backgrounds better than
+     *       inline-span backgrounds.</li>
+     * </ul>
      */
     static List<List<List<Cell>>> findClusters(Document doc,
                                                Map<String, String> classRules) {
         List<List<List<Cell>>> clusters = new ArrayList<>();
-        Elements blocks = doc.select("pre, code");
-        for (Element block : blocks) {
+        // Mode 1: <pre>/<code>
+        for (Element block : doc.select("pre, code")) {
             List<List<Cell>> grid = buildGrid(block, classRules);
-            if (grid.size() < MIN_CLUSTER_LINES) {
-                continue;
+            if (grid.size() >= MIN_CLUSTER_LINES && maxCols(grid) >= MIN_CLUSTER_COLS) {
+                clusters.add(grid);
             }
-            int maxCols = 0;
-            for (List<Cell> row : grid) {
-                if (row.size() > maxCols) {
-                    maxCols = row.size();
-                }
+        }
+        // Mode 2: <table> grids — one row per <tr>, one cell per <td>/<th>.
+        for (Element table : doc.select("table")) {
+            List<List<Cell>> grid = buildTableGrid(table, classRules);
+            if (grid.size() >= MIN_CLUSTER_LINES && maxCols(grid) >= MIN_CLUSTER_COLS) {
+                clusters.add(grid);
             }
-            if (maxCols < MIN_CLUSTER_COLS) {
-                continue;
-            }
-            clusters.add(grid);
         }
         return clusters;
+    }
+
+    private static int maxCols(List<List<Cell>> grid) {
+        int max = 0;
+        for (List<Cell> row : grid) {
+            if (row.size() > max) {
+                max = row.size();
+            }
+        }
+        return max;
+    }
+
+    /**
+     * Build a cell grid from a {@code <table>}: each {@code <tr>} is a row,
+     * each {@code <td>}/{@code <th>} is a cell whose color is resolved from
+     * the cell's own bgcolor/style or the inherited row/table.
+     */
+    private static List<List<Cell>> buildTableGrid(Element table,
+                                                   Map<String, String> classRules) {
+        List<List<Cell>> grid = new ArrayList<>();
+        for (Element tr : table.select("tr")) {
+            List<Cell> row = new ArrayList<>();
+            for (Element td : tr.select("td, th")) {
+                EffectiveStyle eff = resolveEffectiveStyle(td, classRules);
+                // Pick the most representative char inside the cell to make
+                // the same classifier do the work; whitespace-only cells
+                // produce a single space.
+                String txt = td.text();
+                char ref = txt.isEmpty() ? ' ' : txt.charAt(0);
+                row.add(classifyCell(ref, eff));
+            }
+            grid.add(row);
+        }
+        return grid;
     }
 
     /**
@@ -212,16 +251,19 @@ public final class HtmlColorQRExtractor {
      * </ul>
      */
     private static Cell classifyCell(char c, EffectiveStyle eff) {
-        boolean isWhitespace = c == ' ' || c == '\t' || c == ' ';
         boolean isDarkGlyph = c == '█' || c == '#' || c == '@' || c == '■'
                 || c == '▓' || c == '▒' || c == '◼' || c == '⬛';
         int luma;
-        if (isWhitespace) {
+        // Explicit background dominates the cell's visible color — it fills
+        // the entire cell regardless of what glyph sits on top.
+        if (eff.bgFound) {
             luma = eff.bgLuma;
-        } else if (isDarkGlyph) {
+        } else if (eff.fgFound) {
             luma = eff.fgLuma;
+        } else if (isDarkGlyph) {
+            luma = 0;
         } else {
-            luma = eff.bgLuma;
+            luma = 255;
         }
         return new Cell(luma < DARK_LUMA_THRESHOLD);
     }
@@ -229,9 +271,13 @@ public final class HtmlColorQRExtractor {
     private static final class EffectiveStyle {
         final int fgLuma;
         final int bgLuma;
-        EffectiveStyle(int fgLuma, int bgLuma) {
+        final boolean fgFound;
+        final boolean bgFound;
+        EffectiveStyle(int fgLuma, int bgLuma, boolean fgFound, boolean bgFound) {
             this.fgLuma = fgLuma;
             this.bgLuma = bgLuma;
+            this.fgFound = fgFound;
+            this.bgFound = bgFound;
         }
     }
 
@@ -272,7 +318,7 @@ public final class HtmlColorQRExtractor {
             }
             el = el.parent() instanceof Element ? (Element) el.parent() : null;
         }
-        return new EffectiveStyle(fgLuma, bgLuma);
+        return new EffectiveStyle(fgLuma, bgLuma, fgFound, bgFound);
     }
 
     private static String combinedStyle(Element el, Map<String, String> rules) {
