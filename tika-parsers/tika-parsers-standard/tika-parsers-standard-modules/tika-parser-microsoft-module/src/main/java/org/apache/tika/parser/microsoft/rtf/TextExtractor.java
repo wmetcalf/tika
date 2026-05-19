@@ -333,11 +333,42 @@ final class TextExtractor {
     //to defend against DoS with memory consumption
     private int maxStackSize = 1000;
 
+    // --- Color-aware QR detection state ---
+    // \colortbl entries: each is a 6-char uppercase RGB hex, or null for the
+    // implicit "auto" color at index 0. Populated by \red/\green/\blue plus
+    // the table-terminator ';' inside the {\colortbl} group.
+    private final java.util.List<String> colorTable = new java.util.ArrayList<>();
+    private int colorTableR;
+    private int colorTableG;
+    private int colorTableB;
+    private boolean colorTableHasFirst;  // any of R/G/B set for the entry being built
+    // Per-paragraph row of luma values (one per emitted, non-whitespace char).
+    // Active only when ColorAwareConfig is enabled; otherwise null/no-op.
+    private boolean colorAwareEnabled;
+    private final java.util.List<java.util.List<Integer>> colorRows =
+            new java.util.ArrayList<>();
+    private java.util.List<Integer> currentColorRow;
+    // ParseContext, kept around so we can pull ZXingCPPConfig at end-of-doc
+    // when handing the captured rows off to OOXMLColorQRScanHelper.
+    private org.apache.tika.parser.ParseContext parseContext;
+
     public TextExtractor(ContentHandler out, Metadata metadata,
                          RTFEmbObjHandler embObjHandler) {
+        this(out, metadata, embObjHandler, null);
+    }
+
+    public TextExtractor(ContentHandler out, Metadata metadata,
+                         RTFEmbObjHandler embObjHandler,
+                         org.apache.tika.parser.ParseContext context) {
         this.metadata = metadata;
         this.out = out;
         this.embObjHandler = embObjHandler;
+        this.parseContext = context;
+        if (context != null) {
+            org.apache.tika.parser.ColorAwareConfig cc =
+                    context.get(org.apache.tika.parser.ColorAwareConfig.class);
+            this.colorAwareEnabled = cc != null && cc.isEnabled();
+        }
     }
 
     private static Charset getCharset(String name) {
@@ -431,6 +462,37 @@ final class TextExtractor {
             pushBytes();
         }
 
+        // Color table parsing: ';' inside {\colortbl} terminates one entry.
+        // If R/G/B were set during the entry, capture an RGB hex; else null
+        // (a bare ';' represents the implicit "auto" entry).
+        if (groupState.inColorTable) {
+            if (ch == ';') {
+                if (colorTableHasFirst) {
+                    String hex = String.format(java.util.Locale.ROOT, "%02X%02X%02X",
+                            colorTableR, colorTableG, colorTableB);
+                    colorTable.add(hex);
+                } else {
+                    colorTable.add(null);
+                }
+                colorTableR = 0;
+                colorTableG = 0;
+                colorTableB = 0;
+                colorTableHasFirst = false;
+            }
+            // While we're capturing the table, do not let its characters land
+            // in the document text.
+            return;
+        }
+
+        // Per-glyph color capture for color-aware QR.
+        if (colorAwareEnabled && currentColorRow != null
+                && !inHeader && fieldState != 1
+                && !groupState.ignore && nextMetaData == null) {
+            if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+                currentColorRow.add(lumaForColorIndex(groupState.foregroundColorIndex));
+            }
+        }
+
         // While in the RTF header, route text to pendingBuffer only when we are
         // inside a specific metadata destination (nextMetaData != null) or an
         // ignored group (groupState.ignore).  Text that appears in the header but
@@ -448,6 +510,26 @@ final class TextExtractor {
                 pendingChars = newArray;
             }
             pendingChars[pendingCharCount++] = ch;
+        }
+    }
+
+    /** BT.601 luma for the resolved RGB of a color-table index, or 0 (dark)
+     *  for the implicit "auto" color since that's the default text color. */
+    private int lumaForColorIndex(int idx) {
+        if (idx <= 0 || idx >= colorTable.size()) {
+            return 0;
+        }
+        String hex = colorTable.get(idx);
+        if (hex == null || hex.length() != 6) {
+            return 0;
+        }
+        try {
+            int r = Integer.parseInt(hex.substring(0, 2), 16);
+            int g = Integer.parseInt(hex.substring(2, 4), 16);
+            int b = Integer.parseInt(hex.substring(4, 6), 16);
+            return org.apache.tika.parser.image.ColorGridQRDecoder.luma(r, g, b);
+        } catch (NumberFormatException ex) {
+            return 0;
         }
     }
 
@@ -489,6 +571,10 @@ final class TextExtractor {
                     // parsed document closing brace
                     break;
                 }
+                // If we just closed out of {\colortbl}, the new top-of-stack
+                // GroupState won't have inColorTable set (we deliberately
+                // don't inherit that field), so we're already correctly
+                // back in normal text mode.
             } else if (groupState.objdata == true || groupState.pictDepth == 1) {
                 embObjHandler.writeHexChar(b);
             } else if (b != '\r' && b != '\n' &&
@@ -516,6 +602,22 @@ final class TextExtractor {
             embObjHandler.flushLastObjData();
         } catch (Exception e) {
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
+        }
+
+        // Color-aware QR: if a per-paragraph color grid was collected, hand
+        // it off to the shared OOXMLColorQRScanHelper (which the DOCX, PPTX
+        // and XLSX paths already use). Catches the RTF evasion variant
+        // where each module is a same-glyph (e.g., 'X') colored per-run
+        // with \cfN — invisible to image-based scanners and to standard
+        // RTF text extraction (which strips color).
+        if (colorAwareEnabled && !colorRows.isEmpty() && parseContext != null) {
+            try {
+                org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper
+                        .scan(colorRows, parseContext, metadata,
+                              "rtf_color_qr", "RTF");
+            } catch (Throwable t) {
+                // Best-effort; never fail the parse for QR scanning.
+            }
         }
     }
 
@@ -643,6 +745,9 @@ final class TextExtractor {
             }
             startStyles(groupState);
             inParagraph = true;
+            if (colorAwareEnabled) {
+                currentColorRow = new java.util.ArrayList<>();
+            }
         }
     }
 
@@ -715,6 +820,15 @@ final class TextExtractor {
         if (!preserveStyles && pendingListEnd != 0) {
             endList(pendingListEnd);
             pendingListEnd = 0;
+        }
+
+        // Color-aware QR: commit the row of luma values we collected for
+        // this paragraph; a fresh row will be started by lazyStartParagraph.
+        if (colorAwareEnabled && currentColorRow != null) {
+            if (!currentColorRow.isEmpty()) {
+                colorRows.add(currentColorRow);
+            }
+            currentColorRow = null;
         }
     }
 
@@ -1021,6 +1135,25 @@ final class TextExtractor {
                 groupState.listLevel = param;
             } else if (equals("wbitmap")) {
                 embObjHandler.setPictBitmap(true);
+            } else if (equals("cf")) {
+                // \cfN sets foreground color to index N in the colortbl.
+                // 0 = "auto" (no override) — we leave colorTable[0] = null.
+                groupState.foregroundColorIndex = param;
+            }
+        }
+        // Color table parsing — record R/G/B per entry. The actual entry
+        // terminator (;) is handled at the byte-stream level in process(),
+        // so here we just stash the most recent value.
+        if (groupState.inColorTable) {
+            if (equals("red")) {
+                colorTableR = param & 0xFF;
+                colorTableHasFirst = true;
+            } else if (equals("green")) {
+                colorTableG = param & 0xFF;
+                colorTableHasFirst = true;
+            } else if (equals("blue")) {
+                colorTableB = param & 0xFF;
+                colorTableHasFirst = true;
             }
         }
 
@@ -1157,7 +1290,20 @@ final class TextExtractor {
                 globalCharset = MAC_ROMAN;
             }
 
-            if (equals("colortbl") || equals("stylesheet") || equals("fonttbl")) {
+            if (equals("colortbl")) {
+                // Capture the color table for color-aware QR detection rather
+                // than discarding it. The body of the group is a sequence of
+                // \redN \greenN \blueN; tuples ending in semicolons; the
+                // \red/\green/\blue control words below populate the table.
+                groupState.inColorTable = true;
+                colorTableR = 0;
+                colorTableG = 0;
+                colorTableB = 0;
+                colorTableHasFirst = false;
+                colorTable.clear();
+                // Push a sentinel entry for the implicit "auto" color at index 0.
+                colorTable.add(null);
+            } else if (equals("stylesheet") || equals("fonttbl")) {
                 groupState.ignore = true;
             } else if (equals("listtable")) {
                 currentListTable = listTable;

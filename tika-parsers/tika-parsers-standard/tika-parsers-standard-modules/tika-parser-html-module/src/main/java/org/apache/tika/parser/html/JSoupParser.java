@@ -238,6 +238,70 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         } catch (Throwable t) {
             // Never let QR scanning kill HTML parsing.
         }
+        scanForUnicodeArtQR(document, metadata, context);
+    }
+
+    /** Pull text out of every monospace-preserving HTML element (&lt;pre&gt;,
+     *  &lt;code&gt;, anything with {@code white-space: pre*} in inline style)
+     *  and feed it to {@link org.apache.tika.parser.image.UnicodeQRExtractor}.
+     *  Catches Unicode-art QR payloads embedded in HTML — most notably the
+     *  X-ALT-DESC HTML-body variant attackers use when a calendar invite's
+     *  plain-text DESCRIPTION renders too poorly to scan but the HTML
+     *  alt-description gets the same payload styled in monospace. Works for
+     *  any glyph family the {@code UnicodeQRExtractor} supports (block,
+     *  Braille, sextant) — the attacker doesn't get to pivot away. */
+    private static void scanForUnicodeArtQR(Document document, Metadata metadata,
+            ParseContext context) {
+        org.apache.tika.parser.image.ZXingCPPConfig zCfg =
+                context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
+        if (zCfg == null || !zCfg.isEnabled()) {
+            return;
+        }
+        try {
+            // Collect raw text from <pre>, <code>, and any element with an
+            // inline style declaring whitespace pre-served rendering.
+            org.jsoup.select.Elements monospace = document.select(
+                    "pre, code, [style*=white-space:pre], [style*=white-space: pre]");
+            if (monospace.isEmpty()) {
+                return;
+            }
+            StringBuilder buf = new StringBuilder();
+            for (org.jsoup.nodes.Element el : monospace) {
+                // wholeText() preserves newlines inside <pre>; text() collapses them.
+                String txt = el.wholeText();
+                if (txt == null || txt.isEmpty()) {
+                    continue;
+                }
+                buf.append(txt);
+                if (!txt.endsWith("\n")) {
+                    buf.append('\n');
+                }
+                buf.append('\n');
+            }
+            if (buf.length() == 0) {
+                return;
+            }
+            int glyphCount = org.apache.tika.parser.image.UnicodeQRExtractor
+                    .countQrGlyphs(buf.toString());
+            if (glyphCount < 50) {
+                return;
+            }
+            org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+            java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
+                    org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
+                            buf.toString(), scanner, zCfg, context);
+            org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(decoded, metadata);
+            metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
+            if (!decoded.isEmpty()) {
+                metadata.add("ExploitClass",
+                        "Decoded " + decoded.size()
+                      + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
+                      + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
+            }
+        } catch (Throwable t) {
+            // Best-effort.
+        }
     }
 
     public void parseString(String html, ContentHandler handler, Metadata metadata, ParseContext context) throws SAXException {

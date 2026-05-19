@@ -37,12 +37,12 @@ import org.apache.tika.parser.image.ZXingCPPScanner;
  * <p>Use a different {@code keyPrefix} per format so metadata keys don't
  * collide across DOCX/PPTX/XLSX entries.</p>
  */
-final class OOXMLColorQRScanHelper {
+public final class OOXMLColorQRScanHelper {
 
     private OOXMLColorQRScanHelper() {
     }
 
-    static void scan(List<List<Integer>> rows, ParseContext context,
+    public static void scan(List<List<Integer>> rows, ParseContext context,
                      Metadata metadata, String keyPrefix,
                      String exploitFormatLabel) {
         if (rows == null || rows.isEmpty()) {

@@ -46,6 +46,13 @@ class GroupState {
     //in embedded object or not
     public boolean object;
     public boolean annotation;
+    // Foreground color index into the document's \colortbl, set by \cfN.
+    // 0 means "auto" (default), and the resolved RGB from the color table
+    // is null in that case. -1 means "no \cf seen yet in this group".
+    public int foregroundColorIndex = -1;
+    // True if we're currently inside the \colortbl group itself, so we
+    // can capture \redN \greenN \blueN; tuples for later \cfN resolution.
+    public boolean inColorTable;
 
     // Create default (root) GroupState
     public GroupState() {
@@ -62,7 +69,8 @@ class GroupState {
         fontCharset = other.fontCharset;
         depth = 1 + other.depth;
         pictDepth = other.pictDepth > 0 ? other.pictDepth + 1 : 0;
-        //do not inherit object, sn, sv, sp or annotation
+        foregroundColorIndex = other.foregroundColorIndex;
+        //do not inherit object, sn, sv, sp, annotation, or inColorTable
 
     }
 }
