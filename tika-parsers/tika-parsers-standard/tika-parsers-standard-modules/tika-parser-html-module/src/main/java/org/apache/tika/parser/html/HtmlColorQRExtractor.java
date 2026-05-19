@@ -75,7 +75,7 @@ public final class HtmlColorQRExtractor {
                                                 ZXingCPPConfig config,
                                                 ParseContext context) {
         List<String> decoded = new ArrayList<>();
-        if (doc == null || scanner == null || !scanner.hasZXingCPP(config)) {
+        if (doc == null || scanner == null || !scanner.hasZXingCPP()) {
             return decoded;
         }
         Map<String, String> classRules = parseStylesheets(doc);
