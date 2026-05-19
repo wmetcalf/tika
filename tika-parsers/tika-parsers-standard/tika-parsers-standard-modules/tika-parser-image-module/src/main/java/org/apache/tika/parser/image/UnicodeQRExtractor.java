@@ -315,7 +315,16 @@ public final class UnicodeQRExtractor {
             }
             int total = blockGlyphs + brailleGlyphs + sextantGlyphs;
             if (total >= MIN_CLUSTER_LINE_GLYPHS) {
-                current.add(line);
+                // Strip a Tika property-label prefix (e.g., "Description: ",
+                // "Summary: ") from the start of the line so the first QR
+                // glyph lands at col 0. Without this the leading ASCII
+                // space in "Description: <QR>" counts as a block/sextant
+                // "empty" cell and the row gets shifted right relative to
+                // continuation rows, breaking the bitmap. Only triggers
+                // when the prefix ends with ":<whitespace>" and is followed
+                // by a non-space QR glyph, so QR rows that legitimately
+                // start with empty cells aren't touched.
+                current.add(stripPropertyLabelPrefix(line));
                 blockTotal += blockGlyphs;
                 brailleTotal += brailleGlyphs;
                 sextantTotal += sextantGlyphs;
@@ -336,6 +345,51 @@ public final class UnicodeQRExtractor {
         }
         flushCluster(current, blockTotal, brailleTotal, sextantTotal, clusters);
         return clusters;
+    }
+
+    /** Strip a Tika property-label prefix (e.g., "Description: ") from a
+     *  line when the prefix is plausibly such a label — letters, then a
+     *  colon, then whitespace, then a non-space QR glyph. QR rows that
+     *  legitimately start with empty cells (which Tika emits as a leading
+     *  ASCII space) are left untouched. */
+    private static String stripPropertyLabelPrefix(String line) {
+        int len = line.length();
+        if (len < 3) {
+            return line;
+        }
+        int colon = -1;
+        for (int i = 0; i < len; i++) {
+            char c = line.charAt(i);
+            if (c == ':') {
+                colon = i;
+                break;
+            }
+            // Property labels are ASCII letters / digits / dashes only.
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+                return line;
+            }
+        }
+        if (colon <= 0) {
+            return line;
+        }
+        // Skip whitespace after the colon.
+        int idx = colon + 1;
+        while (idx < len && (line.charAt(idx) == ' ' || line.charAt(idx) == '\t')) {
+            idx++;
+        }
+        if (idx >= len) {
+            return line;
+        }
+        // Next codepoint must be a non-space QR glyph to confirm this is a
+        // property label sitting in front of QR content.
+        int cp = line.codePointAt(idx);
+        boolean confirms = (cp < 0x10000 && isQrGlyph((char) cp) && cp != ' ')
+                || isSextantQrCodepoint(cp);
+        if (!confirms) {
+            return line;
+        }
+        return line.substring(idx);
     }
 
     private static void flushCluster(List<String> lines, int blockTotal,
