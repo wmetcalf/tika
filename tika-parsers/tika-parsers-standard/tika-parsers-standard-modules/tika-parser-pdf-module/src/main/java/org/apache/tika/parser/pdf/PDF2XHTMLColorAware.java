@@ -110,19 +110,27 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
     }
 
     private void scanPageForColorQR() {
+        metadata.add("pdf_color_qr:glyphs", String.valueOf(pageGlyphs.size()));
         if (pageGlyphs.size() < 64) {
-            // Below a 8x8 minimum — can't be a real QR.
+            metadata.add("pdf_color_qr:stage", "skip-below-64");
             return;
         }
         try {
-            List<List<ColorGridQRDecoder.Cell>> grid = clusterToGrid(pageGlyphs);
-            if (grid.isEmpty()) {
+            ClusterResult cr = clusterToGridDiag(pageGlyphs);
+            metadata.add("pdf_color_qr:rows", String.valueOf(cr.rowCount));
+            metadata.add("pdf_color_qr:maxcols", String.valueOf(cr.maxCols));
+            metadata.add("pdf_color_qr:qualifying", String.valueOf(cr.qualifying));
+            metadata.add("pdf_color_qr:dark_glyphs", String.valueOf(cr.darkCount));
+            if (cr.grid.isEmpty()) {
+                metadata.add("pdf_color_qr:stage", "clusterToGrid-empty");
                 return;
             }
+            metadata.add("pdf_color_qr:stage", "calling-decoder");
             List<List<List<ColorGridQRDecoder.Cell>>> grids = new ArrayList<>();
-            grids.add(grid);
+            grids.add(cr.grid);
             List<String> decoded = ColorGridQRDecoder.decode(
                     grids, scanner, zxingConfig, null);
+            metadata.add("pdf_color_qr:decode_count", String.valueOf(decoded.size()));
             for (String t : decoded) {
                 metadata.add("pdf_color_qr:decoded", t);
             }
@@ -133,9 +141,74 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
                       + "invisible to image-based scanners and to standard "
                       + "PDF text extraction");
             }
-        } catch (RuntimeException ignored) {
-            // best-effort
+        } catch (RuntimeException ex) {
+            metadata.add("pdf_color_qr:stage", "exception:" + ex.getClass().getSimpleName() + ":" + ex.getMessage());
         }
+    }
+
+    private static final class ClusterResult {
+        final List<List<ColorGridQRDecoder.Cell>> grid;
+        final int rowCount;
+        final int maxCols;
+        final int qualifying;
+        final int darkCount;
+        ClusterResult(List<List<ColorGridQRDecoder.Cell>> g, int r, int c, int q, int d) {
+            grid = g; rowCount = r; maxCols = c; qualifying = q; darkCount = d;
+        }
+    }
+
+    private static ClusterResult clusterToGridDiag(List<Glyph> glyphs) {
+        if (glyphs.isEmpty()) {
+            return new ClusterResult(new ArrayList<>(), 0, 0, 0, 0);
+        }
+        List<Glyph> sorted = new ArrayList<>(glyphs);
+        sorted.sort((a, b) -> Float.compare(b.y, a.y));
+
+        List<List<Glyph>> rows = new ArrayList<>();
+        List<Glyph> currentRow = new ArrayList<>();
+        float currentY = sorted.get(0).y;
+        for (Glyph g : sorted) {
+            if (Math.abs(g.y - currentY) <= ROW_BIN_TOLERANCE) {
+                currentRow.add(g);
+            } else {
+                rows.add(currentRow);
+                currentRow = new ArrayList<>();
+                currentRow.add(g);
+                currentY = g.y;
+            }
+        }
+        if (!currentRow.isEmpty()) {
+            rows.add(currentRow);
+        }
+        int maxCols = 0;
+        for (List<Glyph> r : rows) {
+            r.sort((a, b) -> Float.compare(a.x, b.x));
+            if (r.size() > maxCols) maxCols = r.size();
+        }
+        int needed = (int) Math.ceil(maxCols * 0.7);
+        int qualifying = 0;
+        for (List<Glyph> r : rows) {
+            if (r.size() >= needed) qualifying++;
+        }
+        int darkCount = 0;
+        for (Glyph g : glyphs) {
+            if (g.luma < ColorGridQRDecoder.DARK_LUMA_THRESHOLD) darkCount++;
+        }
+        if (rows.size() < ColorGridQRDecoder.MIN_LINES
+                || maxCols < ColorGridQRDecoder.MIN_COLS
+                || qualifying < (int) Math.ceil(rows.size() * 0.7)) {
+            return new ClusterResult(new ArrayList<>(), rows.size(), maxCols, qualifying, darkCount);
+        }
+        List<List<ColorGridQRDecoder.Cell>> grid = new ArrayList<>();
+        for (List<Glyph> r : rows) {
+            List<ColorGridQRDecoder.Cell> cells = new ArrayList<>(r.size());
+            for (Glyph g : r) {
+                cells.add(new ColorGridQRDecoder.Cell(
+                        g.luma < ColorGridQRDecoder.DARK_LUMA_THRESHOLD));
+            }
+            grid.add(cells);
+        }
+        return new ClusterResult(grid, rows.size(), maxCols, qualifying, darkCount);
     }
 
     /**
