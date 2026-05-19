@@ -664,96 +664,13 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
     }
 
     /**
-     * Color-aware QR scan: if ColorAwareConfig is enabled and a
-     * ZXingCPPConfig is in the context, treat the captured (paragraph row ×
-     * per-character luma) grid as a candidate QR module map and try to
-     * decode it via the shared ColorGridQRDecoder.
-     *
-     * <p>Catches the DOCX evasion variant where each module is a same-shape
-     * glyph (e.g., '█') colored per-run with {@code <w:color w:val="HEX"/>}
-     * to encode dark/light cells — invisible to image-based scanners and to
-     * standard text extraction (which strips color).</p>
+     * Color-aware QR scan for DOCX. Catches the evasion variant where each
+     * module is a same-shape glyph (e.g., '█') colored per-run with
+     * {@code <w:color w:val="HEX"/>} to encode dark/light cells —
+     * invisible to image-based scanners and to standard DOCX text
+     * extraction (which strips color).
      */
     private void scanColorAwareQR(java.util.List<java.util.List<Integer>> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        org.apache.tika.parser.ColorAwareConfig cc =
-                context.get(org.apache.tika.parser.ColorAwareConfig.class);
-        if (cc == null || !cc.isEnabled()) {
-            return;
-        }
-        org.apache.tika.parser.image.ZXingCPPConfig zcfg =
-                context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
-        if (zcfg == null) {
-            return;
-        }
-        // Determine grid extents
-        int maxCols = 0;
-        for (java.util.List<Integer> r : rows) {
-            if (r.size() > maxCols) {
-                maxCols = r.size();
-            }
-        }
-        if (rows.size() < org.apache.tika.parser.image.ColorGridQRDecoder.MIN_LINES
-                || maxCols < org.apache.tika.parser.image.ColorGridQRDecoder.MIN_COLS) {
-            return;
-        }
-        // 70% grid-shape sanity filter: most rows should have ~maxCols
-        // characters — filters out body-text documents.
-        int needed = (int) Math.ceil(maxCols * 0.7);
-        int qualifying = 0;
-        for (java.util.List<Integer> r : rows) {
-            if (r.size() >= needed) {
-                qualifying++;
-            }
-        }
-        if (qualifying < (int) Math.ceil(rows.size() * 0.7)) {
-            return;
-        }
-        // Build the Cell grid from only qualifying rows. This drops body
-        // text rows (like a "Scan to verify:" caption) that share the page
-        // but are not part of the QR module map.
-        java.util.List<java.util.List<org.apache.tika.parser.image.ColorGridQRDecoder.Cell>> grid
-                = new java.util.ArrayList<>();
-        for (java.util.List<Integer> r : rows) {
-            if (r.size() < needed) {
-                continue;
-            }
-            java.util.List<org.apache.tika.parser.image.ColorGridQRDecoder.Cell> cells
-                    = new java.util.ArrayList<>(r.size());
-            for (Integer luma : r) {
-                cells.add(new org.apache.tika.parser.image.ColorGridQRDecoder.Cell(
-                        luma < org.apache.tika.parser.image.ColorGridQRDecoder.DARK_LUMA_THRESHOLD));
-            }
-            grid.add(cells);
-        }
-        java.util.List<java.util.List<java.util.List<
-                org.apache.tika.parser.image.ColorGridQRDecoder.Cell>>> grids
-                = new java.util.ArrayList<>();
-        grids.add(grid);
-        try {
-            org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                    new org.apache.tika.parser.image.ZXingCPPScanner(zcfg);
-            java.util.List<String> decoded =
-                    org.apache.tika.parser.image.ColorGridQRDecoder.decode(
-                            grids, scanner, zcfg, null);
-            metadata.add("docx_color_qr:rows", String.valueOf(rows.size()));
-            metadata.add("docx_color_qr:maxcols", String.valueOf(maxCols));
-            metadata.add("docx_color_qr:decode_count", String.valueOf(decoded.size()));
-            for (String t : decoded) {
-                metadata.add("docx_color_qr:decoded", t);
-            }
-            if (!decoded.isEmpty()) {
-                metadata.add("ExploitClass",
-                        "Decoded " + decoded.size()
-                      + " CSS-colored QR code(s) from DOCX run colors — "
-                      + "invisible to image-based scanners and to standard "
-                      + "DOCX text extraction");
-            }
-        } catch (RuntimeException ex) {
-            metadata.add("docx_color_qr:error",
-                    ex.getClass().getSimpleName() + ":" + ex.getMessage());
-        }
+        OOXMLColorQRScanHelper.scan(rows, context, metadata, "docx_color_qr", "DOCX");
     }
 }

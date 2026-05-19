@@ -89,6 +89,9 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
     /**
      * @see org.apache.poi.xslf.extractor.XSLFPowerPointExtractor#getText()
      */
+    private final java.util.List<java.util.List<Integer>> pptxColorRows =
+            new java.util.ArrayList<>();
+
     protected void buildXHTML(XHTMLContentHandler xhtml) throws SAXException, IOException {
 
         loadCommentAuthors();
@@ -121,6 +124,8 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
         if (hiddenSlideCount > 0) {
             metadata.set(Office.NUM_HIDDEN_SLIDES, hiddenSlideCount);
         }
+        OOXMLColorQRScanHelper.scan(pptxColorRows, context, metadata,
+                "pptx_color_qr", "PPTX");
 
         if (config.isIncludeSlideMasterContent()) {
             handleGeneralTextContainingPart(XSLFRelation.SLIDE_MASTER.getRelation(), "slide-master",
@@ -190,8 +195,12 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
         int hidden = 0;
         xhtml.startElement("div", "class", "slide-content");
         try (InputStream stream = slidePart.getInputStream()) {
-            OOXMLWordAndPowerPointTextHandler wordAndPPTHandler = new OOXMLWordAndPowerPointTextHandler(
-                    new OOXMLTikaBodyPartHandler(xhtml, metadata), linkedRelationships);
+            OOXMLTikaBodyPartHandler slideBodyHandler =
+                    new OOXMLTikaBodyPartHandler(xhtml, metadata);
+            slideBodyHandler.setInlineBodyPartMap(null, context);
+            OOXMLWordAndPowerPointTextHandler wordAndPPTHandler =
+                    new OOXMLWordAndPowerPointTextHandler(slideBodyHandler,
+                            linkedRelationships);
             XMLReaderUtils.parseSAX(stream,
                     new EmbeddedContentHandler(wordAndPPTHandler), context);
             if (wordAndPPTHandler.isHiddenSlide()) {
@@ -201,6 +210,7 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
             if (wordAndPPTHandler.hasAnimations()) {
                 metadata.set(Office.HAS_ANIMATIONS, true);
             }
+            pptxColorRows.addAll(slideBodyHandler.getColorRows());
         } catch (TikaException | IOException e) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
