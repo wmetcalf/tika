@@ -300,7 +300,7 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
             if (inR && inRPr) {
                 String hex = atts.getValue(W_NS, VAL);
                 if (hex != null && hex.length() == 6) {
-                    currRunProperties.setColor(hex.toUpperCase());
+                    currRunProperties.setColor(hex.toUpperCase(java.util.Locale.ROOT));
                 }
             }
         } else if (SRGB_CLR.equals(localName) && DRAWING_MAIN_NS.equals(uri)) {
@@ -308,7 +308,7 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
             if (inR && inRPr) {
                 String hex = atts.getValue("", VAL);
                 if (hex != null && hex.length() == 6) {
-                    currRunProperties.setColor(hex.toUpperCase());
+                    currRunProperties.setColor(hex.toUpperCase(java.util.Locale.ROOT));
                 }
             }
         } else if (TR.equals(localName)) {
