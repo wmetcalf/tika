@@ -610,6 +610,9 @@ final class TextExtractor {
         // where each module is a same-glyph (e.g., 'X') colored per-run
         // with \cfN — invisible to image-based scanners and to standard
         // RTF text extraction (which strips color).
+        metadata.add("rtf_color_qr:enabled", String.valueOf(colorAwareEnabled));
+        metadata.add("rtf_color_qr:colortbl_size", String.valueOf(colorTable.size()));
+        metadata.add("rtf_color_qr:rows_captured", String.valueOf(colorRows.size()));
         if (colorAwareEnabled && !colorRows.isEmpty() && parseContext != null) {
             try {
                 org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper
@@ -617,6 +620,8 @@ final class TextExtractor {
                               "rtf_color_qr", "RTF");
             } catch (Throwable t) {
                 // Best-effort; never fail the parse for QR scanning.
+                metadata.add("rtf_color_qr:error", t.getClass().getSimpleName()
+                        + ":" + t.getMessage());
             }
         }
     }
