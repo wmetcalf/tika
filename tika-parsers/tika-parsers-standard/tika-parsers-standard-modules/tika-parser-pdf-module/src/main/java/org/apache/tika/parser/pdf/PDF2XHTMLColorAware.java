@@ -20,6 +20,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingColor;
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingColorN;
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingColorSpace;
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingDeviceCMYKColor;
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingDeviceGrayColor;
+import org.apache.pdfbox.contentstream.operator.color.SetNonStrokingDeviceRGBColor;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.graphics.color.PDColor;
@@ -69,6 +75,16 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         super(document, handler, context, metadata, config, renderer);
         this.scanner = scanner;
         this.zxingConfig = zxingConfig;
+        // PDFTextStripper does not register color operators by default, so
+        // getNonStrokingColor() would always return black. Register them
+        // explicitly so per-glyph fill color is tracked through the page
+        // content stream.
+        addOperator(new SetNonStrokingColorSpace());
+        addOperator(new SetNonStrokingDeviceRGBColor());
+        addOperator(new SetNonStrokingDeviceGrayColor());
+        addOperator(new SetNonStrokingDeviceCMYKColor());
+        addOperator(new SetNonStrokingColor());
+        addOperator(new SetNonStrokingColorN());
     }
 
     /** One captured text glyph with its position + fill color luminance. */
