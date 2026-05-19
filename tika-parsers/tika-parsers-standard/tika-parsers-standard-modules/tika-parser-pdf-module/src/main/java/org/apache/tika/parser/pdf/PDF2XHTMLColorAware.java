@@ -79,12 +79,12 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         // getNonStrokingColor() would always return black. Register them
         // explicitly so per-glyph fill color is tracked through the page
         // content stream.
-        addOperator(new SetNonStrokingColorSpace());
-        addOperator(new SetNonStrokingDeviceRGBColor());
-        addOperator(new SetNonStrokingDeviceGrayColor());
-        addOperator(new SetNonStrokingDeviceCMYKColor());
-        addOperator(new SetNonStrokingColor());
-        addOperator(new SetNonStrokingColorN());
+        addOperator(new SetNonStrokingColorSpace(this));
+        addOperator(new SetNonStrokingDeviceRGBColor(this));
+        addOperator(new SetNonStrokingDeviceGrayColor(this));
+        addOperator(new SetNonStrokingDeviceCMYKColor(this));
+        addOperator(new SetNonStrokingColor(this));
+        addOperator(new SetNonStrokingColorN(this));
     }
 
     /** One captured text glyph with its position + fill color luminance. */
