@@ -201,6 +201,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             tis.removeCloseShield();
         }
         document.quirksMode(Document.QuirksMode.quirks);
+        // CSS-colored QR detection: only invoked when the user has set a
+        // ZXingCPPConfig (i.e. they care about barcode scanning at all).
+        // Failures are non-fatal — the QR scan is best-effort.
+        scanForColorQR(document, metadata, context);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
                 new HtmlHandler(mapper, handler, metadata, context, extractScripts));
         xhtml.startDocument();
@@ -213,6 +217,31 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         }
     }
 
+    private static void scanForColorQR(Document document, Metadata metadata, ParseContext context) {
+        org.apache.tika.parser.image.ZXingCPPConfig zCfg =
+                context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
+        if (zCfg == null || !zCfg.isEnabled()) {
+            return;
+        }
+        try {
+            org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+            java.util.List<String> decoded =
+                    HtmlColorQRExtractor.extractAndDecode(document, scanner, zCfg, context);
+            for (String t : decoded) {
+                metadata.add("html_color_qr:decoded", t);
+            }
+            if (!decoded.isEmpty()) {
+                metadata.add("ExploitClass",
+                        "Decoded " + decoded.size()
+                      + " CSS-colored QR code(s) from HTML — invisible to "
+                      + "image-based scanners (color encodes dark/light, not glyph)");
+            }
+        } catch (Throwable t) {
+            // Never let QR scanning kill HTML parsing.
+        }
+    }
+
     public void parseString(String html, ContentHandler handler, Metadata metadata, ParseContext context) throws SAXException {
         // Get the HTML mapper from the parse context
         HtmlMapper mapper = context.get(HtmlMapper.class, new DefaultHtmlMapper());
@@ -220,6 +249,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         //do better with baseUri?
         Document document = Jsoup.parse(html, Parser.htmlParser().tagSet(SELF_CLOSEABLE_TAGS));
         document.quirksMode(Document.QuirksMode.quirks);
+        scanForColorQR(document, metadata, context);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
                 new HtmlHandler(mapper, handler, metadata, context, extractScripts));
         xhtml.startDocument();

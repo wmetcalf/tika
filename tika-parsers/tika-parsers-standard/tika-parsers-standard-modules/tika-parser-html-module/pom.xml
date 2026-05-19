@@ -46,6 +46,14 @@
       <artifactId>commons-codec</artifactId>
     </dependency>
 
+    <!-- HtmlColorQRExtractor calls ZXingCPPScanner from image-module to
+         decode the bitmap reconstructed from CSS-colored HTML text. -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-parser-image-module</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <!-- test scope -->
     <!-- this is required for basic encoding detection -->
     <dependency>
