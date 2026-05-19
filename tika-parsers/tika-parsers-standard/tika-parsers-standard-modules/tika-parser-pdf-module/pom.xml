@@ -36,6 +36,13 @@
       <artifactId>tika-parser-xmp-commons</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- PDF2XHTMLColorAware uses ColorGridQRDecoder + ZXingCPPScanner from
+         the image module to decode color-encoded QR codes embedded in PDFs. -->
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-parser-image-module</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.apache.pdfbox</groupId>
       <artifactId>pdfbox</artifactId>

@@ -96,9 +96,20 @@ class PDF2XHTML extends AbstractPDF2XHTML {
             // Extract text using a dummy Writer as we override the
             // key methods to output to the given content
             // handler.
+            org.apache.tika.parser.ColorAwareConfig colorConfig =
+                    context.get(org.apache.tika.parser.ColorAwareConfig.class);
+            org.apache.tika.parser.image.ZXingCPPConfig zxingConfig =
+                    context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
+            boolean colorAware = colorConfig != null && colorConfig.isEnabled()
+                    && zxingConfig != null;
             if (config.isDetectAngles()) {
                 pdf2XHTML =
                         new AngleDetectingPDF2XHTML(document, handler, context, metadata, config, renderer);
+            } else if (colorAware) {
+                org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                        new org.apache.tika.parser.image.ZXingCPPScanner(zxingConfig);
+                pdf2XHTML = new PDF2XHTMLColorAware(document, handler, context, metadata,
+                        config, renderer, scanner, zxingConfig);
             } else {
                 pdf2XHTML = new PDF2XHTML(document, handler, context, metadata, config, renderer);
             }
