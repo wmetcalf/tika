@@ -832,25 +832,30 @@ final class TextExtractor {
     private void pushChars() throws IOException, SAXException, TikaException {
         if (pendingCharCount != 0) {
             lazyStartParagraph();
-            // Color-aware QR: append luma for every non-whitespace char being
-            // emitted, attributed to the CURRENT \cfN. The \cf handler calls
-            // pushText() (which calls pushChars) BEFORE changing the color,
-            // so the chars in this batch all share the same \cf value. The
-            // current row was established by lazyStartParagraph above.
-            if (colorAwareEnabled && currentColorRow != null
-                    && !inHeader && fieldState != 1
-                    && !groupState.ignore && nextMetaData == null) {
-                int luma = lumaForColorIndex(groupState.foregroundColorIndex);
-                for (int i = 0; i < pendingCharCount; i++) {
-                    char c = pendingChars[i];
-                    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-                        continue;
-                    }
-                    currentColorRow.add(luma);
-                }
-            }
+            captureColorRow(pendingChars, pendingCharCount);
             out.characters(pendingChars, 0, pendingCharCount);
             pendingCharCount = 0;
+        }
+    }
+
+    /** Append luma for every non-whitespace char in {@code chars[0..count)} to
+     *  the current paragraph's color row. Called from both pushChars and
+     *  pushBytes after lazyStartParagraph, with the current \cfN value
+     *  representing the color of every char in this batch (the \cf handler
+     *  pushText()s first, so a batch never crosses a color boundary). */
+    private void captureColorRow(char[] chars, int count) {
+        if (!colorAwareEnabled || currentColorRow == null
+                || inHeader || fieldState == 1
+                || groupState.ignore || nextMetaData != null) {
+            return;
+        }
+        int luma = lumaForColorIndex(groupState.foregroundColorIndex);
+        for (int i = 0; i < count; i++) {
+            char c = chars[i];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                continue;
+            }
+            currentColorRow.add(luma);
         }
     }
 
@@ -880,6 +885,7 @@ final class TextExtractor {
                         pendingBuffer.append(outputArray, 0, pos);
                     } else {
                         lazyStartParagraph();
+                        captureColorRow(outputArray, pos);
                         out.characters(outputArray, 0, pos);
                     }
                     outputCharBuffer.position(0);
@@ -899,6 +905,7 @@ final class TextExtractor {
                         pendingBuffer.append(outputArray, 0, pos);
                     } else {
                         lazyStartParagraph();
+                        captureColorRow(outputArray, pos);
                         out.characters(outputArray, 0, pos);
                     }
                     outputCharBuffer.position(0);
