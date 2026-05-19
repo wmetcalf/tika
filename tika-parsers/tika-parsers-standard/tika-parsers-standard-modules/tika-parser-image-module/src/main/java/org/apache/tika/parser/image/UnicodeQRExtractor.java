@@ -60,6 +60,10 @@ public final class UnicodeQRExtractor {
         BLOCK_2X2,
         /** Braille patterns — 4 module rows × 2 module cols per char. */
         BRAILLE_4X2,
+        /** "Symbols for Legacy Computing" sextants — 3 module rows × 2 module
+         *  cols per char. U+1FB00..U+1FB3B (60 codepoints) plus the 4 overlap
+         *  glyphs (' ', '█', '▌', '▐') that complete the 64-pattern table. */
+        SEXTANT_3X2,
     }
 
     /** Module grid per block-element character.
@@ -71,6 +75,9 @@ public final class UnicodeQRExtractor {
      *  decorative ASCII boxes from tripping the scan. */
     private static final int MIN_CLUSTER_LINES_BLOCK   = 5;
     private static final int MIN_CLUSTER_LINES_BRAILLE = 3;
+    /** Each sextant char carries 3 module rows, so a Micro-QR (~11 modules)
+     *  needs at least ⌈11/3⌉ = 4 sextant rows. */
+    private static final int MIN_CLUSTER_LINES_SEXTANT = 4;
 
     /** Per-line glyph density floor. Real QR rows are dense; lines that are
      *  mostly normal text with one stray ■ shouldn't merge into a cluster. */
@@ -129,9 +136,55 @@ public final class UnicodeQRExtractor {
         return c >= 0x2800 && c <= 0x28FF;
     }
 
-    /** True if {@code c} is either a block or Braille QR glyph. */
+    /** True if {@code c} is either a block or Braille QR glyph.
+     *  Sextants live above the BMP and need {@link #isSextantQrCodepoint(int)}. */
     public static boolean isQrGlyph(char c) {
         return isBlockQrGlyph(c) || isBrailleQrGlyph(c);
+    }
+
+    /** True if {@code cp} is a sextant glyph (U+1FB00..U+1FB3B). The four
+     *  overlap glyphs (' ', '█', '▌', '▐') that fill out the 64-pattern
+     *  table are NOT counted here — they're already in {@link #BLOCK_MAP}
+     *  and get picked up by the block-element scan. The sextant painter
+     *  ({@link #sextantBits(int)}) understands them on top. */
+    public static boolean isSextantQrCodepoint(int cp) {
+        return cp >= 0x1FB00 && cp <= 0x1FB3B;
+    }
+
+    /** Returns the 6-bit module pattern for a sextant or overlap glyph, or
+     *  {@code -1} if not a sextant-compatible codepoint. Bit positions:
+     *  <pre>
+     *  bit 0 = cell 1 (top-left)     bit 1 = cell 2 (top-right)
+     *  bit 2 = cell 3 (mid-left)     bit 3 = cell 4 (mid-right)
+     *  bit 4 = cell 5 (bottom-left)  bit 5 = cell 6 (bottom-right)
+     *  </pre>
+     *  <p>U+1FB00..U+1FB3B (60 codepoints) cover patterns 1..62 with the
+     *  four "already exists" patterns (0, 21=left-half, 42=right-half, 63)
+     *  delegated to U+0020, U+258C, U+2590, U+2588 respectively.</p>
+     */
+    public static int sextantBits(int cp) {
+        if (cp == 0x0020) {
+            return 0;        // SPACE — empty
+        }
+        if (cp == 0x2588) {
+            return 63;       // FULL BLOCK
+        }
+        if (cp == 0x258C) {
+            return 21;       // LEFT HALF BLOCK (cells 1+3+5)
+        }
+        if (cp == 0x2590) {
+            return 42;       // RIGHT HALF BLOCK (cells 2+4+6)
+        }
+        if (cp >= 0x1FB00 && cp <= 0x1FB13) {
+            return cp - 0x1FB00 + 1;     // patterns 1..20
+        }
+        if (cp >= 0x1FB14 && cp <= 0x1FB27) {
+            return cp - 0x1FB00 + 2;     // patterns 22..41 (skip 21=left-half)
+        }
+        if (cp >= 0x1FB28 && cp <= 0x1FB3B) {
+            return cp - 0x1FB00 + 3;     // patterns 43..62 (skip 21, 42)
+        }
+        return -1;
     }
 
     /** Cheap probe — total count of any QR-glyph chars in the text. */
@@ -140,8 +193,12 @@ public final class UnicodeQRExtractor {
             return 0;
         }
         int count = 0;
-        for (int i = 0; i < text.length(); i++) {
-            if (isQrGlyph(text.charAt(i))) {
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp < 0x10000 && isQrGlyph((char) cp)) {
+                count++;
+            } else if (isSextantQrCodepoint(cp)) {
                 count++;
             }
         }
@@ -238,43 +295,52 @@ public final class UnicodeQRExtractor {
         List<String> current = new ArrayList<>();
         int blockTotal = 0;
         int brailleTotal = 0;
+        int sextantTotal = 0;
         int gapStreak = 0;
 
         for (String line : lines) {
             int blockGlyphs = 0;
             int brailleGlyphs = 0;
-            for (int i = 0; i < line.length(); i++) {
-                char c = line.charAt(i);
-                if (isBlockQrGlyph(c)) {
+            int sextantGlyphs = 0;
+            for (int i = 0; i < line.length(); ) {
+                int cp = line.codePointAt(i);
+                i += Character.charCount(cp);
+                if (isSextantQrCodepoint(cp)) {
+                    sextantGlyphs++;
+                } else if (cp < 0x10000 && isBlockQrGlyph((char) cp)) {
                     blockGlyphs++;
-                } else if (isBrailleQrGlyph(c)) {
+                } else if (cp < 0x10000 && isBrailleQrGlyph((char) cp)) {
                     brailleGlyphs++;
                 }
             }
-            int total = blockGlyphs + brailleGlyphs;
+            int total = blockGlyphs + brailleGlyphs + sextantGlyphs;
             if (total >= MIN_CLUSTER_LINE_GLYPHS) {
                 current.add(line);
                 blockTotal += blockGlyphs;
                 brailleTotal += brailleGlyphs;
+                sextantTotal += sextantGlyphs;
                 gapStreak = 0;
             } else if (!current.isEmpty() && gapStreak < CLUSTER_GAP_TOLERANCE) {
                 // Tolerate a short formatting gap inside an otherwise-dense run
                 current.add(line);
                 gapStreak++;
             } else {
-                flushCluster(current, blockTotal, brailleTotal, clusters);
+                flushCluster(current, blockTotal, brailleTotal, sextantTotal,
+                        clusters);
                 current.clear();
                 blockTotal = 0;
                 brailleTotal = 0;
+                sextantTotal = 0;
                 gapStreak = 0;
             }
         }
-        flushCluster(current, blockTotal, brailleTotal, clusters);
+        flushCluster(current, blockTotal, brailleTotal, sextantTotal, clusters);
         return clusters;
     }
 
     private static void flushCluster(List<String> lines, int blockTotal,
-                                     int brailleTotal, List<Cluster> out) {
+                                     int brailleTotal, int sextantTotal,
+                                     List<Cluster> out) {
         if (lines.isEmpty()) {
             return;
         }
@@ -284,8 +350,11 @@ public final class UnicodeQRExtractor {
             int last = end - 1;
             String line = lines.get(last);
             boolean hasGlyph = false;
-            for (int i = 0; i < line.length(); i++) {
-                if (isQrGlyph(line.charAt(i))) {
+            for (int i = 0; i < line.length(); ) {
+                int cp = line.codePointAt(i);
+                i += Character.charCount(cp);
+                if ((cp < 0x10000 && isQrGlyph((char) cp))
+                        || isSextantQrCodepoint(cp)) {
                     hasGlyph = true;
                     break;
                 }
@@ -298,9 +367,23 @@ public final class UnicodeQRExtractor {
         if (end == 0) {
             return;
         }
-        Mode mode = brailleTotal > blockTotal ? Mode.BRAILLE_4X2 : Mode.BLOCK_2X2;
-        int minLines = (mode == Mode.BRAILLE_4X2)
-                ? MIN_CLUSTER_LINES_BRAILLE : MIN_CLUSTER_LINES_BLOCK;
+        // Pick the dominant family. When a cluster mixes (e.g., 4 sextant
+        // overlap-glyphs like '█' counted as block + many real sextants),
+        // sextants need to outweigh blocks to win — otherwise the block
+        // renderer (which doesn't know sextants) would corrupt the bitmap.
+        Mode mode;
+        int minLines;
+        if (sextantTotal >= brailleTotal && sextantTotal >= blockTotal
+                && sextantTotal > 0) {
+            mode = Mode.SEXTANT_3X2;
+            minLines = MIN_CLUSTER_LINES_SEXTANT;
+        } else if (brailleTotal > blockTotal) {
+            mode = Mode.BRAILLE_4X2;
+            minLines = MIN_CLUSTER_LINES_BRAILLE;
+        } else {
+            mode = Mode.BLOCK_2X2;
+            minLines = MIN_CLUSTER_LINES_BLOCK;
+        }
         if (end < minLines) {
             return;
         }
@@ -318,6 +401,8 @@ public final class UnicodeQRExtractor {
         switch (cluster.mode) {
             case BRAILLE_4X2:
                 return renderBrailleCluster(cluster.lines);
+            case SEXTANT_3X2:
+                return renderSextantCluster(cluster.lines);
             case BLOCK_2X2:
             default:
                 return renderBlockCluster(cluster.lines);
@@ -325,14 +410,18 @@ public final class UnicodeQRExtractor {
     }
 
     private static BufferedImage renderBlockCluster(String[] lines) {
-        int maxCharWidth = maxGlyphCols(lines, true);
+        int maxCharWidth = maxGlyphCols(lines, Mode.BLOCK_2X2);
         if (maxCharWidth < 5) {
             return null;
         }
         int widthModules  = maxCharWidth * 2;
         int heightModules = lines.length * 2;
-        return paint(lines, widthModules, heightModules, (g, row, col, c, quiet) -> {
-            int[] mods = BLOCK_MAP.get(c);
+        return paint(lines, Mode.BLOCK_2X2, widthModules, heightModules,
+                (g, row, col, cp, quiet) -> {
+            if (cp > 0xFFFF) {
+                return;
+            }
+            int[] mods = BLOCK_MAP.get((char) cp);
             if (mods == null) {
                 return;
             }
@@ -354,18 +443,19 @@ public final class UnicodeQRExtractor {
     }
 
     private static BufferedImage renderBrailleCluster(String[] lines) {
-        int maxCharWidth = maxGlyphCols(lines, false);
+        int maxCharWidth = maxGlyphCols(lines, Mode.BRAILLE_4X2);
         if (maxCharWidth < 5) {
             return null;
         }
         // Braille = 4 rows × 2 cols of modules per char.
         int widthModules  = maxCharWidth * 2;
         int heightModules = lines.length * 4;
-        return paint(lines, widthModules, heightModules, (g, row, col, c, quiet) -> {
-            if (!isBrailleQrGlyph(c)) {
+        return paint(lines, Mode.BRAILLE_4X2, widthModules, heightModules,
+                (g, row, col, cp, quiet) -> {
+            if (cp < 0x2800 || cp > 0x28FF) {
                 return;
             }
-            int dots = c - 0x2800;
+            int dots = cp - 0x2800;
             // ISO Braille dot-numbering -> (row, col) within the 4x2 grid.
             // bit 0 = dot 1 = (0,0)    bit 3 = dot 4 = (0,1)
             // bit 1 = dot 2 = (1,0)    bit 4 = dot 5 = (1,1)
@@ -386,13 +476,61 @@ public final class UnicodeQRExtractor {
         });
     }
 
-    private static int maxGlyphCols(String[] lines, boolean block) {
+    private static BufferedImage renderSextantCluster(String[] lines) {
+        int maxCharWidth = maxGlyphCols(lines, Mode.SEXTANT_3X2);
+        if (maxCharWidth < 5) {
+            return null;
+        }
+        // Sextant = 3 rows × 2 cols of modules per char.
+        int widthModules  = maxCharWidth * 2;
+        int heightModules = lines.length * 3;
+        return paint(lines, Mode.SEXTANT_3X2, widthModules, heightModules,
+                (g, row, col, cp, quiet) -> {
+            int bits = sextantBits(cp);
+            if (bits < 0) {
+                return;
+            }
+            // Bit positions: 0=TL, 1=TR, 2=ML, 3=MR, 4=BL, 5=BR
+            int[][] cellPos = {
+                {0, 0}, {0, 1}, {1, 0}, {1, 1}, {2, 0}, {2, 1}
+            };
+            for (int b = 0; b < 6; b++) {
+                if ((bits & (1 << b)) != 0) {
+                    int dr = cellPos[b][0];
+                    int dc = cellPos[b][1];
+                    int x = (quiet + col * 2 + dc) * MODULE_PX;
+                    int y = (quiet + row * 3 + dr) * MODULE_PX;
+                    g.fillRect(x, y, MODULE_PX, MODULE_PX);
+                }
+            }
+        });
+    }
+
+    /** Counts the maximum number of glyphs in any line for the given render
+     *  mode. Codepoint-aware so sextants (which are surrogate pairs) count
+     *  as 1 glyph, not 2. */
+    private static int maxGlyphCols(String[] lines, Mode mode) {
         int maxCharWidth = 0;
         for (String line : lines) {
             int w = 0;
-            for (int i = 0; i < line.length(); i++) {
-                char c = line.charAt(i);
-                if (block ? isBlockQrGlyph(c) : isBrailleQrGlyph(c)) {
+            for (int i = 0; i < line.length(); ) {
+                int cp = line.codePointAt(i);
+                i += Character.charCount(cp);
+                boolean match;
+                switch (mode) {
+                    case BRAILLE_4X2:
+                        match = (cp < 0x10000) && isBrailleQrGlyph((char) cp);
+                        break;
+                    case SEXTANT_3X2:
+                        // Sextant glyph OR overlap glyph (' ', '█', '▌', '▐').
+                        match = sextantBits(cp) >= 0;
+                        break;
+                    case BLOCK_2X2:
+                    default:
+                        match = (cp < 0x10000) && isBlockQrGlyph((char) cp);
+                        break;
+                }
+                if (match) {
                     w++;
                 }
             }
@@ -405,11 +543,12 @@ public final class UnicodeQRExtractor {
 
     @FunctionalInterface
     private interface Painter {
-        void paint(Graphics2D g, int row, int col, char c, int quiet);
+        void paint(Graphics2D g, int row, int col, int codepoint, int quiet);
     }
 
-    private static BufferedImage paint(String[] lines, int widthModules,
-                                       int heightModules, Painter painter) {
+    private static BufferedImage paint(String[] lines, Mode mode,
+                                       int widthModules, int heightModules,
+                                       Painter painter) {
         int quiet = 4; // 4-module quiet zone is the QR spec minimum.
         int imgW = (widthModules  + 2 * quiet) * MODULE_PX;
         int imgH = (heightModules + 2 * quiet) * MODULE_PX;
@@ -422,12 +561,26 @@ public final class UnicodeQRExtractor {
             for (int row = 0; row < lines.length; row++) {
                 String line = lines[row];
                 int col = 0;
-                for (int i = 0; i < line.length(); i++) {
-                    char c = line.charAt(i);
-                    if (!isQrGlyph(c)) {
+                for (int i = 0; i < line.length(); ) {
+                    int cp = line.codePointAt(i);
+                    i += Character.charCount(cp);
+                    boolean isGlyph;
+                    switch (mode) {
+                        case BRAILLE_4X2:
+                            isGlyph = (cp < 0x10000) && isBrailleQrGlyph((char) cp);
+                            break;
+                        case SEXTANT_3X2:
+                            isGlyph = sextantBits(cp) >= 0;
+                            break;
+                        case BLOCK_2X2:
+                        default:
+                            isGlyph = (cp < 0x10000) && isBlockQrGlyph((char) cp);
+                            break;
+                    }
+                    if (!isGlyph) {
                         continue;
                     }
-                    painter.paint(g, row, col, c, quiet);
+                    painter.paint(g, row, col, cp, quiet);
                     col++;
                 }
             }
