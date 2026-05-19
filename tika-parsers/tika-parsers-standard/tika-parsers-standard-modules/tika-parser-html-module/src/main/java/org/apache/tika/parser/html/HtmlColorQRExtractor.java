@@ -287,33 +287,35 @@ public final class HtmlColorQRExtractor {
         int bgLuma = 255;
         boolean fgFound = false;
         boolean bgFound = false;
+
+        // Background does NOT inherit in CSS — only the immediate element's
+        // own background applies. Read it once from `start` only.
+        if (start != null) {
+            String startStyle = combinedStyle(start, classRules);
+            Integer bg = readColor(startStyle, "background-color");
+            if (bg == null) {
+                bg = readBackgroundShorthand(startStyle);
+            }
+            if (bg == null) {
+                String bgAttr = start.attr("bgcolor");
+                if (!bgAttr.isEmpty()) {
+                    bg = parseColor(bgAttr);
+                }
+            }
+            if (bg != null) {
+                bgLuma = bg;
+                bgFound = true;
+            }
+        }
+
+        // Foreground DOES inherit — walk up until a `color` is found.
         Element el = start;
-        while (el != null) {
+        while (el != null && !fgFound) {
             String style = combinedStyle(el, classRules);
-            if (!fgFound) {
-                Integer fg = readColor(style, "color");
-                if (fg != null) {
-                    fgLuma = fg;
-                    fgFound = true;
-                }
-            }
-            if (!bgFound) {
-                Integer bg = readColor(style, "background-color");
-                if (bg == null) {
-                    bg = readBackgroundShorthand(style);
-                }
-                if (bg == null) {
-                    String bgAttr = el.attr("bgcolor");
-                    if (!bgAttr.isEmpty()) {
-                        bg = parseColor(bgAttr);
-                    }
-                }
-                if (bg != null) {
-                    bgLuma = bg;
-                    bgFound = true;
-                }
-            }
-            if (fgFound && bgFound) {
+            Integer fg = readColor(style, "color");
+            if (fg != null) {
+                fgLuma = fg;
+                fgFound = true;
                 break;
             }
             el = el.parent() instanceof Element ? (Element) el.parent() : null;
