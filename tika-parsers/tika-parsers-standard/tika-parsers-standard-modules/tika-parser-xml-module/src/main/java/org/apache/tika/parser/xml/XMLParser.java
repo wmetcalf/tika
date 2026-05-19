@@ -123,7 +123,7 @@ public class XMLParser implements Parser {
      * </ul>
      * Returns the original path unchanged if no edits were needed.
      */
-    private static Path normalizeSvgHrefs(Path svgPath) throws IOException {
+    static Path normalizeSvgHrefs(Path svgPath) throws IOException {
         byte[] raw = Files.readAllBytes(svgPath);
         String content = new String(raw, StandardCharsets.UTF_8);
 
