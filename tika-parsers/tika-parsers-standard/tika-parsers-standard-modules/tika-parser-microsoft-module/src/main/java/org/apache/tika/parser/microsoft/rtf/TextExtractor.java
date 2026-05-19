@@ -469,15 +469,6 @@ final class TextExtractor {
             return;
         }
 
-        // Per-glyph color capture for color-aware QR.
-        if (colorAwareEnabled && currentColorRow != null
-                && !inHeader && fieldState != 1
-                && !groupState.ignore && nextMetaData == null) {
-            if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
-                currentColorRow.add(lumaForColorIndex(groupState.foregroundColorIndex));
-            }
-        }
-
         // While in the RTF header, route text to pendingBuffer only when we are
         // inside a specific metadata destination (nextMetaData != null) or an
         // ignored group (groupState.ignore).  Text that appears in the header but
@@ -841,6 +832,23 @@ final class TextExtractor {
     private void pushChars() throws IOException, SAXException, TikaException {
         if (pendingCharCount != 0) {
             lazyStartParagraph();
+            // Color-aware QR: append luma for every non-whitespace char being
+            // emitted, attributed to the CURRENT \cfN. The \cf handler calls
+            // pushText() (which calls pushChars) BEFORE changing the color,
+            // so the chars in this batch all share the same \cf value. The
+            // current row was established by lazyStartParagraph above.
+            if (colorAwareEnabled && currentColorRow != null
+                    && !inHeader && fieldState != 1
+                    && !groupState.ignore && nextMetaData == null) {
+                int luma = lumaForColorIndex(groupState.foregroundColorIndex);
+                for (int i = 0; i < pendingCharCount; i++) {
+                    char c = pendingChars[i];
+                    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                        continue;
+                    }
+                    currentColorRow.add(luma);
+                }
+            }
             out.characters(pendingChars, 0, pendingCharCount);
             pendingCharCount = 0;
         }
@@ -1142,7 +1150,9 @@ final class TextExtractor {
                 embObjHandler.setPictBitmap(true);
             } else if (equals("cf")) {
                 // \cfN sets foreground color to index N in the colortbl.
-                // 0 = "auto" (no override) — we leave colorTable[0] = null.
+                // Flush any buffered text first so it gets attributed to
+                // the PREVIOUS color before the index changes.
+                pushText();
                 groupState.foregroundColorIndex = param;
             }
         }
