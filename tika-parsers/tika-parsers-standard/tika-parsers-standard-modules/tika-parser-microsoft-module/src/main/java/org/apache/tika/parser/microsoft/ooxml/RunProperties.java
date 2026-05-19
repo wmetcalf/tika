@@ -33,6 +33,11 @@ public class RunProperties {
     // PPTX hlinkClick hyperlink URL — set from <a:hlinkClick> inside <a:rPr>
     String hlinkClickUrl = null;
 
+    // Run foreground (font) color as a 6-char uppercase RGB hex string, e.g.
+    // "FF0000". Set from <w:color w:val="HEX"/> in DOCX or <a:srgbClr val="HEX"/>
+    // in PPTX run properties. Null when no explicit color set.
+    String color = null;
+
     public boolean isItalics() {
         return italics;
     }
@@ -78,5 +83,13 @@ public class RunProperties {
 
     public void setHlinkClickUrl(String url) {
         this.hlinkClickUrl = url;
+    }
+
+    public String getColor() {
+        return color;
+    }
+
+    public void setColor(String color) {
+        this.color = color;
     }
 }

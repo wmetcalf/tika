@@ -81,6 +81,14 @@ public class OOXMLTikaBodyPartHandler
     private String activeRunHyperlinkUrl = null;
     private final StringBuilder activeHyperlinkText = new StringBuilder();
 
+    // Color-aware QR collector: optionally records (per-glyph color) for
+    // every character emitted in run(), binned by paragraph row. Populated
+    // only when ColorAwareConfig is enabled in the ParseContext. Each row
+    // is a list of luma integers; the final grid is fed to ColorGridQRDecoder.
+    private final java.util.List<java.util.List<Integer>> colorRows = new java.util.ArrayList<>();
+    private java.util.List<Integer> currentColorRow = null;
+    private boolean colorAwareEnabled = false;
+
     public OOXMLTikaBodyPartHandler(XHTMLContentHandler xhtml) {
         this(xhtml, null);
     }
@@ -122,6 +130,20 @@ public class OOXMLTikaBodyPartHandler
             ParseContext parseContext) {
         this.inlinePartMap = inlinePartMap != null ? inlinePartMap : OOXMLInlineBodyPartMap.EMPTY;
         this.parseContext = parseContext;
+        if (parseContext != null) {
+            org.apache.tika.parser.ColorAwareConfig cc =
+                    parseContext.get(org.apache.tika.parser.ColorAwareConfig.class);
+            this.colorAwareEnabled = cc != null && cc.isEnabled();
+        }
+    }
+
+    /**
+     * Returns the collected color grid (paragraph row × per-character luma)
+     * for color-aware QR scanning. Returns an empty list when color-aware
+     * mode is disabled or no per-run colors were seen.
+     */
+    public java.util.List<java.util.List<Integer>> getColorRows() {
+        return colorRows;
     }
 
     @Override
@@ -131,6 +153,33 @@ public class OOXMLTikaBodyPartHandler
         xhtml.characters(contents);
         if (isCollectingLinkMetadata() && contents != null) {
             activeHyperlinkText.append(contents);
+        }
+        if (colorAwareEnabled && currentColorRow != null && contents != null) {
+            int luma = lumaForHex(runProperties.getColor());
+            for (int i = 0; i < contents.length(); i++) {
+                char c = contents.charAt(i);
+                // Skip pure whitespace — adds no QR-grid signal and would
+                // typically be inter-module spacing.
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                    continue;
+                }
+                currentColorRow.add(luma);
+            }
+        }
+    }
+
+    /** BT.601 luma from a 6-char RGB hex string. Null/invalid → 0 (treated dark). */
+    private static int lumaForHex(String hex) {
+        if (hex == null || hex.length() != 6) {
+            return 0;
+        }
+        try {
+            int r = Integer.parseInt(hex.substring(0, 2), 16);
+            int g = Integer.parseInt(hex.substring(2, 4), 16);
+            int b = Integer.parseInt(hex.substring(4, 6), 16);
+            return org.apache.tika.parser.image.ColorGridQRDecoder.luma(r, g, b);
+        } catch (NumberFormatException ex) {
+            return 0;
         }
     }
 
@@ -180,6 +229,9 @@ public class OOXMLTikaBodyPartHandler
         writeParagraphNumber(paragraphProperties.getNumId(), paragraphProperties.getIlvl(),
                 listManager, xhtml);
         pDepth++;
+        if (colorAwareEnabled) {
+            currentColorRow = new java.util.ArrayList<>();
+        }
     }
 
 
@@ -203,6 +255,12 @@ public class OOXMLTikaBodyPartHandler
             pWithinCell++;
         }
         pDepth--;
+        if (colorAwareEnabled && currentColorRow != null) {
+            if (!currentColorRow.isEmpty()) {
+                colorRows.add(currentColorRow);
+            }
+            currentColorRow = null;
+        }
     }
 
     private void emitPendingComments() throws SAXException {

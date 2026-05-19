@@ -67,6 +67,8 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
     private final static String I = "i";
     private final static String U = "u";
     private final static String STRIKE = "strike";
+    private final static String COLOR = "color";        // <w:color w:val="HEX"/>
+    private final static String SRGB_CLR = "srgbClr";   // <a:srgbClr val="HEX"/>
     private final static String NUM_PR = "numPr";
     private final static String BR = "br";
     private final static String NO_BREAK_HYPHEN = "noBreakHyphen";
@@ -292,6 +294,22 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
         } else if (U.equals(localName)) {
             if (inR && inRPr) {
                 currRunProperties.setUnderline(getStringVal(atts));
+            }
+        } else if (COLOR.equals(localName) && W_NS.equals(uri)) {
+            // DOCX font color: <w:color w:val="HEX" w:themeColor="..."/>
+            if (inR && inRPr) {
+                String hex = atts.getValue(W_NS, VAL);
+                if (hex != null && hex.length() == 6) {
+                    currRunProperties.setColor(hex.toUpperCase());
+                }
+            }
+        } else if (SRGB_CLR.equals(localName) && DRAWING_MAIN_NS.equals(uri)) {
+            // PPTX font color: <a:solidFill><a:srgbClr val="HEX"/></a:solidFill> inside <a:rPr>
+            if (inR && inRPr) {
+                String hex = atts.getValue("", VAL);
+                if (hex != null && hex.length() == 6) {
+                    currRunProperties.setColor(hex.toUpperCase());
+                }
             }
         } else if (TR.equals(localName)) {
             bodyContentsHandler.startTableRow();
@@ -586,6 +604,7 @@ public class OOXMLWordAndPowerPointTextHandler extends DefaultHandler {
         currRunProperties.setStrike(false);
         currRunProperties.setUnderline(UnderlinePatterns.NONE.name());
         currRunProperties.setHlinkClickUrl(null);
+        currRunProperties.setColor(null);
     }
 
     @Override
