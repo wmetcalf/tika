@@ -606,6 +606,21 @@ public final class UnicodeQRExtractor {
         int quiet = 4; // 4-module quiet zone is the QR spec minimum.
         int imgW = (widthModules  + 2 * quiet) * MODULE_PX;
         int imgH = (heightModules + 2 * quiet) * MODULE_PX;
+        // Per-line starting column offset: lets us pad short rows on the
+        // LEFT when the first glyph looks like a non-space (suggests a
+        // leading-space-strip by some upstream text extractor — e.g. RTF's
+        // \par keyword-terminator behavior eating a literal leading space).
+        // Rows whose first glyph IS a space stay anchored at col 0 (more
+        // consistent with a trailing-space-strip).
+        int maxCharWidth = (widthModules + 1) / 2;  // recover from modules
+        // maxCharWidth recovery: BLOCK_2X2/BRAILLE_4X2/SEXTANT_3X2 all use
+        // 2 module-cols per char, so widthModules / 2 == maxCharWidth.
+        if (mode == Mode.BLOCK_2X2 || mode == Mode.BRAILLE_4X2
+                || mode == Mode.SEXTANT_3X2) {
+            maxCharWidth = widthModules / 2;
+        }
+        int[] colOffsets = computeColOffsets(lines, mode, maxCharWidth);
+
         BufferedImage img = new BufferedImage(imgW, imgH, BufferedImage.TYPE_BYTE_GRAY);
         Graphics2D g = img.createGraphics();
         try {
@@ -614,7 +629,7 @@ public final class UnicodeQRExtractor {
             g.setColor(Color.BLACK);
             for (int row = 0; row < lines.length; row++) {
                 String line = lines[row];
-                int col = 0;
+                int col = colOffsets[row];
                 for (int i = 0; i < line.length(); ) {
                     int cp = line.codePointAt(i);
                     i += Character.charCount(cp);
@@ -642,5 +657,50 @@ public final class UnicodeQRExtractor {
             g.dispose();
         }
         return img;
+    }
+
+    /**
+     * Per-line column offset for the painter. If a line has fewer glyphs
+     * than {@code maxCharWidth}, its offset is set to
+     * {@code maxCharWidth - lineGlyphs} when the line's first glyph is a
+     * non-space block (heuristic: a leading space was stripped by an
+     * upstream text extractor). Lines whose first glyph IS a space, or
+     * whose glyph count equals {@code maxCharWidth}, get offset 0.
+     */
+    private static int[] computeColOffsets(String[] lines, Mode mode, int maxCharWidth) {
+        int[] offsets = new int[lines.length];
+        for (int r = 0; r < lines.length; r++) {
+            int count = 0;
+            int firstCp = -1;
+            for (int i = 0; i < lines[r].length(); ) {
+                int cp = lines[r].codePointAt(i);
+                i += Character.charCount(cp);
+                boolean isGlyph;
+                switch (mode) {
+                    case BRAILLE_4X2:
+                        isGlyph = (cp < 0x10000) && isBrailleQrGlyph((char) cp);
+                        break;
+                    case SEXTANT_3X2:
+                        isGlyph = sextantBits(cp) >= 0;
+                        break;
+                    case BLOCK_2X2:
+                    default:
+                        isGlyph = (cp < 0x10000) && isBlockQrGlyph((char) cp);
+                        break;
+                }
+                if (!isGlyph) {
+                    continue;
+                }
+                if (firstCp < 0) {
+                    firstCp = cp;
+                }
+                count++;
+            }
+            int gap = maxCharWidth - count;
+            if (gap > 0 && firstCp >= 0 && firstCp != ' ') {
+                offsets[r] = gap;
+            }
+        }
+        return offsets;
     }
 }
