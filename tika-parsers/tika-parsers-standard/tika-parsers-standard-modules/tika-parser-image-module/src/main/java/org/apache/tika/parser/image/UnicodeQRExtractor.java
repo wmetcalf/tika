@@ -104,8 +104,12 @@ public final class UnicodeQRExtractor {
                 '#', '@', '▣', '▩', '◼', '⬛'}) {
             m.put(c, new int[]{1, 1, 1, 1});
         }
-        // Space & empty box — all 4 quadrants light
-        for (char c : new char[]{' ', '□', '▢', '◻', '⬜', '☐'}) {
+        // Space & empty box — all 4 quadrants light.
+        // U+00A0 NO-BREAK SPACE is included because HTML &nbsp; is the
+        // canonical "won't trigger Word HTML font-fallback" trick, and we
+        // see it both in defender-corpus fixtures and as a plausible
+        // attacker evasion path against U+0020-only detectors.
+        for (char c : new char[]{' ', ' ', '□', '▢', '◻', '⬜', '☐'}) {
             m.put(c, new int[]{0, 0, 0, 0});
         }
         // Half-blocks
@@ -375,7 +379,8 @@ public final class UnicodeQRExtractor {
         }
         // Skip whitespace after the colon.
         int idx = colon + 1;
-        while (idx < len && (line.charAt(idx) == ' ' || line.charAt(idx) == '\t')) {
+        while (idx < len && (line.charAt(idx) == ' ' || line.charAt(idx) == '\t'
+                || line.charAt(idx) == ' ')) {
             idx++;
         }
         if (idx >= len) {
@@ -384,7 +389,8 @@ public final class UnicodeQRExtractor {
         // Next codepoint must be a non-space QR glyph to confirm this is a
         // property label sitting in front of QR content.
         int cp = line.codePointAt(idx);
-        boolean confirms = (cp < 0x10000 && isQrGlyph((char) cp) && cp != ' ')
+        boolean confirms = (cp < 0x10000 && isQrGlyph((char) cp)
+                            && cp != ' ' && cp != 0x00A0)
                 || isSextantQrCodepoint(cp);
         if (!confirms) {
             return line;
@@ -697,7 +703,7 @@ public final class UnicodeQRExtractor {
                 count++;
             }
             int gap = maxCharWidth - count;
-            if (gap > 0 && firstCp >= 0 && firstCp != ' ') {
+            if (gap > 0 && firstCp >= 0 && firstCp != ' ' && firstCp != 0x00A0) {
                 offsets[r] = gap;
             }
         }

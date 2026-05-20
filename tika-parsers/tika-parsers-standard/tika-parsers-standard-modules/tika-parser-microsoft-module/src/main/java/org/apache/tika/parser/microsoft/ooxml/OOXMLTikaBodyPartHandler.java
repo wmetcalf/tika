@@ -159,8 +159,9 @@ public class OOXMLTikaBodyPartHandler
             for (int i = 0; i < contents.length(); i++) {
                 char c = contents.charAt(i);
                 // Skip pure whitespace — adds no QR-grid signal and would
-                // typically be inter-module spacing.
-                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                // typically be inter-module spacing. NBSP (U+00A0) is a
+                // common Word-HTML evasion alternative to U+0020.
+                if (c == ' ' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                     continue;
                 }
                 currentColorRow.add(luma);

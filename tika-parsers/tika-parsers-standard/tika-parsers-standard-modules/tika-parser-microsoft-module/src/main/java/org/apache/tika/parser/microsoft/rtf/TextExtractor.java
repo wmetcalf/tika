@@ -852,7 +852,7 @@ final class TextExtractor {
         int luma = lumaForColorIndex(groupState.foregroundColorIndex);
         for (int i = 0; i < count; i++) {
             char c = chars[i];
-            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            if (c == ' ' || c == ' ' || c == '\t' || c == '\r' || c == '\n') {
                 continue;
             }
             currentColorRow.add(luma);
