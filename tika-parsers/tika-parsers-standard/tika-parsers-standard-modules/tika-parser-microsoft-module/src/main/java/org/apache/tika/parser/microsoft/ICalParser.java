@@ -271,7 +271,8 @@ public class ICalParser implements Parser {
                         metadata.set("ical:prodid", value);
                     } else if ("method".equals(nameLower)) {
                         metadata.set("ical:method", value);
-                        xhtml.element("p", "Method: " + value);
+                        // ical:method already carries the value; don't
+                        // duplicate as "Method: ..." body text.
                         String methodUpper = value.trim().toUpperCase(Locale.ROOT);
                         if (SUSPICIOUS_METHODS.contains(methodUpper)) {
                             exploitDesc.append(
@@ -284,7 +285,8 @@ public class ICalParser implements Parser {
                         metadata.set("ical:version", value);
                     } else if ("x-wr-calname".equals(nameLower)) {
                         metadata.set("ical:calendar_name", value);
-                        xhtml.element("p", "Calendar: " + value);
+                        // ical:calendar_name already carries the value;
+                        // don't duplicate as "Calendar: ..." body text.
                     } else if ("x-wr-caldesc".equals(nameLower)) {
                         metadata.set("ical:calendar_description", value);
                     }

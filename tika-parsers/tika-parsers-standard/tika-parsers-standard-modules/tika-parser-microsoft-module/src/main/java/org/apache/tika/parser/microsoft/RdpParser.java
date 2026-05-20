@@ -169,13 +169,14 @@ public class RdpParser implements Parser {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
 
-        // Surface string and integer fields
+        // Surface string and integer fields as metadata only — the prior
+        // duplicate "<p>key: value</p>" dump polluted full-text search with
+        // field-name boilerplate. Downstream tools query rdp:* keys directly.
         for (String key : SURFACE_FIELDS) {
             String[] kv = fields.get(key);
             if (kv != null && kv[1] != null && !kv[1].isEmpty()) {
                 String metaKey = "rdp:" + key.replace(' ', '_');
                 metadata.set(metaKey, kv[1]);
-                xhtml.element("p", key + ": " + kv[1]);
             }
         }
 

@@ -196,19 +196,22 @@ public class PpkgParser implements Parser {
             }
         }
 
-        // Surface structured metadata
+        // Surface structured metadata. Prior "<p>key: value</p>" dump was
+        // dropped — it duplicated ppkg:* and polluted full-text search
+        // with field-name boilerplate.
         for (Map.Entry<String, String> e : pkgMeta.entrySet()) {
-            xhtml.element("p", e.getKey() + ": " + e.getValue());
             metadata.add("ppkg:" + e.getKey().toLowerCase(Locale.ROOT), e.getValue());
         }
 
-        // Deduplicate and emit commands
+        // Deduplicate and emit commands. Bare command goes in the body
+        // (analyst-readable content); the labelled metadata key is the
+        // canonical structured form for downstream tools.
         Set<String> seen = new LinkedHashSet<>();
         for (String cmd : commands) {
             seen.add(cmd);
         }
         for (String cmd : seen) {
-            xhtml.element("p", "CommandLine: " + cmd);
+            xhtml.element("p", cmd);
             metadata.add("ppkg:command", cmd);
         }
 
@@ -714,7 +717,8 @@ public class PpkgParser implements Parser {
                 + ";sha1=" + sha1Hex
                 + ";md5=" + md5;
         rootMeta.add("ppkg:data_asset", asset);
-        xhtml.element("p", "DataAsset: " + asset);
+        // ppkg:data_asset metadata is canonical; don't duplicate as
+        // "DataAsset: ..." body text.
     }
 
     /**

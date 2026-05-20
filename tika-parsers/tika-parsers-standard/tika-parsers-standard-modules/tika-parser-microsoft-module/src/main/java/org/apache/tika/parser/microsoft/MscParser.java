@@ -326,29 +326,20 @@ public class MscParser implements Parser {
             }
         }
 
-        // Write XHTML content body
+        // XHTML body holds only the analyst-readable "content" — the
+        // commands and URLs that would actually execute. Everything else
+        // (CLSIDs, task metadata, exploit-class tags) is already in
+        // metadata.* above; emitting it again here as "<p>key: value</p>"
+        // pollutes full-text search with field-name boilerplate.
         xhtml.startElement("div");
-        for (String clsid : clsids) {
-            String snapName = CLSID_NAMES.getOrDefault(clsid, "Unknown");
-            xhtml.element("p", "SnapIn: " + clsid + " (" + snapName + ")");
-        }
-        for (String name : taskNames) {
-            xhtml.element("p", "Task: " + name);
-        }
-        for (String desc : taskDescs) {
-            xhtml.element("p", "Description: " + desc);
-        }
         for (String tc : taskCommands) {
-            xhtml.element("p", "TaskCommand: " + tc);
+            xhtml.element("p", tc);
         }
         for (String cmd : commands) {
-            xhtml.element("p", "CommandLine: " + cmd);
+            xhtml.element("p", cmd);
         }
         for (String url : urls) {
-            xhtml.element("p", "URL: " + url);
-        }
-        if (grimResource) {
-            xhtml.element("p", "ExploitClass: GrimResource (apds.dll javascript redirect)");
+            xhtml.element("p", url);
         }
         xhtml.endElement("div");
 
