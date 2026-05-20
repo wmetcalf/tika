@@ -343,7 +343,8 @@ public class ICalParser implements Parser {
             throws IOException, SAXException, TikaException {
         switch (type) {
             case "VEVENT":
-                processVevent(props, metadata, xhtml, allUrls, exploitDesc, seenUids);
+                processVevent(props, metadata, xhtml, context, extractor,
+                        allUrls, exploitDesc, seenUids);
                 break;
             case "VTODO":
                 processVtodo(props, metadata, xhtml, allUrls);
@@ -365,7 +366,10 @@ public class ICalParser implements Parser {
     }
 
     private void processVevent(Map<String, String> props, Metadata metadata,
-                                XHTMLContentHandler xhtml, Set<String> allUrls,
+                                XHTMLContentHandler xhtml,
+                                ParseContext context,
+                                EmbeddedDocumentExtractor extractor,
+                                Set<String> allUrls,
                                 StringBuilder exploitDesc, Set<String> seenUids)
             throws IOException, SAXException, TikaException {
         emitText(metadata, xhtml, props, "summary",     "ical:event_summary",
@@ -379,6 +383,37 @@ public class ICalParser implements Parser {
         // X-ALT-DESC carries HTML alternate description — primary phishing vector
         emitText(metadata, xhtml, props, "x-alt-desc", "ical:event_description_html",
                 "HTML Description", allUrls);
+        // Route X-ALT-DESC body through the HTML parser so CSS-color QRs,
+        // <pre>/<code> Unicode-art QRs, and the standard image-QR scanner
+        // all fire on the HTML alternate. The plain text path already
+        // catches Unicode-art-in-text patterns; this catches the
+        // structured HTML variants (most realistic Outlook attack
+        // pattern — <table bgcolor="#000"> grid of cells).
+        String altDesc = props.get("x-alt-desc");
+        if (altDesc != null && !altDesc.isEmpty()) {
+            try {
+                byte[] htmlBytes = altDesc.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                Metadata embMeta = new Metadata();
+                embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "x-alt-desc.html");
+                embMeta.set(Metadata.CONTENT_TYPE, "text/html");
+                try (TikaInputStream tis = TikaInputStream.get(
+                        new java.io.ByteArrayInputStream(htmlBytes))) {
+                    if (extractor.shouldParseEmbedded(embMeta)) {
+                        extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                    }
+                }
+                // Hoist QR/exploit metadata from the embedded HTML parse
+                // back onto the parent metadata so callers see them on the
+                // ICS entry, not as a separate embedded part.
+                // (FastJSoupParser writes to its OWN metadata; the embedded
+                // pipeline merges by default for keys the host doesn't set,
+                // but barcode:* values are appended via metadata.add and
+                // already land on the parent.)
+            } catch (Exception e) {
+                metadata.add("ical:warning",
+                        "x-alt-desc HTML parse failed: " + e.getMessage());
+            }
+        }
         emitField(metadata, props, "dtstart",       "ical:event_dtstart");
         emitField(metadata, props, "dtend",         "ical:event_dtend");
         emitField(metadata, props, "dtstamp",       "ical:event_dtstamp");
