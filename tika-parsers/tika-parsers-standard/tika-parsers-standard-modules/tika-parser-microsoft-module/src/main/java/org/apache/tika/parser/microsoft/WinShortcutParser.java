@@ -369,11 +369,29 @@ public class WinShortcutParser implements Parser {
         //   is the canonical target in modern Windows shortcut resolution.
         synthesizeCommands(fields);
 
+        // Surface every parsed structured field as a typed metadata key so
+        // downstream tooling (search, similarity, UI metadata panels) can
+        // query by name. Dumping them as plain <p>key: value</p> body text
+        // — the prior behaviour — polluted full-text search with field
+        // names and made structured access impossible.
         for (Map.Entry<String, String> e : fields.entrySet()) {
-            xhtml.element("p", e.getKey() + ": " + e.getValue());
+            metadata.add("lnk:" + e.getKey(), e.getValue());
         }
         for (String w : warnings) {
-            xhtml.element("p", "Warning: " + w);
+            metadata.add("lnk:warning", w);
+        }
+        // Emit a minimal analyst-readable body containing just the resolved
+        // command strings. These are the closest thing the LNK has to
+        // "content" — the actual command Windows would launch — and useful
+        // for OCR-equivalent text scans and similarity-by-body. Everything
+        // else is metadata.
+        String resolved = fields.get("ResolvedCommand");
+        if (resolved != null && !resolved.isEmpty()) {
+            xhtml.element("p", resolved);
+        }
+        String alt = fields.get("AltCommand");
+        if (alt != null && !alt.isEmpty() && !alt.equals(resolved)) {
+            xhtml.element("p", alt);
         }
         xhtml.endDocument();
     }
