@@ -118,10 +118,16 @@ final class XlmXmlMacrosheetParser {
         private String currentCellRef;
         // Current row index, derived from <row r="..."> or incremented if absent.
         private int currentRow;
-        // Buffers for the inner text of <f> and <v> elements.
+        // Buffers for the inner text of <f>, <v>, and <t> elements.
         private final StringBuilder buf = new StringBuilder();
         private boolean inFormula;
         private boolean inValue;
+        // Inline string capture: <c t="inlineStr"><is><t>…</t></is></c>. XLM
+        // droppers commonly use inline strings to avoid leaving artifacts in
+        // sharedStrings.xml — every URL/IP/path fragment we miss here would
+        // show as a literal in the extracted body but not as an IOC.
+        private boolean inInlineString;
+        private boolean inText;
         // Tracks the formula text written for the current cell so we can attach
         // it to the cell ref on </c>.
         private String currentFormulaText;
@@ -157,14 +163,23 @@ final class XlmXmlMacrosheetParser {
                     inValue = true;
                     buf.setLength(0);
                     break;
+                case "is":
+                    inInlineString = true;
+                    break;
+                case "t":
+                    if (inInlineString) {
+                        inText = true;
+                        buf.setLength(0);
+                    }
+                    break;
                 default:
-                    // ignore — other elements (is, t, sheetData, worksheet, etc.) are passed through
+                    // ignore — other elements (sheetData, worksheet, etc.) are passed through
             }
         }
 
         @Override
         public void characters(char[] ch, int start, int length) {
-            if (inFormula || inValue) {
+            if (inFormula || inValue || inText) {
                 buf.append(ch, start, length);
             }
         }
@@ -185,6 +200,17 @@ final class XlmXmlMacrosheetParser {
                         currentValueText = buf.toString();
                         inValue = false;
                     }
+                    break;
+                case "t":
+                    if (inText) {
+                        // Inline string: treat as the cell's value so the IOC
+                        // scanner sees URL/IP/path fragments stored as literals.
+                        currentValueText = buf.toString();
+                        inText = false;
+                    }
+                    break;
+                case "is":
+                    inInlineString = false;
                     break;
                 case "c":
                     flushCell();
