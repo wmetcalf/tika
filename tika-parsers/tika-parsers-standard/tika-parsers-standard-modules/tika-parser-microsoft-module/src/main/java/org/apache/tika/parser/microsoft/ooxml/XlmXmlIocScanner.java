@@ -84,6 +84,14 @@ final class XlmXmlIocScanner {
     private static final Pattern URL = Pattern.compile(
             "(?<![\\w.])(?:https?|ftp)://[^\\s\"<>()]+", CI);
 
+    // Volatile date/time functions used by XLM droppers for time-gated payloads
+    // (sample evasion: `IF(NOW()>DATE(2024,1,1), EXEC(...), GOTO(A1))`). We
+    // can't statically resolve the comparison from a regex, but flagging the
+    // pattern itself is forensically useful — analysts know the macro behaves
+    // differently before/after a date.
+    private static final Pattern TIME_GATE = Pattern.compile(
+            "\\b(NOW|TODAY)\\(\\s*\\)|\\bDATE\\(\\s*\\d", CI);
+
     // Bare IPv4 host with trailing slash — common XLM dropper fragment where
     // the scheme and host are split across cells (e.g. cell A1 holds "http://"
     // and cell B1 holds "1.2.3.4/foo"). Surface these even when the formula
@@ -171,6 +179,12 @@ final class XlmXmlIocScanner {
             // function-name matchers missed (e.g. URL concatenated from cell refs
             // but still embedded as a literal somewhere).
             addAll(iocs, URL.matcher(formula), m -> "URL: " + m.group(0));
+            // Time-gated logic: flag formulas referencing volatile clock funcs.
+            // De-duped via `seen` outside the loop would noise-up the IOC list,
+            // so emit one TIME_GATE per cell rather than per match.
+            if (TIME_GATE.matcher(formula).find()) {
+                iocs.add("TIME_GATE: " + formula);
+            }
         }
 
         // Also surface URL / IPv4 host / drop-path fragments that appear in

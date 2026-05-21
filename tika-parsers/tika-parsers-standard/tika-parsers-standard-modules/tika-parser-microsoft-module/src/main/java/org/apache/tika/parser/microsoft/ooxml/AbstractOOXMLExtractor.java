@@ -144,6 +144,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         // Now do any embedded parts
         handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap());
 
+        // Catch-all: walk EVERY part's relationships for external Targets, not
+        // just main-document parts. Settings/footnotes/comments/header/footer/
+        // webSettings/sheet/slide .rels can all carry attachedTemplate /
+        // oleObject / frame / subDocument / hyperlink relations with
+        // TargetMode=External, and handleEmbeddedParts() above only walks
+        // getMainDocumentParts(). Frame URLs in webSettings.xml.rels were the
+        // historical example — generalize to anything analogous.
+        surfaceExternalRefsFromAllParts(xhtml, metadata);
+
         // thumbnail
         handleThumbnail(xhtml, metadata);
 
@@ -647,6 +656,94 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         attrs.addAttribute("", "href", "href", "CDATA", url);
         xhtml.startElement("a", attrs);
         xhtml.endElement("a");
+    }
+
+    /**
+     * Walk every PackagePart in the package and surface external-mode
+     * relationships that the main-doc walk would otherwise miss. Each
+     * relationship type maps to a short refType string used by the
+     * {@link OfficeLinkMetadataUtil} link index and the body {@code <a>} ref.
+     *
+     * <p>Targets like {@code attachedTemplate}, {@code frame}, {@code oleObject},
+     * {@code subDocument}, {@code externalLink}, {@code hyperlink} can appear
+     * in any {@code .rels} file in an OOXML package — webSettings.xml.rels,
+     * footnotes.xml.rels, comments.xml.rels, slideN.xml.rels, sheetN.xml.rels,
+     * etc. The existing {@link #handleEmbeddedParts} loop walks only the
+     * "main" parts, so anything attached via a non-main rels file was silently
+     * dropped before this method ran.</p>
+     */
+    private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata) {
+        if (opcPackage == null) return;
+        // Dedup across all parts: a single Target URI emitted twice (e.g. one
+        // rels mentions it, the main-doc walk already emitted it) would noise
+        // up the link index.
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        try {
+            for (PackagePart part : opcPackage.getParts()) {
+                if (part == null || part.getPartName() == null) continue;
+                String partName = part.getPartName().getName();
+                PackageRelationshipCollection rels;
+                try {
+                    rels = part.getRelationships();
+                } catch (Exception e) {
+                    continue;
+                }
+                if (rels == null) continue;
+                for (PackageRelationship rel : rels) {
+                    if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
+                    if (rel.getTargetURI() == null) continue;
+                    String url = rel.getTargetURI().toString();
+                    if (url.isEmpty()) continue;
+                    String dedupKey = url + "|" + rel.getRelationshipType();
+                    if (!seen.add(dedupKey)) continue;
+
+                    String refType = shortRelType(rel.getRelationshipType());
+                    try {
+                        emitExternalRef(xhtml, metadata, refType, url,
+                                partName.startsWith("/") ? partName.substring(1) : partName,
+                                rel.getRelationshipType(), rel.getId());
+                    } catch (SAXException e) {
+                        // best-effort — never fail the parse over a link surface
+                    }
+                    // Light HAS_* flag heuristics so downstream filters know
+                    // which categories appeared. Only flag types where the
+                    // existing Office.HAS_* constant exists; everything else
+                    // is still surfaced via emitExternalRef.
+                    setHasFlagFor(rel.getRelationshipType(), metadata);
+                }
+            }
+        } catch (Exception e) {
+            // never fail the parse over a relationship walk
+        }
+    }
+
+    /** Trim a fully-qualified relationship type URI down to its last path component. */
+    private static String shortRelType(String relType) {
+        if (relType == null || relType.isEmpty()) return "externalRef";
+        int slash = relType.lastIndexOf('/');
+        return slash >= 0 && slash < relType.length() - 1
+                ? relType.substring(slash + 1) : relType;
+    }
+
+    /** Best-effort HAS_* flag setter for known external relationship types. */
+    private static void setHasFlagFor(String relType, Metadata metadata) {
+        if (relType == null) return;
+        switch (shortRelType(relType)) {
+            case "oleObject":
+                metadata.set(org.apache.tika.metadata.Office.HAS_EXTERNAL_OLE_OBJECTS, true);
+                break;
+            case "attachedTemplate":
+                metadata.set(org.apache.tika.metadata.Office.HAS_ATTACHED_TEMPLATE, true);
+                break;
+            case "subDocument":
+                metadata.set(org.apache.tika.metadata.Office.HAS_SUBDOCUMENTS, true);
+                break;
+            case "frame":
+                metadata.set(org.apache.tika.metadata.Office.HAS_FRAMESETS, true);
+                break;
+            default:
+                // no HAS_* mapping — the addLink metadata is enough
+        }
     }
 
     /**

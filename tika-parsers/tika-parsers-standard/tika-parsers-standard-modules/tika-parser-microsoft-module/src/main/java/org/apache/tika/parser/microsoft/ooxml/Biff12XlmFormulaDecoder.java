@@ -1107,6 +1107,34 @@ final class Biff12XlmFormulaDecoder {
                 return Boolean.TRUE;
             case "FALSE":
                 return Boolean.FALSE;
+            case "NOW":
+                // Excel volatile: current date+time as serial. Returning a real
+                // value (vs falling through to the literal "NOW()" string)
+                // lets time-gate comparisons in droppers actually resolve.
+                // Surface to IOCs so analysts notice the time-gated logic even
+                // when the comparison happens to be true at parse time.
+                if (ctx != null) ctx.iocs.add("TIME_GATE: NOW()");
+                return excelSerialDate(java.time.LocalDateTime.now());
+            case "TODAY":
+                if (ctx != null) ctx.iocs.add("TIME_GATE: TODAY()");
+                return (double) excelSerialDay(java.time.LocalDate.now());
+            case "DATE": {
+                // DATE(year, month, day) → Excel serial. Pure constructor, no
+                // IOC — but the resolved serial enables `=IF(NOW()>DATE(2023,1,1), …)`
+                // to fold to a known boolean.
+                if (args.size() >= 3) {
+                    int y = (int) toNum(args.get(0));
+                    int m = (int) toNum(args.get(1));
+                    int d = (int) toNum(args.get(2));
+                    try {
+                        return (double) excelSerialDay(java.time.LocalDate.of(y, m, d));
+                    } catch (java.time.DateTimeException ignored) {
+                        // Invalid Y/M/D combination — fall through to text rep.
+                    }
+                }
+                return name + "(" + args.stream().map(Biff12XlmFormulaDecoder::toStr)
+                        .collect(Collectors.joining(", ")) + ")";
+            }
             default: {
                 // Unknown function: return a text representation so the
                 // caller can still see WHAT was called.
@@ -1118,6 +1146,26 @@ final class Biff12XlmFormulaDecoder {
     }
 
     private Biff12XlmFormulaDecoder() {
+    }
+
+    /**
+     * Excel serial date number for the integer-day part of {@code date}.
+     * Excel's epoch is 1899-12-30 because of its leap-year-1900 bug: every
+     * date after 1900-02-28 is offset by +1 compared to a real epoch
+     * (Excel believes 1900-02-29 existed). Anchoring the calculation at
+     * 1899-12-30 rather than 1900-01-01 cancels the offset for any date
+     * past March 1900, which covers every conceivable modern dropper.
+     */
+    private static int excelSerialDay(java.time.LocalDate date) {
+        java.time.LocalDate epoch = java.time.LocalDate.of(1899, 12, 30);
+        return (int) java.time.temporal.ChronoUnit.DAYS.between(epoch, date);
+    }
+
+    /** Excel serial date with fractional day for the time component. */
+    private static double excelSerialDate(java.time.LocalDateTime dt) {
+        double day = excelSerialDay(dt.toLocalDate());
+        double fraction = dt.toLocalTime().toSecondOfDay() / 86400.0;
+        return day + fraction;
     }
 
     // ── Public API ──────────────────────────────────────────────────────────
