@@ -290,6 +290,20 @@ final class XlmXmlMacrosheetParser {
             currentCellType = null;
             currentFormulaText = null;
             currentValueText = null;
+            // Defensive: reset ALL element-state flags + accumulator at cell
+            // boundary so a malformed cell with unclosed <rPh>, <is>, <v>, <t>,
+            // or <f> can't leak its open state into the next cell and suppress
+            // legitimate IOC capture (the prior bug was inPhoneticRun staying
+            // true after an unclosed </rPh>, killing every subsequent <t> on
+            // the sheet). Cell boundaries are well-defined; intra-cell open
+            // state never legitimately survives </c>.
+            inPhoneticRun = false;
+            inInlineString = false;
+            inText = false;
+            inFormula = false;
+            inValue = false;
+            inlineAcc.setLength(0);
+            buf.setLength(0);
         }
 
         /**

@@ -250,6 +250,15 @@ final class XlmXmlIocScanner {
     private static String sanitizeForIoc(String s) {
         if (s == null) return "";
         int n = Math.min(s.length(), MAX_TIME_GATE_LEN);
+        // If the cap landed exactly between a valid surrogate pair, extend by
+        // one char so the pair stays intact. Without this, the high surrogate
+        // at n-1 has no low surrogate at n (out of range), gets defanged to
+        // U+FFFD, and we lose a legitimate code point at the truncation edge.
+        if (n > 0 && n < s.length()
+                && Character.isHighSurrogate(s.charAt(n - 1))
+                && Character.isLowSurrogate(s.charAt(n))) {
+            n++;
+        }
         StringBuilder out = new StringBuilder(n);
         for (int i = 0; i < n; i++) {
             char c = s.charAt(i);
