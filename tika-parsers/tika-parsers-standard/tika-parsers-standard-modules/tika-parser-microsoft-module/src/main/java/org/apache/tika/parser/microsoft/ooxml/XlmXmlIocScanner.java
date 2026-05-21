@@ -68,10 +68,11 @@ final class XlmXmlIocScanner {
 
     // ── Patterns ─────────────────────────────────────────────────────────────
     // Function-name match is case-insensitive — XLM is itself case-insensitive
-    // and obfuscators sometimes randomize case to evade naive YARA rules. The
-    // UNICODE_CASE flag catches fullwidth-letter obfuscation (EXEC vs ＥＸＥＣ
-    // U+FF25 U+FF38…) commonly seen in newer XLM dropper kits.
-    private static final int CI = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
+    // and obfuscators sometimes randomize case to evade naive YARA rules.
+    // Fullwidth-letter obfuscation (EXEC vs ＥＸＥＣ U+FF25 U+FF38…) is handled
+    // by NFKC-normalizing the formula text at scan entry — Java's UNICODE_CASE
+    // flag doesn't help (it folds ＥＸＥＣ → ｅｘｅｃ, not to ASCII).
+    private static final int CI = Pattern.CASE_INSENSITIVE;
 
     private static final Pattern EXEC_STR = Pattern.compile(
             "\\bEXEC\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
@@ -163,6 +164,13 @@ final class XlmXmlIocScanner {
                 // emitted in full to the XHTML stream by XlmXmlMacrosheetParser.
                 formula = formula.substring(0, MAX_FORMULA_SCAN_LEN);
             }
+            // NFKC-normalize so fullwidth-letter obfuscation (ＥＸＥＣ → EXEC),
+            // ligatures, and other compatibility variants collapse to the ASCII
+            // forms the patterns target. NFKC is the right normalization here:
+            // NFC alone wouldn't fold fullwidth; NFKD/NFKC do. The compatibility
+            // decomposition tables map fullwidth Latin → ASCII as a documented
+            // round-trip-lossy fold.
+            formula = java.text.Normalizer.normalize(formula, java.text.Normalizer.Form.NFKC);
 
             // EXEC("cmd …")
             addAll(iocs, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
@@ -253,6 +261,19 @@ final class XlmXmlIocScanner {
                 out.append('�');  // LRE/RLE/PDF/LRO/RLO bidi overrides
             } else if (c >= 0x2066 && c <= 0x2069) {
                 out.append('�');  // LRI/RLI/FSI/PDI bidi isolates
+            } else if (Character.isHighSurrogate(c)) {
+                // Strict downstream JSON encoders (orjson, some Jackson configs)
+                // reject lone surrogates outright. Only emit the high half if a
+                // valid low surrogate follows; otherwise defang both halves so a
+                // truncated emoji or a forged orphan doesn't break the index.
+                if (i + 1 < n && Character.isLowSurrogate(s.charAt(i + 1))) {
+                    out.append(c);
+                    out.append(s.charAt(++i));
+                } else {
+                    out.append('�');
+                }
+            } else if (Character.isLowSurrogate(c)) {
+                out.append('�');  // unpaired low — by construction (high path above advances i)
             } else {
                 out.append(c);
             }

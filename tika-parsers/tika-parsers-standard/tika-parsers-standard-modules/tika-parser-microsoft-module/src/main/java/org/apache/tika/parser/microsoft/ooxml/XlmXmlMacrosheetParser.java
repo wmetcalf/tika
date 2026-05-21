@@ -152,6 +152,12 @@ final class XlmXmlMacrosheetParser {
         // the current <is>; flushed to currentValueText on </is>.
         private boolean inInlineString;
         private boolean inText;
+        // True while inside a <rPh> phonetic-run element. Phonetic runs are
+        // furigana hints (Japanese / CJK pronunciation aids); they sit inside
+        // <is> alongside the real <t> runs but are NOT part of the cell value.
+        // Mixing them into inlineAcc would noise up the IOC scanner with
+        // pronunciation glyphs that look like split-payload fragments.
+        private boolean inPhoneticRun;
         private final StringBuilder inlineAcc = new StringBuilder();
 
         private String currentFormulaText;
@@ -187,14 +193,24 @@ final class XlmXmlMacrosheetParser {
                     buf.setLength(0);
                     break;
                 case "is":
+                    // Guard against malformed XML with nested <is> — only the
+                    // outermost <is> resets the accumulator. Without the guard,
+                    // crafted XML like <is><t>payload</t><is/></is> would wipe
+                    // payload before flush and silently suppress the IOC.
+                    if (!inInlineString) {
+                        inlineAcc.setLength(0);
+                    }
                     inInlineString = true;
-                    inlineAcc.setLength(0);
+                    break;
+                case "rPh":
+                    // Phonetic-run wrapper: any <t> within is furigana, not value.
+                    inPhoneticRun = true;
                     break;
                 case "t":
-                    // Only treat <t> as inline-string text when we're inside <is>.
-                    // <t> also appears inside <rPh> phonetic-runs and inside
-                    // formula-result string elements — those aren't payload.
-                    if (inInlineString) {
+                    // Only treat <t> as inline-string text when we're inside <is>
+                    // and NOT in a phonetic-run subtree. <t> also appears inside
+                    // formula-result string elements — those aren't payload either.
+                    if (inInlineString && !inPhoneticRun) {
                         inText = true;
                         buf.setLength(0);
                     }
@@ -244,6 +260,9 @@ final class XlmXmlMacrosheetParser {
                         }
                         inInlineString = false;
                     }
+                    break;
+                case "rPh":
+                    inPhoneticRun = false;
                     break;
                 case "c":
                     flushCell();

@@ -86,7 +86,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     // under WORKBOOK_VALUE_MAX_LEN; entries past WORKBOOK_VALUES_MAX_ENTRIES
     // are silently dropped (we still get the first N).
     static final int WORKBOOK_VALUES_MAX_ENTRIES = 200_000;
-    static final int WORKBOOK_VALUE_MAX_LEN = 4096;
+    // 1 KB is well above any legitimate URL/IP/path fragment we'd surface as
+    // an IOC; the prior 4 KB cap × 200k entries = ~825 MB worst case, which is
+    // ~20% of a typical worker JVM heap from a single optional capture map.
+    // Drop to 1 KB → ~200 MB worst case.
+    static final int WORKBOOK_VALUE_MAX_LEN = 1024;
     private final java.util.Map<String, String> workbookCellValues =
             new java.util.HashMap<>();
     private static final String QUERY_TABLE_RELATION =
