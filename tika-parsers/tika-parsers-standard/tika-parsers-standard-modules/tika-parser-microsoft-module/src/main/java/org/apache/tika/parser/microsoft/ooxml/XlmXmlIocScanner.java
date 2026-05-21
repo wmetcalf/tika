@@ -84,6 +84,22 @@ final class XlmXmlIocScanner {
     private static final Pattern URL = Pattern.compile(
             "(?<![\\w.])(?:https?|ftp)://[^\\s\"<>()]+", CI);
 
+    // Bare IPv4 host with trailing slash — common XLM dropper fragment where
+    // the scheme and host are split across cells (e.g. cell A1 holds "http://"
+    // and cell B1 holds "1.2.3.4/foo"). Surface these even when the formula
+    // concatenation can't be statically resolved.
+    private static final Pattern IP_HOST = Pattern.compile(
+            "(?<![\\d.])\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?:[:/][^\\s\"<>()]*)?");
+
+    // Suspicious filename / drop path markers found in cell values: a path-like
+    // prefix that ends in a Windows binary extension. Conservative — pads false
+    // positives down by requiring a slash/backslash separator.
+    private static final Pattern DROP_PATH = Pattern.compile(
+            "[a-zA-Z]:\\\\[^\\s\"<>()]+\\.(?:exe|dll|scr|bat|cmd|ps1|vbs|js|hta|wsf|msi)",
+            CI);
+
+    // ── Public scan entry points ─────────────────────────────────────────────
+
     // Doubled-quote unescape: XLM string literals double the embedded quote ("" → ").
     private static String unq(String s) {
         return s.replace("\"\"", "\"");
@@ -155,6 +171,30 @@ final class XlmXmlIocScanner {
             // function-name matchers missed (e.g. URL concatenated from cell refs
             // but still embedded as a literal somewhere).
             addAll(iocs, URL.matcher(formula), m -> "URL: " + m.group(0));
+        }
+
+        // Also surface URL / IPv4 host / drop-path fragments that appear in
+        // *cell values* (constants) — XLM droppers commonly split a URL
+        // across cells so no formula contains the literal string. We can't
+        // statically reconstruct the joined URL without a formula evaluator
+        // but the fragments themselves are forensically actionable.
+        if (cellValues != null && !cellValues.isEmpty()) {
+            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            for (String val : cellValues.values()) {
+                if (val == null || val.isEmpty()) continue;
+                Matcher m;
+                for (m = URL.matcher(val); m.find(); ) seen.add("URL: " + m.group(0));
+                for (m = IP_HOST.matcher(val); m.find(); ) {
+                    // Skip pure version-string-looking IPs (3.5.7 etc.) and
+                    // bare 0-prefixed octets that aren't routable.
+                    String hit = m.group(0);
+                    if (hit.matches("\\d{1,3}(\\.\\d{1,3}){3}.*")) {
+                        seen.add("IPV4: " + hit);
+                    }
+                }
+                for (m = DROP_PATH.matcher(val); m.find(); ) seen.add("DROP_PATH: " + m.group(0));
+            }
+            iocs.addAll(seen);
         }
         return iocs;
     }
