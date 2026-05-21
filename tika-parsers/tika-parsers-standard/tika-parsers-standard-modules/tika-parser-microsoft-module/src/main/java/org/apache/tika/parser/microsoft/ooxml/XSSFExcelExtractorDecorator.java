@@ -200,9 +200,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             }
             SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
             sheetExtractor.colorAwareEnabled = colorAwareOn;
-            // Capture this sheet's cell values into the workbook-wide map so
-            // XLM macro IOC resolution can follow cross-sheet refs.
-            sheetExtractor.setCellValueCapture(workbookCellValues, iter.getSheetName());
             PackagePart sheetPart = null;
             InputStream nextStream;
             try {
@@ -218,6 +215,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             }
             try (InputStream stream = nextStream) {
                 sheetPart = iter.getSheetPart();
+                // Wire the workbook-wide cell capture sink now that iter.next()
+                // has run — POI's SheetIterator throws if getSheetName() is
+                // called before next(), so this MUST come after the try-with
+                // takes ownership of nextStream.
+                sheetExtractor.setCellValueCapture(workbookCellValues, iter.getSheetName());
 
                 addDrawingHyperLinks(sheetPart);
                 sheetParts.add(sheetPart);
