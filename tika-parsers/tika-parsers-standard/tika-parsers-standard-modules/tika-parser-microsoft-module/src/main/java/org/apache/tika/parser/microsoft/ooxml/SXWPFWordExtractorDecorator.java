@@ -87,12 +87,6 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate";
     private static final String SUBDOCUMENT_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/subDocument";
-    // OOXML frame relationships live on webSettings.xml.rels. The XML inside
-    // webSettings.xml only references them by rId via <w:sourceFileName r:id="…"/>,
-    // so the SAX walk alone can't surface the target URL — we must inspect the
-    // webSettings part's relationship collection directly.
-    private static final String FRAME_RELATION =
-            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/frame";
 
     //a docx file should have one of these "main story" parts
     private final static String[] MAIN_STORY_PART_RELATIONS =
@@ -215,7 +209,11 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             // swallow
         }
 
-        // Check webSettings.xml for framesets
+        // Check webSettings.xml for the frameset flag. URL extraction for any
+        // external frame target is handled by AbstractOOXMLExtractor's
+        // universal external-rels walker (which iterates every part's rels
+        // including webSettings.xml.rels) — emitting them here too would
+        // double up the link-metadata index.
         try {
             PackageRelationshipCollection webSettingsRels =
                     documentPart.getRelationshipsByType(WEB_SETTINGS_RELATION);
@@ -228,27 +226,6 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                         if (handler.hasFrameset()) {
                             metadata.set(Office.HAS_FRAMESETS, true);
                         }
-                    }
-                    // Surface external frame TARGET URLs. The frameset XML only
-                    // references them by rId — the URL itself is on the
-                    // webSettings part's relationship collection (frame rel type).
-                    // Classic remote-template-injection / Follina vector when
-                    // TargetMode=External.
-                    try {
-                        PackageRelationshipCollection frameRels =
-                                webSettingsPart.getRelationshipsByType(FRAME_RELATION);
-                        if (frameRels != null) {
-                            for (PackageRelationship rel : frameRels) {
-                                if (rel.getTargetMode() == TargetMode.EXTERNAL) {
-                                    emitExternalRef(xhtml, "frame",
-                                            rel.getTargetURI().toString(),
-                                            webSettingsPart, rel);
-                                }
-                            }
-                        }
-                    } catch (InvalidFormatException ignored) {
-                        // No relationships file or malformed — frameset flag
-                        // alone is still useful as a warning signal.
                     }
                 }
             }

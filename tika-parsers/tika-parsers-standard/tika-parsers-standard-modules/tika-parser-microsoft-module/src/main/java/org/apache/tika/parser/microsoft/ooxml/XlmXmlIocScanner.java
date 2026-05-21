@@ -17,7 +17,6 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,10 +57,21 @@ final class XlmXmlIocScanner {
 
     private XlmXmlIocScanner() { /* utility */ }
 
+    // ── Bounds ───────────────────────────────────────────────────────────────
+    // Per-cell scan length cap: even with linear-time regex, a multi-MB formula
+    // would still be measurable scan cost. 64 KB is far past any legitimate XLM
+    // formula size while bounding pathological worst case.
+    private static final int MAX_FORMULA_SCAN_LEN = 64 * 1024;
+    // TIME_GATE IOC carries the formula text. Cap so a megabyte-long crafted
+    // formula doesn't bloat the link-metadata index / extracted text.
+    private static final int MAX_TIME_GATE_LEN = 4096;
+
     // ── Patterns ─────────────────────────────────────────────────────────────
     // Function-name match is case-insensitive — XLM is itself case-insensitive
-    // and obfuscators sometimes randomize case to evade naive YARA rules.
-    private static final int CI = Pattern.CASE_INSENSITIVE;
+    // and obfuscators sometimes randomize case to evade naive YARA rules. The
+    // UNICODE_CASE flag catches fullwidth-letter obfuscation (EXEC vs ＥＸＥＣ
+    // U+FF25 U+FF38…) commonly seen in newer XLM dropper kits.
+    private static final int CI = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
 
     private static final Pattern EXEC_STR = Pattern.compile(
             "\\bEXEC\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
@@ -146,6 +156,13 @@ final class XlmXmlIocScanner {
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
             String formula = entry.getValue();
             if (formula == null || formula.isEmpty()) continue;
+            if (formula.length() > MAX_FORMULA_SCAN_LEN) {
+                // Truncate the scan input for this cell. We still see most of the
+                // payload (legitimate XLM lines are tiny; only attacker-padded
+                // formulas exceed the cap), and the formula text was already
+                // emitted in full to the XHTML stream by XlmXmlMacrosheetParser.
+                formula = formula.substring(0, MAX_FORMULA_SCAN_LEN);
+            }
 
             // EXEC("cmd …")
             addAll(iocs, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
@@ -181,9 +198,12 @@ final class XlmXmlIocScanner {
             addAll(iocs, URL.matcher(formula), m -> "URL: " + m.group(0));
             // Time-gated logic: flag formulas referencing volatile clock funcs.
             // De-duped via `seen` outside the loop would noise-up the IOC list,
-            // so emit one TIME_GATE per cell rather than per match.
+            // so emit one TIME_GATE per cell rather than per match. Sanitize
+            // the formula text first — it can contain control bytes, RTL
+            // overrides, NUL, or be megabytes long; downstream metadata
+            // consumers (JSON encoders, log aggregators) misbehave on those.
             if (TIME_GATE.matcher(formula).find()) {
-                iocs.add("TIME_GATE: " + formula);
+                iocs.add("TIME_GATE: " + sanitizeForIoc(formula));
             }
         }
 
@@ -198,19 +218,47 @@ final class XlmXmlIocScanner {
                 if (val == null || val.isEmpty()) continue;
                 Matcher m;
                 for (m = URL.matcher(val); m.find(); ) seen.add("URL: " + m.group(0));
+                // IP_HOST already requires 4 dotted octets in its main pattern,
+                // so every match is shape-valid by construction; no second-pass
+                // filter needed (the prior "skip 3-octet versions" check was
+                // tautological — the regex never produced 3-octet hits).
                 for (m = IP_HOST.matcher(val); m.find(); ) {
-                    // Skip pure version-string-looking IPs (3.5.7 etc.) and
-                    // bare 0-prefixed octets that aren't routable.
-                    String hit = m.group(0);
-                    if (hit.matches("\\d{1,3}(\\.\\d{1,3}){3}.*")) {
-                        seen.add("IPV4: " + hit);
-                    }
+                    seen.add("IPV4: " + m.group(0));
                 }
                 for (m = DROP_PATH.matcher(val); m.find(); ) seen.add("DROP_PATH: " + m.group(0));
             }
             iocs.addAll(seen);
         }
         return iocs;
+    }
+
+    /**
+     * Defang IOC strings that get embedded in metadata + XHTML emission.
+     * Caps length, replaces ASCII control bytes (0x00–0x1F except tab/newline)
+     * and the bidirectional-override controls (U+202A..U+202E, U+2066..U+2069)
+     * with U+FFFD so downstream JSON encoders / log aggregators don't choke
+     * and so RTL-override obfuscation can't visually hide content from analysts.
+     */
+    private static String sanitizeForIoc(String s) {
+        if (s == null) return "";
+        int n = Math.min(s.length(), MAX_TIME_GATE_LEN);
+        StringBuilder out = new StringBuilder(n);
+        for (int i = 0; i < n; i++) {
+            char c = s.charAt(i);
+            if (c == '\t' || c == '\n' || c == '\r') {
+                out.append(' ');
+            } else if (c < 0x20 || c == 0x7f) {
+                out.append('�');
+            } else if (c >= 0x202A && c <= 0x202E) {
+                out.append('�');  // LRE/RLE/PDF/LRO/RLO bidi overrides
+            } else if (c >= 0x2066 && c <= 0x2069) {
+                out.append('�');  // LRI/RLI/FSI/PDI bidi isolates
+            } else {
+                out.append(c);
+            }
+        }
+        if (s.length() > MAX_TIME_GATE_LEN) out.append("…");
+        return out.toString();
     }
 
     @FunctionalInterface
@@ -222,25 +270,4 @@ final class XlmXmlIocScanner {
         }
     }
 
-    /** Resolve a cell-reference iterator into its value when known; returns null when unresolved. */
-    static String resolveRef(String ref, Map<String, String> shortRefIndex) {
-        if (ref == null || shortRefIndex == null) return null;
-        String key = ref.toUpperCase(java.util.Locale.ROOT);
-        return shortRefIndex.get(key);
-    }
-
-    /** Build a sheet-stripped value index of the form {cellRef → value} from a workbook-wide map. */
-    static Map<String, String> shortRefIndex(Map<String, String> cellValues) {
-        Map<String, String> out = new LinkedHashMap<>();
-        if (cellValues == null) return out;
-        for (Iterator<Map.Entry<String, String>> it = cellValues.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<String, String> e = it.next();
-            String k = e.getKey();
-            int last = k.lastIndexOf(':');
-            if (last >= 0 && last < k.length() - 1) {
-                out.put(k.substring(last + 1).toUpperCase(java.util.Locale.ROOT), e.getValue());
-            }
-        }
-        return out;
-    }
 }

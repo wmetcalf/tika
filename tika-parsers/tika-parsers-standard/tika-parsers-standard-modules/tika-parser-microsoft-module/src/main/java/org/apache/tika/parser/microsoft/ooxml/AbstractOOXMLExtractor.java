@@ -672,12 +672,25 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      * "main" parts, so anything attached via a non-main rels file was silently
      * dropped before this method ran.</p>
      */
+    /** Hard cap on external-ref emissions per document. A crafted package can
+     *  list the same URL under many fabricated relationship types — without
+     *  this cap a single doc could produce unbounded link-metadata entries. */
+    private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
+
     private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata) {
         if (opcPackage == null) return;
-        // Dedup across all parts: a single Target URI emitted twice (e.g. one
-        // rels mentions it, the main-doc walk already emitted it) would noise
-        // up the link index.
+        // Dedup ON URL ALONE so an attacker can't bloat by mentioning the same
+        // URL under N fabricated relationship types. Forensically this means we
+        // keep the FIRST relType we see for any given URL — typically the most
+        // specific one (frame/attachedTemplate beats hyperlink because the
+        // type-specific walks elsewhere often run first via the per-part
+        // iteration order POI returns).
         java.util.Set<String> seen = new java.util.HashSet<>();
+        // Hard cap to bound total emissions. Counted across the package root
+        // and every part. Once exceeded, downstream emissions are silently
+        // skipped — the link index still has the first MAX_EXTERNAL_REFS_PER_DOC
+        // links, which is more than any legitimate doc would carry.
+        int[] emitted = new int[]{0};
         // Package-level relationships (/_rels/.rels at the OPC root). These
         // sit ABOVE any part and could in principle carry an external Target
         // (e.g. a malformed/handcrafted package). opcPackage.getParts() does
@@ -685,13 +698,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         try {
             PackageRelationshipCollection rootRels = opcPackage.getRelationships();
             if (rootRels != null) {
-                surfaceExternalRels(xhtml, metadata, rootRels, "_rels/.rels", seen);
+                surfaceExternalRels(xhtml, metadata, rootRels, "_rels/.rels", seen, emitted);
             }
         } catch (Exception ignored) {
             // best-effort
         }
         try {
             for (PackagePart part : opcPackage.getParts()) {
+                if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) break;
                 if (part == null || part.getPartName() == null) continue;
                 String partName = part.getPartName().getName();
                 PackageRelationshipCollection rels;
@@ -701,7 +715,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     continue;
                 }
                 if (rels == null) continue;
-                surfaceExternalRels(xhtml, metadata, rels, partName, seen);
+                surfaceExternalRels(xhtml, metadata, rels, partName, seen, emitted);
             }
         } catch (Exception e) {
             // never fail the parse over a relationship walk
@@ -711,24 +725,27 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     /**
      * Emit any external-mode relationships from {@code rels} that haven't
      * already been recorded in {@code seen}. Shared between the per-part walk
-     * and the package-level root rels walk.
+     * and the package-level root rels walk. Honors the per-doc emission cap.
      */
     private void surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
                                      PackageRelationshipCollection rels, String partName,
-                                     java.util.Set<String> seen) {
+                                     java.util.Set<String> seen, int[] emitted) {
         for (PackageRelationship rel : rels) {
+            if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) return;
             if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
             if (rel.getTargetURI() == null) continue;
             String url = rel.getTargetURI().toString();
             if (url.isEmpty()) continue;
-            String dedupKey = url + "|" + rel.getRelationshipType();
-            if (!seen.add(dedupKey)) continue;
+            // Dedup on URL alone — see class-level comment in
+            // surfaceExternalRefsFromAllParts on attacker URL-bloat.
+            if (!seen.add(url)) continue;
 
             String refType = shortRelType(rel.getRelationshipType());
             try {
                 emitExternalRef(xhtml, metadata, refType, url,
                         partName.startsWith("/") ? partName.substring(1) : partName,
                         rel.getRelationshipType(), rel.getId());
+                emitted[0]++;
             } catch (SAXException e) {
                 // best-effort — never fail the parse over a link surface
             }

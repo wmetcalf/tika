@@ -80,8 +80,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     // XLM-dropper obfuscation where URL/payload fragments are stashed in data
     // sheets and concatenated by formulas in the macro sheet.
     //
-    // Empty when no XLM macro sheet is present in the workbook; cheap enough
-    // to capture unconditionally (~100 bytes per cell, bounded by cell count).
+    // BOUNDED on both axes against attacker-crafted resource-exhaustion: a
+    // workbook with 1M cells × 64KB inline strings would otherwise pin 64GB
+    // of heap. URL/IP/path fragments long enough to matter as IOCs are well
+    // under WORKBOOK_VALUE_MAX_LEN; entries past WORKBOOK_VALUES_MAX_ENTRIES
+    // are silently dropped (we still get the first N).
+    static final int WORKBOOK_VALUES_MAX_ENTRIES = 200_000;
+    static final int WORKBOOK_VALUE_MAX_LEN = 4096;
     private final java.util.Map<String, String> workbookCellValues =
             new java.util.HashMap<>();
     private static final String QUERY_TABLE_RELATION =
@@ -311,7 +316,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // XML side reuses the same IOC vocabulary via a text-formula scanner.
         // Failures here never fail the whole parse.
         try {
-            processXlmXmlMacroSheets(container, xhtml);
+            processXlmXmlMacroSheets(container, xhtml, stringsShim);
         } catch (Exception e) {
             //swallow — macro extraction is opportunistic
         }
@@ -323,9 +328,15 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
      * and run a pattern-based IOC scan against the formula text. Mirrors the
      * binary-side {@code processXlmBinaryMacroSheets} in
      * {@link XSSFBExcelExtractorDecorator}.
+     *
+     * @param sharedStrings  workbook shared-strings table (may be null) — passed
+     *                       to the macrosheet SAX parser so {@code <c t="s">}
+     *                       cells resolve to their actual string rather than the
+     *                       SST index.
      */
     private void processXlmXmlMacroSheets(OPCPackage container,
-                                           XHTMLContentHandler xhtml)
+                                           XHTMLContentHandler xhtml,
+                                           XSSFSharedStringsShim sharedStrings)
             throws SAXException, IOException {
         List<PackagePart> macroParts = new ArrayList<>();
         macroParts.addAll(container.getPartsByContentType(
@@ -355,7 +366,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
             try (InputStream is = macroPart.getInputStream()) {
                 XlmXmlMacrosheetParser parser =
-                        new XlmXmlMacrosheetParser(is, xhtml, sheetName);
+                        new XlmXmlMacrosheetParser(is, xhtml, sheetName, sharedStrings);
                 parser.parse();
                 allFormulas.putAll(parser.getFormulas());
                 allValues.putAll(parser.getValues());
@@ -1261,11 +1272,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             try {
                 // Capture for the XLM cross-sheet scanner before any "missing
                 // cell" gap-filling — gap cells have no value to record.
+                // Bounded: skip past WORKBOOK_VALUES_MAX_ENTRIES, truncate
+                // per-value past WORKBOOK_VALUE_MAX_LEN. See javadoc on
+                // workbookCellValues for the threat model.
                 if (cellValueSink != null && captureSheetName != null
-                        && cellRef != null && formattedValue != null && !formattedValue.isEmpty()) {
+                        && cellRef != null && formattedValue != null && !formattedValue.isEmpty()
+                        && cellValueSink.size() < WORKBOOK_VALUES_MAX_ENTRIES) {
+                    String v = formattedValue.length() > WORKBOOK_VALUE_MAX_LEN
+                            ? formattedValue.substring(0, WORKBOOK_VALUE_MAX_LEN)
+                            : formattedValue;
                     cellValueSink.put(
-                            captureSheetName + ":" + currentRowForCapture + ":" + cellRef,
-                            formattedValue);
+                            captureSheetName + ":" + currentRowForCapture + ":" + cellRef, v);
                 }
 
                 // Handle any missing cells
