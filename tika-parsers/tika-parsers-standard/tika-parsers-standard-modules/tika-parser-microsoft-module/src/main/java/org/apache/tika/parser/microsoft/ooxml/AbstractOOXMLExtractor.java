@@ -678,6 +678,18 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         // rels mentions it, the main-doc walk already emitted it) would noise
         // up the link index.
         java.util.Set<String> seen = new java.util.HashSet<>();
+        // Package-level relationships (/_rels/.rels at the OPC root). These
+        // sit ABOVE any part and could in principle carry an external Target
+        // (e.g. a malformed/handcrafted package). opcPackage.getParts() does
+        // not include the root, so check it separately.
+        try {
+            PackageRelationshipCollection rootRels = opcPackage.getRelationships();
+            if (rootRels != null) {
+                surfaceExternalRels(xhtml, metadata, rootRels, "_rels/.rels", seen);
+            }
+        } catch (Exception ignored) {
+            // best-effort
+        }
         try {
             for (PackagePart part : opcPackage.getParts()) {
                 if (part == null || part.getPartName() == null) continue;
@@ -689,31 +701,41 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     continue;
                 }
                 if (rels == null) continue;
-                for (PackageRelationship rel : rels) {
-                    if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
-                    if (rel.getTargetURI() == null) continue;
-                    String url = rel.getTargetURI().toString();
-                    if (url.isEmpty()) continue;
-                    String dedupKey = url + "|" + rel.getRelationshipType();
-                    if (!seen.add(dedupKey)) continue;
-
-                    String refType = shortRelType(rel.getRelationshipType());
-                    try {
-                        emitExternalRef(xhtml, metadata, refType, url,
-                                partName.startsWith("/") ? partName.substring(1) : partName,
-                                rel.getRelationshipType(), rel.getId());
-                    } catch (SAXException e) {
-                        // best-effort — never fail the parse over a link surface
-                    }
-                    // Light HAS_* flag heuristics so downstream filters know
-                    // which categories appeared. Only flag types where the
-                    // existing Office.HAS_* constant exists; everything else
-                    // is still surfaced via emitExternalRef.
-                    setHasFlagFor(rel.getRelationshipType(), metadata);
-                }
+                surfaceExternalRels(xhtml, metadata, rels, partName, seen);
             }
         } catch (Exception e) {
             // never fail the parse over a relationship walk
+        }
+    }
+
+    /**
+     * Emit any external-mode relationships from {@code rels} that haven't
+     * already been recorded in {@code seen}. Shared between the per-part walk
+     * and the package-level root rels walk.
+     */
+    private void surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
+                                     PackageRelationshipCollection rels, String partName,
+                                     java.util.Set<String> seen) {
+        for (PackageRelationship rel : rels) {
+            if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
+            if (rel.getTargetURI() == null) continue;
+            String url = rel.getTargetURI().toString();
+            if (url.isEmpty()) continue;
+            String dedupKey = url + "|" + rel.getRelationshipType();
+            if (!seen.add(dedupKey)) continue;
+
+            String refType = shortRelType(rel.getRelationshipType());
+            try {
+                emitExternalRef(xhtml, metadata, refType, url,
+                        partName.startsWith("/") ? partName.substring(1) : partName,
+                        rel.getRelationshipType(), rel.getId());
+            } catch (SAXException e) {
+                // best-effort — never fail the parse over a link surface
+            }
+            // Light HAS_* flag heuristics so downstream filters know which
+            // categories appeared. Types without a HAS_* constant still get
+            // an addLink entry via emitExternalRef.
+            setHasFlagFor(rel.getRelationshipType(), metadata);
         }
     }
 
