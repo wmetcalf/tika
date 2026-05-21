@@ -42,6 +42,7 @@ import org.apache.poi.ss.util.CellReference;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler.SheetContentsHandler;
 import org.apache.poi.xssf.usermodel.XSSFComment;
+import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.apache.poi.xssf.usermodel.helpers.HeaderFooterHelper;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -287,6 +288,82 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             //swallow
         }
 
+        // XLM (Excel 4.0) macro extraction for XML-based OOXML workbooks
+        // (.xlsm / .xltm). XSSFBExcelExtractorDecorator handles the binary
+        // (XLSB) side via XlmMacroEmulator + Biff12XlmMacrosheetParser; the
+        // XML side reuses the same IOC vocabulary via a text-formula scanner.
+        // Failures here never fail the whole parse.
+        try {
+            processXlmXmlMacroSheets(container, xhtml);
+        } catch (Exception e) {
+            //swallow — macro extraction is opportunistic
+        }
+    }
+
+    /**
+     * Walk macro-sheet parts ({@code MACRO_SHEET_XML} / {@code INTL_MACRO_SHEET_XML}),
+     * emit each formula to the XHTML stream so it surfaces in extracted text,
+     * and run a pattern-based IOC scan against the formula text. Mirrors the
+     * binary-side {@code processXlmBinaryMacroSheets} in
+     * {@link XSSFBExcelExtractorDecorator}.
+     */
+    private void processXlmXmlMacroSheets(OPCPackage container,
+                                           XHTMLContentHandler xhtml)
+            throws SAXException, IOException {
+        List<PackagePart> macroParts = new ArrayList<>();
+        macroParts.addAll(container.getPartsByContentType(
+                XSSFRelation.MACRO_SHEET_XML.getContentType()));
+        macroParts.addAll(container.getPartsByContentType(
+                XSSFRelation.INTL_MACRO_SHEET_XML.getContentType()));
+        if (macroParts.isEmpty()) return;
+
+        metadata.set("msoffice:xlsx:has-xlm-macros", "true");
+
+        // Accumulate formulas + values across all macro sheets so the IOC scanner
+        // can resolve cross-sheet references. Sheet name (derived from the part
+        // name) is the disambiguator in the per-cell key.
+        Map<String, String> allFormulas = new HashMap<>();
+        Map<String, String> allValues = new HashMap<>();
+
+        for (PackagePart macroPart : macroParts) {
+            String sheetName = sheetNameFromPart(macroPart);
+            xhtml.startElement("div", "class", "xlm-macrosheet");
+            xhtml.element("h1", sheetName);
+
+            try (InputStream is = macroPart.getInputStream()) {
+                XlmXmlMacrosheetParser parser =
+                        new XlmXmlMacrosheetParser(is, xhtml, sheetName);
+                parser.parse();
+                allFormulas.putAll(parser.getFormulas());
+                allValues.putAll(parser.getValues());
+            } catch (Exception e) {
+                xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+            }
+
+            xhtml.endElement("div");
+        }
+
+        // Pattern-scan everything once we've seen all sheets. Cross-sheet
+        // EXEC(Sheet1!A1) lookups resolve here.
+        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues);
+        if (!iocs.isEmpty()) {
+            xhtml.startElement("div", "class", "xlm-iocs");
+            xhtml.element("h2", "XLM Emulation");
+            for (String ioc : iocs) {
+                xhtml.element("p", ioc);
+            }
+            xhtml.endElement("div");
+        }
+    }
+
+    /** Sheet name derived from a package-part path. Mirrors XSSFBExcelExtractorDecorator. */
+    private static String sheetNameFromPart(PackagePart part) {
+        String name = part.getPartName().getName();
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) name = name.substring(0, dot);
+        return name;
     }
 
     /**
