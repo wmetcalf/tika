@@ -17,10 +17,14 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import org.apache.tika.sax.XHTMLContentHandler;
-import org.apache.tika.utils.XMLReaderUtils;
 import org.xml.sax.Attributes;
+import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
+
+import javax.xml.parsers.SAXParser;
+import javax.xml.parsers.SAXParserFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -72,9 +76,22 @@ final class XlmXmlMacrosheetParser {
      * as {@link Biff12XlmMacrosheetParser#parse()}.
      */
     void parse() throws SAXException, IOException {
+        // Direct JAXP SAX parse — avoids XMLReaderUtils' requirement for a
+        // non-null ParseContext, which we don't need for a self-contained
+        // SAX walk that doesn't recurse into Tika sub-parsers. Disabling
+        // external entity resolution keeps this safe against XXE on the
+        // (untrusted) macrosheet XML.
         try {
-            XMLReaderUtils.parseSAX(stream, new Handler(), null);
-        } catch (org.apache.tika.exception.TikaException e) {
+            SAXParserFactory spf = SAXParserFactory.newInstance();
+            spf.setNamespaceAware(true);
+            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            SAXParser sp = spf.newSAXParser();
+            XMLReader reader = sp.getXMLReader();
+            reader.setContentHandler(new Handler());
+            reader.parse(new InputSource(stream));
+        } catch (javax.xml.parsers.ParserConfigurationException e) {
             throw new SAXException(e);
         }
     }
