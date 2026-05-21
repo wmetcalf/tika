@@ -1113,11 +1113,14 @@ final class Biff12XlmFormulaDecoder {
                 // lets time-gate comparisons in droppers actually resolve.
                 // Surface to IOCs so analysts notice the time-gated logic even
                 // when the comparison happens to be true at parse time.
+                //
+                // UTC because forbiddenapis blocks the default-timezone form;
+                // Excel's display timezone is irrelevant when comparing serials.
                 if (ctx != null) ctx.iocs.add("TIME_GATE: NOW()");
-                return excelSerialDate(java.time.LocalDateTime.now());
+                return excelSerialDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
             case "TODAY":
                 if (ctx != null) ctx.iocs.add("TIME_GATE: TODAY()");
-                return (double) excelSerialDay(java.time.LocalDate.now());
+                return (double) excelSerialDay(java.time.LocalDate.now(java.time.ZoneOffset.UTC));
             case "DATE": {
                 // DATE(year, month, day) → Excel serial. Pure constructor, no
                 // IOC — but the resolved serial enables `=IF(NOW()>DATE(2023,1,1), …)`
