@@ -72,6 +72,18 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink";
     private static final String CONNECTIONS_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/connections";
+
+    // Workbook-wide cell values, keyed "{sheetName}:{rowNum}:{cellRef}" (e.g.
+    // "Sheet1:7:A7"). Populated by SheetTextAsHTML during the main sheet walk
+    // and consumed by processXlmXmlMacroSheets so the XLM IOC scanner can
+    // resolve cross-sheet references like EXEC(Sheet1!A1) — the canonical
+    // XLM-dropper obfuscation where URL/payload fragments are stashed in data
+    // sheets and concatenated by formulas in the macro sheet.
+    //
+    // Empty when no XLM macro sheet is present in the workbook; cheap enough
+    // to capture unconditionally (~100 bytes per cell, bounded by cell count).
+    private final java.util.Map<String, String> workbookCellValues =
+            new java.util.HashMap<>();
     private static final String QUERY_TABLE_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/queryTable";
     private static final String PIVOT_CACHE_DEFINITION_RELATION =
@@ -188,6 +200,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             }
             SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
             sheetExtractor.colorAwareEnabled = colorAwareOn;
+            // Capture this sheet's cell values into the workbook-wide map so
+            // XLM macro IOC resolution can follow cross-sheet refs.
+            sheetExtractor.setCellValueCapture(workbookCellValues, iter.getSheetName());
             PackagePart sheetPart = null;
             InputStream nextStream;
             try {
@@ -322,8 +337,14 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // Accumulate formulas + values across all macro sheets so the IOC scanner
         // can resolve cross-sheet references. Sheet name (derived from the part
         // name) is the disambiguator in the per-cell key.
+        //
+        // Seed with the workbook-wide cell values captured during the standard
+        // sheet walk — that's where XLM droppers stash URL/IP/path fragments
+        // referenced by macro formulas like =Sheet1!A1. Without this, the
+        // scanner only saw the macro-sheets' own cells and missed every
+        // split-payload obfuscation.
         Map<String, String> allFormulas = new HashMap<>();
-        Map<String, String> allValues = new HashMap<>();
+        Map<String, String> allValues = new HashMap<>(workbookCellValues);
 
         for (PackagePart macroPart : macroParts) {
             String sheetName = sheetNameFromPart(macroPart);
@@ -1160,6 +1181,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 new java.util.ArrayList<>();
         protected boolean colorAwareEnabled;
         private java.util.List<Integer> currentColorRow;
+        // XLM cross-sheet value capture — see workbookCellValues javadoc on
+        // the enclosing class. Both fields are null on workbooks where the
+        // outer extractor decided not to capture (currently always non-null
+        // because capture is unconditional).
+        private java.util.Map<String, String> cellValueSink;
+        private String captureSheetName;
+        private int currentRowForCapture = -1;
 
         protected SheetTextAsHTML(OfficeParserConfig config, XHTMLContentHandler xhtml) {
             this.includeHeadersFooters = config.isIncludeHeadersAndFooters();
@@ -1167,6 +1195,16 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             this.xhtml = xhtml;
             headers = new ArrayList<>();
             footers = new ArrayList<>();
+        }
+
+        /**
+         * Capture per-cell resolved values into a shared workbook map.
+         * Used by the XLM IOC scanner to resolve cross-sheet cell references
+         * (e.g. {@code EXEC(Sheet1!A1)}) without re-parsing each sheet.
+         */
+        protected void setCellValueCapture(java.util.Map<String, String> sink, String sheetName) {
+            this.cellValueSink = sink;
+            this.captureSheetName = sheetName;
         }
 
         public void startRow(int rowNum) {
@@ -1180,6 +1218,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         xhtml.endElement("tr");
                     }
                 }
+
+                // Track row number for the cell-value capture map (XLM scanner)
+                currentRowForCapture = rowNum;
 
                 // Start the new row
                 xhtml.startElement("tr");
@@ -1216,6 +1257,15 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         public void cell(String cellRef, String formattedValue,
                           XSSFCommentsShim.CommentData comment) {
             try {
+                // Capture for the XLM cross-sheet scanner before any "missing
+                // cell" gap-filling — gap cells have no value to record.
+                if (cellValueSink != null && captureSheetName != null
+                        && cellRef != null && formattedValue != null && !formattedValue.isEmpty()) {
+                    cellValueSink.put(
+                            captureSheetName + ":" + currentRowForCapture + ":" + cellRef,
+                            formattedValue);
+                }
+
                 // Handle any missing cells
                 int colNum =
                         (cellRef == null) ? lastSeenCol + 1 : (new CellReference(cellRef)).getCol();
