@@ -48,6 +48,7 @@ def render(doc: dict) -> str:
     out.append("")
     out.append("- [Declared properties (by namespace)](#declared-properties-by-namespace)")
     out.append("- [Undeclared string-literal fields](#undeclared-string-literal-fields)")
+    out.append("- [Templated field patterns](#templated-field-patterns)")
     out.append("- [Parsers and what they emit](#parsers-and-what-they-emit)")
     out.append("")
 
@@ -96,6 +97,27 @@ def render(doc: dict) -> str:
                 short = s["class"].rsplit(".", 1)[-1]
                 src = f"`{s['file']}:{s['line']}`"
                 out.append(f"| `{name}` | `{short}` | {src} |")
+    out.append("")
+
+    # ── Templated field patterns ─────────────────────────────────────────────
+    out.append("## Templated field patterns")
+    out.append("")
+    out.append("Parsers that construct field names dynamically (`metadata.set(\"prefix:\" + dynamicKey, ...)`) produce *templated* fields — the literal anchor is known but the dynamic half comes from runtime data (image-format metadata trees, MIME headers, MAPI properties, etc.). Each pattern below shows the resolvable prefix/suffix and the parser emission sites.")
+    out.append("")
+    templated = doc.get("templated_fields") or {}
+    if not templated:
+        out.append("_(none)_")
+    else:
+        out.append("| Pattern | Prefix | Suffix | Emitter | Source |")
+        out.append("|---|---|---|---|---|")
+        for pattern in sorted(templated):
+            info = templated[pattern]
+            prefix = f"`{info.get('prefix')}`" if info.get('prefix') else "_(none)_"
+            suffix = f"`{info.get('suffix')}`" if info.get('suffix') else "_(none)_"
+            for s in info.get("emitted_by", []):
+                short = s["class"].rsplit(".", 1)[-1]
+                src = f"`{s['file']}:{s['line']}`"
+                out.append(f"| `{pattern}` | {prefix} | {suffix} | `{short}` | {src} |")
     out.append("")
 
     # ── Parsers and what they emit ───────────────────────────────────────────

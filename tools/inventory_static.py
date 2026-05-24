@@ -153,6 +153,18 @@ STRING_CONST_HEAD_RE = re.compile(
     re.VERBOSE | re.MULTILINE,
 )
 
+# Local-variable String binding (lowercase identifier). Used to trace patterns
+# like `String key = PREFIX + name;` followed later by `metadata.add(key, ...)`.
+# Tika does this when the dynamic-key construction is too noisy to inline.
+STRING_LOCAL_HEAD_RE = re.compile(
+    r"""
+    (?:^|\n)\s*
+    (?:final\s+)?
+    String\s+(?P<name>[a-z][a-zA-Z0-9_]*)\s*=\s*
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
 # metadata.set / add / setMulti / setMultiple / etc.
 # Group 1: method name. Group 2: first argument (Property constant ref OR string literal).
 META_CALL_RE = re.compile(
@@ -204,6 +216,23 @@ class FieldRecord:
     emitted_by: set[str] = field(default_factory=set)
     is_string_literal_only: bool = False
     literal_emit_sites: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class TemplatedField:
+    """A field name pattern where one part is a literal prefix/suffix and the
+    other part is a runtime-computed string. E.g.
+        metadata.set("img:" + iioMetadataKey, value)
+                     ^^^^^^   ^^^^^^^^^^^^^^^
+                     prefix   dynamic
+    Recorded so the registry can document that `img:*` is a known templated
+    namespace whose suffix is unbounded by the source — useful for downstream
+    consumers that need to validate "is `img:Chroma Gamma` a legitimate field?"
+    """
+    pattern: str             # e.g. "img:*"
+    prefix: str | None
+    suffix: str | None
+    emitted_by: list[dict] = field(default_factory=list)
 
 
 # ── File scanning ───────────────────────────────────────────────────────────
@@ -261,6 +290,44 @@ def collect_string_constants(text: str,
                 resolved[name] = value
                 progress = True
     return resolved
+
+
+def collect_local_string_vars(text: str, string_consts: dict[str, str],
+                               global_consts: dict[str, str] | None) -> tuple[
+        dict[str, str],  # var name → fully-resolved value
+        dict[str, tuple[str | None, str | None]],  # var name → (prefix, suffix) for templated
+]:
+    """Scan a file for local `String key = expr;` declarations (lowercase
+    identifiers — not Property constants). Returns two maps:
+
+      resolved: var → concrete string value when the RHS fully resolves
+      templated: var → (prefix, suffix) when the RHS is a partial concat
+                 with at least one literal anchor
+
+    Used by scan_metadata_calls to trace `metadata.add(key, ...)` patterns
+    where `key` was assigned in an earlier statement. No scope tracking;
+    last-write-wins across the file. Good enough for the common Tika
+    pattern where each method's `key` is unique by convention.
+    """
+    resolved: dict[str, str] = {}
+    templated: dict[str, tuple[str | None, str | None]] = {}
+    for m in STRING_LOCAL_HEAD_RE.finditer(text):
+        name = m.group("name")
+        end = _find_statement_end(text, m.end())
+        if end is None:
+            continue
+        expr = text[m.end():end].strip()
+        # Drop assignments whose RHS is a method call we can't resolve
+        # (e.g. `String key = computeKey();`). Only useful when the RHS is
+        # a String expression we can fold.
+        v = resolve_string(expr, string_consts, global_consts)
+        if v is not None:
+            resolved[name] = v
+            continue
+        prefix, suffix = _extract_templated_parts(expr, string_consts, global_consts)
+        if prefix or suffix:
+            templated[name] = (prefix, suffix)
+    return resolved, templated
 
 
 def _find_statement_end(text: str, start: int) -> int | None:
@@ -414,6 +481,14 @@ def resolve_string(expr: str, string_consts: dict[str, str],
         if global_consts and p in global_consts:
             resolved.append(global_consts[p])
             continue
+        # ShortClass.CONST_NAME where the constant is declared in a parent
+        # interface (Java interface inheritance): try the bare constant name
+        # as a final fallback. global_consts is populated with both forms.
+        if "." in p:
+            tail = p.rsplit(".", 1)[-1]
+            if global_consts and tail in global_consts:
+                resolved.append(global_consts[tail])
+                continue
         # Method call like FOO.toString() — try stripping
         if p.endswith(".toString()"):
             base = p[:-len(".toString()")]
@@ -479,30 +554,33 @@ def _unescape_java_string(s: str) -> str:
 
 def scan_metadata_calls(java_path: Path, prop_index: dict[str, PropertyDecl],
                          global_consts: dict[str, str] | None = None) -> tuple[
-        list[tuple[str, str]],  # (parser_fqn, field_name) for typed emissions
-        list[tuple[str, str, int]],  # (parser_fqn, field_name, line) for literal emissions
+        list[tuple[str, str]],            # (parser_fqn, field_name) typed
+        list[tuple[str, str, int]],       # (parser_fqn, field_name, line) literal
+        list[tuple[str, str | None, str | None, int]],  # (parser_fqn, prefix, suffix, line) templated
 ]:
-    """Pass 2: scan a parser source file for metadata.set/add calls."""
+    """Pass 2: scan a parser source file for metadata.set/add calls.
+
+    Returns three buckets — typed (Property constant ref), literal (fully
+    resolvable string), templated ("prefix" + dynamicVar etc. where one side
+    of the concat is a literal anchor but the rest is runtime-computed).
+    """
     text = java_path.read_text(encoding="utf-8", errors="replace")
     pkg = package_of(java_path)
     cls = class_of(java_path)
     fqn = f"{pkg}.{cls}" if pkg else cls
     string_consts = collect_string_constants(text, global_consts)
+    local_vars, local_templates = collect_local_string_vars(text, string_consts, global_consts)
     typed: list[tuple[str, str]] = []
     literal: list[tuple[str, str, int]] = []
+    templated: list[tuple[str, str | None, str | None, int]] = []
     for m in META_CALL_RE.finditer(text):
         recv = m.group("recv").split(".")[-1]
-        # Heuristic: receiver must be a "metadata" variable, not e.g.
-        # `Optional.of` or `Files.set`. Accept "metadata", "meta", or any
-        # name ending in "Metadata".
         if not META_RECEIVER_RE.match(recv):
             continue
         first = m.group("first").strip()
-        # Strip trailing parens / casts
         if first.endswith(")"):
-            # Could be `(Foo.BAR)`-style cast; rare. Skip strict casting.
             first = first.rstrip(")")
-        # Try Property constant reference: ShortClass.CONST_NAME
+        # Property constant reference
         cm = CONST_REF_RE.match(first)
         if cm:
             short_class, const = cm.group(1), cm.group(2)
@@ -510,12 +588,69 @@ def scan_metadata_calls(java_path: Path, prop_index: dict[str, PropertyDecl],
             if field_name:
                 typed.append((fqn, field_name))
                 continue
-        # Try string literal or PREFIX+literal
+        # Fully-resolvable string expression
         resolved = resolve_string(first, string_consts, global_consts)
         if resolved is not None:
             line_no = text.count("\n", 0, m.start()) + 1
             literal.append((fqn, resolved, line_no))
-    return typed, literal
+            continue
+        # Local-variable binding: `String key = ...; metadata.add(key, ...);`
+        if first in local_vars:
+            line_no = text.count("\n", 0, m.start()) + 1
+            literal.append((fqn, local_vars[first], line_no))
+            continue
+        if first in local_templates:
+            prefix, suffix = local_templates[first]
+            line_no = text.count("\n", 0, m.start()) + 1
+            templated.append((fqn, prefix, suffix, line_no))
+            continue
+        # Templated: "prefix" + dynamicVar (or dynamicVar + "suffix", etc.)
+        prefix, suffix = _extract_templated_parts(first, string_consts, global_consts)
+        if prefix or suffix:
+            line_no = text.count("\n", 0, m.start()) + 1
+            templated.append((fqn, prefix, suffix, line_no))
+    return typed, literal, templated
+
+
+def _extract_templated_parts(expr: str, string_consts: dict[str, str],
+                              global_consts: dict[str, str] | None) -> tuple[str | None, str | None]:
+    """Pull resolvable leading prefix and/or trailing suffix from a
+    `+`-concatenation that contains at least one non-resolvable term.
+
+    Example: `"img:" + key` → ("img:", None)
+    Example: `prefix + name + ":raw"` where prefix is a String const  but
+             name is a runtime variable → ("img:", ":raw") if prefix→"img:".
+    Returns (None, None) if no literal anchor exists, the expression has
+    no `+`, or it's already fully resolvable (which would have been caught
+    by the literal path).
+    """
+    parts = _split_concat(expr)
+    if not parts or len(parts) == 1:
+        return None, None
+    resolved_parts: list[str | None] = [
+        resolve_string(p, string_consts, global_consts) for p in parts
+    ]
+    if all(v is not None for v in resolved_parts):
+        return None, None  # would have been a literal
+    if not any(v is not None for v in resolved_parts):
+        return None, None  # no anchor at all
+    # Leading run
+    prefix_parts = []
+    for v in resolved_parts:
+        if v is None: break
+        prefix_parts.append(v)
+    # Trailing run (only if it's NOT the same span as the leading one)
+    suffix_parts = []
+    for v in reversed(resolved_parts):
+        if v is None: break
+        suffix_parts.append(v)
+    suffix_parts.reverse()
+    # Avoid double-counting when the whole thing is resolvable from one side
+    if len(prefix_parts) == len(resolved_parts):
+        suffix_parts = []
+    prefix = "".join(prefix_parts) if prefix_parts else None
+    suffix = "".join(suffix_parts) if suffix_parts else None
+    return prefix, suffix
 
 
 def _lookup_const(short_class: str, const_name: str, prop_index: dict[str, PropertyDecl]) -> str | None:
@@ -536,6 +671,13 @@ def main(argv: list[str]) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tika-root", default=".", type=Path,
                     help="Root of the Tika source tree (default: cwd)")
+    ap.add_argument("--extra-root", action="append", default=[], type=Path,
+                    help="Additional source root to scan for parser-side "
+                         "metadata.set/add call sites. Repeatable. Use for "
+                         "downstream JVM modules (e.g., RedTusk worker_jvm) "
+                         "that emit fields via Tika's Metadata API but live "
+                         "outside the Tika source tree. Property declarations "
+                         "still come from --tika-root only.")
     ap.add_argument("--out", default="docs/metadata-fields-static.json", type=Path,
                     help="Output JSON path (default: docs/metadata-fields-static.json)")
     args = ap.parse_args(argv)
@@ -568,6 +710,19 @@ def main(argv: list[str]) -> int:
             cls = class_of(jf)
             for name, value in collect_string_constants(text, global_consts).items():
                 global_consts[f"{cls}.{name}"] = value
+                # Also index by bare CONST_NAME so callers that reference the
+                # constant via an interface that EXTENDS the declaring one
+                # (e.g., `Metadata.MESSAGE_RAW_HEADER_PREFIX` where Metadata
+                # extends Message, which actually declares the field) still
+                # resolve. Last-write-wins is fine — duplicate names across
+                # classes are typically aliases for the same string value.
+                # Only set if not already set OR same value, so a real
+                # `ShortClass.NAME` lookup still wins when there's ambiguity.
+                if name not in global_consts:
+                    global_consts[name] = value
+                elif global_consts[name] != value:
+                    # Genuine collision — keep the first to keep results stable.
+                    pass
         if len(global_consts) == before:
             break
 
@@ -580,10 +735,15 @@ def main(argv: list[str]) -> int:
             # all of them; lookups index by field_name later anyway.
             prop_index[f"{decl.declared_in_fqn}.{decl.constant_name}"] = decl
 
-    # Phase 2: scan ALL Java source for metadata.set/add calls
+    # Phase 2: scan ALL Java source for metadata.set/add calls. Includes
+    # any --extra-root paths so downstream JVM modules (RedTusk worker_jvm,
+    # etc.) that emit Tika Metadata fields show up in the inventory too.
+    java_roots = [root] + [er.resolve() for er in args.extra_root]
     java_files = sorted(
-        p for p in root.rglob("*.java")
-        if "/test/" not in str(p) and "/target/" not in str(p)
+        (jf, jr)
+        for jr in java_roots
+        for jf in jr.rglob("*.java")
+        if "/test/" not in str(jf) and "/target/" not in str(jf)
     )
 
     records: dict[str, FieldRecord] = {}
@@ -604,9 +764,10 @@ def main(argv: list[str]) -> int:
 
     # Walk parser files for emission sites.
     parser_emits: dict[str, set[str]] = {}
-    for jf in java_files:
+    templated_fields: dict[str, TemplatedField] = {}  # keyed by "prefix*suffix"
+    for jf, jr in java_files:
         try:
-            typed, literal = scan_metadata_calls(jf, prop_index, global_consts)
+            typed, literal, templated = scan_metadata_calls(jf, prop_index, global_consts)
         except Exception as e:
             print(f"warning: scan failed for {jf}: {e}", file=sys.stderr)
             continue
@@ -627,10 +788,21 @@ def main(argv: list[str]) -> int:
             rec.emitted_by.add(parser_fqn)
             rec.literal_emit_sites.append({
                 "class": parser_fqn,
-                "file": str(jf.relative_to(root)),
+                "file": str(jf.relative_to(jr)),
                 "line": line,
             })
             parser_emits.setdefault(parser_fqn, set()).add(field_name)
+        for parser_fqn, prefix, suffix, line in templated:
+            pattern = f"{prefix or ''}*{suffix or ''}"
+            tpl = templated_fields.setdefault(pattern, TemplatedField(
+                pattern=pattern, prefix=prefix, suffix=suffix,
+            ))
+            tpl.emitted_by.append({
+                "class": parser_fqn,
+                "file": str(jf.relative_to(jr)),
+                "line": line,
+            })
+            parser_emits.setdefault(parser_fqn, set()).add(pattern)
 
     # ── Build output ────────────────────────────────────────────────────
     properties_out: dict[str, dict] = {}
@@ -652,17 +824,32 @@ def main(argv: list[str]) -> int:
         parser: {"emits": sorted(fields)}
         for parser, fields in sorted(parser_emits.items())
     }
+    # Templated patterns: "prefix*suffix" — runtime-computed suffix/prefix
+    # joined to a literal anchor. Documented so downstream consumers know
+    # `img:*`, `Message:Raw-Header:*`, `lnk:*`, etc. are templated namespaces
+    # whose exact key is unbounded by the source.
+    templated_out = {
+        pattern: {
+            "prefix": tpl.prefix,
+            "suffix": tpl.suffix,
+            "emitted_by": tpl.emitted_by,
+        }
+        for pattern, tpl in sorted(templated_fields.items())
+    }
 
     doc = {
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "tika_root": str(root),
+        "extra_roots": [str(er.resolve()) for er in args.extra_root],
         "summary": {
             "property_declarations": len(properties_out),
             "parsers_emitting_fields": len(parsers_out),
             "undeclared_string_fields": len(undeclared_out),
+            "templated_patterns": len(templated_out),
         },
         "properties": properties_out,
         "undeclared_string_fields": undeclared_out,
+        "templated_fields": templated_out,
         "parsers": parsers_out,
     }
 
@@ -675,6 +862,7 @@ def main(argv: list[str]) -> int:
     print(f"  declared properties: {doc['summary']['property_declarations']}", file=sys.stderr)
     print(f"  parsers emitting:    {doc['summary']['parsers_emitting_fields']}", file=sys.stderr)
     print(f"  undeclared literals: {doc['summary']['undeclared_string_fields']}", file=sys.stderr)
+    print(f"  templated patterns:  {doc['summary']['templated_patterns']}", file=sys.stderr)
     return 0
 
 

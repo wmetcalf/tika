@@ -57,6 +57,16 @@ def diff_inventories(baseline: dict, current: dict) -> list[str]:
     for f in removed_lit:
         lines.append(f"- REMOVED undeclared field `{f}`")
 
+    # 3. Added / removed templated patterns
+    base_tpl = set(baseline.get("templated_fields", {}).keys())
+    cur_tpl = set(current.get("templated_fields", {}).keys())
+    for f in sorted(cur_tpl - base_tpl):
+        sites = current["templated_fields"][f]["emitted_by"]
+        site = f"{sites[0]['file']}:{sites[0]['line']}" if sites else "?"
+        lines.append(f"+ ADDED templated pattern `{f}`  (emitted at {site})")
+    for f in sorted(base_tpl - cur_tpl):
+        lines.append(f"- REMOVED templated pattern `{f}`")
+
     # 3. Emitter set changes for declared properties (parser added/removed)
     for f in sorted(base_props & cur_props):
         base_em = set(baseline["properties"][f].get("emitted_by", []))
