@@ -176,10 +176,12 @@ META_CALL_RE = re.compile(
     re.VERBOSE,
 )
 
-# A metadata receiver — variable named `metadata`, `meta`, or any field whose name
-# ends in "Metadata" (heuristic to catch member-field receivers without false
-# positives on every two-letter `m.`).
-META_RECEIVER_RE = re.compile(r"^(metadata|meta|.*Metadata)$")
+# A metadata receiver — variable named `metadata`, `meta`, or any identifier
+# ending in `Meta` / `Metadata`. Catches the wide range of names Tika and our
+# fork use: rootMeta, parentMeta, parentMetadata, attachMetadata, msgMeta,
+# coreMetadata, etc. The trailing-suffix anchoring keeps false-positive risk
+# low — non-metadata variables rarely end in exactly these tokens.
+META_RECEIVER_RE = re.compile(r"^(?:metadata|meta|.*Meta|.*Metadata)$")
 
 # Captures `ClassName.CONST_NAME` form for the first argument of a metadata call.
 CONST_REF_RE = re.compile(r"^([A-Z][A-Za-z0-9_]*)\.([A-Z][A-Z0-9_]*)$")
@@ -328,6 +330,237 @@ def collect_local_string_vars(text: str, string_consts: dict[str, str],
         if prefix or suffix:
             templated[name] = (prefix, suffix)
     return resolved, templated
+
+
+# Loose method-head detector. We match an identifier followed by `(`, then
+# balance-find to `)`, then look for the body-opening `{` (after an optional
+# `throws ...` clause). The identifier-only regex is intentionally permissive —
+# false positives are rejected at the post-match check phase. Catches the
+# common Tika pattern of static/private helper methods that receive a String
+# key as a parameter and pass it to `metadata.set/add`.
+METHOD_HEAD_RE = re.compile(r'\b(?P<name>[a-z]\w*)\s*\(', re.MULTILINE)
+
+# After the `)` of a method's param list, the body opens with `{`, optionally
+# preceded by a `throws ...` clause. Skip whitespace/throws and check for `{`.
+METHOD_BODY_OPEN_RE = re.compile(r'\s*(?:throws\s+[\w\s.,<>]+)?\s*\{')
+
+
+@dataclass
+class MethodInfo:
+    name: str
+    params: list[tuple[str, str]]   # [(type, paramName), ...] in declared order
+    sig_start: int                  # offset of the method head (just before name)
+    body_start: int                 # offset just after the opening `{`
+    body_end: int                   # offset of the closing `}`
+
+
+def _find_methods(text: str) -> list[MethodInfo]:
+    """Scan a Java source file for method definitions.
+
+    Returns one MethodInfo per identified method. The detector is permissive
+    (any `lowercaseIdent(...)` followed by an opening brace counts), so it
+    catches both static/instance methods and the occasional lambda-like
+    pattern. False positives don't hurt downstream — they just won't match
+    the parameter-tracing flow.
+    """
+    methods: list[MethodInfo] = []
+    pos = 0
+    while True:
+        m = METHOD_HEAD_RE.search(text, pos)
+        if m is None:
+            break
+        pos = m.end()
+        # Skip if we're inside a string literal / line or block comment
+        # (cheap heuristic: count unmatched quotes on this line up to m.start()).
+        if _is_in_string_or_comment(text, m.start()):
+            continue
+        paren_close = _balance_args(text, m.end())
+        if paren_close is None:
+            continue
+        # Look for the body `{` after an optional throws clause
+        body_match = METHOD_BODY_OPEN_RE.match(text, paren_close + 1)
+        if body_match is None:
+            continue
+        body_start = body_match.end()
+        body_end = _find_balanced_brace(text, body_start)
+        if body_end is None:
+            continue
+        params_text = text[m.end():paren_close]
+        params = _parse_method_params(params_text)
+        methods.append(MethodInfo(
+            name=m.group("name"),
+            params=params,
+            sig_start=m.start(),
+            body_start=body_start,
+            body_end=body_end,
+        ))
+        # Skip past the body to avoid re-matching things inside it
+        pos = body_end + 1
+    return methods
+
+
+def _is_in_string_or_comment(text: str, offset: int) -> bool:
+    """Quick heuristic: walk back to the start of the current line, count
+    unmatched `"` and `//` markers. False positives are tolerable — they just
+    skip a legitimate method, which the caller resolves via the still-present
+    main scan."""
+    line_start = text.rfind("\n", 0, offset) + 1
+    line_prefix = text[line_start:offset]
+    # Strip escaped quotes
+    cleaned = re.sub(r'\\.', '', line_prefix)
+    quotes = cleaned.count('"')
+    if quotes % 2 == 1:
+        return True
+    if "//" in cleaned:
+        return True
+    return False
+
+
+def _find_balanced_brace(text: str, start: int) -> int | None:
+    """Given an offset just after an opening `{`, find the matching `}`.
+    Handles nested braces, string/char literals, line/block comments."""
+    depth = 1
+    i = start
+    in_str = False
+    in_char = False
+    in_line_comment = False
+    in_block_comment = False
+    escape = False
+    while i < len(text):
+        c = text[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if in_line_comment:
+            if c == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            if c == "*" and i + 1 < len(text) and text[i + 1] == "/":
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if c == "\\":
+            escape = True
+            i += 1
+            continue
+        if in_str:
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if in_char:
+            if c == "'":
+                in_char = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "'":
+            in_char = True
+        elif c == "/" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "/":
+                in_line_comment = True
+                i += 2
+                continue
+            if nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _parse_method_params(params_text: str) -> list[tuple[str, str]]:
+    """Parse a Java method parameter list. Returns [(type, name)] tuples."""
+    if not params_text.strip():
+        return []
+    parts: list[str] = []
+    depth = 0
+    last = 0
+    for i, c in enumerate(params_text):
+        if c in "<(":
+            depth += 1
+        elif c in ">)":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(params_text[last:i])
+            last = i + 1
+    parts.append(params_text[last:])
+    out: list[tuple[str, str]] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Strip leading annotations like @Nullable / @NotNull(value="x")
+        while p.startswith("@"):
+            ann = re.match(r"@\w+(?:\s*\([^)]*\))?\s*", p)
+            if not ann:
+                break
+            p = p[ann.end():].lstrip()
+        # Strip leading "final"
+        if p.startswith("final"):
+            p = p[5:].lstrip()
+        # Right-most word is the parameter name; everything before is the type
+        m = re.search(r"(\w+)\s*$", p)
+        if not m:
+            continue
+        param_name = m.group(1)
+        param_type = p[:m.start()].rstrip()
+        out.append((param_type, param_name))
+    return out
+
+
+def _split_top_level_args(args_text: str) -> list[str]:
+    """Split a comma-separated argument list at top level (respecting
+    parens, brackets, braces, generics, and string literals)."""
+    if not args_text.strip():
+        return []
+    out: list[str] = []
+    depth = 0
+    last = 0
+    in_str = False
+    in_char = False
+    escape = False
+    for i, c in enumerate(args_text):
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if in_str:
+            if c == '"':
+                in_str = False
+            continue
+        if in_char:
+            if c == "'":
+                in_char = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "'":
+            in_char = True
+        elif c in "([{<":
+            depth += 1
+        elif c in ")]}>":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append(args_text[last:i])
+            last = i + 1
+    out.append(args_text[last:])
+    return [a.strip() for a in out]
 
 
 def _find_statement_end(text: str, start: int) -> int | None:
@@ -570,9 +803,34 @@ def scan_metadata_calls(java_path: Path, prop_index: dict[str, PropertyDecl],
     fqn = f"{pkg}.{cls}" if pkg else cls
     string_consts = collect_string_constants(text, global_consts)
     local_vars, local_templates = collect_local_string_vars(text, string_consts, global_consts)
+
+    # Pre-pass: find helper methods that take a String key as a parameter and
+    # pass it to metadata.set/add. Maps (method_name, param_position) -> True.
+    # The main META_CALL_RE pass then ignores the inside-helper sites (they're
+    # unresolvable bare-identifier first args) and trusts this helper-tracing
+    # pass to expand them to their callers' literal args.
+    methods = _find_methods(text)
+    helper_signatures: list[tuple[str, int]] = []   # [(method_name, param_pos)]
+    method_def_offsets = {m.sig_start for m in methods}
+    for method in methods:
+        body = text[method.body_start:method.body_end]
+        param_names = [p[1] for p in method.params]
+        if not param_names:
+            continue
+        for mm in META_CALL_RE.finditer(body):
+            recv = mm.group("recv").split(".")[-1]
+            if not META_RECEIVER_RE.match(recv):
+                continue
+            first = mm.group("first").strip().rstrip(")")
+            if first in param_names:
+                helper_signatures.append((method.name, param_names.index(first)))
+                break  # one per method is enough; same param used multiple times
+                       # in a body still maps to the same caller-expansion.
+
     typed: list[tuple[str, str]] = []
     literal: list[tuple[str, str, int]] = []
     templated: list[tuple[str, str | None, str | None, int]] = []
+
     for m in META_CALL_RE.finditer(text):
         recv = m.group("recv").split(".")[-1]
         if not META_RECEIVER_RE.match(recv):
@@ -609,6 +867,37 @@ def scan_metadata_calls(java_path: Path, prop_index: dict[str, PropertyDecl],
         if prefix or suffix:
             line_no = text.count("\n", 0, m.start()) + 1
             templated.append((fqn, prefix, suffix, line_no))
+
+    # Helper-method tracing: for each (method_name, param_position) identified
+    # above, find every call site of that method in the file and extract the
+    # literal/resolved value of the argument at the param's position. Each
+    # resolution becomes an emission attributed to this file.
+    for method_name, param_pos in helper_signatures:
+        caller_re = re.compile(rf'\b{re.escape(method_name)}\s*\(')
+        for cm in caller_re.finditer(text):
+            # Skip the method definition itself (same regex matches the head)
+            if cm.start() in method_def_offsets:
+                continue
+            args_end = _balance_args(text, cm.end())
+            if args_end is None:
+                continue
+            args_text = text[cm.end():args_end]
+            args = _split_top_level_args(args_text)
+            if len(args) <= param_pos:
+                continue
+            arg = args[param_pos]
+            # Try full resolve
+            resolved = resolve_string(arg, string_consts, global_consts)
+            if resolved is not None:
+                line_no = text.count("\n", 0, cm.start()) + 1
+                literal.append((fqn, resolved, line_no))
+                continue
+            # Try templated
+            tprefix, tsuffix = _extract_templated_parts(arg, string_consts, global_consts)
+            if tprefix or tsuffix:
+                line_no = text.count("\n", 0, cm.start()) + 1
+                templated.append((fqn, tprefix, tsuffix, line_no))
+
     return typed, literal, templated
 
 
@@ -765,6 +1054,36 @@ def main(argv: list[str]) -> int:
     # Walk parser files for emission sites.
     parser_emits: dict[str, set[str]] = {}
     templated_fields: dict[str, TemplatedField] = {}  # keyed by "prefix*suffix"
+
+    # Auto-register String constants that look like namespace prefixes (value
+    # ends in `:` or const name ends in `_PREFIX`) as latent templated patterns.
+    # Some parsers construct field names through multi-method StringBuilder
+    # flows that static analysis can't trace — rtf_pict:* via RTFEmbObjHandler's
+    # startSN/endSN pair is the canonical example. Treating namespace prefixes
+    # as templated patterns documents the fact that field names of the form
+    # `prefix:<runtime>` exist, even if the exact emission flow is too tangled
+    # to capture. Marked as `auto_registered_from_constant` so callers can
+    # distinguish from emission-traced templates.
+    for const_qualified_name, value in global_consts.items():
+        if not isinstance(value, str) or not value:
+            continue
+        is_prefix = value.endswith(":") or (
+            "." in const_qualified_name and
+            const_qualified_name.rsplit(".", 1)[-1].endswith("_PREFIX")
+        )
+        if not is_prefix:
+            continue
+        pattern = f"{value}*"
+        # Only register if not already templated via emission tracing
+        if pattern in templated_fields:
+            continue
+        tpl = TemplatedField(pattern=pattern, prefix=value, suffix=None)
+        tpl.emitted_by.append({
+            "class": const_qualified_name,
+            "auto_registered_from_constant": True,
+        })
+        templated_fields[pattern] = tpl
+
     for jf, jr in java_files:
         try:
             typed, literal, templated = scan_metadata_calls(jf, prop_index, global_consts)

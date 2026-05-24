@@ -1,14 +1,14 @@
 {
-  "scanned_at": "2026-05-24T15:32:38.496818+00:00",
+  "scanned_at": "2026-05-24T17:15:17.090534+00:00",
   "tika_root": "/home/coz/.config/superpowers/worktrees/tika/4.0-upstream-office-links",
   "extra_roots": [
     "/home/coz/Downloads/RedTusk/worker_jvm"
   ],
   "summary": {
     "property_declarations": 549,
-    "parsers_emitting_fields": 191,
-    "undeclared_string_fields": 242,
-    "templated_patterns": 48
+    "parsers_emitting_fields": 193,
+    "undeclared_string_fields": 296,
+    "templated_patterns": 92
   },
   "properties": {
     "Content-Type-Hint": {
@@ -45,12 +45,15 @@
       "javadoc": "This is used by parsers to override detection of embedded resources with the override detector.",
       "emitted_by": [
         "org.apache.tika.parser.image.AbstractImageParser",
+        "org.apache.tika.parser.image.HeifParser",
         "org.apache.tika.parser.mail.MailContentHandler",
+        "org.apache.tika.parser.microsoft.EMFParser",
         "org.apache.tika.parser.microsoft.pst.OutlookPSTParser",
         "org.apache.tika.parser.microsoft.pst.PSTMailItemParser",
         "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
         "org.apache.tika.parser.microsoft.rtf.jflex.RTFEmbeddedHandler",
         "org.apache.tika.parser.pdf.AbstractPDF2XHTML",
+        "org.apache.tika.parser.xml.XMLParser",
         "org.apache.tika.pipes.core.server.ParseHandler"
       ]
     },
@@ -856,6 +859,7 @@
       "constant_name": "RESOURCE_NAME_KEY",
       "javadoc": null,
       "emitted_by": [
+        "io.redtusk.worker.ParserRunner",
         "org.apache.tika.Tika",
         "org.apache.tika.example.ImportContextImpl",
         "org.apache.tika.example.MyFirstTika",
@@ -870,7 +874,13 @@
         "org.apache.tika.parser.iwork.iwana.IWork13PackageParser",
         "org.apache.tika.parser.mail.MailContentHandler",
         "org.apache.tika.parser.microsoft.AbstractPOIFSExtractor",
+        "org.apache.tika.parser.microsoft.ICalParser",
+        "org.apache.tika.parser.microsoft.MscParser",
+        "org.apache.tika.parser.microsoft.PpkgParser",
+        "org.apache.tika.parser.microsoft.RdpParser",
         "org.apache.tika.parser.microsoft.TNEFParser",
+        "org.apache.tika.parser.microsoft.WinShortcutParser",
+        "org.apache.tika.parser.microsoft.chm.ChmParser",
         "org.apache.tika.parser.microsoft.libpst.EmailVisitor",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.pst.OutlookPSTParser",
@@ -3382,7 +3392,9 @@
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_HEX_ESCAPE_IN_OBJDATA",
       "javadoc": "Set to {@code true} when the {@code \\objdata} hex stream for this embedded object contained one or more {@code \\'HH} RTF hex escapes.  In a legitimate document the OLE data is pure ASCII hex; injected {@code \\'HH} escapes are used to corrupt single-pass decoders and hide the real payload.",
-      "emitted_by": []
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler"
+      ]
     },
     "rtf_meta:malformed_rtf_header": {
       "type": "internalBoolean",
@@ -3398,7 +3410,9 @@
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_OBJDATA_DECOY_COUNT",
       "javadoc": "Number of decoy {@code \\objdata} blocks that were discarded before the surviving (last-occurrence) block for this embedded object.  A non-zero value indicates that the document deliberately hid the real OLE payload behind dummy data to defeat parsers that extract only the first occurrence.",
-      "emitted_by": []
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler"
+      ]
     },
     "rtf_meta:thumbnail": {
       "type": "internalBoolean",
@@ -3415,7 +3429,9 @@
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_UNICODE_IN_OBJDATA",
       "javadoc": "Set to {@code true} when the {@code \\objdata} hex stream for this embedded object contained one or more RTF unicode escape sequences (backslash-u followed by a decimal). Unicode escapes have no meaning inside a binary OLE hex stream and are used solely to corrupt or hide data.",
-      "emitted_by": []
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler"
+      ]
     },
     "signature:contact-info": {
       "type": "internalTextBag",
@@ -4665,6 +4681,15 @@
         }
       ]
     },
+    "AvgCharacterWidth": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 88
+        }
+      ]
+    },
     "CharacterSet": {
       "emitted_by": [
         {
@@ -4884,6 +4909,11 @@
           "class": "org.apache.tika.parser.microsoft.pst.OutlookPSTParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/pst/OutlookPSTParser.java",
           "line": 84
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.pst.PSTMailItemParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/pst/PSTMailItemParser.java",
+          "line": 251
         },
         {
           "class": "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
@@ -5249,6 +5279,11 @@
           "line": 226
         },
         {
+          "class": "org.apache.tika.parser.image.HeifParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/HeifParser.java",
+          "line": 167
+        },
+        {
           "class": "org.apache.tika.parser.image.ICNSParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ICNSParser.java",
           "line": 131
@@ -5291,12 +5326,47 @@
         {
           "class": "org.apache.tika.parser.microsoft.EMFParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/EMFParser.java",
+          "line": 239
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.EMFParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/EMFParser.java",
           "line": 354
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 398
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 830
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 426
         },
         {
           "class": "org.apache.tika.parser.microsoft.OfficeParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OfficeParser.java",
           "line": 373
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 648
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 693
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 430
         },
         {
           "class": "org.apache.tika.parser.microsoft.TNEFParser",
@@ -5574,6 +5644,11 @@
           "line": 81
         },
         {
+          "class": "org.apache.tika.parser.xml.XMLParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
+          "line": 246
+        },
+        {
           "class": "org.apache.tika.pipes.core.server.ParseHandler",
           "file": "tika-pipes/tika-pipes-core/src/main/java/org/apache/tika/pipes/core/server/ParseHandler.java",
           "line": 153
@@ -5632,6 +5707,15 @@
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
           "line": 404
+        }
+      ]
+    },
+    "DocVersion": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 90
         }
       ]
     },
@@ -5774,6 +5858,69 @@
           "class": "org.apache.tika.example.DirListParser",
           "file": "tika-example/src/main/java/org/apache/tika/example/DirListParser.java",
           "line": 122
+        }
+      ]
+    },
+    "FontFamilyName": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 93
+        }
+      ]
+    },
+    "FontFullName": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 92
+        }
+      ]
+    },
+    "FontName": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 91
+        }
+      ]
+    },
+    "FontNotice": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 96
+        }
+      ]
+    },
+    "FontUnderlineThickness": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 97
+        }
+      ]
+    },
+    "FontVersion": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 94
+        }
+      ]
+    },
+    "FontWeight": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.font.AdobeFontMetricParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/AdobeFontMetricParser.java",
+          "line": 95
         }
       ]
     },
@@ -6015,6 +6162,11 @@
     "Message-Bcc": {
       "emitted_by": [
         {
+          "class": "org.apache.tika.parser.mail.MailContentHandler",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mail/MailContentHandler.java",
+          "line": 390
+        },
+        {
           "class": "org.apache.tika.parser.microsoft.OutlookExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OutlookExtractor.java",
           "line": 717
@@ -6023,6 +6175,11 @@
     },
     "Message-Cc": {
       "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.mail.MailContentHandler",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mail/MailContentHandler.java",
+          "line": 388
+        },
         {
           "class": "org.apache.tika.parser.microsoft.OutlookExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OutlookExtractor.java",
@@ -6075,6 +6232,11 @@
     },
     "Message-To": {
       "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.mail.MailContentHandler",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mail/MailContentHandler.java",
+          "line": 386
+        },
         {
           "class": "org.apache.tika.parser.mbox.MboxParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mbox/MboxParser.java",
@@ -6625,6 +6787,24 @@
         }
       ]
     },
+    "ical:alarm_description": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 757
+        }
+      ]
+    },
+    "ical:alarm_trigger": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 756
+        }
+      ]
+    },
     "ical:attach_html": {
       "emitted_by": [
         {
@@ -6729,12 +6909,102 @@
         }
       ]
     },
+    "ical:event_categories": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 425
+        }
+      ]
+    },
+    "ical:event_class": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 426
+        }
+      ]
+    },
+    "ical:event_created": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 420
+        }
+      ]
+    },
+    "ical:event_description": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 377
+        }
+      ]
+    },
+    "ical:event_description_html": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 384
+        }
+      ]
+    },
+    "ical:event_dtend": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 418
+        }
+      ]
+    },
+    "ical:event_dtstamp": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 419
+        }
+      ]
+    },
+    "ical:event_dtstart": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 417
+        }
+      ]
+    },
     "ical:event_duration_hours": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.microsoft.ICalParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
           "line": 494
+        }
+      ]
+    },
+    "ical:event_last_modified": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 421
+        }
+      ]
+    },
+    "ical:event_location": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 379
         }
       ]
     },
@@ -6765,12 +7035,75 @@
         }
       ]
     },
+    "ical:event_rrule": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 422
+        }
+      ]
+    },
+    "ical:event_sequence": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 427
+        }
+      ]
+    },
+    "ical:event_status": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 424
+        }
+      ]
+    },
+    "ical:event_summary": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 375
+        }
+      ]
+    },
+    "ical:event_transp": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 428
+        }
+      ]
+    },
+    "ical:event_uid": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 423
+        }
+      ]
+    },
     "ical:event_urgency_keyword": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.microsoft.ICalParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
           "line": 536
+        }
+      ]
+    },
+    "ical:event_url": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 381
         }
       ]
     },
@@ -6807,6 +7140,96 @@
           "class": "org.apache.tika.parser.microsoft.ICalParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
           "line": 358
+        }
+      ]
+    },
+    "ical:todo_categories": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 736
+        }
+      ]
+    },
+    "ical:todo_description": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 731
+        }
+      ]
+    },
+    "ical:todo_dtstart": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 734
+        }
+      ]
+    },
+    "ical:todo_due": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 733
+        }
+      ]
+    },
+    "ical:todo_last_modified": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 740
+        }
+      ]
+    },
+    "ical:todo_percent_complete": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 738
+        }
+      ]
+    },
+    "ical:todo_priority": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 737
+        }
+      ]
+    },
+    "ical:todo_status": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 735
+        }
+      ]
+    },
+    "ical:todo_summary": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 729
+        }
+      ]
+    },
+    "ical:todo_uid": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ICalParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ICalParser.java",
+          "line": 739
         }
       ]
     },
@@ -6881,6 +7304,33 @@
           "class": "org.apache.tika.metadata.filter.GeoPointMetadataFilter",
           "file": "tika-core/src/main/java/org/apache/tika/metadata/filter/GeoPointMetadataFilter.java",
           "line": 91
+        }
+      ]
+    },
+    "msc:binary_mime": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 427
+        }
+      ]
+    },
+    "msc:binary_sha256": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 405
+        }
+      ]
+    },
+    "msc:binary_type": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 412
         }
       ]
     },
@@ -7299,12 +7749,75 @@
         }
       ]
     },
+    "ppkg:data_asset": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 719
+        }
+      ]
+    },
     "ppkg:data_asset_ref": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
           "line": 231
+        }
+      ]
+    },
+    "ppkg:embedded_file_md5": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 696
+        }
+      ]
+    },
+    "ppkg:embedded_file_mime": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 700
+        }
+      ]
+    },
+    "ppkg:embedded_file_name": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 698
+        }
+      ]
+    },
+    "ppkg:embedded_file_sha1": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 697
+        }
+      ]
+    },
+    "ppkg:embedded_file_sha256": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 695
+        }
+      ]
+    },
+    "ppkg:embedded_file_size": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.PpkgParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
+          "line": 699
         }
       ]
     },
@@ -7319,6 +7832,70 @@
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
           "line": 234
+        }
+      ]
+    },
+    "rdp:pcb_cert_issuer": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 419
+        }
+      ]
+    },
+    "rdp:pcb_cert_san": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 400
+        }
+      ]
+    },
+    "rdp:pcb_cert_self_signed": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 392
+        }
+      ]
+    },
+    "rdp:pcb_cert_subject": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 418
+        }
+      ]
+    },
+    "rdp:pcb_chain_depth": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 414
+        }
+      ]
+    },
+    "rdp:pcb_warning": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 347
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 423
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 436
         }
       ]
     },
@@ -7915,6 +8492,28 @@
         }
       ]
     },
+    "*fingerprint_sha1": {
+      "prefix": null,
+      "suffix": "fingerprint_sha1",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 385
+        }
+      ]
+    },
+    "*fingerprint_sha256": {
+      "prefix": null,
+      "suffix": "fingerprint_sha256",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 384
+        }
+      ]
+    },
     "*height": {
       "prefix": null,
       "suffix": "height",
@@ -7923,6 +8522,17 @@
           "class": "org.apache.tika.parser.image.ImageParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ImageParser.java",
           "line": 180
+        }
+      ]
+    },
+    "*issuer": {
+      "prefix": null,
+      "suffix": "issuer",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 369
         }
       ]
     },
@@ -7937,6 +8547,61 @@
         }
       ]
     },
+    "*not_after": {
+      "prefix": null,
+      "suffix": "not_after",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 373
+        }
+      ]
+    },
+    "*not_before": {
+      "prefix": null,
+      "suffix": "not_before",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 371
+        }
+      ]
+    },
+    "*serial": {
+      "prefix": null,
+      "suffix": "serial",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 370
+        }
+      ]
+    },
+    "*subject": {
+      "prefix": null,
+      "suffix": "subject",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 368
+        }
+      ]
+    },
+    "*valid_now": {
+      "prefix": null,
+      "suffix": "valid_now",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 380
+        }
+      ]
+    },
     "*width": {
       "prefix": null,
       "suffix": "width",
@@ -7945,6 +8610,16 @@
           "class": "org.apache.tika.parser.image.ImageParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ImageParser.java",
           "line": 181
+        }
+      ]
+    },
+    ":*": {
+      "prefix": ":",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER",
+          "auto_registered_from_constant": true
         }
       ]
     },
@@ -7992,10 +8667,24 @@
         }
       ]
     },
+    "Message:*": {
+      "prefix": "Message:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "Message.MESSAGE_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "Message:Raw-Header:*": {
       "prefix": "Message:Raw-Header:",
       "suffix": null,
       "emitted_by": [
+        {
+          "class": "Message.MESSAGE_RAW_HEADER_PREFIX",
+          "auto_registered_from_constant": true
+        },
         {
           "class": "org.apache.tika.parser.mail.MailContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mail/MailContentHandler.java",
@@ -8178,6 +8867,46 @@
         }
       ]
     },
+    "X-TIKA:*": {
+      "prefix": "X-TIKA:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "TikaCoreProperties.TIKA_META_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "X-TIKA:EXCEPTION:*": {
+      "prefix": "X-TIKA:EXCEPTION:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "TikaCoreProperties.TIKA_META_EXCEPTION_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "X-TIKA:WARN:*": {
+      "prefix": "X-TIKA:WARN:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "TikaCoreProperties.TIKA_META_WARN_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "access_permission:*": {
+      "prefix": "access_permission:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "AccessPermissions.PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "az-blob:*": {
       "prefix": "az-blob:",
       "suffix": null,
@@ -8204,6 +8933,10 @@
       "prefix": "custom:",
       "suffix": null,
       "emitted_by": [
+        {
+          "class": "Office.USER_DEFINED_METADATA_NAME_PREFIX",
+          "auto_registered_from_constant": true
+        },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
@@ -8236,6 +8969,16 @@
         }
       ]
     },
+    "database:*": {
+      "prefix": "database:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "Database.PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "dwg-custom:*": {
       "prefix": "dwg-custom:",
       "suffix": null,
@@ -8249,6 +8992,16 @@
           "class": "org.apache.tika.parser.dwg.DWGParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/main/java/org/apache/tika/parser/dwg/DWGParser.java",
           "line": 207
+        }
+      ]
+    },
+    "dwg:*": {
+      "prefix": "dwg:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "DWG.DWG_PREFIX",
+          "auto_registered_from_constant": true
         }
       ]
     },
@@ -8270,6 +9023,26 @@
           "class": "org.apache.tika.parser.envi.EnviHeaderParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/envi/EnviHeaderParser.java",
           "line": 135
+        }
+      ]
+    },
+    "epub:*": {
+      "prefix": "epub:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "Epub.EPUB_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "fs:*": {
+      "prefix": "fs:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "FileSystem.PREFIX",
+          "auto_registered_from_constant": true
         }
       ]
     },
@@ -8299,6 +9072,10 @@
       "prefix": "html:",
       "suffix": null,
       "emitted_by": [
+        {
+          "class": "HTML.PREFIX_HTML_META",
+          "auto_registered_from_constant": true
+        },
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
@@ -8381,10 +9158,44 @@
         }
       ]
     },
+    "machine:*": {
+      "prefix": "machine:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "MachineMetadata.PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "mapi:*": {
+      "prefix": "mapi:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "MAPI.PREFIX_MAPI_META",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "mapi:attach:*": {
+      "prefix": "mapi:attach:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "MAPI.PREFIX_MAPI_ATTACH_META",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "mapi:property:*": {
       "prefix": "mapi:property:",
       "suffix": null,
       "emitted_by": [
+        {
+          "class": "MAPI.PREFIX_MAPI_PROPERTY",
+          "auto_registered_from_constant": true
+        },
         {
           "class": "org.apache.tika.parser.microsoft.msg.ExtendedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/msg/ExtendedMetadataExtractor.java",
@@ -8402,6 +9213,56 @@
         }
       ]
     },
+    "pdf:*": {
+      "prefix": "pdf:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PDF.PDF_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "pdf:docinfo:*": {
+      "prefix": "pdf:docinfo:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PDF.PDF_DOC_INFO_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "pdf:docinfo:custom:*": {
+      "prefix": "pdf:docinfo:custom:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PDF.PDF_DOC_INFO_CUSTOM_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "pdfa:*": {
+      "prefix": "pdfa:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PDF.PDFA_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "pdfaid:*": {
+      "prefix": "pdfaid:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PDF.PDFAID_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "ppkg:*": {
       "prefix": "ppkg:",
       "suffix": null,
@@ -8410,6 +9271,16 @@
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
           "line": 203
+        }
+      ]
+    },
+    "pst:*": {
+      "prefix": "pst:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "PST.PST_PREFIX",
+          "auto_registered_from_constant": true
         }
       ]
     },
@@ -8424,6 +9295,26 @@
         }
       ]
     },
+    "rendering:*": {
+      "prefix": "rendering:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "Rendering.RENDERING_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "rtf_pict:*": {
+      "prefix": "rtf_pict:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "RTFMetadata.RTF_PICT_META_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "s3:*": {
       "prefix": "s3:",
       "suffix": null,
@@ -8432,6 +9323,72 @@
           "class": "org.apache.tika.pipes.fetcher.s3.S3Fetcher",
           "file": "tika-pipes/tika-pipes-plugins/tika-pipes-s3/src/main/java/org/apache/tika/pipes/fetcher/s3/S3Fetcher.java",
           "line": 244
+        }
+      ]
+    },
+    "sf:*:basis": {
+      "prefix": "sf:",
+      "suffix": ":basis",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 271
+        }
+      ]
+    },
+    "sf:*:format": {
+      "prefix": "sf:",
+      "suffix": ":format",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 272
+        }
+      ]
+    },
+    "sf:*:id": {
+      "prefix": "sf:",
+      "suffix": ":id",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 273
+        }
+      ]
+    },
+    "sf:*:mime": {
+      "prefix": "sf:",
+      "suffix": ":mime",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 274
+        }
+      ]
+    },
+    "sf:*:version": {
+      "prefix": "sf:",
+      "suffix": ":version",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 275
+        }
+      ]
+    },
+    "sf:*:warning": {
+      "prefix": "sf:",
+      "suffix": ":warning",
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.detect.siegfried.SiegfriedDetector",
+          "file": "tika-detectors/tika-detector-siegfried/src/main/java/org/apache/tika/detect/siegfried/SiegfriedDetector.java",
+          "line": 276
         }
       ]
     },
@@ -8451,10 +9408,34 @@
         }
       ]
     },
+    "tika_pg:*": {
+      "prefix": "tika_pg:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "TikaPagedText.TIKA_PAGED_TEXT_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "w*": {
+      "prefix": "w",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "OfficeOpenXMLExtended.WORD_PROCESSING_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
     "warc:*": {
       "prefix": "warc:",
       "suffix": null,
       "emitted_by": [
+        {
+          "class": "WARC.PREFIX",
+          "auto_registered_from_constant": true
+        },
         {
           "class": "org.apache.tika.parser.warc.WARCParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-webarchive-module/src/main/java/org/apache/tika/parser/warc/WARCParser.java",
@@ -8472,9 +9453,84 @@
           "line": 174
         }
       ]
+    },
+    "wordperfect*": {
+      "prefix": "wordperfect",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "QuattroPro.QUATTROPRO_METADATA_NAME_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmp:*": {
+      "prefix": "xmp:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XMP.PREFIX_",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmp:pdf:*": {
+      "prefix": "xmp:pdf:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XMPPDF.PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmpMM:*": {
+      "prefix": "xmpMM:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XMPMM.PREFIX_",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmpRights:*": {
+      "prefix": "xmpRights:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XMPRights.PREFIX_",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmpidq:*": {
+      "prefix": "xmpidq:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XMPIdq.PREFIX_",
+          "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "zip:*": {
+      "prefix": "zip:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "Zip.ZIP_PREFIX",
+          "auto_registered_from_constant": true
+        }
+      ]
     }
   },
   "parsers": {
+    "io.redtusk.worker.ParserRunner": {
+      "emits": [
+        "X-TIKA:resourceName"
+      ]
+    },
     "org.apache.tika.Tika": {
       "emits": [
         "X-TIKA:resourceName"
@@ -8520,7 +9576,13 @@
     "org.apache.tika.detect.siegfried.SiegfriedDetector": {
       "emits": [
         "external-process:exit-value",
-        "external-process:timeout"
+        "external-process:timeout",
+        "sf:*:basis",
+        "sf:*:format",
+        "sf:*:id",
+        "sf:*:mime",
+        "sf:*:version",
+        "sf:*:warning"
       ]
     },
     "org.apache.tika.detect.zip.DefaultZipContainerDetector": {
@@ -8807,7 +9869,16 @@
     },
     "org.apache.tika.parser.font.AdobeFontMetricParser": {
       "emits": [
-        "Content-Type"
+        "AvgCharacterWidth",
+        "Content-Type",
+        "DocVersion",
+        "FontFamilyName",
+        "FontFullName",
+        "FontName",
+        "FontNotice",
+        "FontUnderlineThickness",
+        "FontVersion",
+        "FontWeight"
       ]
     },
     "org.apache.tika.parser.font.TrueTypeParser": {
@@ -8947,6 +10018,12 @@
         "tiff:ImageWidth"
       ]
     },
+    "org.apache.tika.parser.image.HeifParser": {
+      "emits": [
+        "Content-Type",
+        "Content-Type-Parser-Override"
+      ]
+    },
     "org.apache.tika.parser.image.ICNSParser": {
       "emits": [
         "Content-Type",
@@ -9070,7 +10147,10 @@
     "org.apache.tika.parser.mail.MailContentHandler": {
       "emits": [
         "Content-Type-Parser-Override",
+        "Message-Bcc",
+        "Message-Cc",
         "Message-From",
+        "Message-To",
         "Message:Raw-Header:*",
         "Multipart-Boundary",
         "Multipart-Subtype",
@@ -9111,7 +10191,8 @@
     },
     "org.apache.tika.parser.microsoft.EMFParser": {
       "emits": [
-        "Content-Type"
+        "Content-Type",
+        "Content-Type-Parser-Override"
       ]
     },
     "org.apache.tika.parser.microsoft.ExcelExtractor": {
@@ -9141,9 +10222,13 @@
     },
     "org.apache.tika.parser.microsoft.ICalParser": {
       "emits": [
+        "Content-Type",
         "ExploitClass",
+        "X-TIKA:resourceName",
         "ical:alarm_action",
         "ical:alarm_attach",
+        "ical:alarm_description",
+        "ical:alarm_trigger",
         "ical:attach_html",
         "ical:attach_mime",
         "ical:attach_sha256",
@@ -9155,15 +10240,42 @@
         "ical:conference_host_abused",
         "ical:event_attendee",
         "ical:event_attendee_partstat",
+        "ical:event_categories",
+        "ical:event_class",
+        "ical:event_created",
+        "ical:event_description",
+        "ical:event_description_html",
+        "ical:event_dtend",
+        "ical:event_dtstamp",
+        "ical:event_dtstart",
         "ical:event_duration_hours",
+        "ical:event_last_modified",
+        "ical:event_location",
         "ical:event_organizer",
         "ical:event_phone",
         "ical:event_revision",
+        "ical:event_rrule",
+        "ical:event_sequence",
+        "ical:event_status",
+        "ical:event_summary",
+        "ical:event_transp",
+        "ical:event_uid",
         "ical:event_urgency_keyword",
+        "ical:event_url",
         "ical:method",
         "ical:prodid",
         "ical:source_encoding",
         "ical:timezone_id",
+        "ical:todo_categories",
+        "ical:todo_description",
+        "ical:todo_dtstart",
+        "ical:todo_due",
+        "ical:todo_last_modified",
+        "ical:todo_percent_complete",
+        "ical:todo_priority",
+        "ical:todo_status",
+        "ical:todo_summary",
+        "ical:todo_uid",
         "ical:unicode_qr_in_*",
         "ical:url",
         "ical:version",
@@ -9177,7 +10289,12 @@
     },
     "org.apache.tika.parser.microsoft.MscParser": {
       "emits": [
+        "Content-Type",
         "ExploitClass",
+        "X-TIKA:resourceName",
+        "msc:binary_mime",
+        "msc:binary_sha256",
+        "msc:binary_type",
         "msc:command",
         "msc:snap_in_clsid",
         "msc:snap_in_name",
@@ -9236,10 +10353,19 @@
     },
     "org.apache.tika.parser.microsoft.PpkgParser": {
       "emits": [
+        "Content-Type",
         "ExploitClass",
+        "X-TIKA:resourceName",
         "ppkg:*",
         "ppkg:command",
+        "ppkg:data_asset",
         "ppkg:data_asset_ref",
+        "ppkg:embedded_file_md5",
+        "ppkg:embedded_file_mime",
+        "ppkg:embedded_file_name",
+        "ppkg:embedded_file_sha1",
+        "ppkg:embedded_file_sha256",
+        "ppkg:embedded_file_size",
         "ppkg:warning",
         "wim:descriptor_xml",
         "wim:image_count"
@@ -9247,8 +10373,24 @@
     },
     "org.apache.tika.parser.microsoft.RdpParser": {
       "emits": [
+        "*fingerprint_sha1",
+        "*fingerprint_sha256",
+        "*issuer",
+        "*not_after",
+        "*not_before",
+        "*serial",
+        "*subject",
+        "*valid_now",
+        "Content-Type",
         "ExploitClass",
+        "X-TIKA:resourceName",
         "rdp:*",
+        "rdp:pcb_cert_issuer",
+        "rdp:pcb_cert_san",
+        "rdp:pcb_cert_self_signed",
+        "rdp:pcb_cert_subject",
+        "rdp:pcb_chain_depth",
+        "rdp:pcb_warning",
         "rdp:signature_raw",
         "rdp:signature_sha1",
         "rdp:signature_sha256",
@@ -9289,6 +10431,7 @@
       "emits": [
         "Content-Type",
         "X-TIKA:origResourceName",
+        "X-TIKA:resourceName",
         "lnk:*",
         "lnk:warning"
       ]
@@ -9305,7 +10448,8 @@
     },
     "org.apache.tika.parser.microsoft.chm.ChmParser": {
       "emits": [
-        "Content-Type"
+        "Content-Type",
+        "X-TIKA:resourceName"
       ]
     },
     "org.apache.tika.parser.microsoft.libpst.EmailVisitor": {
@@ -9468,6 +10612,7 @@
     },
     "org.apache.tika.parser.microsoft.pst.PSTMailItemParser": {
       "emits": [
+        "Content-Length",
         "Content-Type",
         "Content-Type-Parser-Override",
         "Message-From",
@@ -9499,7 +10644,10 @@
         "X-TIKA:origResourceName",
         "X-TIKA:resourceName",
         "X-TIKA:resourceNameExtensionInferred",
-        "rtf_meta:thumbnail"
+        "rtf_meta:hex_escape_in_objdata",
+        "rtf_meta:objdata_decoy_count",
+        "rtf_meta:thumbnail",
+        "rtf_meta:unicode_in_objdata"
       ]
     },
     "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser": {
@@ -10006,6 +11154,7 @@
     "org.apache.tika.parser.xml.XMLParser": {
       "emits": [
         "Content-Type",
+        "Content-Type-Parser-Override",
         "svg:externalScript",
         "svg:externalUseRef",
         "svg:hasEventHandlers",

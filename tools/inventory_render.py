@@ -95,7 +95,13 @@ def render(doc: dict) -> str:
             sites = doc["undeclared_string_fields"][name]["emitted_by"]
             for s in sites:
                 short = s["class"].rsplit(".", 1)[-1]
-                src = f"`{s['file']}:{s['line']}`"
+                # Auto-registered prefix templates have no source file/line —
+                # the "site" is the namespace constant declaration that
+                # implies the prefix exists.
+                if s.get("auto_registered_from_constant"):
+                    src = f"_(auto: {s.get('class','')})_"
+                else:
+                    src = f"`{s.get('file','?')}:{s.get('line','?')}`"
                 out.append(f"| `{name}` | `{short}` | {src} |")
     out.append("")
 
@@ -116,7 +122,13 @@ def render(doc: dict) -> str:
             suffix = f"`{info.get('suffix')}`" if info.get('suffix') else "_(none)_"
             for s in info.get("emitted_by", []):
                 short = s["class"].rsplit(".", 1)[-1]
-                src = f"`{s['file']}:{s['line']}`"
+                # Auto-registered prefix templates have no source file/line —
+                # the "site" is the namespace constant declaration that
+                # implies the prefix exists.
+                if s.get("auto_registered_from_constant"):
+                    src = f"_(auto: {s.get('class','')})_"
+                else:
+                    src = f"`{s.get('file','?')}:{s.get('line','?')}`"
                 out.append(f"| `{pattern}` | {prefix} | {suffix} | `{short}` | {src} |")
     out.append("")
 
