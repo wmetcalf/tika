@@ -20,6 +20,7 @@ on:
       - 'tika-core/src/main/java/org/apache/tika/metadata/**'
       - 'tika-parsers/**/*.java'
       - 'tools/inventory_*.py'
+  workflow_dispatch:
 
 jobs:
   inventory-drift:
