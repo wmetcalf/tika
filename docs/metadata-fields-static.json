@@ -1,12 +1,10 @@
 {
-  "scanned_at": "2026-05-24T18:24:51.187937+00:00",
+  "scanned_at": "2026-05-24T20:29:07.651518+00:00",
   "tika_root": "/home/coz/.config/superpowers/worktrees/tika/4.0-upstream-office-links",
-  "extra_roots": [
-    "/home/coz/Downloads/RedTusk/worker_jvm"
-  ],
+  "extra_roots": [],
   "summary": {
-    "property_declarations": 663,
-    "parsers_emitting_fields": 194,
+    "property_declarations": 657,
+    "parsers_emitting_fields": 193,
     "undeclared_string_fields": 283,
     "templated_patterns": 93
   },
@@ -1140,7 +1138,6 @@
       "constant_name": "RESOURCE_NAME_KEY",
       "javadoc": null,
       "emitted_by": [
-        "io.redtusk.worker.ParserRunner",
         "org.apache.tika.Tika",
         "org.apache.tika.example.ImportContextImpl",
         "org.apache.tika.example.MyFirstTika",
@@ -3934,48 +3931,6 @@
       "emitted_by": [
         "org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer"
       ]
-    },
-    "rtf:hyperlinkUrl": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_HYPERLINK_URL",
-      "javadoc": null,
-      "emitted_by": []
-    },
-    "rtf:nullByteUrl": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_NULL_BYTE_URL",
-      "javadoc": null,
-      "emitted_by": []
-    },
-    "rtf:objdataMixedCase": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_OBJDATA_MIXEDCASE",
-      "javadoc": null,
-      "emitted_by": []
-    },
-    "rtf:protocolHandler": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_PROTOCOL_HANDLER",
-      "javadoc": null,
-      "emitted_by": []
-    },
-    "rtf:templateUrl": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_TEMPLATE_URL",
-      "javadoc": null,
-      "emitted_by": []
-    },
-    "rtf:uncPath": {
-      "type": "String",
-      "declared_in": "io.redtusk.worker.RtfIocScanner",
-      "constant_name": "KEY_UNC_PATH",
-      "javadoc": null,
-      "emitted_by": []
     },
     "rtf_meta:contains_encapsulated_html": {
       "type": "internalBoolean",
@@ -9475,11 +9430,6 @@
     }
   },
   "parsers": {
-    "io.redtusk.worker.ParserRunner": {
-      "emits": [
-        "X-TIKA:resourceName"
-      ]
-    },
     "org.apache.tika.Tika": {
       "emits": [
         "X-TIKA:resourceName"
