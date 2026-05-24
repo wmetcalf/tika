@@ -1035,6 +1035,165 @@ def main(argv: list[str]) -> int:
         if "/test/" not in str(jf) and "/target/" not in str(jf)
     )
 
+    # Phase 1b: extend Property-declaration scanning to ALL java files (not
+    # just metadata namespace files). Some parsers declare their own Property
+    # constants inline — e.g. EMFParser declares EMF_ICON_ONLY /
+    # EMF_ICON_STRING right next to the parse code that emits them. These
+    # would otherwise be misclassified as undeclared-literal emissions.
+    for jf, _jr in java_files:
+        if jf in file_texts:
+            continue  # already scanned in Phase 1
+        try:
+            for decl in scan_property_declarations(jf, global_consts):
+                key = f"{decl.declared_in_fqn}.{decl.constant_name}"
+                if key not in prop_index:
+                    prop_index[key] = decl
+        except Exception as e:
+            print(f"warning: parser-side Property scan failed for {jf}: {e}",
+                  file=sys.stderr)
+
+    # Phase 1c: inferred-Property scan. Pick up `Property.internal*("…")`
+    # factory calls that are NOT at the head of a top-level `Property NAME =
+    # ...` declaration — e.g. when wrapped by `Property.composite(...)`:
+    #     Property KEYWORDS = Property.composite(
+    #         Property.internalTextBag(PREFIX_DOC_META + ":" + "keyword"),
+    #         ...);
+    # The inner internalTextBag declares the canonical field name
+    # `meta:keyword`; without unwrapping it, that name vanishes from the
+    # registry. We mark these inferred entries with `inferred_from_factory`
+    # so downstream consumers can distinguish them from named declarations.
+    inferred_factory_re = re.compile(
+        r"Property\s*\.\s*(?P<factory>internal[A-Za-z]+|composite|external\w*)\s*\("
+    )
+    for jf, _jr in java_files:
+        try:
+            text = file_texts.get(jf) or jf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        pkg = package_of(jf)
+        cls = class_of(jf)
+        fqn = f"{pkg}.{cls}" if pkg else cls
+        file_consts = collect_string_constants(text, global_consts)
+        for m in inferred_factory_re.finditer(text):
+            factory = m.group("factory")
+            if factory == "composite":
+                continue  # composite() takes Property args, not a name string
+            # Skip if this is already the head of a named declaration handled
+            # by Phase 1 — those start with `Property\s+NAME\s*=\s*`.
+            head_start = text.rfind("\n", 0, m.start()) + 1
+            head = text[head_start:m.start()]
+            if re.search(r"\bProperty\s+[A-Z][A-Z0-9_]*\s*=\s*$", head):
+                continue
+            end = _balance_args(text, m.end())
+            if end is None:
+                continue
+            args_text = text[m.end():end].strip()
+            first_arg = _split_first_arg(args_text)
+            field_name = resolve_string(first_arg, file_consts, global_consts)
+            if not field_name or ":" not in field_name:
+                continue  # require a namespaced-looking key
+            key = f"{fqn}.inferred:{field_name}"
+            if key in prop_index:
+                continue
+            # Don't shadow a real named declaration of the same field.
+            already_declared = any(
+                d.field_name == field_name for d in prop_index.values()
+            )
+            if already_declared:
+                continue
+            line_no = text.count("\n", 0, m.start()) + 1
+            prop_index[key] = PropertyDecl(
+                field_name=field_name,
+                type=factory,
+                declared_in_fqn=fqn,
+                constant_name=f"<inferred:{factory}>",
+                javadoc=None,
+                source_file=str(jf),
+                source_line=line_no,
+            )
+
+    # Phase 1d: register namespace-file String constants whose VALUE looks
+    # like a metadata key (contains a `:` namespace separator, OR matches
+    # the HTTP-style `Foo-Bar` header convention) as declared fields. Tika
+    # has metadata namespace files like HttpHeaders.java that declare key
+    # names as bare `String CONST = "Content-Disposition"` rather than as
+    # `Property` constants. Same shape in our fork's RtfIocScanner.java with
+    # `String KEY_PROTOCOL_HANDLER = "rtf:protocolHandler"`. These are
+    # canonical, just typed as String instead of Property.
+    HTTP_HEADER_RE = re.compile(r"^[A-Z][A-Za-z]*(?:-[A-Z][A-Za-z]*)+$")
+    # Augment global_consts with extra-root String constants — Phase 0 only
+    # walked tika-core/metadata/, so RedTusk's RtfIocScanner.java declarations
+    # were never indexed. Walk java_files here, harvest String constants per
+    # file, and seed global_consts via the same dual (ShortClass.NAME + bare
+    # NAME) index used for tika-core files.
+    extra_root_paths = {er.resolve() for er in args.extra_root}
+    for jf, jr in java_files:
+        if jr.resolve() not in extra_root_paths:
+            continue
+        try:
+            t = jf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        cls_short = jf.stem
+        for name, value in collect_string_constants(t, global_consts).items():
+            qualified = f"{cls_short}.{name}"
+            if qualified not in global_consts:
+                global_consts[qualified] = value
+            if name not in global_consts:
+                global_consts[name] = value
+    for const_qualified_name, value in list(global_consts.items()):
+        if not isinstance(value, str) or not value:
+            continue
+        # Skip prefixes (already handled below as templated patterns) and
+        # values that look like file paths or markup snippets, not keys.
+        if value.endswith(":"):
+            continue
+        looks_like_key = (":" in value and " " not in value and "\n" not in value) \
+            or HTTP_HEADER_RE.match(value)
+        if not looks_like_key:
+            continue
+        # Don't shadow a real Property declaration with the same field name.
+        if any(d.field_name == value for d in prop_index.values()):
+            continue
+        # Need a class.const-style qualified name to source-locate.
+        if "." not in const_qualified_name:
+            continue
+        cls_short, const_name = const_qualified_name.rsplit(".", 1)
+        # Resolve to a concrete file path so the entry can carry a source ref.
+        declared_in_fqn = None
+        source_file = None
+        source_line = None
+        for jf, jr in java_files:
+            if jf.stem != cls_short:
+                continue
+            try:
+                t = file_texts.get(jf) or jf.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            mref = re.search(
+                rf"\bString\s+{re.escape(const_name)}\s*=", t)
+            if mref is None:
+                continue
+            pkg = package_of(jf)
+            declared_in_fqn = f"{pkg}.{cls_short}" if pkg else cls_short
+            source_file = str(jf)
+            source_line = t.count("\n", 0, mref.start()) + 1
+            break
+        if declared_in_fqn is None:
+            continue
+        key = f"{declared_in_fqn}.{const_name}"
+        if key in prop_index:
+            continue
+        prop_index[key] = PropertyDecl(
+            field_name=value,
+            type="String",  # not a Property — typed as a key constant
+            declared_in_fqn=declared_in_fqn,
+            constant_name=const_name,
+            javadoc=None,
+            source_file=source_file,
+            source_line=source_line,
+        )
+
     records: dict[str, FieldRecord] = {}
 
     # Seed records with every declared Property — so the registry includes
@@ -1083,6 +1242,22 @@ def main(argv: list[str]) -> int:
             "auto_registered_from_constant": True,
         })
         templated_fields[pattern] = tpl
+
+    # XMP language-alternative structural rule: any declared XMP-class field
+    # (dc:*, xmp:*) implicitly carries a `:x-default` language-tagged
+    # variant when written through `AbstractConverter`. Observed runtime
+    # examples: `dc:title:x-default`, `dc:description:x-default`. Encode as
+    # a single suffix-anchored template `*:x-default` so the matcher can
+    # attach all such observations to this XMP rule rather than leaving
+    # them as unknown-source.
+    xdefault_pattern = "*:x-default"
+    if xdefault_pattern not in templated_fields:
+        tpl = TemplatedField(pattern=xdefault_pattern, prefix=None, suffix=":x-default")
+        tpl.emitted_by.append({
+            "class": "org.apache.tika.xmp.convert.AbstractConverter",
+            "auto_registered_xmp_language_alt": True,
+        })
+        templated_fields[xdefault_pattern] = tpl
 
     for jf, jr in java_files:
         try:
