@@ -1,0 +1,55 @@
+name: metadata-field-inventory
+
+# Detects drift between the parser source and the checked-in metadata field
+# inventory snapshot (docs/metadata-fields-static.json). Any PR that adds,
+# removes, or changes the emitter set of a Tika metadata field must update the
+# snapshot — otherwise downstream consumers that depend on the field contract
+# would silently break.
+
+on:
+  pull_request:
+    paths:
+      - 'tika-core/src/main/java/org/apache/tika/metadata/**'
+      - 'tika-parsers/**/*.java'
+      - 'tools/inventory_*.py'
+      - 'docs/metadata-fields-static.json'
+      - '.github/workflows/metadata-inventory.yml'
+  push:
+    branches: [4.0-upstream-office-links, main]
+    paths:
+      - 'tika-core/src/main/java/org/apache/tika/metadata/**'
+      - 'tika-parsers/**/*.java'
+      - 'tools/inventory_*.py'
+
+jobs:
+  inventory-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate current inventory
+        run: |
+          python3 tools/inventory_static.py \
+            --tika-root . \
+            --out /tmp/current-inventory.json
+      - name: Diff against checked-in snapshot
+        run: |
+          python3 tools/inventory_check.py \
+            --baseline docs/metadata-fields-static.json \
+            --current /tmp/current-inventory.json
+      - name: Verify Markdown re-render is in sync
+        run: |
+          # If someone updated the JSON but forgot to re-render the .md, catch
+          # it here. inventory_render.py overwrites in place; we compare bytes.
+          cp docs/metadata-fields.md /tmp/baseline.md
+          python3 tools/inventory_render.py \
+            --inventory docs/metadata-fields-static.json \
+            --out docs/metadata-fields.md
+          if ! diff -q /tmp/baseline.md docs/metadata-fields.md > /dev/null; then
+            echo "::error::docs/metadata-fields.md is out of sync with the JSON snapshot."
+            echo "Run: python3 tools/inventory_render.py"
+            diff /tmp/baseline.md docs/metadata-fields.md | head -50
+            exit 1
+          fi
