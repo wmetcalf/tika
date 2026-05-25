@@ -1090,8 +1090,15 @@ def main(argv: list[str]) -> int:
             args_text = text[m.end():end].strip()
             first_arg = _split_first_arg(args_text)
             field_name = resolve_string(first_arg, file_consts, global_consts)
-            if not field_name or ":" not in field_name:
-                continue  # require a namespaced-looking key
+            if not field_name:
+                continue
+            # Reject obvious non-keys: whitespace, multi-line, control chars,
+            # or values that look like prose. Real Tika field names are short
+            # tokens (with optional `:` namespace and `-`/`_` separators).
+            if " " in field_name or "\n" in field_name or len(field_name) > 80:
+                continue
+            if not re.match(r"^[A-Za-z][A-Za-z0-9:_.\-]*$", field_name):
+                continue
             key = f"{fqn}.inferred:{field_name}"
             if key in prop_index:
                 continue
@@ -1121,15 +1128,16 @@ def main(argv: list[str]) -> int:
     # `String KEY_PROTOCOL_HANDLER = "rtf:protocolHandler"`. These are
     # canonical, just typed as String instead of Property.
     HTTP_HEADER_RE = re.compile(r"^[A-Z][A-Za-z]*(?:-[A-Z][A-Za-z]*)+$")
-    # Augment global_consts with extra-root String constants — Phase 0 only
-    # walked tika-core/metadata/, so RedTusk's RtfIocScanner.java declarations
-    # were never indexed. Walk java_files here, harvest String constants per
-    # file, and seed global_consts via the same dual (ShortClass.NAME + bare
-    # NAME) index used for tika-core files.
-    extra_root_paths = {er.resolve() for er in args.extra_root}
+    # Augment global_consts with String constants from ALL main-src Java
+    # files (tika-parsers/, extra-roots, etc.) — Phase 0 only walked
+    # tika-core/metadata/. Parsers like OpenDocumentMetaParser declare key
+    # constants directly (`String ODF_VERSION_KEY = "odf:version"`) and
+    # RedTusk's RtfIocScanner.java does the same. Use the same dual
+    # (ShortClass.NAME + bare NAME) index Phase 0 uses, with first-write-
+    # wins on collisions so the canonical metadata-pkg values still win.
     for jf, jr in java_files:
-        if jr.resolve() not in extra_root_paths:
-            continue
+        if jf in file_texts:
+            continue  # already indexed in Phase 0
         try:
             t = jf.read_text(encoding="utf-8", errors="replace")
         except Exception:
