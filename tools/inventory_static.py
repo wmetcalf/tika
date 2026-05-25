@@ -1156,8 +1156,17 @@ def main(argv: list[str]) -> int:
         # values that look like file paths or markup snippets, not keys.
         if value.endswith(":"):
             continue
-        looks_like_key = (":" in value and " " not in value and "\n" not in value) \
-            or HTTP_HEADER_RE.match(value)
+        # Real Tika metadata key names contain only letters, digits, and the
+        # punctuation `:`, `-`, `_`, `.`. Anything else — parens, brackets,
+        # backslashes, regex metacharacters — means we picked up a regex
+        # constant or a code snippet, not a key. StandardsText.REGEX_*,
+        # MediaType.VALID_CHARS, RegexUtils.LINKS_REGEX etc. are declared as
+        # `String` but they aren't field names.
+        KEY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9:_.\-]*$")
+        looks_like_key = (
+            KEY_NAME_RE.match(value) is not None
+            and ((":" in value) or HTTP_HEADER_RE.match(value))
+        )
         if not looks_like_key:
             continue
         # Don't shadow a real Property declaration with the same field name.
