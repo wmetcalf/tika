@@ -148,13 +148,13 @@ public class Word2006MLParserTest extends MultiThreadedTikaTest {
 
         assertContains("Odd page footer", content);
 
-        //test default ignores deleted
-        assertNotContained("frog", content);
+        //downstream policy (ec67306a65): deleted content IS included by default
+        assertContains("frog", content);
 
         assertContains("Mattmann", content);
 
-        //test default -- do not include moveFrom
-        assertContainsCount("Second paragraph", content, 1);
+        //downstream policy: moveFrom IS included by default
+        assertContainsCount("Second paragraph", content, 2);
 
         //TODO: figure out how to get this
         //assertContains("This is the chart title", content);
@@ -163,15 +163,17 @@ public class Word2006MLParserTest extends MultiThreadedTikaTest {
 
     @Test
     public void testSkipDeletedAndMoveFrom() throws Exception {
+        // Verifies the explicit-exclude path. Method name matches behavior:
+        // with both flags off, deleted runs and moveFrom blocks are dropped.
         ParseContext pc = new ParseContext();
         OfficeParserConfig officeParserConfig = new OfficeParserConfig();
-        officeParserConfig.setIncludeDeletedContent(true);
-        officeParserConfig.setIncludeMoveFromContent(true);
+        officeParserConfig.setIncludeDeletedContent(false);
+        officeParserConfig.setIncludeMoveFromContent(false);
         pc.set(OfficeParserConfig.class, officeParserConfig);
 
         XMLResult r = getXML("testWORD_2006ml.xml", pc);
-        assertContains("frog", r.xml);
-        assertContainsCount("Second paragraph", r.xml, 2);
+        assertNotContained("frog", r.xml);
+        assertContainsCount("Second paragraph", r.xml, 1);
 
     }
 
