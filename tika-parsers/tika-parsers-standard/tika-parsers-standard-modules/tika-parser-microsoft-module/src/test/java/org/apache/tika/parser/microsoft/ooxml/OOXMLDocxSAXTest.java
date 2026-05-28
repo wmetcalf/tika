@@ -579,7 +579,8 @@ public class OOXMLDocxSAXTest extends TikaTest {
         assertContains("First page footer", content);
         assertContains("Even page footer", content);
         assertContains("Odd page footer", content);
-        assertNotContained("frog", content);
+        //downstream policy (ec67306a65): deleted content IS included by default
+        assertContains("frog", content);
         assertContains("Mattmann", content);
     }
 
@@ -607,15 +608,17 @@ public class OOXMLDocxSAXTest extends TikaTest {
 
     @Test
     public void testSkipDeleted() throws Exception {
+        // Verifies the explicit-exclude path. Method name matches behavior:
+        // with both flags off, deleted runs and moveFrom blocks are dropped.
         ParseContext pc = new ParseContext();
         OfficeParserConfig officeParserConfig = new OfficeParserConfig();
-        officeParserConfig.setIncludeDeletedContent(true);
-        officeParserConfig.setIncludeMoveFromContent(true);
+        officeParserConfig.setIncludeDeletedContent(false);
+        officeParserConfig.setIncludeMoveFromContent(false);
         pc.set(OfficeParserConfig.class, officeParserConfig);
 
         XMLResult r = getXML("testWORD_2006ml.docx", pc);
-        assertContains("frog", r.xml);
-        assertContainsCount("Second paragraph", r.xml, 2);
+        assertNotContained("frog", r.xml);
+        assertContainsCount("Second paragraph", r.xml, 1);
     }
 
     @Test

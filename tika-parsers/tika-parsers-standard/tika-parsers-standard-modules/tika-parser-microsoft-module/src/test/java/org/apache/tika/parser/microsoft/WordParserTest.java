@@ -621,22 +621,27 @@ public class WordParserTest extends TikaTest {
 
     @Test
     public void testDeleted() throws Exception {
-        //test classic behavior
+        // Downstream policy (commit ec67306a65): deleted / moveFrom content is
+        // INCLUDED by default in this fork — forensics use case wants visibility
+        // into tracked-changes residue, not the upstream Tika hide-by-default
+        // behavior. Test both the default and the explicit-exclude path.
         String xml = getXML("testWORD_2006ml.doc").xml;
-        assertNotContained("frog", xml);
+        assertContains("frog", xml);
 
-        //moveFrom is deleted in .doc files
-        assertContainsCount("Second paragraph", xml, 1);
-        //now test inclusion of deleted text
+        //moveFrom is deleted in .doc files, so it's pulled in under the
+        //default-include policy too
+        assertContainsCount("Second paragraph", xml, 2);
+
+        //now test explicit exclusion
         ParseContext context = new ParseContext();
         OfficeParserConfig officeParserConfig = new OfficeParserConfig();
-        officeParserConfig.setIncludeDeletedContent(true);
+        officeParserConfig.setIncludeDeletedContent(false);
         context.set(OfficeParserConfig.class, officeParserConfig);
         XMLResult r = getXML("testWORD_2006ml.doc", context);
-        assertContains("frog", r.xml);
+        assertNotContained("frog", r.xml);
 
         //moveFrom is deleted in .doc files
-        assertContainsCount("Second paragraph", r.xml, 2);
+        assertContainsCount("Second paragraph", r.xml, 1);
     }
 
     @Test
