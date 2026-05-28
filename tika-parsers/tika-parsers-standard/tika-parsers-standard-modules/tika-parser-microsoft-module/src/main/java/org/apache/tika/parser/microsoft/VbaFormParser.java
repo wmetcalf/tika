@@ -696,7 +696,7 @@ public final class VbaFormParser {
             for (byte e : expected) checkValue(name, size / expected.length, e & 0xFF);
         }
         private void check(int n) throws IOException {
-            if (pos + n > data.length)
+            if (n < 0 || pos > data.length - n)
                 throw new IOException("OleForm: read past end (pos=" + pos + " need=" + n + " len=" + data.length + ")");
         }
     }

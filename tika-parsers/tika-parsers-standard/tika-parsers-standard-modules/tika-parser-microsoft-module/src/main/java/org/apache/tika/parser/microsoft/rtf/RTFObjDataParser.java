@@ -496,11 +496,10 @@ class RTFObjDataParser {
 
     private static String extractWideCharUrlInternal(byte[] data) {
         // Build a lowercased copy for case-insensitive matching (HttP://, HTTP:// etc).
-        // Only the even bytes are ASCII scheme chars; odd bytes are the UTF-16LE zero pad.
-        // We lowercase even bytes only so the matching offsets still align with the
-        // original data (which we decode unchanged for the final URL string).
+        // We lowercase every byte in the array to handle wide-character strings
+        // regardless of odd/even byte alignment (e.g. if the string starts at an odd offset).
         byte[] lower = data.clone();
-        for (int i = 0; i < lower.length - 1; i += 2) {
+        for (int i = 0; i < lower.length; i++) {
             if (lower[i] >= 'A' && lower[i] <= 'Z') {
                 lower[i] = (byte) (lower[i] + 32);
             }
@@ -570,12 +569,16 @@ class RTFObjDataParser {
             if (!(e instanceof DocumentEntry)) {
                 continue;
             }
-            // The control-char prefix \x01 is part of the stream name.
-            if (!e.getName().equalsIgnoreCase("\u0001Ole10Native")) {
+            // Strip any leading system control character (e.g. \x01) before comparing
+            // to align with the robust stream-name recovery logic in AbstractOOXMLExtractor.
+            String entryName = e.getName();
+            String suffix = (entryName.length() > 1 && entryName.charAt(0) < 0x20)
+                    ? entryName.substring(1) : entryName;
+            if (!suffix.equalsIgnoreCase("Ole10Native")) {
                 continue;
             }
-            // Non-canonical casing — flag obfuscation.
-            if (!e.getName().equals("\u0001Ole10Native")) {
+            // Non-canonical casing or prefix manipulation — flag obfuscation.
+            if (!entryName.equals("\u0001Ole10Native")) {
                 metadata.set(RTFMetadata.EMB_CLASS_OBFUSCATED, true);
             }
             DocumentEntry de = (DocumentEntry) e;
