@@ -28,7 +28,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
-
 import javax.imageio.ImageIO;
 import javax.xml.parsers.SAXParserFactory;
 
@@ -43,6 +42,7 @@ import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -53,7 +53,6 @@ import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.TextContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
-import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.utils.ImageHashUtils;
 import org.apache.tika.utils.XMLReaderUtils;
 
