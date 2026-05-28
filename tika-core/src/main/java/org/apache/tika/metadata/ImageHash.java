@@ -17,9 +17,15 @@
 package org.apache.tika.metadata;
 
 /**
- * Perceptual image hash metadata keys.
+ * Perceptual image hash metadata keys. Hash values are computed by
+ * {@link org.apache.tika.utils.ImageHashUtils}, which delegates to the
+ * <a href="https://github.com/wmetcalf/rosetta-squint">rosetta-squint</a>
+ * Java port of Python {@code imagehash} 4.3.2 — the hex values match
+ * byte-for-byte across Python / Java / Rust / Go / JS / Swift.
  */
 public interface ImageHash {
     Property PHASH = Property.internalText("image:phash");
+    Property DHASH = Property.internalText("image:dhash");
+    Property AHASH = Property.internalText("image:ahash");
     Property COLORHASH = Property.internalText("image:colorhash");
 }

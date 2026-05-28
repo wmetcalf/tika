@@ -45,6 +45,18 @@
       <artifactId>commons-io</artifactId>
     </dependency>
 
+    <!-- rosetta-squint: byte-exact-with-Python-imagehash perceptual-hash
+         algorithms (phash / dhash / ahash / colorhash / whash / crop-resistant).
+         Drives ImageHashUtils so the hex values we emit match identically
+         across Python / Java / Rust / Go / JS / Swift — see
+         https://github.com/wmetcalf/rosetta-squint. Only the hash half is
+         pulled in (the decode half is unused — Tika has its own decoders). -->
+    <dependency>
+      <groupId>io.github.wmetcalf</groupId>
+      <artifactId>rosetta-squint-hash</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+
     <!-- Optional OSGi dependencies, used only when running within OSGi -->
     <dependency>
       <groupId>org.osgi</groupId>
