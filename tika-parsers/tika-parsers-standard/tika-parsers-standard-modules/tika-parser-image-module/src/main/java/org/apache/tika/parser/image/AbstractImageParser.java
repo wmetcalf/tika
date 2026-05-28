@@ -36,7 +36,6 @@ import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Barcode;
-import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -45,6 +44,7 @@ import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.ImageHashUtils;
 
 public abstract class AbstractImageParser implements Parser {
 
@@ -118,8 +118,10 @@ public abstract class AbstractImageParser implements Parser {
         if (image == null) {
             return;
         }
-        metadata.set(ImageHash.PHASH, ImageHashExtractor.computePhash(image));
-        metadata.set(ImageHash.COLORHASH, ImageHashExtractor.computeColorHash(image));
+        // Delegates to tika-core's ImageHashUtils, which uses the rosetta-squint
+        // hash library — byte-exact-compatible with Python imagehash 4.3.2. Sets
+        // phash, dhash, ahash, and colorhash in one shot. Mirrors XMLParser.
+        ImageHashUtils.setHashes(image, metadata);
     }
 
     private String normalizeBarcodeFormat(String format) {

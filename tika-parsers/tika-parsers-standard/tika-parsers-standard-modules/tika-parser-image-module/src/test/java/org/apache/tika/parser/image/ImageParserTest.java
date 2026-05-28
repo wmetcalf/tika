@@ -261,6 +261,8 @@ public class ImageParserTest extends TikaTest {
         }
 
         assertEquals(null, metadata.get(ImageHash.PHASH));
+        assertEquals(null, metadata.get(ImageHash.DHASH));
+        assertEquals(null, metadata.get(ImageHash.AHASH));
         assertEquals(null, metadata.get(ImageHash.COLORHASH));
     }
 
@@ -275,7 +277,11 @@ public class ImageParserTest extends TikaTest {
             hashingParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
         }
 
+        // rosetta-squint (Python imagehash 4.3.2 port) — phash + colorhash match the
+        // homegrown values for this image; dhash + ahash are new keys added in the swap.
         assertEquals("b68fc4b2746d8986", metadata.get(ImageHash.PHASH));
+        assertEquals("cd6d732e0d990e06", metadata.get(ImageHash.DHASH));
+        assertEquals("ffffbf0005000000", metadata.get(ImageHash.AHASH));
         assertEquals("1f0e0310000000", metadata.get(ImageHash.COLORHASH));
     }
 
