@@ -1330,7 +1330,18 @@ final class TextExtractor {
                 // The first ';' in {\colortbl; ...} is the implicit "auto"
                 // entry at index 0 — the byte-level handler will add a
                 // null for it.
-            } else if (equals("stylesheet") || equals("fonttbl")) {
+            } else if (equals("stylesheet") || equals("fonttbl") || equals("info")) {
+                // \info is a destination group whose recognized sub-fields
+                // (\title, \author, \subject, \creatim, etc.) explicitly set
+                // nextMetaData and route their text to metadata. Anything else
+                // inside \info (e.g. \operator, \edmins, \nofpages, \version,
+                // \vern, \nofchars) must not bleed into the body output. After
+                // the c43c0f9655 gating change ("route text to pendingBuffer
+                // only when nextMetaData != null or groupState.ignore"), those
+                // unknown info-sub-destinations leaked into body. Setting
+                // ignore=true on \info entry restores the old drop semantics
+                // for unknowns; known fields still buffer (because their
+                // nextMetaData is non-null) and flush to metadata on group end.
                 groupState.ignore = true;
             } else if (equals("listtable")) {
                 currentListTable = listTable;
