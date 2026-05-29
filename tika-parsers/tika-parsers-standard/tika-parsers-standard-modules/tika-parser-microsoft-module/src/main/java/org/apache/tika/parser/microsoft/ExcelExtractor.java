@@ -777,8 +777,29 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                     }
                     sb.append(((BoolPtg) ptg).getValue());
                 } else if (!(ptg instanceof MissingArgPtg)) {
-                    // For cell refs, operators, etc. use the default string form
-                    String s = ptg.toFormulaString();
+                    // For cell refs, operators, etc. use the default string form.
+                    // Two POI Ptg subclasses throw IllegalStateException from the
+                    // no-arg toFormulaString() and require a different API we
+                    // can't satisfy in a static-IOC pass:
+                    //   * ValueOperatorPtg subclasses (+, -, *, /, %, ^, &, =, <, >, …)
+                    //     require toFormulaString(String[] operands) — the
+                    //     stack-based renderer would have to pop operands from the
+                    //     evaluation stack, which the olevba-style linear walk
+                    //     doesn't maintain.
+                    //   * Ref3DPtg requires a workbook context to resolve the
+                    //     sheet-name index ("3D references need a workbook to
+                    //     determine formula text").
+                    // Both occur in real macro-malware XLM samples (the cached
+                    // bug surfaced 14 of 19 .xls extractions before this fix).
+                    // Fall back to the Ptg's class name as an IOC token so the
+                    // formula chain stays intact and the rest of the sheet
+                    // extracts cleanly.
+                    String s;
+                    try {
+                        s = ptg.toFormulaString();
+                    } catch (IllegalStateException ex) {
+                        s = "#" + ptg.getClass().getSimpleName();
+                    }
                     if (s != null && !s.isBlank()) {
                         if (sb.length() > 0) {
                             sb.append(' ');
