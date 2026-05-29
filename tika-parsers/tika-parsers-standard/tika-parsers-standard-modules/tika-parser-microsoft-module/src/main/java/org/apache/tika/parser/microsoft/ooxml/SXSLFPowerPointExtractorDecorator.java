@@ -94,6 +94,20 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
 
     protected void buildXHTML(XHTMLContentHandler xhtml) throws SAXException, IOException {
 
+        // .ppam (PowerPoint macro-enabled add-in) is dispatched here by the
+        // OOXMLExtractorFactory fallback added for the addin.macroEnabled
+        // main+xml content type. Add-ins don't carry a presentation part —
+        // pps.get(0) in the constructor leaves mainDocument null — so every
+        // mainDocument.getRelationshipsByType() call in the body of buildXHTML
+        // (loadCommentAuthors, slidesPRC lookup, handout master, notes, theme
+        // parts) would NPE. The VBA macro payload is extracted by the generic
+        // AbstractOOXMLExtractor macro path independently of buildXHTML; bail
+        // out cleanly here so the overall parse finishes with metadata +
+        // macros even when there's no slide tree.
+        if (mainDocument == null) {
+            return;
+        }
+
         loadCommentAuthors();
         addCommentAuthorMetadata();
 
@@ -258,6 +272,14 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
     @Override
     protected List<PackagePart> getMainDocumentParts() {
         List<PackagePart> parts = new ArrayList<>();
+        // .ppam path — same justification as the buildXHTML early-return: no
+        // main presentation part exists, every mainDocument call NPEs, and
+        // the VBA macros are picked up by AbstractOOXMLExtractor's separate
+        // macro-extraction path. Return an empty parts list so the parent's
+        // handleEmbeddedParts loop is a no-op for this entry.
+        if (mainDocument == null) {
+            return parts;
+        }
         //TODO: consider: getPackage().getPartsByName(Pattern.compile("/ppt/embeddings/.*?
         //TODO: consider: getPackage().getPartsByName(Pattern.compile("/ppt/media/.*?
         PackageRelationshipCollection slidePRC = null;
