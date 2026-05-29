@@ -1,10 +1,10 @@
 {
-  "scanned_at": "2026-05-25T12:48:17.316838+00:00",
+  "scanned_at": "2026-05-29T14:46:54.783332+00:00",
   "tika_root": "/home/coz/.config/superpowers/worktrees/tika/4.0-upstream-office-links",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 670,
-    "parsers_emitting_fields": 193,
+    "property_declarations": 672,
+    "parsers_emitting_fields": 192,
     "undeclared_string_fields": 288,
     "templated_patterns": 111
   },
@@ -2098,25 +2098,33 @@
       "javadoc": null,
       "emitted_by": []
     },
+    "image:ahash": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.ImageHash",
+      "constant_name": "AHASH",
+      "javadoc": null,
+      "emitted_by": []
+    },
     "image:colorhash": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.ImageHash",
       "constant_name": "COLORHASH",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.image.AbstractImageParser",
-        "org.apache.tika.utils.ImageHashUtils"
-      ]
+      "emitted_by": []
+    },
+    "image:dhash": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.ImageHash",
+      "constant_name": "DHASH",
+      "javadoc": null,
+      "emitted_by": []
     },
     "image:phash": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.ImageHash",
       "constant_name": "PHASH",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.image.AbstractImageParser",
-        "org.apache.tika.utils.ImageHashUtils"
-      ]
+      "emitted_by": []
     },
     "imagereader:NumImages": {
       "type": "internalInteger",
@@ -10361,9 +10369,7 @@
         "barcode:is-mirrored",
         "barcode:position",
         "barcode:raw-bytes",
-        "barcode:value",
-        "image:colorhash",
-        "image:phash"
+        "barcode:value"
       ]
     },
     "org.apache.tika.parser.image.BPGParser": {
@@ -11650,12 +11656,6 @@
         "Content-Type",
         "Content-Type-Override",
         "X-TIKA:resourceName"
-      ]
-    },
-    "org.apache.tika.utils.ImageHashUtils": {
-      "emits": [
-        "image:colorhash",
-        "image:phash"
       ]
     },
     "org.apache.tika.utils.ParserUtils": {
