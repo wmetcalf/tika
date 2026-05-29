@@ -46,6 +46,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.renderer.Renderer;
 
@@ -207,9 +208,23 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         findPages(pageTree.getCOSObject().getDictionaryObject(COSName.KIDS), pageRefs);
         //confirm the right number of pages was found
         if (pageRefs.size() != pdDocument.getNumberOfPages()) {
-            throw new IOException(new TikaException(
-                    "Couldn't find the right number of page refs (" + pageRefs.size() +
-                            ") for pages (" + pdDocument.getNumberOfPages() + ")"));
+            // PDF carries a marked-content structure tree but findPages
+            // can't recurse the page tree into a flat ref list (common when
+            // /Pages /Kids contains indirect refs to intermediate nodes the
+            // recursion doesn't follow). Without aligned pageRefs we can't
+            // map MCIDs back to pages, so the marked-content extractor
+            // can't function — but the document still has text, so falling
+            // back to the parent PDF2XHTML's regular page-by-page extraction
+            // is strictly better than throwing IOException and emitting
+            // zero output. Record the gap so consumers know marked-content
+            // detail wasn't surfaced.
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "PDF marked content extraction unavailable: pageRefs (" +
+                            pageRefs.size() + ") did not match document pages (" +
+                            pdDocument.getNumberOfPages() + "); fell back to " +
+                            "plain PDF2XHTML extraction.");
+            super.processPages(pageTree);
+            return;
         }
 
         PDStructureTreeRoot structureTreeRoot =
