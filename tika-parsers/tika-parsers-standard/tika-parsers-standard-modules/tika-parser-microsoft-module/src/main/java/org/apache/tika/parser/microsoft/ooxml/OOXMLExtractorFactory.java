@@ -64,6 +64,20 @@ public class OOXMLExtractorFactory {
             XSLFRelation.PRESENTATIONML_TEMPLATE, XSLFRelation.PRESENTATION_MACRO
     };
 
+    /** Inner-part content type for PowerPoint macro-enabled add-ins (.ppam).
+     *  POI's {@link XSLFRelation} enum doesn't define a constant for this
+     *  variant (it has MACRO/MACRO_TEMPLATE for .pptm/.potm but no addin
+     *  equivalent, unlike {@link XSSFRelation#MACRO_ADDIN_WORKBOOK} on the
+     *  Excel side). The structural layout is identical to .pptm — same
+     *  presentation parts plus a VBA project — so we route .ppam through
+     *  {@link XSLFEventBasedPowerPointExtractor} below. Threat actors often
+     *  rename .ppam to .ppt to bypass extension-based macro filters; without
+     *  this dispatch, every .ppam in the corpus came back with
+     *  "No OOXML extractor found for content type:
+     *   application/vnd.ms-powerpoint.addin.macroEnabled.main+xml". */
+    private static final String PPAM_MAIN_PART_CT =
+            "application/vnd.ms-powerpoint.addin.macroEnabled.main+xml";
+
     private static final XSSFRelation[] XSSF_RELATIONS = new XSSFRelation[]{
             XSSFRelation.WORKBOOK, XSSFRelation.MACROS_WORKBOOK,
             XSSFRelation.TEMPLATE_WORKBOOK, XSSFRelation.MACRO_TEMPLATE_WORKBOOK,
@@ -153,6 +167,18 @@ public class OOXMLExtractorFactory {
                     }
                     if (extractor == null &&
                             XSLFRelation.THEME_MANAGER.getContentType().equals(coreContentType)) {
+                        XSLFEventBasedPowerPointExtractor pptExtractor =
+                                new XSLFEventBasedPowerPointExtractor(pkg);
+                        extractor = new SXSLFPowerPointExtractorDecorator(metadata, context,
+                                pptExtractor);
+                        metadata.add(TikaCoreProperties.TIKA_PARSED_BY,
+                                XSLFEventBasedPowerPointExtractor.class.getCanonicalName());
+                    }
+                    // .ppam (PowerPoint macro-enabled add-in) — see PPAM_MAIN_PART_CT
+                    // javadoc above. Same dispatch as .pptm; the structural layout is
+                    // identical and the SXSLFPowerPointExtractorDecorator walks the
+                    // VBA project + slides just fine.
+                    if (extractor == null && PPAM_MAIN_PART_CT.equals(coreContentType)) {
                         XSLFEventBasedPowerPointExtractor pptExtractor =
                                 new XSLFEventBasedPowerPointExtractor(pkg);
                         extractor = new SXSLFPowerPointExtractorDecorator(metadata, context,
