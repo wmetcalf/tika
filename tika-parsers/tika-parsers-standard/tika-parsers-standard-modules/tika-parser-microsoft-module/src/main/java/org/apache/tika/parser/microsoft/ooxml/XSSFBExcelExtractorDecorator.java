@@ -83,6 +83,25 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             strings = new TikaXSSFBSharedStringsTable(container);
         } catch (OpenXML4JException e) {
             throw new IOException(e);
+        } catch (RuntimeException e) {
+            // POI's XSSFBUtils.readXLWideString throws RuntimeException
+            // (StringIndexOutOfBoundsException) on malformed XLSB shared-
+            // strings / styles tables — common in attacker-crafted XLSB
+            // macro carriers. Without this catch the whole workbook
+            // aborts with "Unexpected RuntimeException from OOXMLParser"
+            // and we lose the entire file. Record the gap, surface
+            // whatever metadata is already set, and return; the macros
+            // path (processXlmBinaryMacroSheets) runs against the raw
+            // container parts and isn't affected by the table parse.
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "XLSB shared-strings/styles parse aborted at " +
+                            e.getClass().getSimpleName() + ": " +
+                            (e.getMessage() == null ? "" : e.getMessage()));
+            // Still try the macro-sheet path — it doesn't need strings/styles.
+            processXlmBinaryMacroSheets(container, null, null, xhtml,
+                    java.util.Collections.emptyMap(),
+                    XlmWorkbookSheetMap.build(container));
+            return;
         }
 
         // Capture numeric cell values from every worksheet for XLM emulation.
@@ -93,50 +112,62 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
 
         int sheetIdx = 0;
         while (iter.hasNext()) {
-            InputStream stream = iter.next();
-            PackagePart sheetPart = iter.getSheetPart();
-            addDrawingHyperLinks(sheetPart);
-            sheetParts.add(sheetPart);
+            // Wrap each sheet's parse so a POI XSSFBUtils.readXLWideString
+            // "Range out of bounds" / IllegalStateException on a malformed
+            // sheet binary doesn't take down the whole workbook. Surfaced
+            // by the mbzdls XLSB sample where one sheet's string descriptor
+            // had a negative width and aborted every subsequent sheet.
+            try {
+                InputStream stream = iter.next();
+                PackagePart sheetPart = iter.getSheetPart();
+                addDrawingHyperLinks(sheetPart);
+                sheetParts.add(sheetPart);
 
-            SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
+                SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);
 
-            // Parse comments with our own binary parser that avoids xmlbeans
-            TikaXSSFBCommentsTable tikaComments = parseBinaryComments(sheetPart);
-            if (tikaComments != null && tikaComments.hasComments()) {
-                metadata.set(Office.HAS_COMMENTS, true);
+                // Parse comments with our own binary parser that avoids xmlbeans
+                TikaXSSFBCommentsTable tikaComments = parseBinaryComments(sheetPart);
+                if (tikaComments != null && tikaComments.hasComments()) {
+                    metadata.set(Office.HAS_COMMENTS, true);
+                }
+
+                xhtml.startElement("div");
+                xhtml.element("h1", iter.getSheetName());
+
+                xhtml.startElement("table");
+                xhtml.startElement("tbody");
+
+                // Pass null for POI's comments table to avoid xmlbeans dependency.
+                // Comments are emitted separately after sheet processing.
+                XSSFBSheetHandler xssfbSheetHandler =
+                        new XSSFBSheetHandler(stream, styles, null, strings,
+                                sheetExtractor, formatter, false);
+                xssfbSheetHandler.parse();
+
+                xhtml.endElement("tbody");
+                xhtml.endElement("table");
+
+                // Emit comments after the table (since we bypass POI's inline
+                // comment handling to avoid xmlbeans dependency)
+                if (tikaComments != null) {
+                    tikaComments.emitAllComments(xhtml);
+                }
+
+                for (String header : sheetExtractor.headers) {
+                    extractHeaderFooter(header, xhtml);
+                }
+                for (String footer : sheetExtractor.footers) {
+                    extractHeaderFooter(footer, xhtml);
+                }
+                processDrawings(sheetPart, xhtml);
+                extractHyperLinks(sheetPart, xhtml);
+                xhtml.endElement("div");
+            } catch (RuntimeException e) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        "XLSB sheet " + sheetIdx + " aborted at " +
+                                e.getClass().getSimpleName() + ": " +
+                                (e.getMessage() == null ? "" : e.getMessage()));
             }
-
-            xhtml.startElement("div");
-            xhtml.element("h1", iter.getSheetName());
-
-            xhtml.startElement("table");
-            xhtml.startElement("tbody");
-
-            // Pass null for POI's comments table to avoid xmlbeans dependency.
-            // Comments are emitted separately after sheet processing.
-            XSSFBSheetHandler xssfbSheetHandler =
-                    new XSSFBSheetHandler(stream, styles, null, strings,
-                            sheetExtractor, formatter, false);
-            xssfbSheetHandler.parse();
-
-            xhtml.endElement("tbody");
-            xhtml.endElement("table");
-
-            // Emit comments after the table (since we bypass POI's inline
-            // comment handling to avoid xmlbeans dependency)
-            if (tikaComments != null) {
-                tikaComments.emitAllComments(xhtml);
-            }
-
-            for (String header : sheetExtractor.headers) {
-                extractHeaderFooter(header, xhtml);
-            }
-            for (String footer : sheetExtractor.footers) {
-                extractHeaderFooter(footer, xhtml);
-            }
-            processDrawings(sheetPart, xhtml);
-            extractHyperLinks(sheetPart, xhtml);
-            xhtml.endElement("div");
             sheetIdx++;
         }
 

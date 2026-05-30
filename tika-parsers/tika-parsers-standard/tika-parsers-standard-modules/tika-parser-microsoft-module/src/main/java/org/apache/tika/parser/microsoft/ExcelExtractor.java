@@ -60,6 +60,7 @@ import org.apache.poi.hssf.record.NumberRecord;
 import org.apache.poi.hssf.record.ProtectRecord;
 import org.apache.poi.hssf.record.RKRecord;
 import org.apache.poi.hssf.record.Record;
+import java.util.logging.Logger;
 import org.apache.poi.hssf.record.RowRecord;
 import org.apache.poi.hssf.record.SSTRecord;
 import org.apache.poi.hssf.record.StringRecord;
@@ -263,6 +264,9 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
      */
     private static class TikaHSSFListener implements HSSFListener {
 
+        private static final Logger LOGGER =
+                Logger.getLogger(TikaHSSFListener.class.getName());
+
         /**
          * XHTML content handler to which the document content is rendered.
          */
@@ -415,6 +419,31 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                 eventFactory.processEvents(hssfRequest, documentInputStream);
             } catch (org.apache.poi.EncryptedDocumentException e) {
                 throw new EncryptedDocumentException(e);
+            } catch (RuntimeException e) {
+                // POI's HSSF record-iteration loop throws RuntimeException
+                // (typically IllegalStateException / RecordFormatException)
+                // when it hits a record byte sequence it doesn't know how to
+                // parse. On the mbzdls .xls corpus this fires for:
+                //   * FuncPtg unknown built-in function index (XLM4 macros)
+                //   * "Unhandled Continue Record following TabIdRecord"
+                //     (real .xls files written by non-Office tools)
+                //   * Variants of the same record-stream desync on
+                //     malformed/attacker-crafted files
+                // Default upstream behaviour bubbles this up and aborts the
+                // whole workbook parse, losing every sheet's text. POI's
+                // event listener has already pushed everything from before
+                // the failing record into the formatListener/handler chain,
+                // so the right move is to swallow and continue with what
+                // we have; processExtraText() below still emits the tail
+                // of accumulated text. CAPE-confirmed: every file hitting
+                // this path opens cleanly in real Office; the bugs are
+                // pure POI gaps. Logger.WARNING so consumers see it in
+                // worker stderr; we don't have access to the outer
+                // Metadata here (inner static class).
+                LOGGER.warning("HSSF record stream aborted at " +
+                        e.getClass().getSimpleName() + ": " +
+                        (e.getMessage() == null ? "" : e.getMessage()) +
+                        " (continuing with partial extraction)");
             }
 
             // Output any extra text that came after all the sheets

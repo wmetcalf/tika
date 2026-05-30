@@ -136,8 +136,33 @@ class PDF2XHTML extends AbstractPDF2XHTML {
             }
         }
         if (!pdf2XHTML.exceptions.isEmpty()) {
-            //throw the first
-            throw new TikaException("Unable to extract PDF content", pdf2XHTML.exceptions.get(0));
+            // Intermediate IOExceptions accumulate here when
+            // PDFParserConfig.isCatchIntermediateIOExceptions() is true —
+            // the caller has explicitly asked us to recover what we can
+            // from a broken-but-readable PDF. The legacy behaviour threw
+            // the first accumulated exception, defeating the whole point
+            // of catch-intermediate (anything text-bearing past the broken
+            // page got produced, and we'd toss it). On the mbzdls corpus
+            // the COSStream "Create InputStream called without data"
+            // PDFBox bug at processPage time aborted the only failing PDF
+            // even though earlier pages had emitted text fine.
+            //
+            // Record each accumulated cause in metadata as a warning so
+            // consumers know parsing was partial; don't throw. Falls back
+            // to the legacy throw-the-first behaviour when
+            // isCatchIntermediateIOExceptions is false — that's the
+            // caller saying \"any IOException is fatal\", which we honour.
+            if (config.isCatchIntermediateIOExceptions()) {
+                for (IOException ie : pdf2XHTML.exceptions) {
+                    String msg = ie.getMessage();
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            "PDF intermediate IOException: " +
+                                    (msg == null ? ie.getClass().getSimpleName() : msg));
+                }
+            } else {
+                throw new TikaException("Unable to extract PDF content",
+                        pdf2XHTML.exceptions.get(0));
+            }
         }
     }
 
