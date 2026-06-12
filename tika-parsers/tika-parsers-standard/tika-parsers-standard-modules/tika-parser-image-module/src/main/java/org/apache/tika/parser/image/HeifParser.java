@@ -151,8 +151,9 @@ public class HeifParser extends AbstractImageParser {
                 try {
                     BufferedImage raster = ImageIO.read(new java.io.ByteArrayInputStream(pngBytes));
                     ImageHashUtils.setHashes(raster, metadata);
-                } catch (Exception e) {
-                    // non-fatal
+                } catch (Exception | OutOfMemoryError e) {
+                    // non-fatal (Error too: a small PNG within MAX_RENDERED_PNG_BYTES can still
+                    // decode to a huge in-memory raster and OOM the ImageIO decode — contain it)
                 }
             }
 
