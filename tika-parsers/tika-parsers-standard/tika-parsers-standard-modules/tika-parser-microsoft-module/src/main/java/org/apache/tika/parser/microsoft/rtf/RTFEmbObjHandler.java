@@ -174,9 +174,12 @@ class RTFEmbObjHandler {
      * This matches MS Word's behaviour — it does not mix {@code \'HH} nibbles with
      * the surrounding hex stream.
      */
-    protected void writeDecodedByte(int b) throws IOException {
+    protected void writeDecodedByte(int b) throws IOException, TikaException {
         if (state != EMB_STATE.OBJDATA) {
             return;
+        }
+        if (os.size() >= memoryLimitInKb * 1024) {
+            throw new TikaMemoryLimitException(os.size() + 1, memoryLimitInKb * 1024);
         }
         os.write(b);
         hexEscapeInObjdata = true;
@@ -204,6 +207,9 @@ class RTFEmbObjHandler {
                     throw new IOException("hex char to byte overflow");
                 }
 
+                if (os.size() >= memoryLimitInKb * 1024) {
+                    throw new TikaMemoryLimitException(os.size() + 1, memoryLimitInKb * 1024);
+                }
                 os.write((int) sum);
 
                 hi = -1;

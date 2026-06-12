@@ -119,14 +119,22 @@ public class HeifParser extends AbstractImageParser {
                 return;
             }
 
+            // HEIF/AVIF decompression-bomb guard (audit M-3): a tiny HEIC declaring huge
+            // dimensions makes heif-convert (itself timeout-fenced) emit a correspondingly
+            // huge PNG. Cap the post-conversion in-JVM allocation it was missing — skip
+            // rather than readAllBytes + ImageIO.read a multi-GB raster past the -Xmx heap.
+            final long MAX_DECODED_PNG_BYTES = 64L * 1024 * 1024;
+            if (Files.size(actualPng) > MAX_DECODED_PNG_BYTES) {
+                return;
+            }
             byte[] pngBytes = Files.readAllBytes(actualPng);
 
             // Compute perceptual hashes from the rasterized PNG (always, regardless of OCR)
             try {
                 BufferedImage raster = ImageIO.read(new java.io.ByteArrayInputStream(pngBytes));
                 ImageHashUtils.setHashes(raster, metadata);
-            } catch (Exception e) {
-                // non-fatal
+            } catch (Exception | OutOfMemoryError e) {
+                // non-fatal (Error too: a crafted PNG can OOM the ImageIO decode)
             }
 
             // OCR dispatch — only if Tesseract (or equivalent) is configured
