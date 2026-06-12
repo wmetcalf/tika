@@ -178,8 +178,8 @@ class RTFEmbObjHandler {
         if (state != EMB_STATE.OBJDATA) {
             return;
         }
-        if (os.size() >= memoryLimitInKb * 1024) {
-            throw new TikaMemoryLimitException(os.size() + 1, memoryLimitInKb * 1024);
+        if (os.size() >= (long) memoryLimitInKb * 1024) {
+            throw new TikaMemoryLimitException(os.size() + 1, (long) memoryLimitInKb * 1024);
         }
         os.write(b);
         hexEscapeInObjdata = true;
@@ -207,8 +207,8 @@ class RTFEmbObjHandler {
                     throw new IOException("hex char to byte overflow");
                 }
 
-                if (os.size() >= memoryLimitInKb * 1024) {
-                    throw new TikaMemoryLimitException(os.size() + 1, memoryLimitInKb * 1024);
+                if (os.size() >= (long) memoryLimitInKb * 1024) {
+                    throw new TikaMemoryLimitException(os.size() + 1, (long) memoryLimitInKb * 1024);
                 }
                 os.write((int) sum);
 
@@ -225,8 +225,8 @@ class RTFEmbObjHandler {
         if (len < 0) {
             throw new TikaException("Requesting I read < 0 bytes ?!");
         }
-        if (len > memoryLimitInKb * 1024) {
-            throw new TikaMemoryLimitException(len, (memoryLimitInKb * 1024));
+        if (len > (long) memoryLimitInKb * 1024) {
+            throw new TikaMemoryLimitException(len, ((long) memoryLimitInKb * 1024));
         }
 
         byte[] bytes = new byte[len];

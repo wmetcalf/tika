@@ -21,3 +21,6 @@ nb-configuration.xml
 tika-pipes/tika-pipes-plugins/tika-pipes-ignite/ignite
 tika-grpc/ignite
 .flattened-pom.xml
+
+# local helper script swept in by git add -A
+/generate_qr_ics.py
