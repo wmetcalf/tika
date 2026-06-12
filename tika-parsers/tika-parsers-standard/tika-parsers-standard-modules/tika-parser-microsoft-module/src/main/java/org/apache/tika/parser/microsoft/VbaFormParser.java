@@ -40,6 +40,12 @@ public final class VbaFormParser {
 
     private static final Logger LOG = Logger.getLogger(VbaFormParser.class.getName());
 
+    // Audit caps (2026-06): a UserForm's "f"/"o" stream is fully attacker-controlled.
+    // Bound the two allocation sites a crafted form could drive to OutOfMemoryError (an
+    // Error that escapes catch(Exception) and kills the parse thread).
+    private static final int MAX_SITES = 65_536;                    // OleSiteConcreteControl count cap
+    private static final long MAX_STREAM_BYTES = 10L * 1024 * 1024; // mirrors LenientVBAReader
+
     /** One extracted control from a UserForm's "f" stream. */
     public static final class FormControl {
         public final String name;          // control name
@@ -91,7 +97,7 @@ public final class VbaFormParser {
         List<FormModuleResult> results = new ArrayList<>();
         try {
             collectFormDirs(fs.getRoot(), results);
-        } catch (Exception e) {
+        } catch (Exception | OutOfMemoryError e) {
             LOG.fine("VbaFormParser: scan error: " + e.getMessage());
         }
         return results;
@@ -116,7 +122,7 @@ public final class VbaFormParser {
             try {
                 List<FormControl> controls = parseFormDir(sub);
                 results.add(new FormModuleResult(name, controls));
-            } catch (Exception e) {
+            } catch (Exception | OutOfMemoryError e) {
                 LOG.fine("VbaFormParser: error parsing form '" + name + "': " + e.getMessage());
             }
         }
@@ -162,6 +168,11 @@ public final class VbaFormParser {
             for (int i = 0; i < classTableCount; i++) consumeSiteClassInfo(f);
         }
         int countOfSites = f.readU32();
+        // Cap BEFORE it sizes the SiteDepthsAndTypes drain loop + the sites list: an
+        // unchecked attacker U32 here drove new ArrayList<>(countOfSites) to OOM (audit H-1).
+        if (countOfSites < 0 || countOfSites > MAX_SITES) {
+            throw new IOException("VbaForm countOfSites out of range: " + countOfSites);
+        }
         int countOfBytes = f.readU32();
         // SiteDepthsAndTypes block
         int siteStart = f.pos();
@@ -172,7 +183,7 @@ public final class VbaFormParser {
         // Pad SiteDepthsAndTypes to 4-byte boundary
         f.padTo4(siteStart);
         // Consume each OleSiteConcreteControl
-        List<SiteInfo> sites = new ArrayList<>(countOfSites);
+        List<SiteInfo> sites = new ArrayList<>(); // grows as parsed; countOfSites capped above
         for (int i = 0; i < countOfSites; i++) {
             sites.add(consumeOleSiteConcreteControl(f));
         }
@@ -706,7 +717,14 @@ public final class VbaFormParser {
     private static byte[] readEntry(DirectoryEntry dir, String name) throws IOException {
         org.apache.poi.poifs.filesystem.DocumentEntry de =
             (org.apache.poi.poifs.filesystem.DocumentEntry) dir.getEntry(name);
-        byte[] buf = new byte[de.getSize()];
+        int size = de.getSize();
+        // Cap the up-front buffer alloc: getSize() is the raw OLE2 directory size field
+        // (attacker-controlled), and the "f"/"o" streams deflate-compress to ~nothing in
+        // the OOXML ZIP. LenientVBAReader has this guard; VbaFormParser did not (audit M-2).
+        if (size < 0 || size > MAX_STREAM_BYTES) {
+            throw new IOException("VbaForm stream '" + name + "' too large: " + size);
+        }
+        byte[] buf = new byte[size];
         try (org.apache.poi.poifs.filesystem.DocumentInputStream dis =
                      new org.apache.poi.poifs.filesystem.DocumentInputStream(de)) {
             int read = 0;
