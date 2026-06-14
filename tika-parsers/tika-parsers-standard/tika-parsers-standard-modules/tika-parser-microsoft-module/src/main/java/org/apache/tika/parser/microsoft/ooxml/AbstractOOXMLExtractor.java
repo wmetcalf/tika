@@ -245,6 +245,13 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      */
     private void handleMacrosEarly(XHTMLContentHandler xhtml, Metadata metadata)
             throws TikaException, IOException, SAXException {
+        // Macros disabled -> skip the part walk entirely. handleMacros() itself no-ops when
+        // extraction is off, but the walk (getRelationships / getRelatedPart) is pure overhead
+        // and can throw on malformed files for a feature the caller didn't request.
+        OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
+        if (officeParserConfig == null || !officeParserConfig.isExtractMacros()) {
+            return;
+        }
         try {
             for (PackagePart source : getMainDocumentParts()) {
                 if (source == null) {
