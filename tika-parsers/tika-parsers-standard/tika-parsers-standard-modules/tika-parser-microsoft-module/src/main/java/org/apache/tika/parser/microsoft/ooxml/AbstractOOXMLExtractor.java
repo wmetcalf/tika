@@ -139,6 +139,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
+        // Extract VBA macros BEFORE the main body. The recursive write-limit is a CUMULATIVE
+        // total across the whole parse (RecursiveParserWrapper.SecureHandlerCounter), so a
+        // workbook/doc padded with megabytes of junk body text -- a known malspam evasion --
+        // exhausts the budget inside buildXHTML() before handleEmbeddedParts() reaches the
+        // macro stream, silently dropping the small-but-critical VBA source. Doing it first
+        // guarantees capture; targets handled here are recorded so the normal embedded-part
+        // walk below skips them (no double emission).
+        handleMacrosEarly(xhtml, metadata);
+
         buildXHTML(xhtml);
 
         // Now do any embedded parts
@@ -218,6 +227,62 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             //swallow otherwise
             metadata.add(TikaCoreProperties.EMBEDDED_EXCEPTION,
                     ExceptionUtils.getStackTrace(ex));
+        }
+    }
+
+    // VBA macro targets already emitted by handleMacrosEarly(), so the normal
+    // embedded-part walk in handleEmbeddedPart() does not emit them a second time.
+    private final Set<String> macroTargetsHandledEarly = new HashSet<>();
+
+    /**
+     * Emit VBA macros ahead of the body content so they are not starved by the cumulative
+     * write-limit when the document is padded with junk body text. Walks the same parts as
+     * {@link #handleEmbeddedParts} but only for the {@code VBA_MACROS} relationship, and
+     * records the handled targets in {@link #macroTargetsHandledEarly}. Non-fatal: a broken
+     * macro part is recorded on the metadata and never fails the overall parse (mirroring
+     * the swallow in handleEmbeddedParts). A SAXException (e.g. a write-limit signal) is
+     * allowed to propagate, exactly as the body path would.
+     */
+    private void handleMacrosEarly(XHTMLContentHandler xhtml, Metadata metadata)
+            throws TikaException, IOException, SAXException {
+        // Macros disabled -> skip the part walk entirely. handleMacros() itself no-ops when
+        // extraction is off, but the walk (getRelationships / getRelatedPart) is pure overhead
+        // and can throw on malformed files for a feature the caller didn't request.
+        OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
+        if (officeParserConfig == null || !officeParserConfig.isExtractMacros()) {
+            return;
+        }
+        try {
+            for (PackagePart source : getMainDocumentParts()) {
+                if (source == null) {
+                    continue;
+                }
+                for (PackageRelationship rel : source.getRelationships()) {
+                    if (!XSSFRelation.VBA_MACROS.getRelation().equals(rel.getRelationshipType())) {
+                        continue;
+                    }
+                    if (rel.getTargetMode() != TargetMode.INTERNAL) {
+                        continue;
+                    }
+                    try {
+                        PackagePart target = source.getRelatedPart(rel);
+                        if (target == null) {
+                            continue;
+                        }
+                        handleMacros(target, xhtml);
+                        URI targetURI = rel.getTargetURI();
+                        if (targetURI != null) {
+                            macroTargetsHandledEarly.add(targetURI.toString());
+                        }
+                    } catch (SAXException | SecurityException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
+                    }
+                }
+            }
+        } catch (InvalidFormatException e) {
+            throw new TikaException("Broken OOXML file", e);
         }
     }
 
@@ -326,7 +391,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 handledTarget.add(targetURI.toString());
             }
         } else if (XSSFRelation.VBA_MACROS.getRelation().equals(type)) {
-            handleMacros(target, xhtml);
+            // Skip if handleMacrosEarly() already emitted this macro part (it runs before
+            // buildXHTML so the VBA source survives the cumulative write-limit).
+            if (targetURI == null || !macroTargetsHandledEarly.contains(targetURI.toString())) {
+                handleMacros(target, xhtml);
+            }
             if (targetURI != null) {
                 handledTarget.add(targetURI.toString());
             }

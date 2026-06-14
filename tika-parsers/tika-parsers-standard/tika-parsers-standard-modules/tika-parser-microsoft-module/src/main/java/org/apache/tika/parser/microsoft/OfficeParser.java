@@ -218,22 +218,26 @@ public class OfficeParser extends AbstractOfficeParser {
                 tis.setOpenContainer(fs);
                 root = fs.getRoot();
             }
-            parse(root, context, metadata, xhtml, tis);
             OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
 
-            if (officeParserConfig.isExtractMacros()) {
-                //now try to get macros.
-                //Note that macros are handled separately for ppt in HSLFExtractor.
-
-                //We might consider not bothering to check for macros in root,
-                //if we know we're processing ppt based on content-type identified in metadata
-                if (!isDirectoryNode) {
-                    // if the "root" is a directory node, we assume that the macros have already
-                    // been extracted from the parent's fileSystem -- TIKA-4116
-                    extractMacros(root.getFileSystem(), xhtml, EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context);
-                }
-
+            // Extract macros BEFORE body content. The recursive write-limit (the worker's
+            // BasicContentHandlerFactory char cap) is enforced as a CUMULATIVE total across the
+            // whole parse, not per-entry (see RecursiveParserWrapper.SecureHandlerCounter). A
+            // document padded with megabytes of junk body text -- a known malspam evasion --
+            // therefore exhausts the budget before the macro stream is reached, and the small
+            // but forensically-critical VBA source is silently dropped (or the parse aborts
+            // pre-macro when throwOnWriteLimitReached). Emitting macros first guarantees they are
+            // captured even when the body later busts the limit; the early-stop on huge bodies
+            // is preserved (it now just stops AFTER the macros are already out).
+            //Note that macros are handled separately for ppt in HSLFExtractor.
+            if (officeParserConfig.isExtractMacros() && !isDirectoryNode) {
+                // if the "root" is a directory node, we assume that the macros have already
+                // been extracted from the parent's fileSystem -- TIKA-4116
+                extractMacros(root.getFileSystem(), xhtml,
+                        EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context);
             }
+
+            parse(root, context, metadata, xhtml, tis);
         } finally {
             tis.removeCloseShield();
         }
