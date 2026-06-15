@@ -240,6 +240,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      */
     protected List<PackagePart> getPartsWithVbaRelationship() {
         List<PackagePart> out = new ArrayList<>();
+        if (opcPackage == null) {
+            return out;
+        }
         try {
             for (PackagePart pp : opcPackage.getParts()) {
                 if (pp == null) {
