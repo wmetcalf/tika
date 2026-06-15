@@ -272,13 +272,15 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
     @Override
     protected List<PackagePart> getMainDocumentParts() {
         List<PackagePart> parts = new ArrayList<>();
-        // .ppam path — same justification as the buildXHTML early-return: no
-        // main presentation part exists, every mainDocument call NPEs, and
-        // the VBA macros are picked up by AbstractOOXMLExtractor's separate
-        // macro-extraction path. Return an empty parts list so the parent's
-        // handleEmbeddedParts loop is a no-op for this entry.
+        // .ppam (PowerPoint macro-enabled add-in) and other slideless macro containers have no
+        // main presentation part (the addin.macroEnabled.main+xml content type isn't in
+        // MAIN_STORY_PART_RELATIONS), so mainDocument is null and buildXHTML bails. The VBA
+        // project IS still present — referenced via a vbaProject relationship from the addin
+        // part — so surface the vba-bearing part(s) here; otherwise the parent's macro walk
+        // (handleMacrosEarly / handleEmbeddedParts) has nothing to traverse and the macros are
+        // silently dropped (the prior "picked up independently" comment was incorrect).
         if (mainDocument == null) {
-            return parts;
+            return getPartsWithVbaRelationship();
         }
         //TODO: consider: getPackage().getPartsByName(Pattern.compile("/ppt/embeddings/.*?
         //TODO: consider: getPackage().getPartsByName(Pattern.compile("/ppt/media/.*?
