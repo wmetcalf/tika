@@ -23,6 +23,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -228,6 +229,37 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             metadata.add(TikaCoreProperties.EMBEDDED_EXCEPTION,
                     ExceptionUtils.getStackTrace(ex));
         }
+    }
+
+    /**
+     * Find every package part that carries a VBA-macros (vbaProject) relationship. An extractor
+     * whose {@link #getMainDocumentParts()} would otherwise be empty for a macro-only container
+     * with no body part — notably a PowerPoint {@code .ppam} add-in: no presentation/slide tree,
+     * but the VBA project is still referenced from the addin main part — can return these so the
+     * macro walk has something to traverse. Without it the VBA is silently dropped.
+     */
+    protected List<PackagePart> getPartsWithVbaRelationship() {
+        List<PackagePart> out = new ArrayList<>();
+        if (opcPackage == null) {
+            return out;
+        }
+        try {
+            for (PackagePart pp : opcPackage.getParts()) {
+                if (pp == null) {
+                    continue;
+                }
+                try {
+                    if (pp.getRelationshipsByType(XSSFRelation.VBA_MACROS.getRelation()).size() > 0) {
+                        out.add(pp);
+                    }
+                } catch (Exception ignore) {
+                    // skip parts with malformed relationships
+                }
+            }
+        } catch (Exception ignore) {
+            // best-effort
+        }
+        return out;
     }
 
     // VBA macro targets already emitted by handleMacrosEarly(), so the normal
