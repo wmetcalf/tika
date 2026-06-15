@@ -703,6 +703,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     protected void emitMacroText(String name, String contentType, String text,
                                  XHTMLContentHandler xhtml)
             throws IOException, SAXException, TikaException {
+        // Honor the macro-extraction toggle (parity with the VBA path), so MACRO entries are
+        // suppressed when the caller didn't request macros.
+        if (config == null || !config.isExtractMacros()) {
+            return;
+        }
         if (text == null || text.isBlank()) {
             return;
         }

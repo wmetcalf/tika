@@ -231,6 +231,12 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
      */
     private void emitXls4MacroEntries(TikaHSSFListener listener, XHTMLContentHandler xhtml)
             throws IOException, SAXException, TikaException {
+        // MACRO entries are an extraction feature: honor the toggle, exactly as the VBA path
+        // does (skip emitting when the caller didn't ask for macros). The root has-xls4-macros
+        // flag + in-body text are detection signals and remain unconditional.
+        if (!officeParserConfig.isExtractMacros()) {
+            return;
+        }
         for (Map.Entry<String, StringBuilder> e : listener.macroSheetFormulas.entrySet()) {
             String text = e.getValue().toString();
             if (text.isBlank()) {
@@ -547,10 +553,13 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         // Record the sheet name now that currentSheetIndex is updated
                         if (currentSheetIndex >= 0 && currentSheetIndex < sheetNames.size()) {
                             currentMacroSheetName = sheetNames.get(currentSheetIndex);
-                            macroSheetNames.add(currentMacroSheetName);
                         } else {
-                            currentMacroSheetName = null;
+                            // Malformed/obfuscated workbook: the BOUNDSHEET name didn't resolve.
+                            // Surface the macro under a synthetic name rather than dropping it —
+                            // these are exactly the files that matter for malware triage.
+                            currentMacroSheetName = "Macro" + (macroSheetNames.size() + 1);
                         }
+                        macroSheetNames.add(currentMacroSheetName);
                     }
                     break;
 
