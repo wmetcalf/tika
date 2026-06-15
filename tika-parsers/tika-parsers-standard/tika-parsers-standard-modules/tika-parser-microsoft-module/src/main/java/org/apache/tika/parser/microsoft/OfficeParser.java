@@ -146,6 +146,24 @@ public class OfficeParser extends AbstractOfficeParser {
                 return;
             }
         }
+        // Orphaned VBA storage returns empty WITHOUT throwing (its OLE directory entry was
+        // corrupted to hide it from POI's tree-walking reader), so the catch above never fires.
+        // Try the lenient reader's olevba-style all-entry / orphan recovery before concluding
+        // there are no macros. LenientVBAReader.readMacros(fs) does the tree-walk first, then
+        // falls back to scanning every raw directory entry for the orphaned dir + module streams.
+        if (macros == null || macros.isEmpty()) {
+            try {
+                Map<String, String> recovered = LenientVBAReader.readMacros(fs);
+                if (recovered != null && !recovered.isEmpty()) {
+                    macros = recovered;
+                }
+            } catch (Exception ignore) {
+                // recovery is best-effort
+            }
+        }
+        if (macros == null) {
+            return;
+        }
         for (Map.Entry<String, String> e : macros.entrySet()) {
             Metadata m = Metadata.newInstance(context);
             m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
