@@ -18,9 +18,11 @@ package org.apache.tika.parser.microsoft;
 
 import java.awt.Point;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -28,6 +30,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.logging.Logger;
 
 import org.apache.poi.ddf.EscherBSERecord;
 import org.apache.poi.ddf.EscherBlipRecord;
@@ -60,7 +63,6 @@ import org.apache.poi.hssf.record.NumberRecord;
 import org.apache.poi.hssf.record.ProtectRecord;
 import org.apache.poi.hssf.record.RKRecord;
 import org.apache.poi.hssf.record.Record;
-import java.util.logging.Logger;
 import org.apache.poi.hssf.record.RowRecord;
 import org.apache.poi.hssf.record.SSTRecord;
 import org.apache.poi.hssf.record.StringRecord;
@@ -89,6 +91,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.StringUtils;
@@ -206,6 +209,7 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
         listener.processFile(root, isListenForAllRecords());
         listener.throwStoredException();
         updateMetadata(listener);
+        emitXls4MacroEntries(listener, xhtml);
 
         for (Entry entry : root) {
             if (entry.getName().startsWith("MBD") && entry instanceof DirectoryEntry) {
@@ -215,6 +219,29 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                     // ignore parse errors from embedded documents
                 }
             }
+        }
+    }
+
+    /**
+     * Emit each XLS4 (Excel 4.0 / XLM) macro sheet as a first-class MACRO embedded
+     * entry — the parity counterpart to how VBA modules surface (see
+     * {@code OfficeParser}). The macro formula text is the entry body; the sheet name
+     * is the resource name. This is additive: the root {@code Office.HAS_XLS4_MACROS}
+     * flag and the in-body XHTML text are still emitted by the listener as before.
+     */
+    private void emitXls4MacroEntries(TikaHSSFListener listener, XHTMLContentHandler xhtml)
+            throws IOException, SAXException, TikaException {
+        for (Map.Entry<String, StringBuilder> e : listener.macroSheetFormulas.entrySet()) {
+            String text = e.getValue().toString();
+            if (text.isBlank()) {
+                continue;
+            }
+            Metadata macroMetadata = Metadata.newInstance(context);
+            macroMetadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                    TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
+            handleEmbeddedResource(
+                    TikaInputStream.get(text.getBytes(StandardCharsets.UTF_8)),
+                    macroMetadata, e.getKey(), null, null, "text/x-excel-macro", xhtml, true);
         }
     }
 
@@ -339,6 +366,10 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
         private boolean hasMacroSheets = false;
         private boolean hasXls4AutoExec = false;
         private final List<String> macroSheetNames = new ArrayList<>();
+        // Per-macro-sheet rendered formula text, buffered so each macro sheet can be
+        // emitted as a first-class MACRO embedded entry (parity with VBA modules).
+        private String currentMacroSheetName = null;
+        private final Map<String, StringBuilder> macroSheetFormulas = new LinkedHashMap<>();
 
         /**
          * Construct a new listener instance outputting parsed data to
@@ -515,7 +546,10 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         hasMacroSheets = true;
                         // Record the sheet name now that currentSheetIndex is updated
                         if (currentSheetIndex >= 0 && currentSheetIndex < sheetNames.size()) {
-                            macroSheetNames.add(sheetNames.get(currentSheetIndex));
+                            currentMacroSheetName = sheetNames.get(currentSheetIndex);
+                            macroSheetNames.add(currentMacroSheetName);
+                        } else {
+                            currentMacroSheetName = null;
                         }
                     }
                     break;
@@ -526,6 +560,7 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                     }
                     currentSheet = null;
                     currentSheetIsMacroSheet = false;
+                    currentMacroSheetName = null;
                     break;
 
                 case BoundSheetRecord.sid: // Worksheet index record
@@ -552,6 +587,12 @@ public class ExcelExtractor extends AbstractPOIFSExtractor {
                         String macroFormula = renderXls4Formula(formula.getParsedExpression());
                         if (!macroFormula.isEmpty()) {
                             addTextCell(record, macroFormula);
+                            if (currentMacroSheetName != null) {
+                                macroSheetFormulas
+                                        .computeIfAbsent(currentMacroSheetName,
+                                                k -> new StringBuilder())
+                                        .append(macroFormula).append('\n');
+                            }
                         }
                     } else if (formula.hasCachedResultString()) {
                         // The String itself should be the next record

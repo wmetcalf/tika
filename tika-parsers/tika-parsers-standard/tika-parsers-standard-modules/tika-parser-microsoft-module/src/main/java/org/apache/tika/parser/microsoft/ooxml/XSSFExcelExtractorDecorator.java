@@ -374,6 +374,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 parser.parse();
                 allFormulas.putAll(parser.getFormulas());
                 allValues.putAll(parser.getValues());
+                // Parity with VBA: surface this macro sheet as a first-class MACRO
+                // entry (embeddedResourceType=MACRO) carrying its formula text.
+                emitMacroText(sheetName, "text/x-excel-macro",
+                        String.join("\n", parser.getFormulas().values()), xhtml);
             } catch (Exception e) {
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
             }

@@ -23,6 +23,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -686,6 +687,40 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             return "CorelDRAW";
         }*/
         return null;
+    }
+
+    /**
+     * Emit a macro as a first-class MACRO embedded entry — the parity counterpart
+     * to how VBA modules surface (an entry with {@code embeddedResourceType=MACRO}).
+     * The macro source/formula text becomes the entry body. Used for both VBA and
+     * XLM (Excel 4.0) macro sheets so a downstream consumer can find every macro by
+     * scanning for MACRO entries rather than special-casing XLM metadata flags.
+     *
+     * @param name        resource name (module or macro-sheet name)
+     * @param contentType media type, e.g. {@code text/x-vbasic} or {@code text/x-excel-macro}
+     * @param text        the macro text (entry body); blank text is skipped
+     */
+    protected void emitMacroText(String name, String contentType, String text,
+                                 XHTMLContentHandler xhtml)
+            throws IOException, SAXException, TikaException {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        Metadata m = Metadata.newInstance(context);
+        m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
+        if (contentType != null) {
+            m.set(Metadata.CONTENT_TYPE, contentType);
+        }
+        if (name != null && !name.isBlank()) {
+            m.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
+        }
+        if (embeddedExtractor.shouldParseEmbedded(m)) {
+            try (TikaInputStream tis =
+                         TikaInputStream.get(text.getBytes(StandardCharsets.UTF_8))) {
+                embeddedExtractor.parseEmbedded(tis, xhtml, m, context, true);
+            }
+        }
     }
 
     /**
