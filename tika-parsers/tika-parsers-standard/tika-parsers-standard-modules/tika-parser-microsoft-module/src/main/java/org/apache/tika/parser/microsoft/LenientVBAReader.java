@@ -21,6 +21,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.apache.poi.poifs.filesystem.DirectoryNode;
@@ -81,7 +82,7 @@ public final class LenientVBAReader {
     static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs) {
         Map<String, String> result = new LinkedHashMap<>();
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
-        DocumentProperty dirProp = streams.get("dir");
+        DocumentProperty dirProp = streams.get("dir"); // map is lower-cased; "dir" is already lc
         if (dirProp == null) {
             return result;
         }
@@ -93,7 +94,9 @@ public final class LenientVBAReader {
             Map<String, Integer> moduleOffsets = parseDir(decompress(dirRaw));
             Charset charset = Charset.forName("windows-1252");
             for (Map.Entry<String, Integer> e : moduleOffsets.entrySet()) {
-                DocumentProperty modProp = streams.get(e.getKey());
+                // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
+                // original-case module name as the result key.
+                DocumentProperty modProp = streams.get(e.getKey().toLowerCase(Locale.ROOT));
                 if (modProp == null) {
                     continue;
                 }
@@ -149,7 +152,10 @@ public final class LenientVBAReader {
                 if (name == null || name.isEmpty() || !(p instanceof DocumentProperty)) {
                     continue;
                 }
-                out.putIfAbsent(name, (DocumentProperty) p);
+                // Key case-insensitively: OLE stream names are case-insensitive in MS Office,
+                // and malware case-mismatches the dir-stream module name vs the real entry name
+                // to evade case-sensitive readers (olevba matches case-insensitively too).
+                out.putIfAbsent(name.toLowerCase(Locale.ROOT), (DocumentProperty) p);
             }
         } catch (Throwable t) {
             // POI internals not accessible (version drift / module restriction) — recovery off.
