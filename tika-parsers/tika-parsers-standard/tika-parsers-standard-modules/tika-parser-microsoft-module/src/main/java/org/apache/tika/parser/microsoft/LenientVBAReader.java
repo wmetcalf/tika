@@ -17,14 +17,19 @@
 package org.apache.tika.parser.microsoft;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.poi.poifs.filesystem.DirectoryNode;
 import org.apache.poi.poifs.filesystem.DocumentEntry;
 import org.apache.poi.poifs.filesystem.DocumentInputStream;
+import org.apache.poi.poifs.filesystem.POIFSDocument;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.apache.poi.poifs.property.DocumentProperty;
+import org.apache.poi.poifs.property.Property;
 
 /**
  * Lenient VBA source extractor for VBA projects that trip POI's strict reserved-field
@@ -54,7 +59,126 @@ public final class LenientVBAReader {
      * @return map of module-name → source text; empty if nothing could be extracted
      */
     public static Map<String, String> readMacros(POIFSFileSystem fs) throws IOException {
-        return readMacros(fs.getRoot());
+        Map<String, String> viaTree = readMacros(fs.getRoot());
+        if (!viaTree.isEmpty()) {
+            return viaTree;
+        }
+        // Tree-walk found nothing. The VBA storage may be ORPHANED — its OLE/CFBF directory
+        // entry deliberately unlinked from the directory tree (a malware anti-analysis trick)
+        // so POI's tree-walking readers (incl. findVBADir above) can't see it, even though
+        // Excel and olevba still run the macro by enumerating ALL raw directory entries.
+        // Recover the same way: scan every property, then reuse the dir/module decompression.
+        return readMacrosFromOrphans(fs);
+    }
+
+    /**
+     * Recover VBA source from a project whose directory-tree linkage was corrupted so the
+     * {@code VBA} storage + {@code dir}/module streams are orphaned (present in the raw
+     * property table but unreachable by tree traversal). Enumerates ALL document properties,
+     * locates the orphaned {@code dir} stream, and reuses {@link #parseDir}/{@link #decompress}
+     * to pull each module's source. Best-effort: any failure yields an empty map.
+     */
+    static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs) {
+        Map<String, String> result = new LinkedHashMap<>();
+        Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
+        DocumentProperty dirProp = streams.get("dir");
+        if (dirProp == null) {
+            return result;
+        }
+        try {
+            byte[] dirRaw = readPropBytes(fs, dirProp);
+            if (dirRaw == null) {
+                return result;
+            }
+            Map<String, Integer> moduleOffsets = parseDir(decompress(dirRaw));
+            Charset charset = Charset.forName("windows-1252");
+            for (Map.Entry<String, Integer> e : moduleOffsets.entrySet()) {
+                DocumentProperty modProp = streams.get(e.getKey());
+                if (modProp == null) {
+                    continue;
+                }
+                try {
+                    byte[] raw = readPropBytes(fs, modProp);
+                    int offset = e.getValue();
+                    if (raw == null || offset < 3 || offset >= raw.length) {
+                        continue;
+                    }
+                    String text = new String(decompress(raw, offset), charset);
+                    if (!text.isBlank()) {
+                        result.put(e.getKey(), text);
+                    }
+                } catch (Exception ignore) {
+                    // skip individual module failures
+                }
+            }
+        } catch (Exception ignore) {
+            // dir stream unreadable / not actually a VBA dir
+        }
+        return result;
+    }
+
+    /**
+     * Enumerate ALL document (stream) properties from the raw property table — including ones
+     * the directory tree doesn't link (orphans). POI exposes only the tree-reachable entries
+     * publicly, so reach the full {@code PropertyTable._properties} list via reflection; any
+     * POI-internal drift just yields an empty map and disables orphan recovery (no worse than
+     * the prior tree-only behaviour). Keyed by stream name; first occurrence wins (VBA stream
+     * names — {@code dir} and the module names — are unique within a project).
+     */
+    private static Map<String, DocumentProperty> collectAllStreamProps(POIFSFileSystem fs) {
+        Map<String, DocumentProperty> out = new LinkedHashMap<>();
+        try {
+            Field ptField = POIFSFileSystem.class.getDeclaredField("_property_table");
+            ptField.setAccessible(true);
+            Object pt = ptField.get(fs);
+            Field propsField = pt.getClass().getDeclaredField("_properties");
+            propsField.setAccessible(true);
+            Object raw = propsField.get(pt);
+            if (!(raw instanceof List<?>)) {
+                return out;
+            }
+            for (Object o : (List<?>) raw) {
+                if (!(o instanceof Property)) {
+                    continue;
+                }
+                Property p = (Property) o;
+                if (p.isDirectory()) {
+                    continue;
+                }
+                String name = p.getName();
+                if (name == null || name.isEmpty() || !(p instanceof DocumentProperty)) {
+                    continue;
+                }
+                out.putIfAbsent(name, (DocumentProperty) p);
+            }
+        } catch (Throwable t) {
+            // POI internals not accessible (version drift / module restriction) — recovery off.
+        }
+        return out;
+    }
+
+    /** Read a stream's bytes directly from its property (start block + size), bypassing the
+     *  directory tree, so an orphaned stream is still readable. */
+    private static byte[] readPropBytes(POIFSFileSystem fs, DocumentProperty prop) {
+        try {
+            int size = prop.getSize();
+            if (size < 0 || size > MAX_STREAM_BYTES) {
+                return null;
+            }
+            POIFSDocument doc = new POIFSDocument(prop, fs);
+            byte[] data = new byte[size];
+            try (DocumentInputStream dis = new DocumentInputStream(doc)) {
+                int read = 0;
+                while (read < data.length) {
+                    int n = dis.read(data, read, data.length - read);
+                    if (n < 0) break;
+                    read += n;
+                }
+            }
+            return data;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static Map<String, String> readMacros(DirectoryNode root) throws IOException {
