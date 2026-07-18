@@ -21,9 +21,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.poi.hssf.extractor.ExcelExtractor;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
@@ -55,6 +57,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.PageAnchoring;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
@@ -121,6 +124,18 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     protected static HeaderFooterHelper hfHelper = new HeaderFooterHelper();
     protected final DataFormatter formatter;
     protected final List<PackagePart> sheetParts = new ArrayList<>();
+    /**
+     * Pre-pass index of embedded-image absolute part name (e.g.
+     * {@code /xl/media/image1.png}) → set of 1-based sheet numbers
+     * referencing that image.  In XLSX, sheets reference images
+     * indirectly via drawing parts (sheet → drawing → image), so the
+     * pre-pass walks both hops.  Populated by
+     * {@link #getMainDocumentParts()} so that
+     * {@link #applyEmbeddedAnchorMetadata} can answer per-target
+     * lookups even after {@code AbstractOOXMLExtractor.handleEmbeddedParts}
+     * has deduped on second-and-later references.
+     */
+    private final Map<String, Set<Integer>> picturePages = new HashMap<>();
     protected final Map<String, String> drawingHyperlinks = new HashMap<>();
     protected Metadata metadata;
     protected ParseContext parseContext;
@@ -254,6 +269,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     WriteLimitReachedException.throwIfWriteLimitReached(e);
                     metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                             ExceptionUtils.getStackTrace(e));
+                    // Balance any <tr>/<td> left open by the partial parse so
+                    // the </tbody></table></div> emitted below land in the
+                    // right place.
+                    sheetExtractor.closeAnyPending();
+                } catch (IOException e) {
+                    // Truncated stream — same risk: partial <tr>/<td> still
+                    // open. Close them so the surrounding </tbody></table>
+                    // stays balanced, record the failure, and keep going.
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            ExceptionUtils.getStackTrace(e));
+                    sheetExtractor.closeAnyPending();
                 }
                 try {
                     getThreadedComments(container, sheetPart, xhtml);
@@ -1075,7 +1101,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     @Override
     protected List<PackagePart> getMainDocumentParts() throws TikaException {
         List<PackagePart> parts = new ArrayList<>();
+        // The sheet order in sheetParts mirrors the workbook's sheet
+        // ordering (populated in buildXHTML), so the index here is the
+        // 1-based sheet number.
+        int sheetNumber = 0;
         for (PackagePart part : sheetParts) {
+            sheetNumber++;
             // Add the sheet
             parts.add(part);
 
@@ -1086,7 +1117,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     if (rel.getTargetMode() == TargetMode.INTERNAL) {
                         PackagePartName relName =
                                 PackagingURIHelper.createPartName(rel.getTargetURI());
-                        parts.add(rel.getPackage().getPart(relName));
+                        PackagePart drawingPart = rel.getPackage().getPart(relName);
+                        parts.add(drawingPart);
+                        recordImagesOnSheet(drawingPart, sheetNumber);
                     }
                 }
                 for (PackageRelationship rel : part
@@ -1094,7 +1127,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     if (rel.getTargetMode() == TargetMode.INTERNAL) {
                         PackagePartName relName =
                                 PackagingURIHelper.createPartName(rel.getTargetURI());
-                        parts.add(rel.getPackage().getPart(relName));
+                        PackagePart vmlPart = rel.getPackage().getPart(relName);
+                        parts.add(vmlPart);
+                        recordImagesOnSheet(vmlPart, sheetNumber);
                     }
                 }
             } catch (InvalidFormatException e) {
@@ -1209,6 +1244,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         private java.util.Map<String, String> cellValueSink;
         private String captureSheetName;
         private int currentRowForCapture = -1;
+        // Track open <tr>/<td> so the outer catch can emit balanced closes
+        // when processSheet throws part-way through a row (e.g., a malformed
+        // sheet XML). Without this, the outer code would emit </tbody></table>
+        // while <tr> (or <td>) was still on the stack, producing malformed XHTML.
+        private boolean rowOpen;
+        private boolean cellOpen;
 
         protected SheetTextAsHTML(OfficeParserConfig config, XHTMLContentHandler xhtml) {
             this.includeHeadersFooters = config.isIncludeHeadersAndFooters();
@@ -1234,9 +1275,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 if (includeMissingRows && rowNum > (lastSeenRow + 1)) {
                     for (int rn = lastSeenRow + 1; rn < rowNum; rn++) {
                         xhtml.startElement("tr");
+                        rowOpen = true;
                         xhtml.startElement("td");
+                        cellOpen = true;
                         xhtml.endElement("td");
+                        cellOpen = false;
                         xhtml.endElement("tr");
+                        rowOpen = false;
                     }
                 }
 
@@ -1245,6 +1290,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
                 // Start the new row
                 xhtml.startElement("tr");
+                rowOpen = true;
                 lastSeenCol = -1;
                 if (colorAwareEnabled) {
                     currentColorRow = new java.util.ArrayList<>();
@@ -1259,6 +1305,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         public void endRow(int rowNum) {
             try {
                 xhtml.endElement("tr");
+                rowOpen = false;
             } catch (SAXException e) {
                 throw new RuntimeSAXException(e);
             }
@@ -1273,6 +1320,22 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         @Override
         public void cellStyle(String fontColorHex) {
             this.pendingFontColor = fontColorHex;
+        }
+
+        /**
+         * Closes any pending {@code <tr>} or {@code <td>} that was opened
+         * before a {@link SAXException} interrupted sheet processing. Safe to
+         * call when nothing is open.
+         */
+        void closeAnyPending() throws SAXException {
+            if (cellOpen) {
+                xhtml.endElement("td");
+                cellOpen = false;
+            }
+            if (rowOpen) {
+                xhtml.endElement("tr");
+                rowOpen = false;
+            }
         }
 
         public void cell(String cellRef, String formattedValue,
@@ -1298,12 +1361,15 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         (cellRef == null) ? lastSeenCol + 1 : (new CellReference(cellRef)).getCol();
                 for (int cn = lastSeenCol + 1; cn < colNum; cn++) {
                     xhtml.startElement("td");
+                    cellOpen = true;
                     xhtml.endElement("td");
+                    cellOpen = false;
                 }
                 lastSeenCol = colNum;
 
                 // Start this cell
                 xhtml.startElement("td");
+                cellOpen = true;
 
                 // Main cell contents
                 if (formattedValue != null) {
@@ -1326,6 +1392,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 }
 
                 xhtml.endElement("td");
+                cellOpen = false;
             } catch (SAXException e) {
                 throw new RuntimeSAXException(e);
             }
@@ -1556,5 +1623,59 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 sb.append(ch, start, length);
             }
         }
+    }
+
+    /**
+     * Records every image relationship of {@code drawingPart} against the
+     * given 1-based {@code sheetNumber}.  Called once per drawing during
+     * the pre-pass in {@link #getMainDocumentParts()}.  When the same
+     * image is referenced from drawings on multiple sheets, all sheet
+     * numbers end up in the set so {@link Office#SHEET_NUMBERS} ends up
+     * multi-valued.  Keyed by absolute part name so the lookup matches
+     * what {@link AbstractOOXMLExtractor#applyEmbeddedAnchorMetadata}
+     * sees &mdash; relative target URIs across drawing parts collide
+     * and are not stable lookup keys.
+     */
+    private void recordImagesOnSheet(PackagePart drawingPart, int sheetNumber) {
+        if (drawingPart == null) {
+            return;
+        }
+        PackageRelationshipCollection prc;
+        try {
+            prc = drawingPart.getRelationshipsByType(PackageRelationshipTypes.IMAGE_PART);
+        } catch (InvalidFormatException e) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    ExceptionUtils.getStackTrace(e));
+            return;
+        }
+        if (prc == null) {
+            return;
+        }
+        for (PackageRelationship rel : prc) {
+            if (rel.getTargetMode() != TargetMode.INTERNAL) {
+                continue;
+            }
+            PackagePart imagePart;
+            try {
+                imagePart = drawingPart.getRelatedPart(rel);
+            } catch (InvalidFormatException | IllegalArgumentException e) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        ExceptionUtils.getStackTrace(e));
+                continue;
+            }
+            if (imagePart == null) {
+                continue;
+            }
+            picturePages
+                    .computeIfAbsent(imagePart.getPartName().getName(),
+                            k -> new LinkedHashSet<>())
+                    .add(sheetNumber);
+        }
+    }
+
+    @Override
+    protected void applyEmbeddedAnchorMetadata(PackagePart part, Metadata metadata) {
+        PageAnchoring.applySheetMetadata(metadata,
+                picturePages.get(part.getPartName().getName()));
     }
 }

@@ -255,7 +255,9 @@ Create `/tmp/tika-app-test/my-config.json`:
       "pdf-parser": {
         "extractActions": true,
         "extractInlineImages": true,
-        "ocrStrategy": "NO_OCR"
+        "ocr": {
+          "strategy": "NO_OCR"
+        }
       }
     },
     {
@@ -291,10 +293,14 @@ Create `/tmp/tika-app-test/my-config.json`:
       "emitterId": "fse"
     }
   },
+  "parse-context": {
+    "timeout-limits": {
+      "progressTimeoutMillis": 60000
+    }
+  },
   "pipes": {
     "parseMode": "RMETA",
-    "numClients": 2,
-    "timeoutMillis": 60000
+    "numClients": 2
   },
   "plugin-roots": "/tmp/tika-app-test/plugins"
 }

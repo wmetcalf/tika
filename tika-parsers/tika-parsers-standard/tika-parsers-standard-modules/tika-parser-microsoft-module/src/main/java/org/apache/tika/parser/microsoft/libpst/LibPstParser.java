@@ -30,10 +30,10 @@ import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.Initializable;
 import org.apache.tika.config.JsonConfig;
-import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
@@ -101,7 +101,8 @@ public class LibPstParser implements Parser, Initializable {
                 throw new TikaException("Timeout exception: " + fileProcessResult.getProcessTimeMillis());
             }
             if (fileProcessResult.getExitValue() != 0) {
-                LOGGER.warn("libpst bad exit value {}: {}", fileProcessResult.getExitValue(), fileProcessResult.getStderr());
+                LOGGER.warn("libpst bad exit value {}", fileProcessResult.getExitValue());
+                LOGGER.debug("libpst stderr: {}", fileProcessResult.getStderr());
                 throw new TikaException("Bad exit value: " + fileProcessResult.getExitValue());
             }
             xhtml.endDocument();

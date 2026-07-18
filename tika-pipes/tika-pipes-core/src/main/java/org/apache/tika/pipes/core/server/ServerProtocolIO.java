@@ -20,10 +20,12 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
-import org.apache.tika.pipes.api.FetchEmitTuple;
 import org.apache.tika.pipes.api.ParseMode;
 import org.apache.tika.pipes.api.PipesResult;
 import org.apache.tika.pipes.core.extractor.UnpackConfig;
@@ -44,6 +46,8 @@ import org.apache.tika.utils.StringUtils;
  * catching exceptions and responding according to their own lifecycle policy.
  */
 public class ServerProtocolIO {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ServerProtocolIO.class);
 
     private final DataInputStream input;
     private final DataOutputStream output;
@@ -108,26 +112,28 @@ public class ServerProtocolIO {
     }
 
     /**
-     * Validates that a FetchEmitTuple's configuration is consistent.
-     * <p>
-     * If the tuple has an UnpackConfig with an emitter but ParseMode is not UNPACK,
-     * that's a configuration error.
+     * Validates a (resolved) ParseContext's configuration. Must be called <em>after</em>
+     * {@link org.apache.tika.serialization.ParseContextUtils#resolveAll}, since configs are lazy
+     * and only populated once resolved.
      */
-    public static void validateFetchEmitTuple(FetchEmitTuple fetchEmitTuple)
+    public static void validateParseContext(ParseContext context)
             throws TikaConfigException {
-        ParseContext requestContext = fetchEmitTuple.getParseContext();
-        if (requestContext == null) {
+        if (context == null) {
             return;
         }
-        UnpackConfig unpackConfig = requestContext.get(UnpackConfig.class);
-        ParseMode parseMode = requestContext.get(ParseMode.class);
+        UnpackConfig unpackConfig = context.get(UnpackConfig.class);
+        ParseMode parseMode = context.get(ParseMode.class);
 
+        // Warn (don't throw) when UnpackConfig has an emitter but ParseMode is not UNPACK.
+        // The global parse-context may include UnpackConfig as a default for UNPACK pipe runs,
+        // but the /rmeta and /tika endpoints explicitly set RMETA mode and PipesWorker correctly
+        // ignores UnpackConfig for non-UNPACK modes. Throwing here would crash the child process.
         if (unpackConfig != null && !StringUtils.isBlank(unpackConfig.getEmitter())
-                && parseMode != ParseMode.UNPACK) {
-            throw new TikaConfigException(
-                    "FetchEmitTuple has UnpackConfig with emitter '" + unpackConfig.getEmitter() +
-                            "' but ParseMode is " + parseMode + ". " +
-                            "To extract embedded bytes, set ParseMode.UNPACK in the ParseContext.");
+                && parseMode != null && parseMode != ParseMode.UNPACK) {
+            LOG.warn("FetchEmitTuple has UnpackConfig with emitter '{}' but ParseMode is {}. "
+                    + "UnpackConfig will be ignored. "
+                    + "To extract embedded bytes, set ParseMode.UNPACK in the ParseContext.",
+                    unpackConfig.getEmitter(), parseMode);
         }
     }
 }

@@ -105,6 +105,11 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-antrun-plugin</artifactId>
             <version>${maven.antrun.version}</version>
+            <!-- This dist-staging step is aggregator-only: it copies release artifacts and
+                 CHANGES.txt relative to the reactor root's ${basedir}. tika-docs has <parent>tika</parent>,
+                 so without inherited=false it also runs here with ${basedir}=docs/, where CHANGES.txt
+                 and the artifacts don't exist, and the staging <fail> guards trip. Run only on root. -->
+            <inherited>false</inherited>
             <executions>
               <execution>
                 <goals>
@@ -118,16 +123,65 @@
                       <fileset dir="${basedir}">
                         <include name="CHANGES.txt" />
                         <include name="target/*-src.zip*" />
-                        <include name="tika-parsers/tika-parsers-extended/tika-parser-scientific-package/target/tika-parser-scientific-package-${project.version}.jar*" />
-                        <include name="tika-parsers/tika-parsers-extended/tika-parser-sqlite3-package/target/tika-parser-sqlite3-package-${project.version}.jar*" />
-                        <include name="tika-parsers/tika-parsers-ml/tika-parser-nlp-package/target/tika-parser-nlp-package-${project.version}.jar*" />
-                        <include name="tika-app/target/tika-app-${project.version}.jar*" />
-                        <include name="tika-server/tika-server-standard/target/tika-server-standard-${project.version}.jar*" />
-                        <include name="tika-server/tika-server-standard/target/tika-server-standard-${project.version}-bin.tgz*" />
-                        <include name="tika-server/tika-server-standard/target/tika-server-standard-${project.version}-bin.zip*" />
-                        <include name="tika-eval/tika-eval-app/target/tika-eval-app-${project.version}.jar*" />
+                        <include name="tika-parsers/tika-parsers-extended/tika-parser-scientific-package/target/tika-parser-scientific-package-${project.version}-shaded.jar*" />
+                        <include name="tika-parsers/tika-parsers-extended/tika-parser-sqlite3-package/target/tika-parser-sqlite3-package-${project.version}-shaded.jar*" />
+                        <include name="tika-parsers/tika-parsers-ml/tika-parser-nlp-package/target/tika-parser-nlp-package-${project.version}-shaded.jar*" />
+                        <include name="tika-app/target/tika-app-${project.version}.zip*" />
+                        <include name="tika-server/tika-server-standard/target/tika-server-standard-${project.version}.zip*" />
+                        <include name="tika-eval/tika-eval-app/target/tika-eval-app-${project.version}.zip*" />
+                        <include name="tika-pipes/tika-pipes-plugins/*/target/tika-pipes-*-${project.version}.zip*" />
                       </fileset>
                     </copy>
+                    <!--
+                      TIKA-4733: fail the release build if any expected dist
+                      artifact did not land in target/${project.version}/.
+                      Ant <copy> silently succeeds when an <include> matches
+                      zero files, so a renamed, re-versioned, or forgotten
+                      artifact (or a module whose assembly/shade stopped
+                      producing output) would otherwise yield an incomplete
+                      release candidate with no error. Each <fail> below names
+                      the missing artifact so the gap is obvious. Keep this list
+                      in sync with the <copy> include list above.
+                    -->
+                    <fail message="Release staging missing: CHANGES.txt">
+                      <condition><not><available file="${basedir}/target/${project.version}/CHANGES.txt" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-${project.version}-src.zip">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-${project.version}-src.zip" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-parser-scientific-package-${project.version}-shaded.jar">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-parser-scientific-package-${project.version}-shaded.jar" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-parser-sqlite3-package-${project.version}-shaded.jar">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-parser-sqlite3-package-${project.version}-shaded.jar" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-parser-nlp-package-${project.version}-shaded.jar">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-parser-nlp-package-${project.version}-shaded.jar" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-app-${project.version}.zip">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-app-${project.version}.zip" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-server-standard-${project.version}.zip">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-server-standard-${project.version}.zip" /></not></condition>
+                    </fail>
+                    <fail message="Release staging missing: tika-eval-app-${project.version}.zip">
+                      <condition><not><available file="${basedir}/target/${project.version}/tika-eval-app-${project.version}.zip" /></not></condition>
+                    </fail>
+                    <!--
+                      pipes plugin zips are staged via a glob, so assert the
+                      staged count equals the number of plugin modules that have
+                      an assembly descriptor. This catches a single plugin whose
+                      zip silently dropped out without hard-coding the plugin set.
+                    -->
+                    <resourcecount property="staged.plugin.zip.count">
+                      <fileset dir="${basedir}/target/${project.version}" includes="tika-pipes-*-${project.version}.zip" />
+                    </resourcecount>
+                    <resourcecount property="source.plugin.count">
+                      <fileset dir="${basedir}/tika-pipes/tika-pipes-plugins" includes="*/src/main/assembly/assembly.xml" />
+                    </resourcecount>
+                    <fail message="Release staging has ${staged.plugin.zip.count} tika-pipes plugin zip(s) but there are ${source.plugin.count} plugin module(s) with an assembly descriptor; a plugin zip was dropped from dist staging.">
+                      <condition><not><equals arg1="${staged.plugin.zip.count}" arg2="${source.plugin.count}" /></not></condition>
+                    </fail>
                     <checksum algorithm="SHA-512" fileext=".sha512">
                       <fileset dir="${basedir}/target/${project.version}">
                         <include name="*.tgz" />
@@ -136,6 +190,55 @@
                       </fileset>
                     </checksum>
                     <checksum file="${basedir}/target/${project.version}/tika-${project.version}-src.zip" algorithm="SHA-512" property="checksum" />
+                    <!--
+                      TIKA-4733 follow-up: GPG-sign each staged dist artifact.
+                      The bin zips and parser -shaded.jars are <attach>false</attach>,
+                      so maven-gpg-plugin (which signs only ATTACHED artifacts) does not
+                      produce their .asc; it signs the Maven-Central jars/poms and the
+                      source-release zip only. In 3.x the server bin zip was an attached
+                      "-bin" artifact, so it was signed (and pushed to Central) for free;
+                      4.x detached it from Central (TIKA-4733), which also detached it from
+                      signing. Without this step the Apache dist artifacts ship unsigned.
+                      Uses the gpg-agent the build already primed when signing the attached
+                      artifacts; failonerror aborts the release if a signature can't be made.
+                      tika-<v>-src.zip is excluded; it already has its .asc from the build.
+                      (If you sign with a non-default key, set -Dgpg.keyname and add a
+                      matching "-u" arg here, mirroring maven-gpg-plugin.)
+                    -->
+                    <apply executable="gpg" failonerror="true" parallel="false">
+                      <arg value="--batch" />
+                      <arg value="--yes" />
+                      <arg value="--armor" />
+                      <arg value="--detach-sign" />
+                      <fileset dir="${basedir}/target/${project.version}">
+                        <include name="*.zip" />
+                        <include name="*.tgz" />
+                        <include name="*.jar" />
+                        <exclude name="*-src.zip" />
+                        <exclude name="*.asc" />
+                        <exclude name="*.sha512" />
+                      </fileset>
+                    </apply>
+                    <!--
+                      Guard: every staged dist artifact must now carry a detached .asc.
+                      Catches the exact failure this step exists to prevent (a silently
+                      unsigned artifact), in the same fail-loud spirit as the guards above.
+                    -->
+                    <resourcecount property="dist.artifact.count">
+                      <fileset dir="${basedir}/target/${project.version}">
+                        <include name="*.zip" />
+                        <include name="*.tgz" />
+                        <include name="*.jar" />
+                        <exclude name="*.asc" />
+                        <exclude name="*.sha512" />
+                      </fileset>
+                    </resourcecount>
+                    <resourcecount property="dist.asc.count">
+                      <fileset dir="${basedir}/target/${project.version}" includes="*.asc" />
+                    </resourcecount>
+                    <fail message="Release staging has ${dist.artifact.count} dist artifact(s) but ${dist.asc.count} .asc signature(s); a dist artifact was left unsigned.">
+                      <condition><not><equals arg1="${dist.artifact.count}" arg2="${dist.asc.count}" /></not></condition>
+                    </fail>
 <!-- this spacing is less than ideal, but if you indent here, the vote.txt file will have the leading spaces -->
                     <echo file="${basedir}/target/vote.txt">
 From: ${username}@apache.org
@@ -209,6 +312,9 @@ least three +1 Tika PMC votes are cast.
 
             <!-- Antora UI supplemental files -->
             <inputExclude>docs/supplemental-ui/**</inputExclude>
+
+            <!-- UAT test fixtures (binary/markup test documents carry no license header) -->
+            <inputExclude>release-tools/uat/test-files/**</inputExclude>
 
             <!-- subprojects already checked, added for RAT 0.17, see also RAT-97 -->
             <inputExclude>tika-*/**</inputExclude>

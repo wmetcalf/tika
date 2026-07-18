@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -30,6 +31,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 
 public class AsyncCliParserTest {
@@ -44,6 +46,8 @@ public class AsyncCliParserTest {
         assertEquals(1, simpleAsyncConfig.getNumClients());
         assertEquals(30000L, simpleAsyncConfig.getTimeoutMs());
         assertEquals("-Xmx1g", simpleAsyncConfig.getXmx());
+        // TIKA-4663: default content handler is markdown
+        assertEquals(BasicContentHandlerFactory.HANDLER_TYPE.MARKDOWN, simpleAsyncConfig.getHandlerType());
 
         simpleAsyncConfig = TikaAsyncCLI.parseCommandLine(new String[]{"-o", "output", "-i", "input"});
         assertEquals("input", simpleAsyncConfig.getInputDir());
@@ -52,6 +56,7 @@ public class AsyncCliParserTest {
         assertNull(simpleAsyncConfig.getNumClients());
         assertNull(simpleAsyncConfig.getTimeoutMs());
         assertNull(simpleAsyncConfig.getXmx());
+        assertEquals(BasicContentHandlerFactory.HANDLER_TYPE.MARKDOWN, simpleAsyncConfig.getHandlerType());
 
         simpleAsyncConfig = TikaAsyncCLI.parseCommandLine(new String[]{"-output", "output", "-input", "input"});
         assertEquals("input", simpleAsyncConfig.getInputDir());
@@ -89,6 +94,29 @@ public class AsyncCliParserTest {
         assertEquals(30000L, simpleAsyncConfig.getTimeoutMs());
         assertEquals("1g", simpleAsyncConfig.getXmx());
         assertEquals(BasicContentHandlerFactory.HANDLER_TYPE.XML, simpleAsyncConfig.getHandlerType());
+    }
+
+    @Test
+    public void testOnExists() throws Exception {
+        // TIKA-4736: --on-exists is normalized to upper case and carried on the config.
+        SimpleAsyncConfig replace = TikaAsyncCLI.parseCommandLine(
+                new String[]{"-i", "input", "-o", "output", "--on-exists", "replace"});
+        assertEquals("REPLACE", replace.getOnExists());
+
+        SimpleAsyncConfig skip = TikaAsyncCLI.parseCommandLine(
+                new String[]{"-i", "input", "-o", "output", "--on-exists", "skip"});
+        assertEquals("SKIP", skip.getOnExists());
+
+        // Default (unset) leaves the emitter/config default (EXCEPTION) in place.
+        SimpleAsyncConfig dflt = TikaAsyncCLI.parseCommandLine(
+                new String[]{"-i", "input", "-o", "output"});
+        assertNull(dflt.getOnExists());
+    }
+
+    @Test
+    public void testOnExistsInvalid() {
+        assertThrows(TikaConfigException.class, () -> TikaAsyncCLI.parseCommandLine(
+                new String[]{"-i", "input", "-o", "output", "--on-exists", "bogus"}));
     }
 
     @Test

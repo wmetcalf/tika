@@ -60,8 +60,10 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.Tika;
 import org.apache.tika.config.ServiceLoader;
+import org.apache.tika.config.TikaExtras;
 import org.apache.tika.config.loader.TikaJsonConfig;
 import org.apache.tika.config.loader.TikaLoader;
+import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.pipes.core.EmitStrategy;
 import org.apache.tika.pipes.core.EmitStrategyConfig;
@@ -120,6 +122,11 @@ public class TikaServerProcess {
     }
 
     public static void main(String[] args) throws Exception {
+        // Install any tika.extras.dir jars before loading components, so the
+        // server's in-process SPI discovery sees them too (forked PipesServer
+        // children get them via the classpath in PerClientServerManager /
+        // SharedServerManager writeArgFile).
+        TikaExtras.install();
         LOG.info("Starting {} server", Tika.getString());
         try {
             Options options = getOptions();
@@ -185,7 +192,8 @@ public class TikaServerProcess {
             LOG.info("Pipes-based parsing enabled for /tika and /rmeta endpoints");
         }
 
-        TikaResource.init(tikaLoader, serverStatus, pipesParsingHelper);
+        TikaResource.init(tikaLoader, serverStatus, pipesParsingHelper,
+                tikaServerConfig.isAllowPerRequestConfig());
         JAXRSServerFactoryBean sf = new JAXRSServerFactoryBean();
 
         List<ResourceProvider> resourceProviders = new ArrayList<>();
@@ -301,7 +309,7 @@ public class TikaServerProcess {
         writers.add(new JSONObjWriter());
 
         // Add ConfigEndpointSecurityFilter to gate /config endpoints
-        writers.add(new ConfigEndpointSecurityFilter(tikaServerConfig.isEnableUnsecureFeatures()));
+        writers.add(new ConfigEndpointSecurityFilter(tikaServerConfig.isAllowPerRequestConfig()));
 
         TikaLoggingFilter logFilter = null;
         if (!StringUtils.isBlank(tikaServerConfig.getLogLevel())) {
@@ -329,7 +337,8 @@ public class TikaServerProcess {
 
     }
 
-    private static List<ResourceProvider> loadCoreProviders(TikaServerConfig tikaServerConfig, ServerStatus serverStatus) throws TikaException, IOException, SAXException {
+    // package-private so the pipes/async start-guard can be exercised directly in tests
+    static List<ResourceProvider> loadCoreProviders(TikaServerConfig tikaServerConfig, ServerStatus serverStatus) throws TikaException, IOException, SAXException {
         List<ResourceProvider> resourceProviders = new ArrayList<>();
         boolean addAsyncResource = false;
         boolean addPipesResource = false;
@@ -347,11 +356,13 @@ public class TikaServerProcess {
             resourceProviders.add(new SingletonResourceProvider(new TikaDetectors()));
             resourceProviders.add(new SingletonResourceProvider(new TikaParsers()));
             resourceProviders.add(new SingletonResourceProvider(new TikaVersion()));
-            if (tikaServerConfig.isEnableUnsecureFeatures()) {
+            if (tikaServerConfig.isAllowPipes()) {
                 addAsyncResource = true;
                 addPipesResource = true;
-                resourceProviders.add(new SingletonResourceProvider(new TikaServerStatus(serverStatus)));
             }
+            // status is a plain opt-in endpoint: it is only served when explicitly
+            // listed under "endpoints" (handled in the else branch below), not in
+            // this default set.
         } else {
             for (String endPoint : tikaServerConfig.getEndpoints()) {
                 if ("meta".equals(endPoint)) {
@@ -384,6 +395,15 @@ public class TikaServerProcess {
                     resourceProviders.add(new SingletonResourceProvider(new TikaServerStatus(serverStatus)));
                 }
             }
+        }
+
+        // /pipes and /async fork processes and read/write via fetchers/emitters: never expose them
+        // unless the operator set allowPipes, even when explicitly listed. (The zero-endpoints
+        // branch only enables them when allowPipes is set, so this won't false-fire.)
+        if ((addPipesResource || addAsyncResource) && !tikaServerConfig.isAllowPipes()) {
+            throw new TikaConfigException("The pipes/async endpoints require 'allowPipes' to be true " +
+                    "in the server config: they fork processes and read/write via configured fetchers " +
+                    "and emitters, so they are disabled by default even when explicitly listed as endpoints.");
         }
 
         if (addAsyncResource) {
@@ -509,7 +529,7 @@ public class TikaServerProcess {
 
         // Create and return the helper
         PipesParsingHelper helper = new PipesParsingHelper(pipesParser, pipesConfig,
-                inputTempDirectory, unpackTempDirectory);
+                inputTempDirectory, unpackTempDirectory, tikaServerConfig.isReturnStackTrace());
 
         // Register shutdown hook to clean up PipesParser and temp directories
         final Path inputDirToClean = inputTempDirectory;

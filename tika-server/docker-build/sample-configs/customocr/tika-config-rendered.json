@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Render each PDF page as an image and run Tesseract on it.",
+    "ocr.strategy options: no_ocr, ocr_only, ocr_and_text_extraction, auto."
+  ],
+  "parsers": [
+    { "tesseract-ocr-parser": {} },
+    {
+      "pdf-parser": {
+        "ocr": {
+          "strategy": "ocr_only",
+          "imageType": "rgb",
+          "dpi": 100
+        }
+      }
+    }
+  ]
+}

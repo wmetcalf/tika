@@ -36,11 +36,11 @@ import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.Initializable;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.ParseContextConfig;
-import org.apache.tika.config.TikaComponent;
 import org.apache.tika.config.TikaProgressTracker;
 import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.exception.TikaConfigException;
@@ -64,7 +64,7 @@ import org.apache.tika.utils.StringUtils;
  * <p>
  * This parser registers for the same {@code image/ocr-*} media types
  * used by the PDF renderer's OCR pipeline, so it slots into the
- * existing {@code ocrStrategy} mechanism. When configured, each
+ * existing {@code ocr.strategy} mechanism. When configured, each
  * rendered page image is sent to the embedding endpoint and the
  * vector is stored as a serialized {@link Chunk} with a
  * {@link PaginatedLocator} (when page number metadata is available).
@@ -177,7 +177,7 @@ public class OpenAIImageEmbeddingParser implements Parser, Initializable, Closea
         Chunk chunk = new Chunk(null, locators);
         chunk.setVector(vector);
 
-        ChunkSerializer.mergeInto(metadata, List.of(chunk));
+        ChunkSerializer.mergeInto(metadata, List.of(chunk), config.getOutputField());
 
         XHTMLContentHandler xhtml = new XHTMLContentHandler(
                 handler, metadata, parseContext);
@@ -369,6 +369,14 @@ public class OpenAIImageEmbeddingParser implements Parser, Initializable, Closea
 
     public void setMaxFileSizeToEmbed(long maxFileSizeToEmbed) {
         defaultConfig.setMaxFileSizeToEmbed(maxFileSizeToEmbed);
+    }
+
+    public String getOutputField() {
+        return defaultConfig.getOutputField();
+    }
+
+    public void setOutputField(String outputField) {
+        defaultConfig.setOutputField(outputField);
     }
 
     // ---- Azure / endpoint config getters/setters ----------------------------

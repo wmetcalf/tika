@@ -48,11 +48,11 @@ import org.apache.cxf.jaxrs.lifecycle.SingletonResourceProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
-import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.serialization.config.JsonConfigHelper;
 import org.apache.tika.server.core.CXFTestBase;
 import org.apache.tika.server.core.TikaServerParseExceptionMapper;
 import org.apache.tika.server.core.resource.UnpackerResource;
@@ -71,6 +71,11 @@ public class UnpackerResourceWithConfigTest extends CXFTestBase {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private Path unpackTempDir;
+
+    @Override
+    protected boolean isAllowPerRequestConfig() {
+        return true; // exercises per-request config injection
+    }
 
     @Override
     protected void setUpResources(JAXRSServerFactoryBean sf) {
@@ -127,8 +132,10 @@ public class UnpackerResourceWithConfigTest extends CXFTestBase {
                 {
                   "pdf-parser": {
                     "imageStrategy": "RENDER_PAGES_AT_PAGE_END",
-                    "ocrImageType": "RGB",
-                    "ocrImageFormat": "TIFF"
+                    "ocr": {
+                      "imageType": "RGB",
+                      "imageFormat": "TIFF"
+                    }
                   }
                 }
                 """;
@@ -198,8 +205,10 @@ public class UnpackerResourceWithConfigTest extends CXFTestBase {
                 {
                   "pdf-parser": {
                     "imageStrategy": "RENDER_PAGES_AT_PAGE_END",
-                    "ocrImageType": "GRAY",
-                    "ocrImageFormat": "JPEG"
+                    "ocr": {
+                      "imageType": "GRAY",
+                      "imageFormat": "JPEG"
+                    }
                   }
                 }
                 """;

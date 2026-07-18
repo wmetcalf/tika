@@ -38,11 +38,11 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.Initializable;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.ParseContextConfig;
-import org.apache.tika.config.TikaComponent;
 import org.apache.tika.config.TikaProgressTracker;
 import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.exception.TikaConfigException;
@@ -58,6 +58,18 @@ import org.apache.tika.utils.StringUtils;
 /**
  * OCR parser using <a href="https://github.com/nguyenq/tess4j">Tess4J</a>,
  * which provides a Java JNA wrapper around the native Tesseract library.
+ *
+ * <p><b>Advanced users only.</b> This parser loads the Tesseract native library
+ * directly into the JVM via JNA (Java Native Access). Using it safely requires
+ * locating and linking the correct platform-specific native libraries and
+ * accepting that a fault in the native code can crash the entire JVM. If you are
+ * not comfortable with native-library integration via JNA, please prefer the
+ * standard {@code TesseractOCRParser}, which performs the same OCR by running the
+ * {@code tesseract} command-line program in a separate process: it needs no
+ * native linking and a crash in Tesseract can never take down your application,
+ * so it is the recommended choice for almost everyone. Reach for
+ * {@code Tess4JParser} only when you have a measured need for in-process OCR
+ * throughput <em>and</em> the expertise to operate native bindings safely.
  * <p>
  * Unlike the command-line {@code TesseractOCRParser}, this parser calls Tesseract
  * in-process via JNA, eliminating the per-file process-spawn overhead.

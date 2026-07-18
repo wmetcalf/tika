@@ -30,7 +30,7 @@
   <name>Apache Tika Tess4J OCR parser module</name>
 
   <properties>
-    <tess4j.version>5.18.0</tess4j.version>
+    <tess4j.version>5.19.0</tess4j.version>
   </properties>
 
   <dependencies>
@@ -49,6 +49,12 @@
       <artifactId>tika-core</artifactId>
       <version>${project.version}</version>
       <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>${project.groupId}</groupId>
+      <artifactId>tika-serialization</artifactId>
+      <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

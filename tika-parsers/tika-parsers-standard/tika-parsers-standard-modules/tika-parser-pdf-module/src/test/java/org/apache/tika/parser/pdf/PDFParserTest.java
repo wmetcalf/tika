@@ -47,7 +47,6 @@ import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.AccessPermissionException;
 import org.apache.tika.exception.EncryptedDocumentException;
-import org.apache.tika.exception.ZeroByteFileException;
 import org.apache.tika.extractor.DocumentSelector;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Font;
@@ -62,7 +61,9 @@ import org.apache.tika.metadata.XMPMM;
 import org.apache.tika.metadata.XMPPDF;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.AutoDetectParserConfig;
 import org.apache.tika.parser.CompositeParser;
+import org.apache.tika.parser.MetadataOnlyParse;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.PasswordProvider;
@@ -620,15 +621,25 @@ public class PDFParserTest extends TikaTest {
     //TIKA-1226
     @Test
     public void testSignatureInAcroForm() throws Exception {
-        //The current test doc does not contain any content in the signature area.
-        //This just tests that a RuntimeException is not thrown.
-        //TODO: find a better test file for this issue.
         XMLResult result = getXML("testPDF_acroform3.pdf");
         Metadata m = result.metadata;
         assertEquals("true", m.get(PDF.HAS_XMP));
         assertEquals("true", m.get(PDF.HAS_ACROFORM_FIELDS));
         assertEquals("false", m.get(PDF.HAS_XFA));
+        assertEquals("true", m.get(PDF.HAS_SIGNATURE_FIELDS));
+        assertNull(m.get(TikaCoreProperties.HAS_SIGNATURE));
         assertContains("<li>aTextField: TIKA-1226</li>", result.xml);
+    }
+
+    //TIKA-4756
+    @Test
+    public void testUnsignedSignatureField() throws Exception {
+        // PDF has an AcroForm with /SigFlags 1 and a /Sig type field, but no actual signature value.
+        // Should detect the signature field but not report hasSignature.
+        Metadata m = getXML("testPDF_sigflags.pdf").metadata;
+        assertEquals("true", m.get(PDF.HAS_ACROFORM_FIELDS));
+        assertEquals("true", m.get(PDF.HAS_SIGNATURE_FIELDS));
+        assertNull(m.get(TikaCoreProperties.HAS_SIGNATURE));
     }
 
     @Test
@@ -1037,6 +1048,31 @@ public class PDFParserTest extends TikaTest {
         assertNotContained("Mount Rushmore National Memorial", xml);
     }
 
+    @Test //TIKA-4744
+    public void testMalformedXFADivBalanced() throws Exception {
+        // A PDF whose XFA stream is malformed used to leave <div class=
+        // "xfa_content"> open: XFAExtractor.extract opened the div first and
+        // then threw XMLStreamException from reader.next(), the caller logged
+        // and fell through to AcroForm fallback (which emitted its own divs
+        // nested inside the unclosed xfa_content), and endDocument failed
+        // with </body> not matching topmost <div>.
+        // getXML wraps the handler in StrictXHTMLValidator, so any imbalance
+        // would throw before the assertions.
+        XMLResult r = getXML("testPDF_malformedXFA.pdf");
+        // Caller recorded the XMLStreamException as a warning rather than a
+        // fatal -- confirm that didn't change.
+        String[] warnings = r.metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        boolean xfaWarningPresent = false;
+        for (String w : warnings) {
+            if (w.contains("XFAExtractor")) {
+                xfaWarningPresent = true;
+                break;
+            }
+        }
+        assertTrue(xfaWarningPresent, "expected an XFAExtractor warning");
+    }
+
     @Test
     public void testXMPMM() throws Exception {
 
@@ -1134,8 +1170,8 @@ public class PDFParserTest extends TikaTest {
         //this tests that a new PDFParserConfig completely resets
         //behavior
         config = new PDFParserConfig();
-        config.setOcrDPI(10000);
-        config.setOcrStrategy(OcrConfig.Strategy.NO_OCR);
+        config.getOcr().setDpi(10000);
+        config.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
         pc.set(PDFParserConfig.class, config);
         text = getText("testPDFTwoTextBoxes.pdf", p, new Metadata(), pc);
         text = text.replaceAll("\\s+", " ");
@@ -1147,7 +1183,7 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testDefaultOcrDPI() {
         PDFParserConfig config = new PDFParserConfig();
-        assertEquals(300, config.getOcrDPI());
+        assertEquals(300, config.getOcr().getDpi());
     }
 
     // Moved to tika-parsers-standard-package PDFParserTest.testInitializationOfNonPrimitivesViaJsonConfig
@@ -1187,9 +1223,9 @@ public class PDFParserTest extends TikaTest {
                 pdfParserConfig.getAccessCheckMode());
         assertEquals(true, pdfParserConfig.isExtractInlineImages());
         assertEquals(false, pdfParserConfig.isExtractUniqueInlineImagesOnly());
-        assertEquals(314, pdfParserConfig.getOcrDPI());
-        assertEquals(2.1f, pdfParserConfig.getOcrImageQuality(), .01f);
-        assertEquals(OcrConfig.ImageFormat.JPEG, pdfParserConfig.getOcrImageFormat());
+        assertEquals(314, pdfParserConfig.getOcr().getDpi());
+        assertEquals(2.1f, pdfParserConfig.getOcr().getImageQuality(), .01f);
+        assertEquals(OcrConfig.ImageFormat.JPEG, pdfParserConfig.getOcr().getImageFormat());
         assertEquals(524288000, pdfParserConfig.getMaxMainMemoryBytes());
         assertEquals(false, pdfParserConfig.isCatchIntermediateIOExceptions());
     }
@@ -1339,7 +1375,7 @@ public class PDFParserTest extends TikaTest {
         config.setExtractInlineImageMetadataOnly(true);
         context.set(PDFParserConfig.class, config);
         List<Metadata> metadataList = getRecursiveMetadata("testOCR.pdf", context);
-        assertNull(context.get(ZeroByteFileException.IgnoreZeroByteFileException.class));
+        assertNull(context.get(MetadataOnlyParse.class));
         assertEquals(2, metadataList.size());
         assertEquals("image/png", metadataList.get(1).get(Metadata.CONTENT_TYPE));
         assertEquals("/image-0.png",
@@ -1347,6 +1383,37 @@ public class PDFParserTest extends TikaTest {
         assertEquals(261, (int) metadataList.get(1).getInt(Metadata.IMAGE_LENGTH));
         assertEquals(934, (int) metadataList.get(1).getInt(Metadata.IMAGE_WIDTH));
         assertEquals("image-0.png", metadataList.get(1).get(TikaCoreProperties.RESOURCE_NAME_KEY));
+    }
+
+    @Test
+    public void testExtractInlineImageMetadataThrowOnZeroBytesFalse() throws Exception {
+        //TIKA-4749: in metadata-only mode the inline image is registered via a
+        //placeholder pseudo-parse. With throwOnZeroBytes=false that placeholder used
+        //to be handed to a real parser (image/OCR), recording a spurious embedded
+        //exception. The MetadataOnlyParse marker must make it skip the parse instead.
+        ParseContext context = new ParseContext();
+        PDFParserConfig config = new PDFParserConfig();
+        config.setExtractInlineImageMetadataOnly(true);
+        context.set(PDFParserConfig.class, config);
+
+        AutoDetectParser p = new AutoDetectParser();
+        AutoDetectParserConfig adpc = new AutoDetectParserConfig();
+        adpc.setThrowOnZeroBytes(false);
+        p.setAutoDetectParserConfig(adpc);
+
+        List<Metadata> metadataList =
+                getRecursiveMetadata("testOCR.pdf", p, new Metadata(), context, false);
+        assertNull(context.get(MetadataOnlyParse.class));
+        assertEquals(2, metadataList.size());
+        Metadata image = metadataList.get(1);
+        assertEquals("image/png", image.get(Metadata.CONTENT_TYPE));
+        assertEquals(261, (int) image.getInt(Metadata.IMAGE_LENGTH));
+        assertEquals(934, (int) image.getInt(Metadata.IMAGE_WIDTH));
+        //the placeholder must not be dispatched to any content parser. Without the
+        //fix it is (EmptyParser here; ImageParser+TesseractOCRParser when tesseract
+        //is installed, which is what records the spurious embedded exception).
+        assertEquals(0, image.getValues(TikaCoreProperties.TIKA_PARSED_BY).length);
+        assertNull(image.get(TikaCoreProperties.EMBEDDED_EXCEPTION));
     }
 
     /**
@@ -1509,10 +1576,56 @@ public class PDFParserTest extends TikaTest {
         assertEquals("xmp-xmpmm-documentid", m.get(XMPMM.DOCUMENTID));
         assertEquals("13", m.get(PagedText.N_PAGES));
 
+        // keywords/subject from XMP and doc-info merge into SUBJECT; presence is the contract, order is not.
         String[] expectedSubjectVals = new String[]{
                 "xmp-pdf-keywords", "xmp-dc-subject", "pdf-keywords", "pdf-subject"
         };
-        assertArrayEquals(expectedSubjectVals, m.getValues(TikaCoreProperties.SUBJECT));
+        String[] actualSubjectVals = m.getValues(TikaCoreProperties.SUBJECT);
+        assertEquals(expectedSubjectVals.length, actualSubjectVals.length);
+        assertEquals(new HashSet<>(Arrays.asList(expectedSubjectVals)),
+                new HashSet<>(Arrays.asList(actualSubjectVals)));
+    }
+
+    @Test
+    public void testMaxPages() throws Exception {
+        PDFParser parser = new PDFParser();
+        PDFParserConfig config = new PDFParserConfig();
+        config.setMaxPages(3);
+        ParseContext context = new ParseContext();
+        context.set(PDFParserConfig.class, config);
+
+        // testJournalParser.pdf has 10 pages; limiting to 3 must process only the first 3 pages
+        String truncated = getText("testJournalParser.pdf", parser, new Metadata(), context);
+        String full = getText("testJournalParser.pdf", parser);
+        assertTrue(full.length() > truncated.length(),
+                "Full parse should yield more content than a 3-page-limited parse");
+        assertTrue(truncated.contains("Scalability of Controlling"),
+                "Content from page 1 should be present in truncated output");
+        assertFalse(truncated.contains("CONCLUSION"),
+                "Content from page 10 should not be present in truncated output");
+    }
+
+    @Test
+    public void testMaxPagesInvalidValue() {
+        PDFParserConfig config = new PDFParserConfig();
+        assertThrows(IllegalArgumentException.class, () -> config.setMaxPages(0));
+        assertThrows(IllegalArgumentException.class, () -> config.setMaxPages(-2));
+        config.setMaxPages(-1);
+        config.setMaxPages(1);
+    }
+
+    // TIKA-4728: handleDestinationOrAction pre-populated class/type on the action div,
+    // then processJavaScriptAction appended a second class/type for PDActionJavaScript
+    // actions, producing a div with duplicate attributes that SAX parsers reject.
+    // TikaTest.getXML wraps with StrictXHTMLValidator, so a regression makes
+    // this test throw at the offending SAX event.
+    @Test
+    public void testExtractActionsXHTMLWellFormed() throws Exception {
+        PDFParserConfig config = new PDFParserConfig();
+        config.setExtractActions(true);
+        ParseContext context = new ParseContext();
+        context.set(PDFParserConfig.class, config);
+        getXML("testPDF_jsActionOnPage.pdf", context);
     }
 
     /**

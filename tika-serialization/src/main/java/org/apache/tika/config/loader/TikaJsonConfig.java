@@ -69,16 +69,16 @@ import org.apache.tika.exception.TikaConfigException;
  * {
  *   // Core Tika components (validated by TikaLoader)
  *   "parsers": [
- *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocrStrategy": "AUTO", ... } },
+ *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocr": {"strategy": "AUTO"}, ... } },
  *     { "html-parser": { ... } },
  *     { "default-parser": { "exclude": ["some-parser"] } }
- *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocrStrategy": "AUTO" } },
+ *     { "pdf-parser": { "_mime-include": ["application/pdf"], "ocr": {"strategy": "AUTO"} } },
  *     "html-parser",                    // String shorthand for no-config components
  *     { "default-parser": { "exclude": ["ocr-parser"] } }
  *   ],
  *   "detectors": [
  *     "poifs-container-detector",       // String shorthand
- *     { "default-detector": { "spoolTypes": ["application/zip", "application/pdf"] } }
+ *     { "default-detector": { "exclude": ["html-detector"] } }
  *   ],
  *
  *   // Pipes components (validated by validateKeys())
@@ -117,6 +117,7 @@ public class TikaJsonConfig {
             "auto-detect-parser",
             "parse-context",
             "server",
+            "grpc",
 
             // Pipes/plugin keys
             "fetchers",

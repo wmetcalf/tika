@@ -75,6 +75,14 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
         if (fileSystemEmitterConfig.onExists() == null) {
             throw new TikaConfigException("Must configure 'onExists' as 'skip', 'exception' or 'replace'");
         }
+        if (StringUtils.isBlank(fileSystemEmitterConfig.basePath())
+                && !fileSystemEmitterConfig.allowAbsolutePaths()) {
+            throw new TikaConfigException(
+                    "'basePath' must be set, or 'allowAbsolutePaths' must be true. "
+                            + "Without basePath, clients can write to any file this process "
+                            + "has access to. Set 'allowAbsolutePaths: true' to explicitly "
+                            + "allow this behavior and accept the security risks.");
+        }
     }
 
     @Override
@@ -122,6 +130,8 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
             try (Writer writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE_NEW)) { //CREATE_NEW forces an IOException if the file already exists
                 JsonMetadataList.toJson(metadataList, writer, config.prettyPrint());
+            } catch (FileAlreadyExistsException e) {
+                throw alreadyExistsException(output);
             }
         } else {
             try (Writer writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
@@ -157,7 +167,11 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
         if (config.onExists() == FileSystemEmitterConfig.ON_EXISTS.REPLACE) {
             Files.copy(inputStream, output, StandardCopyOption.REPLACE_EXISTING);
         } else if (config.onExists() == FileSystemEmitterConfig.ON_EXISTS.EXCEPTION) {
-            Files.copy(inputStream, output);
+            try {
+                Files.copy(inputStream, output);
+            } catch (FileAlreadyExistsException e) {
+                throw alreadyExistsException(output);
+            }
         } else if (config.onExists() == FileSystemEmitterConfig.ON_EXISTS.SKIP) {
             if (!Files.isRegularFile(output)) {
                 try {
@@ -167,6 +181,16 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
                 }
             }
         }
+    }
+
+    /**
+     * Actionable error for the {@code onExists=EXCEPTION} case; the bare
+     * {@link FileAlreadyExistsException} reports only the path (TIKA-4736).
+     */
+    private static IOException alreadyExistsException(Path output) {
+        return new IOException("Output already exists (onExists=EXCEPTION, not overwritten): "
+                + output.toAbsolutePath()
+                + ". Use an empty output dir, delete the file, or set onExists to REPLACE or SKIP.");
     }
 
     private FileSystemEmitterConfig getConfig(ParseContext parseContext) throws TikaConfigException, IOException {
@@ -183,9 +207,10 @@ public class FileSystemEmitter extends AbstractStreamEmitter {
                 // Load runtime config (excludes basePath for security)
                 FileSystemEmitterRuntimeConfig runtimeConfig = FileSystemEmitterRuntimeConfig.load(configJson.json());
 
-                // Merge runtime config into default config while preserving basePath
+                // Merge runtime config into default config while preserving basePath and the
+                // init-time allowAbsolutePaths -- neither may be changed at runtime.
                 config = new FileSystemEmitterConfig(fileSystemEmitterConfig.basePath(), runtimeConfig.getFileExtension(), runtimeConfig.getOnExists(),
-                        runtimeConfig.isPrettyPrint());
+                        runtimeConfig.isPrettyPrint(), fileSystemEmitterConfig.allowAbsolutePaths());
                 checkConfig(config);
             }
         }

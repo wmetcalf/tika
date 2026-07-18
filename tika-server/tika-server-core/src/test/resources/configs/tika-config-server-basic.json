@@ -1,13 +1,8 @@
 {
-  "fetchers": {
-    "file-system-fetcher": {
-      "file-system-fetcher": {
-        "allowAbsolutePaths": true
-      }
-    }
-  },
   "server": {
     "port": 9999,
+    "allowPipes": true,
+    "allowPerRequestConfig": true,
     "endpoints": [
       "rmeta",
       "status",

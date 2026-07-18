@@ -51,6 +51,7 @@ import org.apache.tika.pipes.core.emitter.EmitterManager;
 import org.apache.tika.pipes.core.extractor.UnpackConfig;
 import org.apache.tika.pipes.core.serialization.JsonFetchEmitTupleList;
 import org.apache.tika.plugins.TikaPluginManager;
+import org.apache.tika.serialization.ParseContextUtils;
 
 @Path("/async")
 public class AsyncResource {
@@ -113,6 +114,8 @@ public class AsyncResource {
                         .getEmitterId());
             }
             ParseContext parseContext = t.getParseContext();
+            // Configs are lazy; resolve before reading UnpackConfig for the bytes-emitter check.
+            ParseContextUtils.resolveAll(parseContext, getClass().getClassLoader());
             UnpackConfig unpackConfig = parseContext.get(UnpackConfig.class);
             if (unpackConfig != null && !StringUtils.isAllBlank(unpackConfig.getEmitter())) {
                 String bytesEmitter = unpackConfig.getEmitter();
@@ -127,14 +130,14 @@ public class AsyncResource {
         try {
             boolean offered = asyncProcessor.offer(request.getTuples(), maxQueuePauseMs);
             if (offered) {
-                LOG.info("accepted {} tuples, capacity={}", request
+                LOG.debug("accepted {} tuples, capacity={}", request
                         .getTuples()
                         .size(), asyncProcessor.getCapacity());
                 return ok(request
                         .getTuples()
                         .size());
             } else {
-                LOG.info("throttling {} tuples, capacity={}", request
+                LOG.debug("throttling {} tuples, capacity={}", request
                         .getTuples()
                         .size(), asyncProcessor.getCapacity());
                 return throttle(request
@@ -142,7 +145,7 @@ public class AsyncResource {
                         .size());
             }
         } catch (OfferLargerThanQueueSize e) {
-            LOG.info("throttling {} tuples, capacity={}", request
+            LOG.debug("throttling {} tuples, capacity={}", request
                     .getTuples()
                     .size(), asyncProcessor.getCapacity());
             return throttle(request

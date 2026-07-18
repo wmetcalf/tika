@@ -54,13 +54,14 @@ import org.apache.pdfbox.pdmodel.fixup.PDDocumentFixup;
 import org.apache.pdfbox.pdmodel.fixup.processor.AcroFormDefaultsProcessor;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
+import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.JsonConfig;
 import org.apache.tika.config.ParseContextConfig;
-import org.apache.tika.config.TikaComponent;
 import org.apache.tika.exception.AccessPermissionException;
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
@@ -81,7 +82,6 @@ import org.apache.tika.parser.pdf.updates.IncrementalUpdateRecord;
 import org.apache.tika.parser.pdf.updates.IsIncrementalUpdate;
 import org.apache.tika.parser.pdf.updates.StartXRefOffset;
 import org.apache.tika.parser.pdf.updates.StartXRefScanner;
-import org.apache.tika.parser.pdf.xmpschemas.XMPSchemaIllustrator;
 import org.apache.tika.renderer.PageRangeRequest;
 import org.apache.tika.renderer.RenderResult;
 import org.apache.tika.renderer.RenderResults;
@@ -234,7 +234,7 @@ public class PDFParser implements Parser, RenderingParser {
             if (handler != null) {
                 if (shouldHandleXFAOnly(hasXFA, localConfig)) {
                     handleXFAOnly(pdfDocument, handler, metadata, context);
-                } else if (localConfig.getOcrStrategy()
+                } else if (localConfig.getOcr().getStrategy()
                         .equals(OcrConfig.Strategy.OCR_ONLY)) {
                     OCR2XHTML.process(pdfDocument, handler, context, metadata,
                             localConfig, renderer);
@@ -402,7 +402,7 @@ public class PDFParser implements Parser, RenderingParser {
         if (privateDict == null) {
             return;
         }
-        metadata.set(Metadata.CONTENT_TYPE, XMPSchemaIllustrator.ILLUSTRATOR);
+        metadata.set(Metadata.CONTENT_TYPE, MediaType.application("illustrator").toString());
         //TODO -- consider parsing the metadata
         //COSStream aiMetaData = privateDict.getCOSStream(COSName.AI_META_DATA);
     }
@@ -427,13 +427,19 @@ public class PDFParser implements Parser, RenderingParser {
     }
 
     private void extractSignatures(PDDocument pdfDocument, Metadata metadata) {
+        List<PDSignatureField> sigFields = pdfDocument.getSignatureFields();
+        if (sigFields.isEmpty()) {
+            return;
+        }
+        metadata.set(PDF.HAS_SIGNATURE_FIELDS, true);
+
         boolean hasSignature = false;
-        for (PDSignature signature : pdfDocument.getSignatureDictionaries()) {
+        for (PDSignatureField sigField : sigFields) {
+            PDSignature signature = sigField.getSignature();
             if (signature == null) {
                 continue;
             }
             PDMetadataExtractor.addNotNull(signature.getName(), metadata, TikaCoreProperties.SIGNATURE_NAME);
-
             Calendar date = signature.getSignDate();
             if (date != null) {
                 metadata.add(TikaCoreProperties.SIGNATURE_DATE, date);
@@ -443,11 +449,10 @@ public class PDFParser implements Parser, RenderingParser {
             PDMetadataExtractor.addNotNull(signature.getLocation(), metadata, TikaCoreProperties.SIGNATURE_LOCATION);
             PDMetadataExtractor.addNotNull(signature.getReason(), metadata, TikaCoreProperties.SIGNATURE_REASON);
             hasSignature = true;
-
         }
 
         if (hasSignature) {
-            metadata.set(TikaCoreProperties.HAS_SIGNATURE, hasSignature);
+            metadata.set(TikaCoreProperties.HAS_SIGNATURE, true);
         }
     }
 
@@ -461,7 +466,7 @@ public class PDFParser implements Parser, RenderingParser {
             return true;
         }
 
-        if (localConfig.getOcrStrategy() == OcrConfig.Strategy.NO_OCR) {
+        if (localConfig.getOcr().getStrategy() == OcrConfig.Strategy.NO_OCR) {
             return false;
         }
         //TODO: test that this is not AUTO with no OCR parser installed
@@ -780,9 +785,9 @@ public class PDFParser implements Parser, RenderingParser {
         }
         //set a default renderer if nothing was defined
         PDFBoxRenderer pdfBoxRenderer = new PDFBoxRenderer();
-        pdfBoxRenderer.setDPI(config.getOcrDPI());
-        pdfBoxRenderer.setImageType(config.getOcrImageType().getPdfBoxImageType());
-        pdfBoxRenderer.setImageFormatName(config.getOcrImageFormat().getFormatName());
+        pdfBoxRenderer.setDPI(config.getOcr().getDpi());
+        pdfBoxRenderer.setImageType(config.getOcr().getImageType().getPdfBoxImageType());
+        pdfBoxRenderer.setImageFormatName(config.getOcr().getImageFormat().getFormatName());
         this.renderer = pdfBoxRenderer;
     }
 

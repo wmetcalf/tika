@@ -25,6 +25,31 @@ See the xref:roadmap.adoc[Roadmap] for version timelines and support schedules.
 
 * Java 17 or later (upgraded from Java 11 in 3.x)
 
+== `tika-app` distribution: jar -> zip
+
+In 3.x, `tika-app-<version>.jar` was a self-contained fat jar — you could drop it anywhere and run `java -jar tika-app.jar`. In 4.x it is a thin launcher that depends on the parsers, the Tika Pipes processor, and other modules living in an adjacent `lib/` directory. Running the bare jar by itself will fail with `NoClassDefFoundError`.
+
+Download `tika-app-<version>.zip` and run from inside the unzipped directory so `lib/` (and `plugins/`) sit alongside the jar:
+
+[source,bash]
+----
+unzip tika-app-<version>.zip
+cd tika-app-<version>
+java -jar tika-app-<version>.jar [option...] [file...]
+----
+
+If you have build scripts or container images that drop in just the jar, update them to unpack the zip and run from inside it.
+
+== Default content handler: XHTML/XML -> Markdown
+
+In 3.x the default content handler produced XHTML/XML. In 4.x the default is **Markdown** everywhere:
+
+* `tika-app` outputs Markdown by default (was XHTML). Pass `-x`/`--xml`, `-h`/`--html`, or `-t`/`--text` to choose another format.
+* `tika-server` — the `/tika` and `/rmeta` endpoints return Markdown content by default (was XHTML/XML). Use an explicit handler path (`/tika/xml`, `/rmeta/xml`, ...) or the `X-Tika-Handler` header to choose another format.
+* The async/pipes CLI emits Markdown by default (was plain text). Use `--handler x` (etc.) to choose another format.
+
+If you parse the extracted content programmatically and expect XHTML/XML, request it explicitly as shown above (TIKA-4663).
+
 == Configuration: XML to JSON
 
 Tika 4.x uses JSON configuration files instead of XML. The legacy `tika-config.xml` format
@@ -36,8 +61,11 @@ Tika provides a conversion tool in `tika-app` to help migrate your XML configura
 
 [source,bash]
 ----
-java -jar tika-app.jar --convert-config-xml-to-json=tika-config.xml,tika-config.json
+java -jar tika-app.jar --convert-config-xml-to-json=tika-config.xml > tika-config.json
 ----
+
+The converted JSON is written to standard output, so redirect it to the file of your choice
+(as shown above). No separate `--config` argument is needed.
 
 The converter currently supports:
 
@@ -45,6 +73,10 @@ The converter currently supports:
 * **Parameter types** - bool, int, long, double, float, string, list, and map
 * **Special handling** - TesseractOCR's `otherTesseractSettings` list is automatically
   converted to the `otherTesseractConfig` map format
+
+IMPORTANT: The converter is a starting point, not a complete translation. It handles only
+the `parsers` section, and some 3.x options were genuinely removed or restructured in 4.x
+with no mechanical equivalent. Review the generated JSON and confirm it loads before relying on it.
 
 === Example Conversion
 
@@ -76,16 +108,18 @@ The converter currently supports:
         "sortByPosition": true,
         "maxMainMemoryBytes": 1000000
       }
+    },
+    {
+      "default-parser": {}
     }
   ]
 }
 ----
 
-NOTE: When you configure a parser with specific settings in JSON, the loader automatically
-excludes it from SPI loading. The parser (e.g., `pdf-parser`) is not even instantiated in
-`default-parser` if there's a definition for it in the tika-config.json. Explicit `_exclude`
-directives are only needed when you want to disable a parser entirely without providing
-custom configuration.
+NOTE: A `parsers` list loads *only* the parsers it names. The `default-parser` entry above
+restores all the other parsers (it is the JSON equivalent of the 3.x `DefaultParser`).
+Configuring a parser automatically excludes its default copy, so there is no duplication;
+explicit `exclude` directives are only needed to disable a parser without replacing it.
 
 === Key Differences
 
@@ -103,7 +137,7 @@ custom configuration.
 
 |Exclusions
 |`<parser-exclude class="..."/>`
-|`"_exclude": ["component-name"]` (only needed to disable a parser entirely)
+|`"exclude": ["component-name"]` (only needed to disable a parser entirely)
 |===
 
 === Limitations

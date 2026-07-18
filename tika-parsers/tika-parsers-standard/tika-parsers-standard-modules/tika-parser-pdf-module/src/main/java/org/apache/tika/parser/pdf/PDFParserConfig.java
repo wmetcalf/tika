@@ -147,6 +147,8 @@ public class PDFParserConfig implements Serializable {
 
     int maxIncrementalUpdates = 10;
 
+    private int maxPages = -1;
+
     private boolean throwOnEncryptedPayload = false;
 
     /**
@@ -520,122 +522,9 @@ public class PDFParserConfig implements Serializable {
         this.ocr = ocr;
     }
 
-    /**
-     * @return strategy to use for OCR
-     */
-    public OcrConfig.Strategy getOcrStrategy() {
-        return ocr.getStrategy();
-    }
-
-    /**
-     * @return ocr auto strategy to use when ocr_strategy = Auto
-     */
-    public OcrConfig.StrategyAuto getOcrStrategyAuto() {
-        return ocr.getStrategyAuto();
-    }
-
-    /**
-     * Which strategy to use for OCR
-     */
-    public void setOcrStrategy(OcrConfig.Strategy ocrStrategy) {
-        ocr.setStrategy(ocrStrategy);
-    }
-
-    /**
-     * Sets the OCR strategy auto configuration.
-     */
-    public void setOcrStrategyAuto(OcrConfig.StrategyAuto ocrStrategyAuto) {
-        ocr.setStrategyAuto(ocrStrategyAuto);
-    }
-
-    public OcrConfig.RenderingStrategy getOcrRenderingStrategy() {
-        return ocr.getRenderingStrategy();
-    }
-
-    /**
-     * When rendering the page for OCR, do you want to include the rendering of the electronic text,
-     * ALL, or do you only want to run OCR on the images and vector graphics (NO_TEXT)?
-     */
-    public void setOcrRenderingStrategy(OcrConfig.RenderingStrategy ocrRenderingStrategy) {
-        ocr.setRenderingStrategy(ocrRenderingStrategy);
-    }
-
-    public OcrConfig.ImageFormat getOcrImageFormat() {
-        return ocr.getImageFormat();
-    }
-
-    public void setOcrImageFormat(OcrConfig.ImageFormat ocrImageFormat) {
-        ocr.setImageFormat(ocrImageFormat);
-    }
-
-    public OcrConfig.ImageType getOcrImageType() {
-        return ocr.getImageType();
-    }
-
-    public void setOcrImageType(OcrConfig.ImageType ocrImageType) {
-        ocr.setImageType(ocrImageType);
-    }
-
-    /**
-     * @return dots per inch used to render the page image for OCR
-     */
-    public int getOcrDPI() {
-        return ocr.getDpi();
-    }
-
-    /**
-     * Dots per inch used to render the page image for OCR.
-     */
-    public void setOcrDPI(int ocrDPI) {
-        ocr.setDpi(ocrDPI);
-    }
-
-    /**
-     * @return image quality used to render the page image for OCR
-     */
-    public float getOcrImageQuality() {
-        return ocr.getImageQuality();
-    }
-
-    /**
-     * Image quality used to render the page image for OCR.
-     */
-    public void setOcrImageQuality(float ocrImageQuality) {
-        ocr.setImageQuality(ocrImageQuality);
-    }
-
-    /**
-     * @return maximum total pixels (width &times; height) allowed for a
-     * rendered page image before OCR is skipped
-     */
-    public long getOcrMaxImagePixels() {
-        return ocr.getMaxImagePixels();
-    }
-
-    /**
-     * Set the maximum total pixels (width &times; height) for a rendered
-     * page image. Pages exceeding this limit are skipped for OCR.
-     * Default is 100,000,000 (100 megapixels).
-     */
-    public void setOcrMaxImagePixels(long ocrMaxImagePixels) {
-        ocr.setMaxImagePixels(ocrMaxImagePixels);
-    }
-
-    /**
-     * @return maximum number of pages to OCR per document, or {@code -1}
-     * for no limit
-     */
-    public int getOcrMaxPagesToOcr() {
-        return ocr.getMaxPagesToOcr();
-    }
-
-    /**
-     * Set the maximum number of pages to OCR per document.
-     * Default is {@code -1} (no limit).
-     */
-    public void setOcrMaxPagesToOcr(int ocrMaxPagesToOcr) {
-        ocr.setMaxPagesToOcr(ocrMaxPagesToOcr);
-    }
+    // OCR settings are configured through the nested OcrConfig (getOcr()/setOcr()).
+    // The flat ocr* convenience accessors (getOcrStrategy/setOcrDPI/...) were removed in
+    // 4.x so that "ocr" is the single JSON spelling; use getOcr().setStrategy(...) etc.
 
     /**
      * @return whether or not to extract PDActions
@@ -768,6 +657,28 @@ public class PDFParserConfig implements Serializable {
      */
     public void setMaxIncrementalUpdates(int maxIncrementalUpdates) {
         this.maxIncrementalUpdates = maxIncrementalUpdates;
+    }
+
+    /**
+     * @return maximum number of pages to process, or -1 for no limit
+     */
+    public int getMaxPages() {
+        return maxPages;
+    }
+
+    /**
+     * Set the maximum number of pages to process per document.
+     * Use -1 (the default) for no limit.
+     *
+     * @param maxPages must be -1 or &gt;= 1
+     * @throws IllegalArgumentException if the value is 0 or less than -1
+     */
+    public void setMaxPages(int maxPages) {
+        if (maxPages != -1 && maxPages < 1) {
+            throw new IllegalArgumentException(
+                    "maxPages must be -1 (no limit) or >= 1, got: " + maxPages);
+        }
+        this.maxPages = maxPages;
     }
 
     public void setThrowOnEncryptedPayload(boolean throwOnEncryptedPayload) {

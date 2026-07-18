@@ -17,7 +17,6 @@
 package org.apache.tika.config.loader;
 
 import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -35,69 +34,12 @@ import org.apache.tika.parser.DefaultParser;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.ParserDecorator;
 import org.apache.tika.serialization.ComponentNameResolver;
-import org.apache.tika.utils.ServiceLoaderUtils;
 
 /**
  * Utility class for instantiating Tika components from JSON configuration.
  * Provides common logic for all component loaders to avoid code duplication.
  */
 public class ComponentInstantiator {
-
-    /**
-     * Instantiates a component with JsonConfig constructor or falls back to zero-arg constructor.
-     * <p>
-     * Instantiation strategy:
-     * <ol>
-     *   <li>Try constructor with JsonConfig parameter</li>
-     *   <li>If not found and JSON config has actual configuration, throw error</li>
-     *   <li>Otherwise fall back to zero-arg constructor via ServiceLoader</li>
-     * </ol>
-     *
-     * @param componentClass the component class to instantiate
-     * @param jsonConfig the JSON configuration for the component
-     * @param classLoader the class loader to use
-     * @param componentTypeName the component type name (e.g., "Detector", "Parser") for error messages
-     * @param objectMapper the Jackson ObjectMapper for parsing JSON
-     * @param <T> the component type
-     * @return the instantiated component
-     * @throws TikaConfigException if instantiation fails
-     */
-    @SuppressWarnings("unchecked")
-    public static <T> T instantiate(Class<?> componentClass,
-                                     JsonConfig jsonConfig,
-                                     ClassLoader classLoader,
-                                     String componentTypeName,
-                                     ObjectMapper objectMapper)
-            throws TikaConfigException {
-        try {
-            T component;
-
-            // Try constructor with JsonConfig parameter
-            try {
-                Constructor<?> constructor = componentClass.getConstructor(JsonConfig.class);
-                component = (T) constructor.newInstance(jsonConfig);
-            } catch (NoSuchMethodException e) {
-                // Check if JSON config has actual configuration
-                if (hasConfiguration(jsonConfig, objectMapper)) {
-                    throw new TikaConfigException(
-                            componentTypeName + " '" + componentClass.getName() + "' has configuration in JSON, " +
-                            "but does not have a constructor that accepts JsonConfig. " +
-                            "Please add a constructor: public " + componentClass.getSimpleName() + "(JsonConfig jsonConfig)");
-                }
-                // Fall back to zero-arg constructor if no configuration provided
-                component = (T) ServiceLoaderUtils.newInstance(componentClass,
-                        new org.apache.tika.config.ServiceLoader(classLoader));
-            }
-
-            // Call initialize() on Initializable components
-            initializeIfNeeded(component);
-
-            return component;
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
-            throw new TikaConfigException("Failed to instantiate " + componentTypeName + ": " +
-                    componentClass.getName(), e);
-        }
-    }
 
     /**
      * Instantiates a component from a JsonNode configuration.
@@ -127,7 +69,9 @@ public class ComponentInstantiator {
                 Constructor<?> constructor = componentClass.getConstructor(JsonConfig.class);
                 String jsonString = configNode != null ? configNode.toString() : "{}";
                 JsonConfig jsonConfig = () -> jsonString;
-                return (T) constructor.newInstance(jsonConfig);
+                T component = (T) constructor.newInstance(jsonConfig);
+                initializeIfNeeded(component);
+                return component;
             } catch (NoSuchMethodException e) {
                 // No JsonConfig constructor, fall back to other methods
             }
@@ -303,9 +247,17 @@ public class ComponentInstantiator {
     }
 
     /**
-     * Strips decorator fields (_mime-include, _mime-exclude) from config node.
-     * These fields are handled by TikaLoader for wrapping, not by the component itself.
-     * Note: _exclude is NOT stripped as it's used by DefaultParser for SPI exclusions.
+     * Strips decorator fields ({@code _mime-include}, {@code _mime-exclude}) from a real
+     * component's config node. These directives are applied by {@link
+     * org.apache.tika.config.loader.TikaLoader} as a wrapper around the component, not
+     * consumed by the component itself, so they must be stripped before deserialization.
+     * <p>
+     * Convention: directives that share a JSON object with a real component's own
+     * config properties carry a leading underscore to avoid namespace collisions
+     * (e.g., a parser could legitimately have a config key named {@code mime-include}).
+     * Directives on marker entries that have no component-config namespace —
+     * {@code "exclude"} on {@code default-parser}/{@code default-detector} — need no
+     * prefix; those are read directly by {@link AbstractSpiComponentLoader}.
      */
     private static JsonNode stripDecoratorFields(JsonNode configNode) {
         if (configNode == null || !configNode.isObject()) {
@@ -315,35 +267,6 @@ public class ComponentInstantiator {
         cleaned.remove("_mime-include");
         cleaned.remove("_mime-exclude");
         return cleaned;
-    }
-
-    /**
-     * Checks if the JsonConfig contains actual configuration (non-empty JSON object with fields).
-     *
-     * @param jsonConfig the JSON configuration
-     * @param objectMapper the Jackson ObjectMapper for parsing JSON
-     * @return true if there's meaningful configuration, false if empty or just "{}"
-     */
-    public static boolean hasConfiguration(JsonConfig jsonConfig, ObjectMapper objectMapper) {
-        if (jsonConfig == null) {
-            return false;
-        }
-        String json = jsonConfig.json();
-        if (json == null || json.trim().isEmpty()) {
-            return false;
-        }
-        // Parse to check if it's an empty object or has actual fields
-        try {
-            JsonNode node = objectMapper.readTree(json);
-            // Check if it's an object and has at least one field
-            if (node.isObject() && node.size() > 0) {
-                return true;
-            }
-            return false;
-        } catch (Exception e) {
-            // If we can't parse it, assume it has configuration to be safe
-            return true;
-        }
     }
 
     /**

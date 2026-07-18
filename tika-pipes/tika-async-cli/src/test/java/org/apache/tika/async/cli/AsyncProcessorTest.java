@@ -18,6 +18,7 @@ package org.apache.tika.async.cli;
 
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,7 +39,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.tika.TikaTest;
-import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
@@ -53,6 +53,7 @@ import org.apache.tika.pipes.core.extractor.UnpackConfig;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.ContentHandlerFactory;
 import org.apache.tika.serialization.JsonMetadataList;
+import org.apache.tika.serialization.config.JsonConfigHelper;
 
 /**
  * This should be in tika-core, but we want to avoid a dependency mess with tika-serialization
@@ -157,6 +158,86 @@ public class AsyncProcessorTest extends TikaTest {
         assertContains("some_embedded_content", metadataList
                 .get(1)
                 .get(TikaCoreProperties.TIKA_CONTENT));
+    }
+
+    @Test
+    public void testContentOnlyFromConfigDefault() throws Exception {
+        // TIKA-4735: parseMode set only as a PipesConfig default (not on the request
+        // context) must still be honored at emit time - the file should be raw content,
+        // not a JSON metadata wrapper.
+        Path contentOnlyConfig = configDir.resolve("tika-config-content-only.json");
+        Map<String, Object> replacements = new HashMap<>();
+        replacements.put("FETCHER_BASE_PATH", inputDir);
+        replacements.put("JSON_EMITTER_BASE_PATH", jsonOutputDir);
+        replacements.put("BYTES_EMITTER_BASE_PATH", bytesOutputDir);
+        replacements.put("PLUGIN_ROOTS", Paths.get("target/plugins"));
+        JsonConfigHelper.writeConfigFromResource("/configs/config-content-only-default.json",
+                AsyncProcessorTest.class, replacements, contentOnlyConfig);
+
+        AsyncProcessor processor = AsyncProcessor.load(contentOnlyConfig);
+
+        // Deliberately do NOT set ParseMode on the request context - it must come from
+        // the config default.
+        FetchEmitTuple t = new FetchEmitTuple("co-1", new FetchKey("fsf", "mock.xml"),
+                new EmitKey("fse-json", "emit-co"), new Metadata(), new ParseContext(),
+                FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT);
+        processor.offer(t, 1000);
+        for (int i = 0; i < 10; i++) {
+            processor.offer(PipesIterator.COMPLETED_SEMAPHORE, 1000);
+        }
+        while (processor.checkActive()) {
+            Thread.sleep(100);
+        }
+        processor.close();
+
+        String emitted = Files.readString(jsonOutputDir.resolve("emit-co"));
+        // Raw concatenated content (markdown may escape underscores), not a JSON wrapper.
+        assertContains("content", emitted);
+        assertContains("some", emitted);
+        assertFalse(emitted.contains(TikaCoreProperties.TIKA_CONTENT.getName()),
+                "content-only output must not contain the JSON content key: " + emitted);
+        String trimmed = emitted.trim();
+        assertFalse(trimmed.startsWith("[") || trimmed.startsWith("{"),
+                "content-only output must be raw content, not a JSON wrapper: " + emitted);
+    }
+
+    @Test
+    public void testContentOnlyDynamicEmitStrategy() throws Exception {
+        // TIKA-4735: With emitStrategy=DYNAMIC and a file smaller than the threshold,
+        // EmitHandler would previously let the file passback to AsyncEmitter, which called
+        // emitter.emit(List<EmitData>) and serialised it as JSON rather than raw content.
+        // The fix forces direct server-side emission (via emitContentOnly) when an emitter
+        // is configured and parseMode=CONTENT_ONLY, regardless of emit strategy.
+        Path contentOnlyConfig = configDir.resolve("tika-config-content-only-dynamic.json");
+        Map<String, Object> replacements = new HashMap<>();
+        replacements.put("FETCHER_BASE_PATH", inputDir);
+        replacements.put("JSON_EMITTER_BASE_PATH", jsonOutputDir);
+        replacements.put("BYTES_EMITTER_BASE_PATH", bytesOutputDir);
+        replacements.put("PLUGIN_ROOTS", Paths.get("target/plugins"));
+        JsonConfigHelper.writeConfigFromResource("/configs/config-content-only-dynamic.json",
+                AsyncProcessorTest.class, replacements, contentOnlyConfig);
+
+        AsyncProcessor processor = AsyncProcessor.load(contentOnlyConfig);
+
+        FetchEmitTuple t = new FetchEmitTuple("co-dyn-1", new FetchKey("fsf", "mock.xml"),
+                new EmitKey("fse-json", "emit-co-dyn"), new Metadata(), new ParseContext(),
+                FetchEmitTuple.ON_PARSE_EXCEPTION.EMIT);
+        processor.offer(t, 1000);
+        for (int i = 0; i < 10; i++) {
+            processor.offer(PipesIterator.COMPLETED_SEMAPHORE, 1000);
+        }
+        while (processor.checkActive()) {
+            Thread.sleep(100);
+        }
+        processor.close();
+
+        String emitted = Files.readString(jsonOutputDir.resolve("emit-co-dyn"));
+        assertContains("content", emitted);
+        assertFalse(emitted.contains(TikaCoreProperties.TIKA_CONTENT.getName()),
+                "TIKA-4735: DYNAMIC strategy must not produce JSON wrapper in CONTENT_ONLY mode: " + emitted);
+        String trimmed = emitted.trim();
+        assertFalse(trimmed.startsWith("[") || trimmed.startsWith("{"),
+                "TIKA-4735: DYNAMIC strategy must produce raw content, not JSON, in CONTENT_ONLY mode: " + emitted);
     }
 
     @Test

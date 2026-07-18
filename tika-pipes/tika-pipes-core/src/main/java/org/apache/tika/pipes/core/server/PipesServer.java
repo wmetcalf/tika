@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -95,6 +96,15 @@ public class PipesServer implements AutoCloseable {
 
     public static final int AUTH_TOKEN_LENGTH_BYTES = 32;
 
+    /** Env var the parent manager sets so the child can watch the parent's
+     *  process handle and exit promptly if the parent dies. */
+    public static final String PARENT_PID_ENV = "TIKA_PIPES_PARENT_PID";
+
+    /** Exit code used when the child self-terminates because its parent JVM
+     *  disappeared. Distinct from UNSPECIFIED_CRASH (19) so log readers can
+     *  tell the difference between "I crashed" and "my parent went away". */
+    public static final int PARENT_GONE_EXIT_CODE = 23;
+
     private final long heartbeatIntervalMs;
     private final String pipesClientId;
 
@@ -121,7 +131,7 @@ public class PipesServer implements AutoCloseable {
 
     public static PipesServer load(int port, Path tikaConfigPath) throws Exception {
             String pipesClientId = System.getProperty("pipesClientId", "unknown");
-            LOG.debug("pipesClientId={}: connecting to client on port={}", pipesClientId, port);
+            LOG.debug("connecting to client on port={}", port);
             Socket socket = new Socket();
             socket.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), PipesClient.SOCKET_CONNECT_TIMEOUT_MS);
             socket.setTcpNoDelay(true); // Disable Nagle's algorithm to avoid ~40ms delays on small writes
@@ -142,7 +152,7 @@ public class PipesServer implements AutoCloseable {
             MetadataWriteLimiterFactory metadataWriteLimiterFactory = tikaLoader.loadParseContext().get(MetadataWriteLimiterFactory.class);
             PipesServer pipesServer = new PipesServer(pipesClientId, tikaLoader, pipesConfig, socket, dis, dos, metadataFilter, contentHandlerFactory, metadataWriteLimiterFactory);
             pipesServer.initializeResources();
-            LOG.debug("pipesClientId={}: PipesServer loaded and ready", pipesClientId);
+            LOG.debug("PipesServer loaded and ready");
             return pipesServer;
         } catch (Exception e) {
             LOG.error("Failed to start up", e);
@@ -196,6 +206,10 @@ public class PipesServer implements AutoCloseable {
 
 
     public static void main(String[] args) throws Exception {
+        // Register parent-death watcher FIRST so that even bootstrap failures
+        // below don't strand us if the parent has already died.
+        watchParentProcess();
+
         // Check for shared mode: --shared <numConnections> <tikaConfigPath>
         if (args.length > 0 && "--shared".equals(args[0])) {
             String portEnv = System.getenv("TIKA_PIPES_PORT");
@@ -217,14 +231,14 @@ public class PipesServer implements AutoCloseable {
             int port = Integer.parseInt(args[0]);
             Path tikaConfig = Paths.get(args[1]);
             String pipesClientId = System.getProperty("pipesClientId", "unknown");
-            LOG.debug("pipesClientId={}: starting pipes server on port={}", pipesClientId, port);
+            LOG.debug("starting pipes server on port={}", port);
             try (PipesServer server = PipesServer.load(port, tikaConfig)) {
                 server.mainLoop();
             } catch (Throwable t) {
-                LOG.error("pipesClientId={}: crashed", pipesClientId, t);
+                LOG.error("crashed", t);
                 throw t;
             } finally {
-                LOG.debug("pipesClientId={}: server shutting down", pipesClientId);
+                LOG.debug("server shutting down");
             }
         }
     }
@@ -310,11 +324,11 @@ public class PipesServer implements AutoCloseable {
         try {
             PipesMessage.ready().write(output);
         } catch (IOException e) {
-            LOG.error("pipesClientId={}: failed to send READY", pipesClientId, e);
+            LOG.error("failed to send READY", e);
             exit(PipesMessageType.UNSPECIFIED_CRASH.getExitCode().orElse(19));
             return;
         }
-        LOG.debug("pipesClientId={}: sent READY, entering main loop", pipesClientId);
+        LOG.debug("sent READY, entering main loop");
         ArrayBlockingQueue<Metadata> intermediateResult = new ArrayBlockingQueue<>(1);
 
         //main loop
@@ -326,8 +340,7 @@ public class PipesServer implements AutoCloseable {
                 } catch (SocketTimeoutException e) {
                     // Socket timeout while idle is the normal inactivity shutdown path.
                     // Exit cleanly — PipesClient will restart the server if needed.
-                    LOG.info("pipesClientId={}: socket timeout while waiting for task, shutting down",
-                            pipesClientId);
+                    LOG.info("socket timeout while waiting for task, shutting down");
                     try {
                         close();
                     } catch (Exception ex) {
@@ -336,7 +349,7 @@ public class PipesServer implements AutoCloseable {
                     System.exit(0);
                     return; // unreachable, but needed for compilation
                 }
-                LOG.trace("pipesClientId={}: received message type={}", pipesClientId, msg.type());
+                LOG.trace("received message type={}", msg.type());
 
                 switch (msg.type()) {
                     case PING:
@@ -354,12 +367,12 @@ public class PipesServer implements AutoCloseable {
                             handleCrash(PipesMessageType.UNSPECIFIED_CRASH, "unknown", e);
                             break; // unreachable after handleCrash/exit, but needed for compilation
                         }
-                        // Validate before merging with global config
-                        ServerProtocolIO.validateFetchEmitTuple(fetchEmitTuple);
                         // Create merged ParseContext: defaults from tika-config + request overrides
                         ParseContext mergedContext = createMergedParseContext(fetchEmitTuple.getParseContext());
                         // Resolve friendly-named configs in ParseContext to actual objects
                         ParseContextUtils.resolveAll(mergedContext, getClass().getClassLoader());
+                        // Validate the effective (merged + resolved) context
+                        ServerProtocolIO.validateParseContext(mergedContext);
                         TikaProgressTracker tracker = new TikaProgressTracker();
                         mergedContext.set(TikaProgressTracker.class, tracker);
 
@@ -403,7 +416,8 @@ public class PipesServer implements AutoCloseable {
         long threshold = (thresholdBytes != null) ? thresholdBytes : EmitStrategyConfig.DEFAULT_DIRECT_EMIT_THRESHOLD_BYTES;
         EmitHandler emitHandler = new EmitHandler(defaultMetadataFilter, emitStrategy, emitterManager, threshold);
         return new PipesWorker(fetchEmitTuple, mergedContext, autoDetectParser, emitterManager,
-                fetchHandler, parseHandler, emitHandler, defaultMetadataWriteLimiterFactory);
+                fetchHandler, parseHandler, emitHandler, defaultMetadataWriteLimiterFactory,
+                pipesConfig.getParseMode());
     }
 
     private void loopUntilDone(FetchEmitTuple fetchEmitTuple, ParseContext mergedContext,
@@ -516,6 +530,46 @@ public class PipesServer implements AutoCloseable {
         System.exit(exitCode);
     }
 
+    /**
+     * Registers a {@link ProcessHandle#onExit()} callback on the parent PID
+     * (read from the {@value #PARENT_PID_ENV} env var) so that this JVM
+     * self-terminates promptly if its parent disappears. Without this, an
+     * orphaned PipesServer would only notice the parent is gone when the
+     * next socket read fails -- which can take up to
+     * {@code socketTimeoutMs} (default 60s) and doesn't fire at all while
+     * the server is mid-parse. {@code System.exit} here lets the
+     * {@code AbstractExternalProcessParser} shutdown hook run, killing any
+     * in-flight external subprocess (e.g. tesseract) cleanly.
+     */
+    private static void watchParentProcess() {
+        String parentPidStr = System.getenv(PARENT_PID_ENV);
+        if (parentPidStr == null || parentPidStr.isEmpty()) {
+            LOG.info("{} not set; skipping parent-watch", PARENT_PID_ENV);
+            return;
+        }
+        long parentPid;
+        try {
+            parentPid = Long.parseLong(parentPidStr);
+        } catch (NumberFormatException e) {
+            LOG.warn("invalid {} value '{}'; skipping parent-watch",
+                    PARENT_PID_ENV, parentPidStr);
+            return;
+        }
+        Optional<ProcessHandle> parent = ProcessHandle.of(parentPid);
+        if (parent.isEmpty()) {
+            LOG.error("parent pid {} not found at startup; exiting to avoid orphan",
+                    parentPid);
+            System.exit(PARENT_GONE_EXIT_CODE);
+            return;
+        }
+        parent.get().onExit().thenRun(() -> {
+            LOG.error("parent pid {} exited; shutting down to avoid orphan",
+                    parentPid);
+            System.exit(PARENT_GONE_EXIT_CODE);
+        });
+        LOG.info("watching parent pid {} for exit", parentPid);
+    }
+
     protected void initializeResources() throws TikaException, IOException, SAXException {
 
         TikaJsonConfig tikaJsonConfig = tikaLoader.getConfig();
@@ -550,7 +604,7 @@ public class PipesServer implements AutoCloseable {
         if (mergedContext.get(EmbeddedDocumentExtractorFactory.class) == null) {
             mergedContext.set(EmbeddedDocumentExtractorFactory.class, new UnpackExtractorFactory());
         }
-        // Overlay request's values (request takes precedence)
+        // Request-level values override config defaults
         mergedContext.copyFrom(requestContext);
         return mergedContext;
     }
@@ -596,7 +650,7 @@ public class PipesServer implements AutoCloseable {
     }
 
     private void handleShutDown() {
-        LOG.info("pipesClientId={}: received SHUT_DOWN, shutting down gracefully", pipesClientId);
+        LOG.info("received SHUT_DOWN, shutting down gracefully");
         try {
             close();
         } catch (Exception e) {

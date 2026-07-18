@@ -24,119 +24,314 @@ This section covers running Apache Tika as a REST server via `tika-server`.
 Tika Server provides a RESTful HTTP interface for parsing documents and extracting
 content. It can be deployed as a standalone service or in a containerized environment.
 
+In Tika 4.x, the main content-extraction endpoints — `/tika`, `/rmeta`, and
+`/unpack` — parse in forked child processes via the Tika Pipes infrastructure.
+This provides process isolation (a parser crash or OOM in a child cannot take
+down the request-handling process) at the cost of requiring a Pipes
+configuration. A few endpoints (notably `/meta`) still parse in-process in the
+request-handling JVM; treat those as best-effort under load. See
+xref:migration-to-4x/migrating-tika-server-4x.adoc[Migrating Tika Server to 4.x]
+for the full breaking-change list when upgrading from 3.x.
+
+== Security
+
+IMPORTANT: The primary rule is *trusted callers only*. `tika-server` is not a security boundary:
+it performs no authentication or authorization, and parsing untrusted documents is inherently
+risky. Only expose it to trusted callers on a trusted network — never directly to untrusted users
+or the public internet — and put your own authentication, authorization, and network controls in
+front of it.
+
+`allowPipes` and `allowPerRequestConfig` (both off by default) are *defense in depth, not security
+boundaries*: they reduce what a caller can reach, but they do **not** make it safe to expose the
+server to untrusted callers. tika-grpc is even more exposed by default. See
+xref:security.adoc[Security] for the shared trust model and
+xref:using-tika/grpc/index.adoc[Tika gRPC] for the gRPC specifics.
+
 == Basic Usage
 
 [source,bash]
 ----
-java -jar tika-server-standard.jar
+java -jar tika-server-standard-X.Y.Z.jar
 ----
 
-The server starts on port 9998 by default.
+The server starts on `localhost:9998` by default.
+
+== Command Line Options
+
+[cols="1,3"]
+|===
+|Option |Description
+
+|`-h <host>` or `--host <host>`
+|Hostname to bind to. Default `localhost`. Use `*` to bind to all interfaces.
+
+|`-p <port>` or `--port <port>`
+|Listen port. Default `9998`.
+
+|`-c <file>` or `--config <file>`
+|Path to `tika-config.json`. See <<_configuration,Configuration>> below.
+
+|`-a <file>` or `--pluginsConfig <file>`
+|Path to the Tika Pipes plugins configuration file.
+
+|`-i <id>` or `--id <id>`
+|Server ID, surfaced in the `/status` endpoint and in logs.
+
+|`-?` or `--help`
+|Print the usage message.
+|===
+
+NOTE: Other behavior — `allowPipes`, `allowPerRequestConfig`, CORS, TLS, timeouts — is
+configured in the JSON config file (see <<_configuration,Configuration>>), not via CLI flags.
 
 == Endpoints
 
+For the canonical endpoint inventory, including the PUT vs POST split and the
+multipart-config pattern introduced in 4.x, see the
+xref:migration-to-4x/migrating-tika-server-4x.adoc#_new_tika_endpoint_structure[New `/tika` Endpoint Structure]
+section of the migration guide. The most-used endpoints are summarized below.
+
 === Content Extraction (`/tika`)
 
-The `/tika` endpoint extracts content from a document as plain text.
+Simple PUT — the entire request body is the document, no metadata:
 
 [source,bash]
 ----
+# Default: raw XHTML
 curl -T document.pdf http://localhost:9998/tika
+
+# Explicit handler
+curl -T document.pdf http://localhost:9998/tika/text
+curl -T document.docx http://localhost:9998/tika/html
+curl -T document.docx http://localhost:9998/tika/md
+curl -T document.pdf http://localhost:9998/tika/json
 ----
 
-==== Markdown Output (`/tika/md`)
-
-The `/tika/md` endpoint extracts content as Markdown, preserving structural semantics
-like headings, lists, tables, and emphasis:
+POST with multipart for custom per-request configuration:
 
 [source,bash]
 ----
-curl -T document.docx http://localhost:9998/tika/md
+curl -X POST http://localhost:9998/tika/json \
+  -F "file=@document.pdf" \
+  -F "config={\"pdf-parser\":{\"ocr\":{\"strategy\":\"no_ocr\"}}};type=application/json"
 ----
 
-==== Custom Handler Type
+Valid handler paths under `/tika/`: `text`, `html`, `xml`, `md`, `json`. For
+the JSON variant, you can also nest a handler — `/tika/json/text`,
+`/tika/json/html`, etc. — to choose the content-field format inside the JSON
+envelope; that nested handler accepts the full set (`text`, `html`, `xml`,
+`md`, `markdown`, `body`, `ignore`).
 
-Use the `X-Tika-Handler` header to control the output format. Valid values: `text` (default),
-`html`, `xml`, `markdown`, `ignore`.
+==== `X-Tika-Handler` header
+
+For the root `/tika` PUT endpoint you can also pick the handler with a header:
 
 [source,bash]
 ----
 curl -T document.pdf -H "X-Tika-Handler: markdown" http://localhost:9998/tika
 ----
 
+Accepted values: `text`, `html`, `xml`, `markdown` (or `md`), `body`, `ignore`. The default is `markdown`.
+
 === Recursive Metadata (`/rmeta`)
 
-The `/rmeta` endpoint returns metadata for the container document and all embedded documents
-as a JSON array of metadata objects.
+Returns metadata for the container document and all embedded documents as a JSON
+array of metadata objects. The handler controls the content field of each entry:
 
 [source,bash]
 ----
-curl -T document.pdf http://localhost:9998/rmeta
+curl -T document.pdf http://localhost:9998/rmeta            # default: markdown
+curl -T document.pdf http://localhost:9998/rmeta/text
+curl -T document.pdf http://localhost:9998/rmeta/html
+curl -T document.pdf http://localhost:9998/rmeta/xml
+curl -T document.docx http://localhost:9998/rmeta/markdown  # or /md
+curl -T document.pdf http://localhost:9998/rmeta/ignore     # metadata only
 ----
 
-Content handler can be specified in the URL path:
+=== Metadata only (`/meta`)
 
-* `/rmeta/text` - plain text content (default)
-* `/rmeta/html` - HTML content
-* `/rmeta/xml` - XHTML content
-* `/rmeta/markdown` - Markdown content
-* `/rmeta/ignore` - metadata only, no content
+Returns container-document metadata only (no recursive embedded list, no content):
 
 [source,bash]
 ----
-curl -T document.docx http://localhost:9998/rmeta/markdown
+curl -T document.pdf http://localhost:9998/meta
+curl -T document.pdf http://localhost:9998/meta/Content-Type   # single field
 ----
+
+=== Other endpoints
+
+* `/version` — server version
+* `/status` — health/status (includes server ID)
+* `/parsers` and `/parsers/details` — registered parsers
+* `/detectors` — registered detectors
+* `/mime-types` — known MIME types
+* `/detect/stream` — type detection only (no parsing)
+* `/language/stream`, `/language/string` — language detection
+* `/translate/all/\{translator}/\{src}/\{dest}` — translation
+* `/pipes`, `/async` — Pipes-based bulk processing
+
+NOTE: `/pipes` and `/async` require `allowPipes` (they drive process-isolated fetching
+and parsing); selecting either without it causes the server to refuse to start. `/status`
+is a plain opt-in endpoint — enable it simply by listing it under `endpoints`. See
+<<_security_configuration,Security Configuration>>.
+
+== Error Responses
+
+When parsing fails due to a process-level problem — the forked child process timed out,
+ran out of memory, or crashed unexpectedly — the server returns an HTTP error with a
+JSON body whose shape matches the `PipesResult` status:
+
+[source,json]
+----
+{"status": "TIMEOUT"}
+----
+
+The `status` field is the `PipesResult.RESULT_STATUS` enum name. By default the body
+carries only the `status`. When the server is configured with `returnStackTrace=true`,
+a `message` field is also included (it often contains a server-side stack trace), e.g.
+`{"status": "TIMEOUT", "message": "Task timed out after 60000ms"}`.
+
+[cols="1,1,3"]
+|===
+|HTTP status |`status` values |Meaning
+
+|`503 Service Unavailable`
+|`TIMEOUT`, `OOM`, `UNSPECIFIED_CRASH`, `CLIENT_UNAVAILABLE_WITHIN_MS`
+|The forked parse process failed, or no parse client became available within the
+configured wait time (`CLIENT_UNAVAILABLE_WITHIN_MS`). The server is still healthy;
+the client may retry.
+
+|`500 Internal Server Error`
+|`FAILED_TO_INITIALIZE`, `FETCH_EXCEPTION`, `EMIT_EXCEPTION`,
+`FETCHER_NOT_FOUND`, `EMITTER_NOT_FOUND`,
+`FETCHER_INITIALIZATION_EXCEPTION`, `EMITTER_INITIALIZATION_EXCEPTION`
+|Server misconfiguration or a task-level infrastructure error. Retrying the same
+document on the same server is unlikely to succeed without a configuration fix.
+|===
+
+NOTE: A successful parse that encountered internal parser errors (e.g. a truncated
+embedded document) still returns `200 OK`. The partial-parse exception is surfaced
+in the `X-TIKA:EXCEPTION:container_exception` metadata field of the response, not as an
+HTTP error code.
+
+== Configuration
+
+Server behavior beyond host/port is controlled by a JSON config file passed via
+`-c`/`--config`. The `server` section in that file maps to fields on
+`TikaServerConfig`; commonly-set fields include:
+
+[cols="1,1,3"]
+|===
+|Field |Default |Description
+
+|`allowPipes`
+|`false`
+|Opt-in for the `/pipes` and `/async` endpoints, which drive process-isolated fetching and parsing. The server refuses to start if either is selected without this flag (see <<_security_configuration,Security Configuration>>).
+
+|`allowPerRequestConfig`
+|`false`
+|Opt-in for per-request parser configuration: the `/config` family of endpoints and the multipart `config` part. When off, such requests are rejected with 403 (see <<_security_configuration,Security Configuration>>).
+
+|`cors`
+|`""` (off)
+|`*` to allow any origin, or an explicit origin string. Empty disables CORS.
+
+|`returnStackTrace`
+|`false`
+|Include parser stack traces in error responses. Useful in dev, dangerous in production (leaks internals).
+
+|`digest`
+|`""` (off)
+|Compute a digest of the parsed bytes. Comma-separated algorithm names: `md5`, `sha1`, `sha256`, `sha384`, `sha512`.
+
+|`digestMarkLimit`
+|`20971520` (20 MiB)
+|Max bytes buffered for digest computation.
+
+|`logLevel`
+|_inherited_
+|`debug` or `info` to override the runtime log level.
+
+|`idBase`
+|random UUID
+|Override the auto-generated server ID (the `-i` CLI flag is the same setting).
+|===
+
+For the full Pipes-related sections (`pipes`, `fetchers`, `emitters`, `parse-context`)
+that tika-server 4.x requires, see
+xref:migration-to-4x/migrating-tika-server-4x.adoc#_configuration_changes[Configuration Changes].
 
 == Topics
 
-* xref:using-tika/server/tls.adoc[TLS/SSL Configuration] - Secure your server with TLS and mutual authentication
+* xref:using-tika/server/tls.adoc[TLS/SSL Configuration] — Secure your server with TLS and mutual authentication
+* xref:migration-to-4x/migrating-tika-server-4x.adoc[Migrating Tika Server to 4.x] — Breaking changes from 3.x
 
 == Security Configuration
 
 === Config Endpoint Protection
 
-By default, the `/config` endpoints that expose server configuration are disabled for security
-reasons. These endpoints can reveal sensitive information about your server configuration,
-including parser settings and system properties (see https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2015-3271[CVE-2015-3271]).
+By default, the `/config` family of endpoints that expose server configuration are
+disabled. These endpoints can reveal sensitive information about your server,
+including parser settings and system properties (see
+https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2015-3271[CVE-2015-3271]).
 
-The protected endpoints include:
+Protected endpoints include:
 
-* `/config` - Returns the server's full configuration
-* `/config/parsers` - Returns configured parsers
-* `/config/detectors` - Returns configured detectors
-* `/config/mimeTypes` - Returns MIME type mappings
+* `/tika/config` and `/tika/config/{text,html,xml,md,json}` — POST with multipart config
+* `/rmeta/config` — POST with multipart config
+* `/meta/config` — POST with multipart config
 
 === Enabling Config Endpoints
 
-To enable these endpoints:
+The setting is JSON-only — there is no CLI flag. Set `allowPerRequestConfig` in
+your config file's `server` section:
 
 [source,json]
 ----
 {
   "server": {
-    "enableUnsecureFeatures": true
+    "allowPerRequestConfig": true
   }
 }
 ----
 
-WARNING: Only enable `enableUnsecureFeatures` if you have secured access to Tika Server through
-network controls (firewalls, private subnets), a reverse proxy (nginx, Apache httpd), or
-xref:using-tika/server/tls.adoc[2-way TLS authentication]. Exposing config endpoints to
-untrusted networks can help attackers identify vulnerabilities and craft targeted attacks.
+WARNING: Only enable `allowPerRequestConfig` if you have secured access to Tika
+Server through network controls (firewalls, private subnets), a reverse proxy
+(nginx, Apache httpd), or
+xref:using-tika/server/tls.adoc[2-way TLS authentication]. Exposing config endpoints
+to untrusted networks can help attackers identify vulnerabilities and craft
+targeted attacks.
 
-=== Command Line Usage
+=== Pipes and Async Endpoints
 
-You can also enable unsecure features via command line:
+The `/pipes` and `/async` endpoints require `allowPipes`. They drive process-isolated
+batch parsing through your configured fetchers and emitters — whoever can reach them
+gains the read access of your fetchers and the write access of your emitters (see
+https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2015-3271[CVE-2015-3271]).
 
-[source,bash]
+In earlier releases these endpoints were enabled simply by listing them under
+`server.endpoints`. You must now *also* set `allowPipes` to `true`; selecting either
+without it causes the server to refuse to start. This is deliberate — it makes enabling
+these powerful endpoints an explicit, considered choice.
+
+[source,json]
 ----
-java -jar tika-server-standard.jar --enableUnsecureFeatures
+{
+  "server": {
+    "allowPipes": true,
+    "endpoints": ["tika", "rmeta", "pipes", "async", "status"]
+  }
+}
 ----
+
+NOTE: `/status` exposes only aggregate counters (active task count, files processed,
+time since last parse) and is *not* gated by `allowPipes` or `allowPerRequestConfig`.
+Enable it by listing `status` under `endpoints`.
 
 === Security Best Practices
 
-1. **Keep config endpoints disabled** in production (default behavior)
-2. **Use network controls** to restrict access to the Tika Server (firewall rules, private subnets)
-3. **Consider TLS** for encrypted communication - see xref:using-tika/server/tls.adoc[TLS Configuration]
-4. **Run with minimal privileges** - don't run Tika Server as root
-5. **Monitor logs** for unusual access patterns
+1. **Keep config endpoints disabled** in production (default behavior).
+2. **Use network controls** to restrict access (firewall rules, private subnets).
+3. **Consider TLS** for encrypted communication — see xref:using-tika/server/tls.adoc[TLS Configuration].
+4. **Run with minimal privileges** — don't run Tika Server as root.
+5. **Monitor logs** for unusual access patterns.

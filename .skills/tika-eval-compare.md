@@ -88,8 +88,9 @@ java -jar <tika-eval>/tika-eval-app-*.jar Compare \
 | `-a` | Directory of "before" extracts (required) |
 | `-b` | Directory of "after" extracts (required) |
 | `-d` | H2 database path (temp file if omitted) |
-| `-r` | Auto-run Report + tar.gz after Compare |
+| `-r` | Auto-run Report + tgz the reports dir (`<reportsDir>.tgz`) after Compare |
 | `-rd` | Reports output directory (default: `reports`) |
+| `-z` | Gzip the H2 db (`<db>.mv.db.gz`) after Compare for transfer; requires `-d` (no-op + warning for a temp db). Combine with `-r` to package both. |
 | `-n` | Number of worker threads |
 
 ## Step 3 — Review Results
@@ -119,6 +120,16 @@ directory, plus a `summary.md` with key metrics:
 | Content length ratio | 0.5–2.0 | > 5× or < 0.2× |
 | Exception count | ≤ A | > A |
 | Total files (B) vs (A) | equal or higher | lower — missing embedded docs |
+
+### Encoding-detection evals
+
+For charset/encoding-detector changes, the summary reports don't cover it — query
+the db directly (see the **tika-eval-h2-query** skill). The detected encoding is in
+the `ENCODINGS_A`/`ENCODINGS_B` tables (`DETECTED_ENCODING`, `ENCODING_DETECTOR`,
+`DECLARED_METADATA`), **not** `PROFILES`. Key signals: per-encoding counts (e.g. CJK
+total), A→B flips by direction, and OOV on the flipped files (a flip that *worsens*
+OOV is a regression; one that *improves* it is a fix). Pair on `ID`; map back to the
+source file via `PROFILES_*.FILE_NAME` (the content hash).
 
 ### CRITICAL: Review Checklist
 

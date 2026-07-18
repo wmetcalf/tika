@@ -131,6 +131,8 @@ public class ChmExtractor {
             setLzxBlocksCache(new ArrayList<>());
 
         } catch (IOException e) {
+            // Fork: don't propagate — a broken stream should leave a usable (empty)
+            // extractor for the salvage path rather than aborting the whole parse.
             LOG.warn("IOException parsing chm file", e);
         } catch (Exception e) {
             LOG.warn("Failed to parse chm file structure: {}", e.getMessage());
