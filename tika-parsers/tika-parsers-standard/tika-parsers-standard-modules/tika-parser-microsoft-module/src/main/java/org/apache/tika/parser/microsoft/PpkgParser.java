@@ -147,8 +147,11 @@ public class PpkgParser implements Parser {
 
         // WIM XML descriptor (uncompressed UTF-16LE) — package-level metadata
         String wimXml = "";
+        // offset + size is computed overflow-safe: offset is bounded to raw.length
+        // first, so (raw.length - offset) can't underflow, then size is compared to it.
         if (xmlHdr.size > 0 && xmlHdr.size < 4 * 1024 * 1024
-                && xmlHdr.offset >= 0 && xmlHdr.offset + xmlHdr.size <= raw.length) {
+                && xmlHdr.offset >= 0 && xmlHdr.offset <= raw.length
+                && xmlHdr.size <= raw.length - xmlHdr.offset) {
             byte[] xmlBytes = Arrays.copyOfRange(raw, (int) xmlHdr.offset,
                     (int) (xmlHdr.offset + xmlHdr.size));
             // UTF-16LE with optional BOM
@@ -309,6 +312,12 @@ public class PpkgParser implements Parser {
         byte[] out = new byte[uncompLen];
         int outPos = 0;
         int nChunks = (uncompLen + chunkSize - 1) / chunkSize;
+        // A tiny chunkSize (e.g. 1) yields nChunks ~= uncompLen (up to 256M) and thus
+        // a multi-hundred-MB int[] chunk table + O(nChunks) work. A legitimate WIM
+        // resource needs very few chunks; reject an absurd count.
+        if (nChunks < 1 || nChunks > 262_144) {
+            return null;
+        }
         int dataOff = (int) hdr.offset;
 
         if (nChunks == 1) {
@@ -337,15 +346,18 @@ public class PpkgParser implements Parser {
         int prevEnd = 0;
         for (int ci = 0; ci < nChunks; ci++) {
             int chunkCompEnd = chunkEnds[ci];
-            int chunkCompLen = chunkCompEnd - prevEnd;
             int chunkUncomp = Math.min(chunkSize, uncompLen - outPos);
             // The chunk-end offsets come straight from attacker bytes: reject a
             // non-monotonic or out-of-range table instead of letting copyOfRange
             // throw an uncaught IllegalArgumentException / IndexOutOfBoundsException.
-            if (chunkCompLen < 0 || prevEnd < 0
+            // Test chunkCompEnd < prevEnd directly (not chunkCompEnd - prevEnd) so a
+            // hostile chunkCompEnd near Integer.MIN_VALUE can't wrap the subtraction
+            // into a positive "length" that slips past the guard.
+            if (chunkCompEnd < prevEnd || prevEnd < 0
                     || (long) chunkDataStart + chunkCompEnd > raw.length) {
                 return null;
             }
+            int chunkCompLen = chunkCompEnd - prevEnd;
             byte[] cdata = Arrays.copyOfRange(raw,
                     chunkDataStart + prevEnd, chunkDataStart + chunkCompEnd);
             byte[] dec;

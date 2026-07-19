@@ -49,8 +49,10 @@ public class PpkgParserSecurityTest {
     }
 
     private static void parse(byte[] wim) throws Exception {
-        new PpkgParser().parse(TikaInputStream.get(wim), new BodyContentHandler(-1),
-                new Metadata(), new ParseContext());
+        try (TikaInputStream tis = TikaInputStream.get(wim)) {
+            new PpkgParser().parse(tis, new BodyContentHandler(-1),
+                    new Metadata(), new ParseContext());
+        }
     }
 
     /** Run parse(); pass if it completes or throws TikaException; fail on a raw RuntimeException. */
