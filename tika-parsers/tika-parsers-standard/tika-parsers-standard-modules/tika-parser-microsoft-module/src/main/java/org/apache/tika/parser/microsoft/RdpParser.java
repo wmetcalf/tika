@@ -104,6 +104,9 @@ public class RdpParser implements Parser {
 
     private static final MediaType RDP_TYPE = MediaType.application("x-rdp");
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(RDP_TYPE);
+    // Cap input like the sibling parsers (ICalParser=32MB, UrlShortcutParser=256KB):
+    // an uncapped readAllBytes() OOMs on a multi-GB file (Error, not TikaException).
+    private static final int MAX_INPUT_BYTES = 8 * 1024 * 1024;
 
     // Fields we extract to metadata (lowercase key → rdp: metadata name).
     // Full set matching wmetcalf/rdp_holiday property_patterns.
@@ -161,7 +164,11 @@ public class RdpParser implements Parser {
                       Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        byte[] raw = stream.readAllBytes();
+        byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
+        if (raw.length == MAX_INPUT_BYTES && stream.read() != -1) {
+            metadata.add("rdp:warning",
+                    "Input truncated at " + MAX_INPUT_BYTES + " bytes");
+        }
         String text = decode(raw);
 
         Map<String, String[]> fields = parseFields(text);

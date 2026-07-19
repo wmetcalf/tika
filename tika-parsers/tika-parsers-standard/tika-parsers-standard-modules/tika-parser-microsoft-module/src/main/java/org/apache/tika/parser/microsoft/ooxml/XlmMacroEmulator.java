@@ -181,8 +181,15 @@ class XlmMacroEmulator {
                 String.valueOf(sheetXtiIdx));
 
         List<Double> values = new ArrayList<>();
-        for (int row = start[0]; row <= end[0]; row++) {
-            for (int col = start[1]; col <= end[1]; col++) {
+        // Bound the rectangle scan: a crafted FOR.CELL range like "A1:XFD1048576"
+        // would otherwise iterate ~1.7e10 empty cells (CPU-hang DoS) because the
+        // MAX_LOOP_ITERATIONS cap in the caller is applied to the RESULT size, after
+        // this scan has already run. Real macro ranges are tiny and only cells
+        // present in cellValues contribute, so cap the cells visited here too.
+        long scanned = 0;
+        for (int row = start[0]; row <= end[0] && scanned < MAX_LOOP_ITERATIONS; row++) {
+            for (int col = start[1]; col <= end[1] && scanned < MAX_LOOP_ITERATIONS; col++) {
+                scanned++;
                 Double v = cellValues.get(sheetName + ":" + row + ":" + col);
                 if (v != null) {
                     values.add(v);

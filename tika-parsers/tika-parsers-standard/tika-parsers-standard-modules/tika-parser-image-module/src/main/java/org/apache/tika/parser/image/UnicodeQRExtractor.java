@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.imageio.ImageIO;
 
 import org.apache.tika.parser.ParseContext;
@@ -90,6 +89,9 @@ public final class UnicodeQRExtractor {
 
     /** Pixel size of each QR module in the rendered bitmap. */
     private static final int MODULE_PX = 4;
+    // Hard cap on rendered QR-art bitmap area (pixels). Guards against a crafted
+    // block-glyph text that would otherwise allocate a multi-GB / int-overflowing image.
+    private static final long MAX_RENDER_PIXELS = 16L * 1024 * 1024;
 
     /** Cap on number of clusters we'll render+decode per call to keep latency
      *  predictable on adversarial input full of decorative ASCII boxes. */
@@ -612,6 +614,13 @@ public final class UnicodeQRExtractor {
         int quiet = 4; // 4-module quiet zone is the QR spec minimum.
         int imgW = (widthModules  + 2 * quiet) * MODULE_PX;
         int imgH = (heightModules + 2 * quiet) * MODULE_PX;
+        // Reject an oversized render: a crafted QR-art block (very wide + tall) drives
+        // imgW*imgH to billions of pixels, overflowing the int raster size and/or
+        // allocating gigabytes (memory-exhaustion DoS). A real QR is <=177 modules per
+        // side; this cap is far larger than any legitimate code.
+        if (imgW <= 0 || imgH <= 0 || (long) imgW * imgH > MAX_RENDER_PIXELS) {
+            return null;
+        }
         // Per-line starting column offset: lets us pad short rows on the
         // LEFT when the first glyph looks like a non-space (suggests a
         // leading-space-strip by some upstream text extractor — e.g. RTF's
