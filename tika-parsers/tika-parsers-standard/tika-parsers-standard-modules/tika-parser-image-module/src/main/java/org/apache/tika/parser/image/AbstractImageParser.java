@@ -185,6 +185,10 @@ public abstract class AbstractImageParser implements Parser {
                 addBarcodeMetadata(barcodePath, metadata, context);
             } catch (IOException | SAXException | TikaException e) {
                 throw e;
+            } catch (SecurityException e) {
+                // Mirror the OCR branch: let a SecurityException propagate unwrapped
+                // rather than masking it as a generic TikaException.
+                throw e;
             } catch (RuntimeException e) {
                 throw new TikaException("problem extracting image metadata", e);
             }
