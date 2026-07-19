@@ -281,6 +281,16 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                 if (txt == null || txt.isEmpty()) {
                     continue;
                 }
+                int remaining = maxBufChars - buf.length();
+                if (remaining <= 0) {
+                    break;
+                }
+                // Cap each element's contribution: a single huge <pre>/<code> must not
+                // be appended in full before the buffer-size check.
+                if (txt.length() >= remaining) {
+                    buf.append(txt, 0, remaining);
+                    break;
+                }
                 buf.append(txt);
                 if (!txt.endsWith("\n")) {
                     buf.append('\n');

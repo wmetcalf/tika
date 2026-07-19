@@ -175,14 +175,16 @@ public final class ColorGridQRDecoder {
             return null;
         }
         int quiet = 4;
-        int imgW = (maxCols     + 2 * quiet) * MODULE_PX;
-        int imgH = (grid.size() + 2 * quiet) * MODULE_PX;
-        // Reject an oversized render (memory-exhaustion DoS): a crafted color-grid
-        // block drives imgW*imgH to billions of pixels, overflowing the int raster
-        // size / allocating gigabytes. A real QR is <=177 modules per side.
-        if (imgW <= 0 || imgH <= 0 || (long) imgW * imgH > 16L * 1024 * 1024) {
+        // Compute as long so a hostile maxCols/grid.size() can't overflow the int
+        // multiply into a small positive that slips past the area check (memory-
+        // exhaustion DoS). A real QR is <=177 modules per side.
+        long imgWLong = ((long) maxCols     + 2 * quiet) * MODULE_PX;
+        long imgHLong = ((long) grid.size() + 2 * quiet) * MODULE_PX;
+        if (imgWLong <= 0 || imgHLong <= 0 || imgWLong * imgHLong > 16L * 1024 * 1024) {
             return null;
         }
+        int imgW = (int) imgWLong;
+        int imgH = (int) imgHLong;
         BufferedImage img = new BufferedImage(imgW, imgH, BufferedImage.TYPE_BYTE_GRAY);
         Graphics2D g = img.createGraphics();
         try {

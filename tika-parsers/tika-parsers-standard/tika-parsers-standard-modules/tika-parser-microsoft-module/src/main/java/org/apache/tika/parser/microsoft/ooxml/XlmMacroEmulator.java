@@ -181,20 +181,39 @@ class XlmMacroEmulator {
                 String.valueOf(sheetXtiIdx));
 
         List<Double> values = new ArrayList<>();
-        // Bound the rectangle scan: a crafted FOR.CELL range like "A1:XFD1048576"
-        // would otherwise iterate ~1.7e10 empty cells (CPU-hang DoS) because the
-        // MAX_LOOP_ITERATIONS cap in the caller is applied to the RESULT size, after
-        // this scan has already run. Real macro ranges are tiny and only cells
-        // present in cellValues contribute, so cap the cells visited here too.
-        long scanned = 0;
-        for (int row = start[0]; row <= end[0] && scanned < MAX_LOOP_ITERATIONS; row++) {
-            for (int col = start[1]; col <= end[1] && scanned < MAX_LOOP_ITERATIONS; col++) {
-                scanned++;
-                Double v = cellValues.get(sheetName + ":" + row + ":" + col);
-                if (v != null) {
-                    values.add(v);
-                }
+        // Iterate the sparse populated-cell map (bounded by the number of cells that
+        // actually hold values, i.e. the workbook size) rather than the full rectangle.
+        // A crafted FOR.CELL range like "A1:XFD1048576" would otherwise drive ~1.7e10
+        // empty-cell probes (CPU-hang DoS); and a plain coordinate cap would silently
+        // drop values that lie beyond the cutoff. Collect the in-range (row,col,value)
+        // triples and return them row-major to match the original scan order.
+        String prefix = sheetName + ":";
+        List<double[]> matched = new ArrayList<>();
+        for (Map.Entry<String, Double> e : cellValues.entrySet()) {
+            String key = e.getKey();
+            if (key == null || !key.startsWith(prefix)) {
+                continue;
             }
+            String rc = key.substring(prefix.length());
+            int sep = rc.lastIndexOf(':');
+            if (sep <= 0) {
+                continue;
+            }
+            try {
+                int row = Integer.parseInt(rc.substring(0, sep));
+                int col = Integer.parseInt(rc.substring(sep + 1));
+                if (row >= start[0] && row <= end[0]
+                        && col >= start[1] && col <= end[1]) {
+                    matched.add(new double[]{row, col, e.getValue()});
+                }
+            } catch (NumberFormatException nfe) {
+                // key suffix wasn't "row:col" — skip
+            }
+        }
+        matched.sort((a, b) -> a[0] != b[0]
+                ? Double.compare(a[0], b[0]) : Double.compare(a[1], b[1]));
+        for (double[] t : matched) {
+            values.add(t[2]);
         }
         return values;
     }

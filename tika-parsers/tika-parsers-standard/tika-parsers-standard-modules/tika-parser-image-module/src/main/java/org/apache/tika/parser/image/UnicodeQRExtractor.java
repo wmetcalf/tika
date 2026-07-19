@@ -612,15 +612,18 @@ public final class UnicodeQRExtractor {
                                        int widthModules, int heightModules,
                                        Painter painter) {
         int quiet = 4; // 4-module quiet zone is the QR spec minimum.
-        int imgW = (widthModules  + 2 * quiet) * MODULE_PX;
-        int imgH = (heightModules + 2 * quiet) * MODULE_PX;
-        // Reject an oversized render: a crafted QR-art block (very wide + tall) drives
-        // imgW*imgH to billions of pixels, overflowing the int raster size and/or
-        // allocating gigabytes (memory-exhaustion DoS). A real QR is <=177 modules per
-        // side; this cap is far larger than any legitimate code.
-        if (imgW <= 0 || imgH <= 0 || (long) imgW * imgH > MAX_RENDER_PIXELS) {
+        // Compute as long: a crafted QR-art block (very wide + tall) drives the render
+        // to billions of pixels, overflowing the int raster size and/or allocating
+        // gigabytes (memory-exhaustion DoS). Computing imgW/imgH in long first stops a
+        // hostile factor from wrapping the int multiply into a small positive that
+        // slips past the area check. A real QR is <=177 modules/side.
+        long imgWLong = ((long) widthModules  + 2 * quiet) * MODULE_PX;
+        long imgHLong = ((long) heightModules + 2 * quiet) * MODULE_PX;
+        if (imgWLong <= 0 || imgHLong <= 0 || imgWLong * imgHLong > MAX_RENDER_PIXELS) {
             return null;
         }
+        int imgW = (int) imgWLong;
+        int imgH = (int) imgHLong;
         // Per-line starting column offset: lets us pad short rows on the
         // LEFT when the first glyph looks like a non-space (suggests a
         // leading-space-strip by some upstream text extractor — e.g. RTF's
