@@ -271,6 +271,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             if (monospace.isEmpty()) {
                 return;
             }
+            // Cap the buffered monospace text: a QR-art code is at most a few KB, and
+            // an unbounded buffer would feed an oversized render (memory-exhaustion DoS).
+            final int maxBufChars = 2 * 1024 * 1024;
             StringBuilder buf = new StringBuilder();
             for (org.jsoup.nodes.Element el : monospace) {
                 // wholeText() preserves newlines inside <pre>; text() collapses them.
@@ -278,11 +281,24 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                 if (txt == null || txt.isEmpty()) {
                     continue;
                 }
+                int remaining = maxBufChars - buf.length();
+                if (remaining <= 0) {
+                    break;
+                }
+                // Cap each element's contribution: a single huge <pre>/<code> must not
+                // be appended in full before the buffer-size check.
+                if (txt.length() >= remaining) {
+                    buf.append(txt, 0, remaining);
+                    break;
+                }
                 buf.append(txt);
                 if (!txt.endsWith("\n")) {
                     buf.append('\n');
                 }
                 buf.append('\n');
+                if (buf.length() >= maxBufChars) {
+                    break;
+                }
             }
             if (buf.length() == 0) {
                 return;

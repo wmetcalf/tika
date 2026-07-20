@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.imageio.ImageIO;
 
 import org.apache.tika.parser.ParseContext;
@@ -90,6 +89,9 @@ public final class UnicodeQRExtractor {
 
     /** Pixel size of each QR module in the rendered bitmap. */
     private static final int MODULE_PX = 4;
+    // Hard cap on rendered QR-art bitmap area (pixels). Guards against a crafted
+    // block-glyph text that would otherwise allocate a multi-GB / int-overflowing image.
+    private static final long MAX_RENDER_PIXELS = 16L * 1024 * 1024;
 
     /** Cap on number of clusters we'll render+decode per call to keep latency
      *  predictable on adversarial input full of decorative ASCII boxes. */
@@ -610,8 +612,18 @@ public final class UnicodeQRExtractor {
                                        int widthModules, int heightModules,
                                        Painter painter) {
         int quiet = 4; // 4-module quiet zone is the QR spec minimum.
-        int imgW = (widthModules  + 2 * quiet) * MODULE_PX;
-        int imgH = (heightModules + 2 * quiet) * MODULE_PX;
+        // Compute as long: a crafted QR-art block (very wide + tall) drives the render
+        // to billions of pixels, overflowing the int raster size and/or allocating
+        // gigabytes (memory-exhaustion DoS). Computing imgW/imgH in long first stops a
+        // hostile factor from wrapping the int multiply into a small positive that
+        // slips past the area check. A real QR is <=177 modules/side.
+        long imgWLong = ((long) widthModules  + 2 * quiet) * MODULE_PX;
+        long imgHLong = ((long) heightModules + 2 * quiet) * MODULE_PX;
+        if (imgWLong <= 0 || imgHLong <= 0 || imgWLong * imgHLong > MAX_RENDER_PIXELS) {
+            return null;
+        }
+        int imgW = (int) imgWLong;
+        int imgH = (int) imgHLong;
         // Per-line starting column offset: lets us pad short rows on the
         // LEFT when the first glyph looks like a non-space (suggests a
         // leading-space-strip by some upstream text extractor — e.g. RTF's
