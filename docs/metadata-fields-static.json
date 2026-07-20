@@ -1,14 +1,63 @@
 {
-  "scanned_at": "2026-05-30T01:43:23.545086+00:00",
-  "tika_root": "/home/coz/.config/superpowers/worktrees/tika/4.0-upstream-office-links",
+  "scanned_at": "2026-07-20T16:40:40.948280+00:00",
+  "tika_root": "/tmp/claude-1000/-home-coz-Downloads-RedTusk/3e4e9d0b-d2e9-4c4b-b435-ff24445dca07/scratchpad/tika-inv",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 672,
-    "parsers_emitting_fields": 194,
-    "undeclared_string_fields": 288,
-    "templated_patterns": 111
+    "property_declarations": 712,
+    "parsers_emitting_fields": 197,
+    "undeclared_string_fields": 282,
+    "templated_patterns": 117
   },
   "properties": {
+    "Camera:MicroVideo": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MICRO_VIDEO",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MicroVideoOffset": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MICRO_VIDEO_OFFSET",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MicroVideoPresentationTimestampUs": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MICRO_VIDEO_PRESENTATION_TIMESTAMP_US",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MicroVideoVersion": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MICRO_VIDEO_VERSION",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MotionPhoto": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MOTION_PHOTO",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MotionPhotoPresentationTimestampUs": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MOTION_PHOTO_PRESENTATION_TIMESTAMP_US",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "Camera:MotionPhotoVersion": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.Google",
+      "constant_name": "MOTION_PHOTO_VERSION",
+      "javadoc": null,
+      "emitted_by": []
+    },
     "Content-Disposition": {
       "type": "String",
       "declared_in": "org.apache.tika.metadata.HttpHeaders",
@@ -28,6 +77,7 @@
         "org.apache.tika.parser.dbf.DBFParser",
         "org.apache.tika.parser.envi.EnviHeaderParser",
         "org.apache.tika.parser.html.JSoupParser",
+        "org.apache.tika.parser.markdown.MarkdownParser",
         "org.apache.tika.parser.mbox.MboxParser",
         "org.apache.tika.parser.mif.MIFParser",
         "org.apache.tika.parser.sas.SAS7BDATParser",
@@ -92,6 +142,7 @@
         "org.apache.tika.parser.audio.AudioParser",
         "org.apache.tika.parser.audio.MidiParser",
         "org.apache.tika.parser.code.SourceCodeParser",
+        "org.apache.tika.parser.crypto.Pkcs7Parser",
         "org.apache.tika.parser.csv.TextAndCSVParser",
         "org.apache.tika.parser.dbf.DBFParser",
         "org.apache.tika.parser.dwg.DWGParser",
@@ -113,6 +164,7 @@
         "org.apache.tika.parser.iwork.IWorkPackageParser",
         "org.apache.tika.parser.iwork.iwana.IWork13PackageParser",
         "org.apache.tika.parser.iwork.iwana.IWork18PackageParser",
+        "org.apache.tika.parser.markdown.MarkdownParser",
         "org.apache.tika.parser.mat.MatParser",
         "org.apache.tika.parser.mbox.MboxParser",
         "org.apache.tika.parser.microsoft.AbstractPOIFSExtractor",
@@ -173,7 +225,9 @@
       "constant_name": "CONTENT_TYPE_HINT",
       "javadoc": "This is currently used to identify Content-Type that may be included within a document, such as in html documents (e.g. <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\">) , or the value might come from outside the document.  This information may be faulty and should be treated only as a hint.",
       "emitted_by": [
-        "org.apache.tika.parser.html.HtmlHandler"
+        "org.apache.tika.parser.html.HtmlHandler",
+        "org.apache.tika.parser.microsoft.OutlookExtractor",
+        "org.apache.tika.parser.pkg.ZipParser"
       ]
     },
     "Content-Type-Magic-Detected": {
@@ -894,6 +948,7 @@
       "javadoc": "Use this to store exceptions caught during a parse that are non-fatal, e.g. if a parser is in lenient mode and more content can be extracted if we ignore an exception thrown by a dependency.",
       "emitted_by": [
         "org.apache.tika.parser.audio.AudioParser",
+        "org.apache.tika.parser.crypto.Pkcs7Parser",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.ooxml.SXSLFPowerPointExtractorDecorator",
         "org.apache.tika.parser.microsoft.ooxml.SXWPFWordExtractorDecorator",
@@ -903,7 +958,6 @@
         "org.apache.tika.parser.pdf.AbstractPDF2XHTML",
         "org.apache.tika.parser.pdf.PDF2XHTML",
         "org.apache.tika.parser.pdf.PDFMarkedContent2XHTML",
-        "org.apache.tika.parser.pdf.PDMetadataExtractor",
         "org.apache.tika.parser.pdf.image.ImageGraphicsEngine"
       ]
     },
@@ -981,7 +1035,8 @@
       "constant_name": "DECODED_CHARSET",
       "javadoc": "The charset actually used to decode the stream when a superset override was applied. When the detected encoding (reported in Content-Type and {@link #DETECTED_ENCODING}) is a subset of a safer, broader charset (e.g. EUC-KR is a subset of x-windows-949, or GB2312 is a subset of GB18030), Tika decodes using the superset charset to avoid mojibake on extension characters. This field records the superset charset name so callers know which codec was actually used. Absent when detection and decoding use the same charset.",
       "emitted_by": [
-        "org.apache.tika.detect.AutoDetectReader"
+        "org.apache.tika.detect.AutoDetectReader",
+        "org.apache.tika.parser.html.JSoupParser"
       ]
     },
     "X-TIKA:detectedEncoding": {
@@ -1230,6 +1285,7 @@
         "org.apache.tika.parser.wacz.WACZParser",
         "org.apache.tika.parser.warc.WARCParser",
         "org.apache.tika.parser.xml.FictionBookParser",
+        "org.apache.tika.pipes.core.server.PipesWorker",
         "org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher",
         "org.apache.tika.pipes.fetcher.http.HttpFetcher",
         "org.apache.tika.server.core.resource.TikaResource"
@@ -1363,6 +1419,76 @@
       "emitted_by": [
         "org.apache.tika.parser.pdf.PDFParser"
       ]
+    },
+    "audio:disc-count": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.Audio",
+      "constant_name": "DISC_COUNT",
+      "javadoc": "Total number of discs in the set (MP4 'disk' second value, ID3 TPOS \"n/total\", Vorbis DISCTOTAL).",
+      "emitted_by": [
+        "org.apache.tika.parser.mp3.Mp3Parser",
+        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox",
+        "org.apache.tika.parser.ogg.OggAudioParser"
+      ]
+    },
+    "audio:raw-disc-number": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.Audio",
+      "constant_name": "RAW_DISC_NUMBER",
+      "javadoc": "The disc value exactly as tagged, see {@link #RAW_TRACK_NUMBER}.",
+      "emitted_by": [
+        "org.apache.tika.parser.mp3.Mp3Parser",
+        "org.apache.tika.parser.ogg.OggAudioParser"
+      ]
+    },
+    "audio:raw-track-number": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.Audio",
+      "constant_name": "RAW_TRACK_NUMBER",
+      "javadoc": "The track value exactly as tagged (e.g. \"3/12\" or a non-numeric form like vinyl \"A1\"). {@link XMPDM#TRACK_NUMBER} only receives clean integers, so nothing is lost.",
+      "emitted_by": [
+        "org.apache.tika.parser.mp3.Mp3Parser",
+        "org.apache.tika.parser.ogg.OggAudioParser"
+      ]
+    },
+    "audio:track-count": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.Audio",
+      "constant_name": "TRACK_COUNT",
+      "javadoc": "Total number of tracks on the album / in the set (MP4 'trkn' second value, ID3 TRCK \"n/total\", Vorbis TRACKTOTAL).",
+      "emitted_by": [
+        "org.apache.tika.parser.mp3.Mp3Parser",
+        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox",
+        "org.apache.tika.parser.ogg.OggAudioParser"
+      ]
+    },
+    "aux:Lens": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.TIFF",
+      "constant_name": "LENS",
+      "javadoc": "Human-readable lens description, e.g. \"70-200mm f/2.8\". */",
+      "emitted_by": []
+    },
+    "aux:LensID": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.TIFF",
+      "constant_name": "LENS_ID",
+      "javadoc": "Numeric lens identifier. */",
+      "emitted_by": []
+    },
+    "aux:LensInfo": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.TIFF",
+      "constant_name": "LENS_INFO",
+      "javadoc": "Lens spec: min/max focal length and aperture. */",
+      "emitted_by": []
+    },
+    "aux:SerialNumber": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.TIFF",
+      "constant_name": "SERIAL_NUMBER",
+      "javadoc": "Camera-body serial number. */",
+      "emitted_by": []
     },
     "barcode:error-correction-level": {
       "type": "internalTextBag",
@@ -1696,6 +1822,7 @@
         "org.apache.tika.parser.html.HtmlHandler",
         "org.apache.tika.parser.iwork.iwana.IWork13PackageParser",
         "org.apache.tika.parser.mail.MailContentHandler",
+        "org.apache.tika.parser.microsoft.ExcelExtractor",
         "org.apache.tika.parser.microsoft.OutlookExtractor",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.pst.PSTMailItemParser",
@@ -2565,9 +2692,11 @@
       "javadoc": "The number of Pages are there in the (paged) document",
       "emitted_by": [
         "org.apache.tika.parser.hwp.HwpTextExtractorV5",
+        "org.apache.tika.parser.indesign.IDMLParser",
         "org.apache.tika.parser.iwork.NumbersContentHandler",
         "org.apache.tika.parser.iwork.PagesContentHandler",
         "org.apache.tika.parser.microsoft.rtf.TextExtractor",
+        "org.apache.tika.parser.mif.MIFContentHandler",
         "org.apache.tika.parser.wordperfect.QPWTextExtractor"
       ]
     },
@@ -2818,6 +2947,20 @@
         "org.apache.tika.parser.microsoft.ooxml.XSSFBExcelExtractorDecorator",
         "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator"
       ]
+    },
+    "msoffice:excel:sheet-number": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.Office",
+      "constant_name": "SHEET_NUMBER",
+      "javadoc": "1-based sheet number for a resource (e.g. an embedded image) anchored to exactly one sheet of a workbook.  For resources spanning multiple sheets see {@link #SHEET_NUMBERS}.  This is the spreadsheet analogue of {@link TikaPagedText#PAGE_NUMBER} — the convention is identical, but the property name reflects the domain (Excel sheets are not \"pages\" in the printer sense).",
+      "emitted_by": []
+    },
+    "msoffice:excel:sheet-numbers": {
+      "type": "internalIntegerSequence",
+      "declared_in": "org.apache.tika.metadata.Office",
+      "constant_name": "SHEET_NUMBERS",
+      "javadoc": "1-based sheet numbers a resource is anchored to, as a sequence. Used for resources that appear on multiple sheets of a workbook. See {@link TikaPagedText#PAGE_NUMBERS} for the full convention (single-page, multi-page, unlinked, unknown); the same rules apply here, with {@link #UNLINKED_SHEET} as the \"known unlinked\" sentinel.",
+      "emitted_by": []
     },
     "msoffice:excel:very-hidden-sheet-names": {
       "type": "internalTextBag",
@@ -3131,6 +3274,13 @@
         "org.apache.tika.parser.pdf.PDFParser"
       ]
     },
+    "pdf:Trapped": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.PDF",
+      "constant_name": "TRAPPED",
+      "javadoc": "Trapped flag from the XMP {@code pdf:} schema; docinfo counterpart {@link #DOC_INFO_TRAPPED}. */",
+      "emitted_by": []
+    },
     "pdf:actionTrigger": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PDF",
@@ -3354,6 +3504,15 @@
         "org.apache.tika.parser.pdf.PDFParser"
       ]
     },
+    "pdf:hasSignatureFields": {
+      "type": "internalBoolean",
+      "declared_in": "org.apache.tika.metadata.PDF",
+      "constant_name": "HAS_SIGNATURE_FIELDS",
+      "javadoc": "Has at least one AcroForm signature field (/FT /Sig), whether or not it has been signed. For documents that have been actually signed, see {@link TikaCoreProperties#HAS_SIGNATURE}.",
+      "emitted_by": [
+        "org.apache.tika.parser.pdf.PDFParser"
+      ]
+    },
     "pdf:hasXFA": {
       "type": "internalBoolean",
       "declared_in": "org.apache.tika.metadata.PDF",
@@ -3377,9 +3536,7 @@
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "ILLUSTRATOR_TYPE",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdf:incrementalUpdateCount": {
       "type": "externalInteger",
@@ -3475,72 +3632,56 @@
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFAID_CONFORMANCE",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfaid:part": {
       "type": "internalInteger",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFAID_PART",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfuaid:part": {
       "type": "internalInteger",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFUAID_PART",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfvt:modified": {
       "type": "internalDate",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFVT_MODIFIED",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfvt:version": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFVT_VERSION",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfx:conformance": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFX_CONFORMANCE",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfx:version": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFX_VERSION",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "pdfxid:version": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PDF",
       "constant_name": "PDFXID_VERSION",
       "javadoc": null,
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "photoshop:AuthorsPosition": {
       "type": "internalText",
@@ -3605,6 +3746,13 @@
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.Photoshop",
       "constant_name": "HEADLINE",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "photoshop:ICCProfile": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.Photoshop",
+      "constant_name": "ICC_PROFILE",
       "javadoc": null,
       "emitted_by": []
     },
@@ -3897,6 +4045,15 @@
       "javadoc": null,
       "emitted_by": [
         "org.apache.tika.parser.microsoft.pst.OutlookPSTParser"
+      ]
+    },
+    "quicktime:still-image-time": {
+      "type": "internalReal",
+      "declared_in": "org.apache.tika.metadata.QuickTime",
+      "constant_name": "STILL_IMAGE_TIME",
+      "javadoc": "Presentation start of the com.apple.quicktime.still-image-time timed metadata track, in microseconds. In an Apple Live Photo video this is the moment the paired still image was captured. A value of 0 means the still is the very first frame; the property is absent when the file declares no such track. Only set when the track holds exactly one sample (the Live Photo shape): the sample marks a point in time, its own one-tick duration is filler, so there is deliberately no corresponding end property.",
+      "emitted_by": [
+        "org.apache.tika.parser.mp4.TikaMp4MetaHandler"
       ]
     },
     "rendering:Rendered-By": {
@@ -4416,12 +4573,19 @@
       "type": "internalInteger",
       "declared_in": "org.apache.tika.metadata.TikaPagedText",
       "constant_name": "PAGE_NUMBER",
-      "javadoc": "1-based page number for a specific page",
+      "javadoc": "1-based page number for a specific page.  Set when a resource is anchored to exactly one page; for resources spanning multiple pages see {@link #PAGE_NUMBERS}.",
       "emitted_by": [
         "org.apache.tika.parser.pdf.AbstractPDF2XHTML",
         "org.apache.tika.parser.pdf.image.ImageGraphicsEngine",
         "org.apache.tika.renderer.pdf.poppler.PopplerRenderer"
       ]
+    },
+    "tika_pg:page_numbers": {
+      "type": "internalIntegerSequence",
+      "declared_in": "org.apache.tika.metadata.TikaPagedText",
+      "constant_name": "PAGE_NUMBERS",
+      "javadoc": "1-based page numbers an embedded resource is anchored to, as a sequence.  Used for resources that appear on multiple pages (e.g. a logo or a shared image referenced from several slides of a presentation, or an image embedded in multiple sheets of a workbook). <p>Conventions: <ul> <li>Resource on a single page: {@code PAGE_NUMBERS = [N]} and {@code PAGE_NUMBER = N} are both set.</li> <li>Resource on multiple pages: {@code PAGE_NUMBERS = [N1, N2, ...]}; {@code PAGE_NUMBER} is not set.</li> <li>Resource present in the container but not referenced from any page (an \"unlinked\" or orphan resource): {@code PAGE_NUMBERS = [-1]} (see {@link #UNLINKED_PAGE}). Distinguishes \"we know this image is unanchored\" from \"this format has no page concept\" (which leaves the property unset).</li> <li>Format has no page concept, or per-page anchoring is unknown: both {@code PAGE_NUMBER} and {@code PAGE_NUMBERS} unset.</li> </ul>",
+      "emitted_by": []
     },
     "tika_pg:page_rotation": {
       "type": "internalRational",
@@ -4724,9 +4888,7 @@
       "declared_in": "org.apache.tika.metadata.XMP",
       "constant_name": "ADVISORY",
       "javadoc": "Unordered text strings of advisories.",
-      "emitted_by": [
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "xmp:CreateDate": {
       "type": "externalDate",
@@ -4751,8 +4913,7 @@
       "constant_name": "IDENTIFIER",
       "javadoc": "An unordered array of text strings that unambiguously identify the resource within a given context. An array item may be qualified with xmpidq:Scheme (see 8.7, “xmpidq namespace”) to denote the formal identification system to which that identifier conforms.",
       "emitted_by": [
-        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox",
-        "org.apache.tika.parser.pdf.PDMetadataExtractor"
+        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox"
       ]
     },
     "xmp:Label": {
@@ -4930,6 +5091,41 @@
       "javadoc": "Date on which the resource was changed.",
       "emitted_by": []
     },
+    "xmp:exif": {
+      "type": "String",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "PREFIX_EXIF",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:exif:DateTimeOriginal": {
+      "type": "internalDate",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "ORIGINAL_DATE",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:exif:IsoSpeedRatings": {
+      "type": "internalIntegerSequence",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "ISO_SPEED_RATINGS",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:exif:PixelXDimension": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "PIXEL_X_DIMENSION",
+      "javadoc": "Valid image width; folded into canonical {@link TIFF#IMAGE_WIDTH}. */",
+      "emitted_by": []
+    },
+    "xmp:exif:PixelYDimension": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "PIXEL_Y_DIMENSION",
+      "javadoc": "Valid image height; folded into canonical {@link TIFF#IMAGE_LENGTH}. */",
+      "emitted_by": []
+    },
     "xmp:pdf:About": {
       "type": "externalTextBag",
       "declared_in": "org.apache.tika.metadata.XMPPDF",
@@ -4955,6 +5151,69 @@
       "type": "externalText",
       "declared_in": "org.apache.tika.metadata.XMPPDF",
       "constant_name": "PRODUCER",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff": {
+      "type": "String",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "PREFIX_TIFF",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:BitsPerSample": {
+      "type": "internalIntegerSequence",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "BITS_PER_SAMPLE",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:ImageLength": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "IMAGE_LENGTH",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:ImageWidth": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "IMAGE_WIDTH",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:Make": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "EQUIPMENT_MAKE",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:Model": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "EQUIPMENT_MODEL",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:Orientation": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "ORIENTATION",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:SamplesPerPixel": {
+      "type": "internalInteger",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "SAMPLES_PER_PIXEL",
+      "javadoc": null,
+      "emitted_by": []
+    },
+    "xmp:tiff:Software": {
+      "type": "internalText",
+      "declared_in": "org.apache.tika.metadata.XMPTIFF",
+      "constant_name": "SOFTWARE",
       "javadoc": null,
       "emitted_by": []
     },
@@ -5085,7 +5344,9 @@
       "constant_name": "COPYRIGHT",
       "javadoc": "\"The copyright information.\"",
       "emitted_by": [
-        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox"
+        "org.apache.tika.parser.mp3.Mp3Parser",
+        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox",
+        "org.apache.tika.parser.ogg.OggAudioParser"
       ]
     },
     "xmpDM:discNumber": {
@@ -5095,7 +5356,8 @@
       "javadoc": "\"The disc number for part of an album set.\"",
       "emitted_by": [
         "org.apache.tika.parser.mp3.Mp3Parser",
-        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox"
+        "org.apache.tika.parser.mp4.boxes.TikaUserDataBox",
+        "org.apache.tika.parser.ogg.OggAudioParser"
       ]
     },
     "xmpDM:duration": {
@@ -5364,6 +5626,20 @@
       "javadoc": "Instance id for the document instance that this document was derived from",
       "emitted_by": []
     },
+    "xmpMM:DerivedFrom:OriginalDocumentID": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.XMPMM",
+      "constant_name": "DERIVED_FROM_ORIGINAL_DOCUMENTID",
+      "javadoc": "Original document id of the source this document was derived from. */",
+      "emitted_by": []
+    },
+    "xmpMM:DerivedFrom:RenditionClass": {
+      "type": "externalText",
+      "declared_in": "org.apache.tika.metadata.XMPMM",
+      "constant_name": "DERIVED_FROM_RENDITION_CLASS",
+      "javadoc": "Rendition class of the source this document was derived from. */",
+      "emitted_by": []
+    },
     "xmpMM:DocumentID": {
       "type": "externalText",
       "declared_in": "org.apache.tika.metadata.XMPMM",
@@ -5376,59 +5652,56 @@
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "HISTORY_ACTION",
       "javadoc": "Action in the XMPMM's history section",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.JempboxExtractor",
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
+    },
+    "xmpMM:History:Changed": {
+      "type": "externalTextBag",
+      "declared_in": "org.apache.tika.metadata.XMPMM",
+      "constant_name": "HISTORY_CHANGED",
+      "javadoc": "Part of the resource changed by the action (XMPMM history section). */",
+      "emitted_by": []
     },
     "xmpMM:History:InstanceID": {
       "type": "externalTextBag",
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "HISTORY_EVENT_INSTANCEID",
       "javadoc": "Instance id in the XMPMM's history section",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.JempboxExtractor",
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
+    },
+    "xmpMM:History:Parameters": {
+      "type": "externalTextBag",
+      "declared_in": "org.apache.tika.metadata.XMPMM",
+      "constant_name": "HISTORY_PARAMETERS",
+      "javadoc": "Additional parameters describing the action (XMPMM history section). */",
+      "emitted_by": []
     },
     "xmpMM:History:SoftwareAgent": {
       "type": "externalTextBag",
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "HISTORY_SOFTWARE_AGENT",
       "javadoc": "Software agent that created the action in the XMPMM's history section",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.JempboxExtractor",
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "xmpMM:History:When": {
       "type": "externalTextBag",
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "HISTORY_WHEN",
       "javadoc": "When the action occurred in the XMPMM's history section",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.JempboxExtractor",
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "xmpMM:InstanceID": {
       "type": "externalText",
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "INSTANCEID",
       "javadoc": "An identifier for a specific incarnation of a resource, updated each time a file is saved.",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.JempboxExtractor",
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "xmpMM:OriginalDocumentID": {
       "type": "externalText",
       "declared_in": "org.apache.tika.metadata.XMPMM",
       "constant_name": "ORIGINAL_DOCUMENTID",
       "javadoc": "The common identifier for the original resource from which the current resource is derived. For example, if you save a resource to a different format, then save that one to another format, each save operation should generate a new xmpMM:DocumentID that uniquely identifies the resource in that format, but should retain the ID of the source file here.",
-      "emitted_by": [
-        "org.apache.tika.parser.xmp.XMPMetadataExtractor"
-      ]
+      "emitted_by": []
     },
     "xmpMM:RenditionClass": {
       "type": "externalOpenChoise",
@@ -5657,7 +5930,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 332
+          "line": 333
         }
       ]
     },
@@ -5702,7 +5975,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 213
+          "line": 214
         }
       ]
     },
@@ -5711,7 +5984,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 246
+          "line": 247
         }
       ]
     },
@@ -5720,7 +5993,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 269
+          "line": 270
         }
       ]
     },
@@ -5729,7 +6002,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 256
+          "line": 257
         }
       ]
     },
@@ -5738,7 +6011,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 259
+          "line": 260
         }
       ]
     },
@@ -5747,7 +6020,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 263
+          "line": 264
         }
       ]
     },
@@ -5756,7 +6029,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 253
+          "line": 254
         }
       ]
     },
@@ -5774,7 +6047,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 226
+          "line": 227
         }
       ]
     },
@@ -5783,16 +6056,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 223
-        }
-      ]
-    },
-    "Copyright": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.font.TrueTypeParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java/org/apache/tika/parser/font/TrueTypeParser.java",
-          "line": 106
+          "line": 224
         }
       ]
     },
@@ -5810,7 +6074,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 444
+          "line": 445
         }
       ]
     },
@@ -5819,7 +6083,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 391
+          "line": 392
         }
       ]
     },
@@ -5828,7 +6092,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 400
+          "line": 401
         }
       ]
     },
@@ -5837,7 +6101,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 404
+          "line": 405
         }
       ]
     },
@@ -5869,12 +6133,12 @@
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 233
+          "line": 239
         },
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 297
+          "line": 319
         },
         {
           "class": "org.apache.tika.parser.image.UnicodeQRContentHandler",
@@ -5889,27 +6153,27 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 305
+          "line": 312
         },
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 320
+          "line": 327
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 223
+          "line": 239
         },
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 237
+          "line": 244
         },
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 247
+          "line": 254
         },
         {
           "class": "org.apache.tika.parser.microsoft.UrlShortcutParser",
@@ -5940,15 +6204,6 @@
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
           "line": 151
-        }
-      ]
-    },
-    "File-Type-Description": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.netcdf.NetCDFParser",
-          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/netcdf/NetCDFParser.java",
-          "line": 84
         }
       ]
     },
@@ -6093,7 +6348,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 368
+          "line": 369
         }
       ]
     },
@@ -6102,7 +6357,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 375
+          "line": 376
         }
       ]
     },
@@ -6111,7 +6366,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 361
+          "line": 362
         }
       ]
     },
@@ -6120,7 +6375,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 352
+          "line": 353
         }
       ]
     },
@@ -6129,7 +6384,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 152
+          "line": 157
         }
       ]
     },
@@ -6138,7 +6393,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 151
+          "line": 156
         }
       ]
     },
@@ -6147,7 +6402,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 150
+          "line": 155
         }
       ]
     },
@@ -6156,12 +6411,12 @@
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
-          "line": 198
+          "line": 201
         },
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
-          "line": 202
+          "line": 205
         }
       ]
     },
@@ -6183,39 +6438,12 @@
         }
       ]
     },
-    "IdentificationInfoAbstract ": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
-          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 274
-        }
-      ]
-    },
-    "IdentificationInfoCitationTitle ": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
-          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 237
-        }
-      ]
-    },
-    "IdentificationInfoLanguage-->": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
-          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 289
-        }
-      ]
-    },
     "IdentificationInfoStatus ": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 277
+          "line": 278
         }
       ]
     },
@@ -6224,7 +6452,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 294
+          "line": 295
         }
       ]
     },
@@ -6292,7 +6520,7 @@
         {
           "class": "org.apache.tika.parser.mif.MIFContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/mif/MIFContentHandler.java",
-          "line": 117
+          "line": 118
         }
       ]
     },
@@ -6301,7 +6529,7 @@
         {
           "class": "org.apache.tika.parser.indesign.IDMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/indesign/IDMLParser.java",
-          "line": 117
+          "line": 119
         }
       ]
     },
@@ -6319,7 +6547,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 470
+          "line": 471
         }
       ]
     },
@@ -6328,7 +6556,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 454
+          "line": 455
         }
       ]
     },
@@ -6337,7 +6565,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 482
+          "line": 483
         }
       ]
     },
@@ -6346,7 +6574,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 479
+          "line": 480
         }
       ]
     },
@@ -6378,7 +6606,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 335
+          "line": 336
         }
       ]
     },
@@ -6415,11 +6643,6 @@
           "class": "org.apache.tika.parser.indesign.ContentAndMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/indesign/ContentAndMetadataExtractor.java",
           "line": 83
-        },
-        {
-          "class": "org.apache.tika.parser.mif.MIFContentHandler",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/mif/MIFContentHandler.java",
-          "line": 116
         }
       ]
     },
@@ -6428,7 +6651,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 463
+          "line": 464
         }
       ]
     },
@@ -6437,7 +6660,7 @@
         {
           "class": "org.apache.tika.parser.mif.MIFContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/mif/MIFContentHandler.java",
-          "line": 118
+          "line": 119
         }
       ]
     },
@@ -6446,7 +6669,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 282
+          "line": 283
         }
       ]
     },
@@ -6455,7 +6678,7 @@
         {
           "class": "org.apache.tika.parser.indesign.IDMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/indesign/IDMLParser.java",
-          "line": 116
+          "line": 118
         }
       ]
     },
@@ -6482,7 +6705,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 323
+          "line": 324
         }
       ]
     },
@@ -6498,14 +6721,9 @@
     "TotalPageCount": {
       "emitted_by": [
         {
-          "class": "org.apache.tika.parser.indesign.IDMLParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/indesign/IDMLParser.java",
-          "line": 118
-        },
-        {
           "class": "org.apache.tika.parser.mif.MIFContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java/org/apache/tika/parser/mif/MIFContentHandler.java",
-          "line": 119
+          "line": 120
         }
       ]
     },
@@ -6523,7 +6741,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 427
+          "line": 428
         }
       ]
     },
@@ -6532,7 +6750,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 431
+          "line": 432
         }
       ]
     },
@@ -6541,7 +6759,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 415
+          "line": 416
         }
       ]
     },
@@ -6550,7 +6768,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 424
+          "line": 425
         }
       ]
     },
@@ -6559,7 +6777,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 421
+          "line": 422
         }
       ]
     },
@@ -6568,7 +6786,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 418
+          "line": 419
         }
       ]
     },
@@ -6577,41 +6795,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 338
-        }
-      ]
-    },
-    "X-TIKA:pdf:metadata-xmp-parse-failed": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 98
-        },
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 148
-        },
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 181
-        },
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 197
-        },
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 210
-        },
-        {
-          "class": "org.apache.tika.parser.pdf.PDMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDMetadataExtractor.java",
-          "line": 235
+          "line": 339
         }
       ]
     },
@@ -6677,7 +6861,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 304
+          "line": 336
         }
       ]
     },
@@ -6686,7 +6870,7 @@
         {
           "class": "org.apache.tika.parser.audio.AudioParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/audio/AudioParser.java",
-          "line": 100
+          "line": 99
         }
       ]
     },
@@ -6700,16 +6884,7 @@
         {
           "class": "org.apache.tika.parser.mp3.Mp3Parser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/mp3/Mp3Parser.java",
-          "line": 162
-        }
-      ]
-    },
-    "createdOn": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.mat.MatParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/main/java/org/apache/tika/parser/mat/MatParser.java",
-          "line": 82
+          "line": 163
         }
       ]
     },
@@ -6783,7 +6958,7 @@
         {
           "class": "org.apache.tika.parser.audio.AudioParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/audio/AudioParser.java",
-          "line": 109
+          "line": 108
         }
       ]
     },
@@ -6792,7 +6967,7 @@
         {
           "class": "org.apache.tika.parser.mat.MatParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/main/java/org/apache/tika/parser/mat/MatParser.java",
-          "line": 100
+          "line": 101
         }
       ]
     },
@@ -6819,7 +6994,25 @@
         {
           "class": "org.apache.tika.parser.mat.MatParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/main/java/org/apache/tika/parser/mat/MatParser.java",
-          "line": 92
+          "line": 93
+        }
+      ]
+    },
+    "flv:hasAudio": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.video.FLVParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/video/FLVParser.java",
+          "line": 199
+        }
+      ]
+    },
+    "flv:hasVideo": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.video.FLVParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/video/FLVParser.java",
+          "line": 198
         }
       ]
     },
@@ -6829,21 +7022,6 @@
           "class": "org.apache.tika.parser.mbox.MboxParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java/org/apache/tika/parser/mbox/MboxParser.java",
           "line": 225
-        },
-        {
-          "class": "org.apache.tika.parser.xmp.XMPMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xmp-commons/src/main/java/org/apache/tika/parser/xmp/XMPMetadataExtractor.java",
-          "line": 90
-        },
-        {
-          "class": "org.apache.tika.parser.xmp.XMPMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xmp-commons/src/main/java/org/apache/tika/parser/xmp/XMPMetadataExtractor.java",
-          "line": 90
-        },
-        {
-          "class": "org.apache.tika.parser.xmp.XMPMetadataExtractor",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xmp-commons/src/main/java/org/apache/tika/parser/xmp/XMPMetadataExtractor.java",
-          "line": 90
         }
       ]
     },
@@ -6856,30 +7034,12 @@
         }
       ]
     },
-    "hasAudio": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.video.FLVParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/video/FLVParser.java",
-          "line": 199
-        }
-      ]
-    },
-    "hasVideo": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.video.FLVParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/video/FLVParser.java",
-          "line": 198
-        }
-      ]
-    },
     "html_unicode_qr:glyph_count": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 295
+          "line": 317
         }
       ]
     },
@@ -7444,7 +7604,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 427
+          "line": 434
         }
       ]
     },
@@ -7453,7 +7613,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 405
+          "line": 412
         }
       ]
     },
@@ -7462,7 +7622,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 412
+          "line": 419
         }
       ]
     },
@@ -7471,7 +7631,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 277
+          "line": 284
         }
       ]
     },
@@ -7480,7 +7640,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 268
+          "line": 275
         }
       ]
     },
@@ -7489,7 +7649,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 271
+          "line": 278
         }
       ]
     },
@@ -7498,7 +7658,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 299
+          "line": 306
         }
       ]
     },
@@ -7507,7 +7667,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 281
+          "line": 288
         }
       ]
     },
@@ -7516,7 +7676,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 289
+          "line": 296
         }
       ]
     },
@@ -7525,7 +7685,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 286
+          "line": 293
         }
       ]
     },
@@ -7534,7 +7694,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 294
+          "line": 301
         }
       ]
     },
@@ -7543,7 +7703,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 352
+          "line": 173
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 359
         }
       ]
     },
@@ -7561,7 +7726,25 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 352
+          "line": 378
+        }
+      ]
+    },
+    "netcdf:File-Type-Description": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.netcdf.NetCDFParser",
+          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/netcdf/NetCDFParser.java",
+          "line": 84
+        }
+      ]
+    },
+    "numbers:sheetNames": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.iwork.NumbersContentHandler",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/main/java/org/apache/tika/parser/iwork/NumbersContentHandler.java",
+          "line": 71
         }
       ]
     },
@@ -7787,7 +7970,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDFParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDFParser.java",
-          "line": 735
+          "line": 740
         }
       ]
     },
@@ -7878,7 +8061,7 @@
         {
           "class": "org.apache.tika.parser.mat.MatParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/main/java/org/apache/tika/parser/mat/MatParser.java",
-          "line": 88
+          "line": 89
         }
       ]
     },
@@ -7887,7 +8070,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 215
+          "line": 231
         }
       ]
     },
@@ -7896,7 +8079,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 719
+          "line": 754
         }
       ]
     },
@@ -7905,7 +8088,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 231
+          "line": 247
         }
       ]
     },
@@ -7914,7 +8097,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 696
+          "line": 731
         }
       ]
     },
@@ -7923,7 +8106,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 700
+          "line": 735
         }
       ]
     },
@@ -7932,7 +8115,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 698
+          "line": 733
         }
       ]
     },
@@ -7941,7 +8124,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 697
+          "line": 732
         }
       ]
     },
@@ -7950,7 +8133,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 695
+          "line": 730
         }
       ]
     },
@@ -7959,7 +8142,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 699
+          "line": 734
         }
       ]
     },
@@ -7973,7 +8156,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 234
+          "line": 250
         }
       ]
     },
@@ -7982,7 +8165,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 419
+          "line": 426
         }
       ]
     },
@@ -7991,7 +8174,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 400
+          "line": 407
         }
       ]
     },
@@ -8000,7 +8183,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 392
+          "line": 399
         }
       ]
     },
@@ -8009,7 +8192,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 418
+          "line": 425
         }
       ]
     },
@@ -8018,7 +8201,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 414
+          "line": 421
         }
       ]
     },
@@ -8027,17 +8210,17 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 347
+          "line": 354
         },
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 423
+          "line": 430
         },
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 436
+          "line": 443
         }
       ]
     },
@@ -8046,7 +8229,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 194
+          "line": 201
         }
       ]
     },
@@ -8055,7 +8238,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 199
+          "line": 206
         }
       ]
     },
@@ -8064,7 +8247,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 198
+          "line": 205
         }
       ]
     },
@@ -8073,7 +8256,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 201
+          "line": 208
         }
       ]
     },
@@ -8082,7 +8265,16 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 207
+          "line": 214
+        }
+      ]
+    },
+    "rdp:warning": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.RdpParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
+          "line": 169
         }
       ]
     },
@@ -8091,7 +8283,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.rtf.TextExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/rtf/TextExtractor.java",
-          "line": 605
+          "line": 610
         }
       ]
     },
@@ -8100,7 +8292,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.rtf.TextExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/rtf/TextExtractor.java",
-          "line": 604
+          "line": 609
         }
       ]
     },
@@ -8109,7 +8301,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.rtf.TextExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/rtf/TextExtractor.java",
-          "line": 614
+          "line": 619
         }
       ]
     },
@@ -8118,21 +8310,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.rtf.TextExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/rtf/TextExtractor.java",
-          "line": 606
-        }
-      ]
-    },
-    "samplerate": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.audio.AudioParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/audio/AudioParser.java",
-          "line": 95
-        },
-        {
-          "class": "org.apache.tika.parser.mp3.Mp3Parser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/mp3/Mp3Parser.java",
-          "line": 161
+          "line": 611
         }
       ]
     },
@@ -8142,15 +8320,6 @@
           "class": "org.apache.tika.parser.tmx.TMXContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/tmx/TMXContentHandler.java",
           "line": 64
-        }
-      ]
-    },
-    "sheetNames": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.iwork.NumbersContentHandler",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/main/java/org/apache/tika/parser/iwork/NumbersContentHandler.java",
-          "line": 72
         }
       ]
     },
@@ -8484,21 +8653,12 @@
         }
       ]
     },
-    "vendor": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.ogg.OggAudioParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/ogg/OggAudioParser.java",
-          "line": 81
-        }
-      ]
-    },
     "version": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.mp3.Mp3Parser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/mp3/Mp3Parser.java",
-          "line": 163
+          "line": 164
         },
         {
           "class": "org.apache.tika.parser.ogg.FlacParser",
@@ -8528,6 +8688,15 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
+          "line": 116
+        }
+      ]
+    },
+    "vorbis:vendor": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.ogg.OggAudioParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/ogg/OggAudioParser.java",
           "line": 98
         }
       ]
@@ -8537,7 +8706,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 156
+          "line": 163
         }
       ]
     },
@@ -8546,7 +8715,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 158
+          "line": 165
         }
       ]
     }
@@ -8613,7 +8782,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 385
+          "line": 392
         }
       ]
     },
@@ -8624,7 +8793,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 384
+          "line": 391
         }
       ]
     },
@@ -8635,7 +8804,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 369
+          "line": 376
         }
       ]
     },
@@ -8646,7 +8815,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 373
+          "line": 380
         }
       ]
     },
@@ -8657,7 +8826,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 371
+          "line": 378
         }
       ]
     },
@@ -8668,7 +8837,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 370
+          "line": 377
         }
       ]
     },
@@ -8679,7 +8848,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 368
+          "line": 375
         }
       ]
     },
@@ -8690,7 +8859,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 380
+          "line": 387
         }
       ]
     },
@@ -8715,7 +8884,7 @@
         {
           "class": "org.apache.tika.parser.image.ImageMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ImageMetadataExtractor.java",
-          "line": 299
+          "line": 297
         }
       ]
     },
@@ -8726,7 +8895,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 303
+          "line": 304
         }
       ]
     },
@@ -8737,7 +8906,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 306
+          "line": 307
         }
       ]
     },
@@ -8832,7 +9001,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.OutlookExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OutlookExtractor.java",
-          "line": 270
+          "line": 269
         }
       ]
     },
@@ -8858,7 +9027,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 157
+          "line": 162
         }
       ]
     },
@@ -8869,7 +9038,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 156
+          "line": 161
         }
       ]
     },
@@ -8880,7 +9049,7 @@
         {
           "class": "org.apache.tika.parser.geo.topic.GeoParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/geo/topic/GeoParser.java",
-          "line": 155
+          "line": 160
         }
       ]
     },
@@ -8901,7 +9070,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 314
+          "line": 315
         }
       ]
     },
@@ -8912,7 +9081,7 @@
         {
           "class": "org.apache.tika.parser.geoinfo.GeographicInformationParser",
           "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/geoinfo/GeographicInformationParser.java",
-          "line": 309
+          "line": 310
         }
       ]
     },
@@ -9132,32 +9301,37 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 403
+          "line": 447
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 411
+          "line": 460
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 419
+          "line": 462
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 425
+          "line": 471
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 429
+          "line": 477
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
-          "line": 434
+          "line": 481
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.ooxml.SAXBasedMetadataExtractor",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/SAXBasedMetadataExtractor.java",
+          "line": 493
         }
       ]
     },
@@ -9203,6 +9377,16 @@
         {
           "class": "DWG.DWG_PREFIX",
           "auto_registered_from_constant": true
+        },
+        {
+          "class": "org.apache.tika.parser.dwg.DWGReadParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/main/java/org/apache/tika/parser/dwg/DWGReadParser.java",
+          "line": 297
+        },
+        {
+          "class": "org.apache.tika.parser.dwg.DWGReadParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/main/java/org/apache/tika/parser/dwg/DWGReadParser.java",
+          "line": 350
         }
       ]
     },
@@ -9237,6 +9421,17 @@
         }
       ]
     },
+    "flv:*": {
+      "prefix": "flv:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.video.FLVParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/video/FLVParser.java",
+          "line": 248
+        }
+      ]
+    },
     "fs:*": {
       "prefix": "fs:",
       "suffix": null,
@@ -9258,6 +9453,17 @@
         }
       ]
     },
+    "grib:*": {
+      "prefix": "grib:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.grib.GribParser",
+          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/grib/GribParser.java",
+          "line": 137
+        }
+      ]
+    },
     "grobid:header_*": {
       "prefix": "grobid:header_",
       "suffix": null,
@@ -9265,7 +9471,7 @@
         {
           "class": "org.apache.tika.parser.journal.GrobidRESTParser",
           "file": "tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java/org/apache/tika/parser/journal/GrobidRESTParser.java",
-          "line": 109
+          "line": 113
         }
       ]
     },
@@ -9280,17 +9486,17 @@
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
-          "line": 145
+          "line": 148
         },
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
-          "line": 224
+          "line": 227
         },
         {
           "class": "org.apache.tika.parser.html.HtmlHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlHandler.java",
-          "line": 231
+          "line": 234
         }
       ]
     },
@@ -9320,7 +9526,7 @@
         {
           "class": "org.apache.tika.pipes.fetcher.http.HttpFetcher",
           "file": "tika-pipes/tika-pipes-plugins/tika-pipes-http/src/main/java/org/apache/tika/pipes/fetcher/http/HttpFetcher.java",
-          "line": 385
+          "line": 384
         }
       ]
     },
@@ -9346,12 +9552,12 @@
         {
           "class": "org.apache.tika.parser.image.ImageMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ImageMetadataExtractor.java",
-          "line": 297
+          "line": 295
         },
         {
           "class": "org.apache.tika.parser.image.ImageMetadataExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/ImageMetadataExtractor.java",
-          "line": 301
+          "line": 299
         },
         {
           "class": "org.apache.tika.parser.image.ImageParser",
@@ -9466,6 +9672,28 @@
         }
       ]
     },
+    "netcdf:*": {
+      "prefix": "netcdf:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.netcdf.NetCDFParser",
+          "file": "tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java/org/apache/tika/parser/netcdf/NetCDFParser.java",
+          "line": 145
+        }
+      ]
+    },
+    "numbers:*": {
+      "prefix": "numbers:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.iwork.NumbersContentHandler",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/main/java/org/apache/tika/parser/iwork/NumbersContentHandler.java",
+          "line": 229
+        }
+      ]
+    },
     "ocr-*": {
       "prefix": "ocr-",
       "suffix": null,
@@ -9563,7 +9791,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 203
+          "line": 219
         }
       ]
     },
@@ -9584,7 +9812,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/RdpParser.java",
-          "line": 179
+          "line": 186
         }
       ]
     },
@@ -9771,6 +9999,17 @@
         }
       ]
     },
+    "vorbis:*": {
+      "prefix": "vorbis:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.ogg.OggAudioParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java/org/apache/tika/parser/ogg/OggAudioParser.java",
+          "line": 121
+        }
+      ]
+    },
     "w*": {
       "prefix": "w",
       "suffix": null,
@@ -9818,6 +10057,21 @@
         {
           "class": "QuattroPro.QUATTROPRO_METADATA_NAME_PREFIX",
           "auto_registered_from_constant": true
+        }
+      ]
+    },
+    "xmp-raw:*": {
+      "prefix": "xmp-raw:",
+      "suffix": null,
+      "emitted_by": [
+        {
+          "class": "XmpExtractor.RAW_PREFIX",
+          "auto_registered_from_constant": true
+        },
+        {
+          "class": "org.apache.tika.parser.xmp.XmpExtractor",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xmp-commons/src/main/java/org/apache/tika/parser/xmp/XmpExtractor.java",
+          "line": 428
         }
       ]
     },
@@ -10124,7 +10378,6 @@
         "bits",
         "channels",
         "encoding",
-        "samplerate",
         "xmpDM:audioSampleRate",
         "xmpDM:audioSampleType"
       ]
@@ -10142,6 +10395,12 @@
         "Content-Encoding",
         "Content-Type",
         "LoC"
+      ]
+    },
+    "org.apache.tika.parser.crypto.Pkcs7Parser": {
+      "emits": [
+        "Content-Type",
+        "X-TIKA:EXCEPTION:warn"
       ]
     },
     "org.apache.tika.parser.crypto.TSDParser": {
@@ -10185,6 +10444,7 @@
     "org.apache.tika.parser.dwg.DWGReadParser": {
       "emits": [
         "X-TIKA:resourceName",
+        "dwg:*",
         "dwg:applicationComment",
         "dwg:applicationName",
         "dwg:applicationVersion",
@@ -10246,7 +10506,6 @@
     "org.apache.tika.parser.font.TrueTypeParser": {
       "emits": [
         "Content-Type",
-        "Copyright",
         "DocVersion",
         "FontFamilyName",
         "FontName",
@@ -10298,9 +10557,6 @@
         "GeographicIdentifierAuthorityDate ",
         "GeographicIdentifierAuthorityTitle ",
         "GeographicIdentifierCode ",
-        "IdentificationInfoAbstract ",
-        "IdentificationInfoCitationTitle ",
-        "IdentificationInfoLanguage-->",
         "IdentificationInfoStatus ",
         "IdentificationInfoTopicCategory-->",
         "Keywords *",
@@ -10326,7 +10582,8 @@
     },
     "org.apache.tika.parser.grib.GribParser": {
       "emits": [
-        "Content-Type"
+        "Content-Type",
+        "grib:*"
       ]
     },
     "org.apache.tika.parser.html.HtmlHandler": {
@@ -10345,6 +10602,7 @@
         "Content-Encoding",
         "Content-Type",
         "ExploitClass",
+        "X-TIKA:decodedCharset",
         "html_unicode_qr:glyph_count"
       ]
     },
@@ -10439,7 +10697,7 @@
         "Content-Type",
         "MasterSpreadPageCount",
         "SpreadPageCount",
-        "TotalPageCount"
+        "meta:page-count"
       ]
     },
     "org.apache.tika.parser.iptc.IptcAnpaParser": {
@@ -10464,7 +10722,8 @@
     "org.apache.tika.parser.iwork.NumbersContentHandler": {
       "emits": [
         "meta:page-count",
-        "sheetNames"
+        "numbers:*",
+        "numbers:sheetNames"
       ]
     },
     "org.apache.tika.parser.iwork.PagesContentHandler": {
@@ -10525,10 +10784,15 @@
         "embeddedResourceType"
       ]
     },
+    "org.apache.tika.parser.markdown.MarkdownParser": {
+      "emits": [
+        "Content-Encoding",
+        "Content-Type"
+      ]
+    },
     "org.apache.tika.parser.mat.MatParser": {
       "emits": [
         "Content-Type",
-        "createdOn",
         "endian",
         "fileType",
         "platform"
@@ -10565,6 +10829,7 @@
     },
     "org.apache.tika.parser.microsoft.ExcelExtractor": {
       "emits": [
+        "embeddedResourceType",
         "msoffice:comment-person-display-name",
         "msoffice:excel:has-hidden-cols",
         "msoffice:excel:has-hidden-rows",
@@ -10699,6 +10964,7 @@
     },
     "org.apache.tika.parser.microsoft.OutlookExtractor": {
       "emits": [
+        "Content-Type-Hint",
         "Message-Bcc",
         "Message-Cc",
         "Message-From",
@@ -10767,7 +11033,8 @@
         "rdp:signature_sha1",
         "rdp:signature_sha256",
         "rdp:signature_warning",
-        "rdp:signscope_but_missing_sig"
+        "rdp:signscope_but_missing_sig",
+        "rdp:warning"
       ]
     },
     "org.apache.tika.parser.microsoft.SummaryExtractor": {
@@ -11100,9 +11367,9 @@
     "org.apache.tika.parser.mif.MIFContentHandler": {
       "emits": [
         "MasterPageCount",
-        "PageCount",
         "ReferencePageCount",
-        "TotalPageCount"
+        "TotalPageCount",
+        "meta:page-count"
       ]
     },
     "org.apache.tika.parser.mif.MIFParser": {
@@ -11114,8 +11381,11 @@
     "org.apache.tika.parser.mp3.Mp3Parser": {
       "emits": [
         "Content-Type",
+        "audio:disc-count",
+        "audio:raw-disc-number",
+        "audio:raw-track-number",
+        "audio:track-count",
         "channels",
-        "samplerate",
         "version",
         "xmpDM:album",
         "xmpDM:albumArtist",
@@ -11125,6 +11395,7 @@
         "xmpDM:audioSampleRate",
         "xmpDM:compilation",
         "xmpDM:composer",
+        "xmpDM:copyright",
         "xmpDM:discNumber",
         "xmpDM:duration",
         "xmpDM:genre",
@@ -11142,8 +11413,15 @@
         "xmpDM:videoCompressor"
       ]
     },
+    "org.apache.tika.parser.mp4.TikaMp4MetaHandler": {
+      "emits": [
+        "quicktime:still-image-time"
+      ]
+    },
     "org.apache.tika.parser.mp4.boxes.TikaUserDataBox": {
       "emits": [
+        "audio:disc-count",
+        "audio:track-count",
         "xmp:CreatorTool",
         "xmp:Identifier",
         "xmpDM:album",
@@ -11166,7 +11444,8 @@
     },
     "org.apache.tika.parser.netcdf.NetCDFParser": {
       "emits": [
-        "File-Type-Description"
+        "netcdf:*",
+        "netcdf:File-Type-Description"
       ]
     },
     "org.apache.tika.parser.ocr.ImagePreprocessor": {
@@ -11216,11 +11495,18 @@
     },
     "org.apache.tika.parser.ogg.OggAudioParser": {
       "emits": [
-        "vendor",
+        "audio:disc-count",
+        "audio:raw-disc-number",
+        "audio:raw-track-number",
+        "audio:track-count",
+        "vorbis:*",
+        "vorbis:vendor",
         "xmp:CreatorTool",
         "xmpDM:album",
         "xmpDM:artist",
         "xmpDM:audioChannelType",
+        "xmpDM:copyright",
+        "xmpDM:discNumber",
         "xmpDM:duration",
         "xmpDM:genre",
         "xmpDM:releaseDate",
@@ -11343,6 +11629,7 @@
         "pdf:hasAcroFormFields",
         "pdf:hasCollection",
         "pdf:hasMarkedContent",
+        "pdf:hasSignatureFields",
         "pdf:hasXFA",
         "signature:date",
         "xmpTPg:NPages"
@@ -11350,21 +11637,8 @@
     },
     "org.apache.tika.parser.pdf.PDMetadataExtractor": {
       "emits": [
-        "X-TIKA:EXCEPTION:warn",
-        "X-TIKA:pdf:metadata-xmp-parse-failed",
         "pdf:hasXMP",
-        "pdf:illustrator:type",
-        "pdfa:PDFVersion",
-        "pdfaid:conformance",
-        "pdfaid:part",
-        "pdfuaid:part",
-        "pdfvt:modified",
-        "pdfvt:version",
-        "pdfx:conformance",
-        "pdfx:version",
-        "pdfxid:version",
-        "xmp:Advisory",
-        "xmp:Identifier"
+        "pdfa:PDFVersion"
       ]
     },
     "org.apache.tika.parser.pdf.image.ImageGraphicsEngine": {
@@ -11404,6 +11678,7 @@
       "emits": [
         "Content-Length",
         "Content-Type",
+        "Content-Type-Hint",
         "X-TIKA:internalPath",
         "X-TIKA:resourceName",
         "zip:centralDirectoryOnlyEntries",
@@ -11475,8 +11750,9 @@
     "org.apache.tika.parser.video.FLVParser": {
       "emits": [
         "Content-Type",
-        "hasAudio",
-        "hasVideo"
+        "flv:*",
+        "flv:hasAudio",
+        "flv:hasVideo"
       ]
     },
     "org.apache.tika.parser.wacz.WACZParser": {
@@ -11555,24 +11831,9 @@
         "svg:link"
       ]
     },
-    "org.apache.tika.parser.xmp.JempboxExtractor": {
+    "org.apache.tika.parser.xmp.XmpExtractor": {
       "emits": [
-        "xmpMM:History:Action",
-        "xmpMM:History:InstanceID",
-        "xmpMM:History:SoftwareAgent",
-        "xmpMM:History:When",
-        "xmpMM:InstanceID"
-      ]
-    },
-    "org.apache.tika.parser.xmp.XMPMetadataExtractor": {
-      "emits": [
-        "format",
-        "xmpMM:History:Action",
-        "xmpMM:History:InstanceID",
-        "xmpMM:History:SoftwareAgent",
-        "xmpMM:History:When",
-        "xmpMM:InstanceID",
-        "xmpMM:OriginalDocumentID"
+        "xmp-raw:*"
       ]
     },
     "org.apache.tika.pipes.core.server.ParseHandler": {
@@ -11585,6 +11846,11 @@
         "X-TIKA:EXCEPTION:write_limit_reached",
         "X-TIKA:content",
         "X-TIKA:content_handler_type"
+      ]
+    },
+    "org.apache.tika.pipes.core.server.PipesWorker": {
+      "emits": [
+        "X-TIKA:resourceName"
       ]
     },
     "org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher": {
