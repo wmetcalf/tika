@@ -19,6 +19,8 @@ package org.apache.tika.config.loader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -141,8 +143,8 @@ public abstract class AbstractSpiComponentLoader<T> implements ComponentLoader<T
     // ==================== Abstract methods for subclasses ====================
 
     /**
-     * Load a single component from config.
-     * Subclasses can apply decorations (e.g., mime filtering for parsers).
+     * Load a single component from config. The default instantiates the named component from its
+     * config; subclasses override to apply decorations (e.g., mime filtering for parsers).
      *
      * @param name the component name (friendly name or FQCN)
      * @param configNode the JSON configuration for this component
@@ -150,8 +152,10 @@ public abstract class AbstractSpiComponentLoader<T> implements ComponentLoader<T
      * @return the loaded component
      * @throws TikaConfigException if loading fails
      */
-    protected abstract T loadComponent(String name, JsonNode configNode,
-                                        LoaderContext context) throws TikaConfigException;
+    protected T loadComponent(String name, JsonNode configNode,
+                              LoaderContext context) throws TikaConfigException {
+        return context.instantiate(name, configNode);
+    }
 
     /**
      * Create the SPI-backed default composite with exclusions.
@@ -241,11 +245,24 @@ public abstract class AbstractSpiComponentLoader<T> implements ComponentLoader<T
 
     // ==================== Shared implementation ====================
 
+    /**
+     * The set of keys permitted inside a marker config (e.g., inside
+     * {@code default-parser}). Subclasses extend this when they consume additional
+     * framework-level decorators on the marker.
+     * <p>
+     * Default: just {@code "exclude"}. ParserLoader adds the mime-filter decorators.
+     */
+    protected Set<String> getAllowedMarkerKeys() {
+        return Set.of("exclude");
+    }
+
     private DefaultMarkerConfig<T> findDefaultMarker(List<Map.Entry<String, JsonNode>> entries,
-                                                      LoaderContext context) {
+                                                      LoaderContext context)
+            throws TikaConfigException {
         int index = 0;
         for (Map.Entry<String, JsonNode> entry : entries) {
             if (defaultMarkerName.equals(entry.getKey())) {
+                validateMarkerKeys(entry.getValue());
                 Set<Class<? extends T>> exclusions =
                         parseExclusions(entry.getValue(), context);
                 return new DefaultMarkerConfig<>(true, index, exclusions, entry.getValue());
@@ -253,6 +270,34 @@ public abstract class AbstractSpiComponentLoader<T> implements ComponentLoader<T
             index++;
         }
         return new DefaultMarkerConfig<>(false, -1, Collections.emptySet(), null);
+    }
+
+    /**
+     * Rejects any unknown key inside a marker's config. The marker schema is fixed
+     * and tiny — silently ignoring an unrecognized key (e.g., {@code _exclude}
+     * instead of {@code exclude}) means the directive is dropped on the floor and
+     * the user only discovers it at runtime, if at all.
+     */
+    private void validateMarkerKeys(JsonNode markerConfig) throws TikaConfigException {
+        if (markerConfig == null || !markerConfig.isObject()) {
+            return;
+        }
+        Set<String> allowed = getAllowedMarkerKeys();
+        Set<String> unknown = new LinkedHashSet<>();
+        Iterator<String> it = markerConfig.fieldNames();
+        while (it.hasNext()) {
+            String key = it.next();
+            if (!allowed.contains(key)) {
+                unknown.add(key);
+            }
+        }
+        if (!unknown.isEmpty()) {
+            throw new TikaConfigException(
+                    "Unknown key(s) " + unknown + " inside '" + defaultMarkerName
+                            + "'. Allowed keys: " + allowed
+                            + ". (Did you mean 'exclude'? The leading-underscore form"
+                            + " '_exclude' is not recognized.)");
+        }
     }
 
     @SuppressWarnings("unchecked")

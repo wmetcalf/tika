@@ -42,9 +42,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.asarkar.grpc.test.GrpcCleanupExtension;
 import com.asarkar.grpc.test.Resources;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableMap;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
@@ -62,21 +65,33 @@ import org.apache.tika.DeleteFetcherReply;
 import org.apache.tika.DeleteFetcherRequest;
 import org.apache.tika.FetchAndParseReply;
 import org.apache.tika.FetchAndParseRequest;
+import org.apache.tika.GetFetcherConfigJsonSchemaReply;
+import org.apache.tika.GetFetcherConfigJsonSchemaRequest;
 import org.apache.tika.GetFetcherReply;
 import org.apache.tika.GetFetcherRequest;
+import org.apache.tika.ListFetchersReply;
+import org.apache.tika.ListFetchersRequest;
 import org.apache.tika.SaveFetcherReply;
 import org.apache.tika.SaveFetcherRequest;
+import org.apache.tika.SavePipesIteratorReply;
+import org.apache.tika.SavePipesIteratorRequest;
 import org.apache.tika.TikaGrpc;
-import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.pipes.api.PipesResult;
 import org.apache.tika.pipes.fetcher.fs.FileSystemFetcher;
+import org.apache.tika.serialization.config.JsonConfigHelper;
 
 @ExtendWith(GrpcCleanupExtension.class)
 public class TikaGrpcServerTest {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Logger LOG = LoggerFactory.getLogger(TikaGrpcServerTest.class);
     public static final int NUM_TEST_DOCS = 2;
+    // Secure-default config: no "grpc" section, so per-request config and runtime
+    // component modifications are both disabled. Used by the default-deny tests.
     static Path tikaConfig = Paths.get("target", "tika-config-" + UUID.randomUUID() + ".json");
+    // Same config but with the dangerous grpc features explicitly enabled. Used by
+    // the CRUD/streaming tests, which save fetchers at runtime.
+    static Path tikaConfigUnlocked =
+            Paths.get("target", "tika-config-unlocked-" + UUID.randomUUID() + ".json");
 
 
     @BeforeAll
@@ -102,12 +117,24 @@ public class TikaGrpcServerTest {
                 TikaGrpcServerTest.class, replacements, tikaConfig);
 
         LOG.debug("Written config to: {}", tikaConfig.toAbsolutePath());
+
+        // Derive an "unlocked" variant that opts in to the dangerous grpc features,
+        // for the tests that add/modify fetchers at runtime.
+        ObjectNode root = (ObjectNode) OBJECT_MAPPER.readTree(tikaConfig.toFile());
+        ObjectNode grpc = OBJECT_MAPPER.createObjectNode();
+        grpc.put("allowComponentManagement", true);
+        grpc.put("allowPerRequestConfig", true);
+        root.set("grpc", grpc);
+        FileUtils.write(tikaConfigUnlocked.toFile(),
+                OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root),
+                StandardCharsets.UTF_8);
     }
 
     @AfterAll
     static void clean() {
         try {
             Files.deleteIfExists(tikaConfig);
+            Files.deleteIfExists(tikaConfigUnlocked);
         } catch (Exception e) {
             LOG.warn("Failed to delete {}", tikaConfig, e);
         }
@@ -122,7 +149,7 @@ public class TikaGrpcServerTest {
         Server server = InProcessServerBuilder
                 .forName(serverName)
                 .directExecutor()
-                .addService(new TikaGrpcServerImpl(tikaConfig.toAbsolutePath().toString()))
+                .addService(new TikaGrpcServerImpl(tikaConfigUnlocked.toAbsolutePath().toString()))
                 .build()
                 .start();
         resources.register(server, Duration.ofSeconds(10));
@@ -141,7 +168,7 @@ public class TikaGrpcServerTest {
             SaveFetcherReply reply = blockingStub.saveFetcher(SaveFetcherRequest
                     .newBuilder()
                     .setFetcherId(fetcherId)
-                    .setFetcherClass(FileSystemFetcher.class.getName())
+                    .setFetcherType("file-system-fetcher")
                     .setFetcherConfigJson(OBJECT_MAPPER.writeValueAsString(ImmutableMap
                             .builder()
                             .put("basePath", targetFolder)
@@ -156,7 +183,7 @@ public class TikaGrpcServerTest {
             SaveFetcherReply reply = blockingStub.saveFetcher(SaveFetcherRequest
                     .newBuilder()
                     .setFetcherId(fetcherId)
-                    .setFetcherClass(FileSystemFetcher.class.getName())
+                    .setFetcherType("file-system-fetcher")
                     .setFetcherConfigJson(OBJECT_MAPPER.writeValueAsString(ImmutableMap
                             .builder()
                             .put("basePath", targetFolder)
@@ -181,7 +208,7 @@ public class TikaGrpcServerTest {
                     .setFetcherId(fetcherId)
                     .build());
             assertEquals(fetcherId, getFetcherReply.getFetcherId());
-            assertEquals(FileSystemFetcher.class.getName(), getFetcherReply.getFetcherClass());
+            assertEquals("file-system-fetcher", getFetcherReply.getFetcherType());
         }
 
         // delete fetchers
@@ -202,10 +229,159 @@ public class TikaGrpcServerTest {
     }
 
     @Test
+    public void testComponentManagementDeniedByDefault(Resources resources) throws Exception {
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfig);
+
+        String targetFolder = new File("target").getAbsolutePath();
+        StatusRuntimeException saveEx = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.saveFetcher(SaveFetcherRequest
+                        .newBuilder()
+                        .setFetcherId(createFetcherId(0))
+                        .setFetcherType("file-system-fetcher")
+                        .setFetcherConfigJson(OBJECT_MAPPER.writeValueAsString(ImmutableMap
+                                .builder()
+                                .put("basePath", targetFolder)
+                                .build()))
+                        .build()));
+        assertEquals(Status.Code.PERMISSION_DENIED, saveEx.getStatus().getCode());
+
+        StatusRuntimeException deleteEx = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.deleteFetcher(DeleteFetcherRequest
+                        .newBuilder()
+                        .setFetcherId(createFetcherId(0))
+                        .build()));
+        assertEquals(Status.Code.PERMISSION_DENIED, deleteEx.getStatus().getCode());
+    }
+
+    @Test
+    public void testPerRequestConfigDeniedByDefault(Resources resources) throws Exception {
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfig);
+
+        // The per-request config gate fires before any fetch, so this never reaches the network.
+        StatusRuntimeException ex = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.fetchAndParse(FetchAndParseRequest
+                        .newBuilder()
+                        .setFetcherId("httpFetcherIdHere")
+                        .setFetchKey("https://example.com")
+                        .setParseContextJson("{\"basic-content-handler-factory\":{\"type\":\"HTML\"}}")
+                        .build()));
+        assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    }
+
+    @Test
+    public void testComponentManagementHidesConfigByDefault(Resources resources) throws Exception {
+        // With component management off (the default), the read RPCs must return component identity
+        // only -- never the stored config, which can carry secrets (passwords, access keys, ...).
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfig);
+
+        GetFetcherReply reply = blockingStub.getFetcher(GetFetcherRequest
+                .newBuilder()
+                .setFetcherId(createFetcherId(1))
+                .build());
+        assertEquals(createFetcherId(1), reply.getFetcherId());
+        Assertions.assertFalse(reply.getFetcherType().isEmpty(),
+                "identity (type) should still be returned");
+        Assertions.assertTrue(reply.getParamsMap().isEmpty(),
+                "config params must NOT be returned when component management is off");
+
+        ListFetchersReply listReply =
+                blockingStub.listFetchers(ListFetchersRequest.newBuilder().build());
+        Assertions.assertFalse(listReply.getGetFetcherRepliesList().isEmpty(),
+                "fetchers should still be listed by identity");
+        for (GetFetcherReply f : listReply.getGetFetcherRepliesList()) {
+            Assertions.assertTrue(f.getParamsMap().isEmpty(),
+                    "listFetchers must not leak config for " + f.getFetcherId());
+        }
+    }
+
+    @Test
+    public void testFetcherConfigJsonSchemaRejectsUnknownType(Resources resources)
+            throws Exception {
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfig);
+        // The schema RPC only resolves config classes from registered fetcher factories: an
+        // unknown type is rejected outright, and no arbitrary class is ever loaded.
+        StatusRuntimeException ex = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.getFetcherConfigJsonSchema(GetFetcherConfigJsonSchemaRequest
+                        .newBuilder()
+                        .setFetcherType("no-such-fetcher")
+                        .build()));
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+
+        // A registered fetcher type still yields a schema.
+        GetFetcherConfigJsonSchemaReply ok = blockingStub.getFetcherConfigJsonSchema(
+                GetFetcherConfigJsonSchemaRequest
+                        .newBuilder()
+                        .setFetcherType("file-system-fetcher")
+                        .build());
+        Assertions.assertFalse(ok.getFetcherConfigJsonSchema().isEmpty(),
+                "a registered fetcher type should still produce a schema");
+    }
+
+    @Test
+    public void testSavePipesIteratorDeniedByDefault(Resources resources) throws Exception {
+        // savePipesIterator is component management: it must be denied when the grpc
+        // feature is off (the secure default), just like saveFetcher.
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfig);
+        StatusRuntimeException ex = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.savePipesIterator(SavePipesIteratorRequest
+                        .newBuilder()
+                        .setIteratorId("it0")
+                        .setIteratorType("file-system-pipes-iterator")
+                        .setIteratorConfigJson("{}")
+                        .build()));
+        assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    }
+
+    @Test
+    public void testSavePipesIteratorValidatesType(Resources resources) throws Exception {
+        // Even with component management enabled, an unknown iterator type must be rejected
+        // up front (mirroring saveFetcher) rather than poisoning the shared ConfigStore with
+        // an unvalidated entry that only fails later.
+        TikaGrpc.TikaBlockingStub blockingStub = startServer(resources, tikaConfigUnlocked);
+
+        StatusRuntimeException ex = Assertions.assertThrows(StatusRuntimeException.class, () ->
+                blockingStub.savePipesIterator(SavePipesIteratorRequest
+                        .newBuilder()
+                        .setIteratorId("bogus")
+                        .setIteratorType("no-such-iterator")
+                        .setIteratorConfigJson("{}")
+                        .build()));
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+
+        // A registered iterator type still saves successfully.
+        SavePipesIteratorReply reply = blockingStub.savePipesIterator(SavePipesIteratorRequest
+                .newBuilder()
+                .setIteratorId("fs-it")
+                .setIteratorType("file-system-pipes-iterator")
+                .setIteratorConfigJson("{\"basePath\":\"" + new File("target").getAbsolutePath().replace("\\", "\\\\") + "\"}")
+                .build());
+        assertNotNull(reply.getMessage());
+    }
+
+    private static TikaGrpc.TikaBlockingStub startServer(Resources resources, Path config)
+            throws Exception {
+        String serverName = InProcessServerBuilder.generateName();
+        Server server = InProcessServerBuilder
+                .forName(serverName)
+                .directExecutor()
+                .addService(new TikaGrpcServerImpl(config.toAbsolutePath().toString()))
+                .build()
+                .start();
+        resources.register(server, Duration.ofSeconds(10));
+
+        ManagedChannel channel = InProcessChannelBuilder
+                .forName(serverName)
+                .directExecutor()
+                .build();
+        resources.register(channel, Duration.ofSeconds(10));
+        return TikaGrpc.newBlockingStub(channel);
+    }
+
+    @Test
     public void testBiStream(Resources resources) throws Exception {
         String serverName = InProcessServerBuilder.generateName();
 
-        TikaGrpcServerImpl tikaGrpcServerImpl = new TikaGrpcServerImpl(tikaConfig.toAbsolutePath().toString());
+        TikaGrpcServerImpl tikaGrpcServerImpl = new TikaGrpcServerImpl(tikaConfigUnlocked.toAbsolutePath().toString());
         Server server = InProcessServerBuilder
                 .forName(serverName)
                 .directExecutor()
@@ -227,7 +403,7 @@ public class TikaGrpcServerTest {
         SaveFetcherReply reply = blockingStub.saveFetcher(SaveFetcherRequest
                 .newBuilder()
                 .setFetcherId(fetcherId)
-                .setFetcherClass(FileSystemFetcher.class.getName())
+                .setFetcherType("file-system-fetcher")
                 .setFetcherConfigJson(OBJECT_MAPPER.writeValueAsString(ImmutableMap
                         .builder()
                         .put("basePath", targetFolder)

@@ -33,7 +33,7 @@ import org.apache.pdfbox.tools.imageio.ImageIOUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
@@ -202,7 +202,7 @@ public class PDFBoxRenderer implements PDDocumentRenderer {
         if (pdfParserConfig == null) {
             return defaultDPI;
         }
-        return pdfParserConfig.getOcrDPI();
+        return pdfParserConfig.getOcr().getDpi();
     }
 
     protected ImageType getImageType(ParseContext parseContext) {
@@ -210,7 +210,7 @@ public class PDFBoxRenderer implements PDDocumentRenderer {
         if (pdfParserConfig == null) {
             return defaultImageType;
         }
-        return pdfParserConfig.getOcrImageType().getPdfBoxImageType();
+        return pdfParserConfig.getOcr().getImageType().getPdfBoxImageType();
     }
 
     protected String getImageFormatName(ParseContext parseContext) {
@@ -218,6 +218,6 @@ public class PDFBoxRenderer implements PDDocumentRenderer {
         if (pdfParserConfig == null) {
             return defaultImageFormatName;
         }
-        return pdfParserConfig.getOcrImageFormat().getFormatName();
+        return pdfParserConfig.getOcr().getImageFormat().getFormatName();
     }
 }

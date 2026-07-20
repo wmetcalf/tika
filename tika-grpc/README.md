@@ -11,6 +11,32 @@ This server will manage a pool of Tika Pipes clients.
     * Delete
 * Fetch + Parse a given Fetch Item
 
+> **Security note:** runtime fetcher/iterator management — mutations (Create/Update/Delete)
+> and reading stored configs back (Read), which may contain secrets — plus per-request parse
+> configuration are **disabled by default**. Enable them explicitly via
+> `allowComponentManagement` / `allowPerRequestConfig` in the `grpc` section of your
+> tika-config; with management off, the Read RPCs return only component id and class, never
+> the config. See the
+> [Tika gRPC security configuration docs](../docs/modules/ROOT/pages/using-tika/grpc/index.adoc).
+
+## Distribution and Maven Artifact
+
+**tika-grpc is designed to be run via Docker — it is not a standalone runnable artifact published to Maven Central.**
+
+The Maven artifact for `tika-grpc` is a thin JAR (~238KB) containing only the compiled classes and resources.
+It does **not** include a bundled distribution ZIP or any plugin ZIPs. This was an intentional change (TIKA-4723)
+to avoid uploading hundreds of megabytes of native libraries and plugin bundles to Nexus on every release.
+
+- The runnable Docker image is built using `tika-grpc/docker-build/docker-build.sh`, which assembles
+  the full classpath and plugins at Docker build time — not during `mvn package`.
+- The `tika-pipes-plugins` (fetchers, emitters, iterators) are also **not** attached as Maven artifacts.
+  They are packaged as pf4j ZIP plugins and included in the Docker image.
+- To build the full distribution ZIP locally (e.g. for debugging outside Docker), use the `docker` Maven profile:
+  ```bash
+  mvn package -Pdocker -pl tika-grpc
+  ```
+  This produces `tika-grpc/target/tika-grpc-<version>.zip` but does **not** deploy it to Nexus.
+
 ## Quick Start - Development Mode
 
 The fastest way to run tika-grpc in development mode with plugin hot-reloading:

@@ -87,6 +87,9 @@ class ParseHandler {
         List<Metadata> metadataList;
         //this adds the EmbeddedDocumentByteStore to the parsecontext
         ParseMode parseMode = getParseMode(parseContext);
+        // Ensure the resolved mode is visible to EmitHandler, which checks parseContext directly
+        // and does not have access to the defaultParseMode fallback.
+        parseContext.set(ParseMode.class, parseMode);
         ContentHandlerFactory contentHandlerFactory = getContentHandlerFactory(parseContext);
         if (parseMode == ParseMode.NO_PARSE) {
             metadataList = detectOnly(fetchEmitTuple, stream, metadata, parseContext);
@@ -142,7 +145,7 @@ class ParseHandler {
                 parseContext.set(SkipContainerDocumentDigest.class,
                         SkipContainerDocumentDigest.INSTANCE);
             } catch (IOException e) {
-                LOG.info("problem digesting: " + t.getId(), e);
+                LOG.warn("problem digesting: " + t.getId(), e);
             }
         }
         // Signal to detectors that parsing will follow, so they can prepare
@@ -154,7 +157,7 @@ class ParseHandler {
                     EmbeddedDocumentUtil.normalizeMediaType(mt.toString()));
             metadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, mt.toString());
         } catch (IOException e) {
-            LOG.info("problem detecting: " + t.getId(), e);
+            LOG.warn("problem detecting: " + t.getId(), e);
         }
         UnpackConfig unpackConfig = parseContext.get(UnpackConfig.class);
         if (unpackConfig != null &&
@@ -163,7 +166,7 @@ class ParseHandler {
             try (InputStream is = Files.newInputStream(tis.getPath())) {
                 unpackHandler.add(0, metadata, is);
             } catch (IOException e) {
-                LOG.info("problem reading source file into embedded document byte store", e);
+                LOG.warn("problem reading source file into embedded document byte store", e);
             }
         }
     }
@@ -201,14 +204,14 @@ class ParseHandler {
         try {
             recursiveParserWrapper.parse(stream, handler, metadata, parseContext);
         } catch (SAXException e) {
-            LOG.info("sax problem:" + fetchEmitTuple.getId(), e);
+            LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
         } catch (EncryptedDocumentException e) {
-            LOG.info("encrypted document:" + fetchEmitTuple.getId(), e);
+            LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
         } catch (SecurityException e) {
-            LOG.info("security exception:" + fetchEmitTuple.getId(), e);
+            LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
             throw e;
         } catch (Exception e) {
-            LOG.info("parse exception: " + fetchEmitTuple.getId(), e);
+            LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
         } finally {
             if (LOG.isTraceEnabled()) {
                 LOG.trace("timer -- parse only time: {} ms", System.currentTimeMillis() - start);
@@ -242,19 +245,19 @@ class ParseHandler {
             autoDetectParser.parse(stream, handler, metadata, parseContext);
         } catch (SAXException e) {
             containerException = ExceptionUtils.getStackTrace(e);
-            LOG.info("sax problem:" + fetchEmitTuple.getId(), e);
+            LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
             if (WriteLimitReachedException.isWriteLimitReached(e)) {
                 writeLimitReached = true;
             }
         } catch (EncryptedDocumentException e) {
             containerException = ExceptionUtils.getStackTrace(e);
-            LOG.info("encrypted document:" + fetchEmitTuple.getId(), e);
+            LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
         } catch (SecurityException e) {
-            LOG.info("security exception:" + fetchEmitTuple.getId(), e);
+            LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
             throw e;
         } catch (Exception e) {
             containerException = ExceptionUtils.getStackTrace(e);
-            LOG.info("parse exception: " + fetchEmitTuple.getId(), e);
+            LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
         } finally {
             metadata.add(TikaCoreProperties.TIKA_CONTENT, handler.toString());
             metadata.set(TikaCoreProperties.TIKA_CONTENT_HANDLER_TYPE,

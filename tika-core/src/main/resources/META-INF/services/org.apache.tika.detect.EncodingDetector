@@ -13,9 +13,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-# Intentionally empty: tika-core itself does not register any default
-# EncodingDetector implementations. The default chain is provided by the
-# tika-encoding-detector-html, tika-encoding-detector-universal, and
-# tika-encoding-detector-icu4j modules and is sequenced by
-# DefaultEncodingDetector.
+# tika-core's part of the default 4.x chain; html, mojibuster, and the
+# junk-filter arbitrator register from their own modules.
+org.apache.tika.detect.BOMDetector
+org.apache.tika.detect.MetadataCharsetDetector
 

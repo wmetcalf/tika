@@ -45,14 +45,15 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.config.ConfigDeserializer;
 import org.apache.tika.config.JsonConfig;
-import org.apache.tika.config.TikaComponent;
 import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.detect.EncodingResult;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AbstractEncodingDetectorParser;
 import org.apache.tika.parser.ParseContext;
@@ -163,6 +164,11 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         List<EncodingResult> encResults = encodingDetector.detect(tis, metadata, context);
         Charset charset = encResults.isEmpty() ? DEFAULT_CHARSET
                 : encResults.get(0).getCharset();
+        Charset decodeAs = encResults.isEmpty() ? DEFAULT_CHARSET
+                : encResults.get(0).getDecodeAs();
+        if (!decodeAs.equals(charset)) {
+            metadata.set(TikaCoreProperties.DECODED_CHARSET, decodeAs.name());
+        }
         String previous = metadata.get(Metadata.CONTENT_TYPE);
         MediaType contentType = null;
         if (previous == null || previous.startsWith("text/html")) {
@@ -195,7 +201,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         tis.setCloseShield();
         Document document;
         try {
-            document = Jsoup.parse(tis, charset.name(), "",
+            document = Jsoup.parse(tis, decodeAs.name(), "",
                     Parser.htmlParser().tagSet(tagSet));
         } finally {
             tis.removeCloseShield();
@@ -265,6 +271,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             if (monospace.isEmpty()) {
                 return;
             }
+            // Cap the buffered monospace text: a QR-art code is at most a few KB, and
+            // an unbounded buffer would feed an oversized render (memory-exhaustion DoS).
+            final int maxBufChars = 2 * 1024 * 1024;
             StringBuilder buf = new StringBuilder();
             for (org.jsoup.nodes.Element el : monospace) {
                 // wholeText() preserves newlines inside <pre>; text() collapses them.
@@ -272,11 +281,24 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                 if (txt == null || txt.isEmpty()) {
                     continue;
                 }
+                int remaining = maxBufChars - buf.length();
+                if (remaining <= 0) {
+                    break;
+                }
+                // Cap each element's contribution: a single huge <pre>/<code> must not
+                // be appended in full before the buffer-size check.
+                if (txt.length() >= remaining) {
+                    buf.append(txt, 0, remaining);
+                    break;
+                }
                 buf.append(txt);
                 if (!txt.endsWith("\n")) {
                     buf.append('\n');
                 }
                 buf.append('\n');
+                if (buf.length() >= maxBufChars) {
+                    break;
+                }
             }
             if (buf.length() == 0) {
                 return;

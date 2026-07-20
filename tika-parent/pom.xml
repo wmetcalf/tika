@@ -25,7 +25,7 @@
   <parent>
     <groupId>org.apache</groupId>
     <artifactId>apache</artifactId>
-    <version>37</version>
+    <version>39</version>
     <relativePath />
   </parent>
 
@@ -288,7 +288,7 @@
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>${project.build.sourceEncoding}</project.reporting.outputEncoding>
-    <project.build.outputTimestamp>2026-05-04T23:37:57Z</project.build.outputTimestamp>
+    <project.build.outputTimestamp>2026-06-29T15:00:41Z</project.build.outputTimestamp>
     <!-- plugin versions -->
     <!-- updates may not be detected by the maven versions plugin:
          https://github.com/mojohaus/versions/issues/1070 -->
@@ -299,13 +299,14 @@
     <maven.assembly.version>3.8.0</maven.assembly.version>
     <maven.bundle.version>6.0.2</maven.bundle.version>
     <maven.compiler.plugin.version>3.15.0</maven.compiler.plugin.version>
-    <maven.failsafe.version>3.5.5</maven.failsafe.version>
-    <maven.surefire.version>3.5.5</maven.surefire.version>
+    <maven.failsafe.version>3.5.6</maven.failsafe.version>
+    <maven.surefire.version>3.5.6</maven.surefire.version>
     <maven.javadoc.version>3.12.0</maven.javadoc.version>
     <maven.jar.version>3.5.0</maven.jar.version>
     <maven.scr.version>1.26.4</maven.scr.version>
     <maven.shade.version>3.6.2</maven.shade.version>
     <maven.project.info.reports.version>3.9.0</maven.project.info.reports.version>
+    <!-- can't update to 13.*, needs jdk21 -->
     <puppycrawl.version>12.3.1</puppycrawl.version>
     <rat.version>0.18</rat.version>
     <scm.version>2.2.1</scm.version>
@@ -314,20 +315,21 @@
     <spotless.header.file>${maven.multiModuleProjectDirectory}/tika-parent/license-header.txt</spotless.header.file>
     <!-- dependency versions -->
     <!-- change threetenbp exclusion version -->
-    <google.cloud.version>2.67.0</google.cloud.version>
-    <aws2.version>2.44.1</aws2.version>
+    <google.cloud.version>2.70.0</google.cloud.version>
+    <aws2.version>2.48.3</aws2.version>
     <!-- WARNING: when you upgrade asm make sure that you update the
         OpCode in the initializer in org.apache.tika.parser.asm.XHTMLClassVisitor
         See TIKA-2992.
     -->
-    <asm.version>9.9.1</asm.version>
-    <azure.version>1.3.6</azure.version>
-    <biz.aqute.version>7.2.3</biz.aqute.version>
+    <asm.version>9.10.1</asm.version>
+    <azure.version>1.3.7</azure.version>
+    <biz.aqute.version>7.3.0</biz.aqute.version>
     <boilerpipe.version>1.1.0</boilerpipe.version>
     <!--  used by POI, PDFBox and Jackcess encrypt ...try to sync -->
-    <bouncycastle.version>1.84</bouncycastle.version>
+    <bouncycastle.version>1.85</bouncycastle.version>
     <!-- NOTE: sync brotli version with commons-compress-->
     <brotli.version>0.1.2</brotli.version>
+    <commonmark.version>0.29.0</commonmark.version>
     <commons.cli.version>1.11.0</commons.cli.version>
     <commons.codec.version>1.22.0</commons.codec.version>
     <commons.collections4.version>4.5.0</commons.collections4.version>
@@ -337,13 +339,11 @@
     <commons.fileupload.version>1.6.0</commons.fileupload.version>
     <commons.io.version>2.22.0</commons.io.version>
     <commons.lang3.version>3.20.0</commons.lang3.version>
-    <commons.logging.version>1.3.6</commons.logging.version>
+    <commons.logging.version>1.4.0</commons.logging.version>
     <commons.math3.version>3.6.1</commons.math3.version>
     <commons.net.version>3.12.0</commons.net.version>
     <ctakes.version>6.0.0</ctakes.version>
-    <!-- can't use 4.1.0, fails in tika server core because it uses jetty 12, which we can't
-         use due to the problems explained there -->
-    <cxf.version>4.0.11</cxf.version>
+    <cxf.version>4.2.2</cxf.version>
     <ddplist.version>1.29</ddplist.version>
     <dl4j.version>1.0.0-M2.1</dl4j.version>
     <fakeload.version>0.7.0</fakeload.version>
@@ -352,7 +352,7 @@
     <freemarker.version>2.3.34</freemarker.version>
     <geoapi.version>3.0.2</geoapi.version>
     <gson.version>2.14.0</gson.version>
-    <grpc.version>1.81.0</grpc.version>
+    <grpc.version>1.82.2</grpc.version>
     <guava.version>33.6.0-jre</guava.version>
     <h2.version>2.4.240</h2.version>
     <hdf5.version>1.14.3-1.5.10</hdf5.version>
@@ -365,62 +365,53 @@
     <icu4j.version>75.1</icu4j.version>
     <imageio.version>1.4.0</imageio.version>
     <jackrabbit.version>2.22.3</jackrabbit.version>
-    <jackson.version>2.21.3</jackson.version>
-    <jackcess.version>4.0.10</jackcess.version>
+    <jackson.version>2.22.1</jackson.version>
+    <jackcess.version>4.0.11</jackcess.version>
     <jackcess.encrypt.version>4.0.3</jackcess.encrypt.version>
     <jai.imageio.core.version>1.4.0</jai.imageio.core.version>
     <jakarta.activation.version>2.1.4</jakarta.activation.version>
     <jakarta.annotation.version>3.0.0</jakarta.annotation.version>
+    <jakarta.servlet.version>6.1.0</jakarta.servlet.version>
     <jakarta.ws.rs.version>4.0.0</jakarta.ws.rs.version>
     <jakarta.xml.bind.version>4.0.5</jakarta.xml.bind.version>
     <jakarta.xml.soap.version>3.0.2</jakarta.xml.soap.version>
     <javax.annotation.version>1.3.2</javax.annotation.version>
     <javax.jcr.version>2.0</javax.jcr.version>
-    <jaxb.runtime.version>4.0.8</jaxb.runtime.version>
-    <jbig2.version>3.0.4</jbig2.version>
+    <jaxb.runtime.version>4.0.9</jaxb.runtime.version>
+    <jbig2.version>3.0.5</jbig2.version>
     <jcommander.version>1.82</jcommander.version>
     <jdom2.version>2.0.6.1</jdom2.version>
-    <jempbox.version>1.8.17</jempbox.version>
-    <!-- can't update to jetty 12 because of problem in solr integration tests
-	 due to Http2SolrClient (solrj 9.10.0)
-         (only on the CI, not on local Windows with Docker, see comment in TIKA-4327 on 14.12.2024)
-         expecting org.eclipse.jetty.client.util.InputStreamResponseListener which is only available
-         in Jetty up to 11.0.26
-         but this class is now in org.eclipse.jetty.client, see also
-         https://jetty.org/docs/jetty/12/programming-guide/migration/11-to-12.html
-         when updating, see also TODO in PipesBiDirectionalStreamingIntegrationTest
-         and add jakarta.servlet jakarta.servlet-api 6.0.0 to tika-server-core
-    -->
-    <jetty.version>11.0.26</jetty.version>
-    <jetty.http2.version>11.0.26</jetty.http2.version>
+    <jetty.version>12.1.11</jetty.version>
+    <jetty.http2.version>12.1.11</jetty.http2.version>
     <jhighlight.version>2.0.0</jhighlight.version>
-    <jna.version>5.18.1</jna.version>
+    <jna.version>5.19.1</jna.version>
     <json.simple.version>1.1.1</json.simple.version>
     <jsoup.version>1.22.2</jsoup.version>
     <jsr305.version>3.0.2</jsr305.version>
-    <junit6.version>6.0.3</junit6.version>
+    <junit6.version>6.1.2</junit6.version>
     <juniversalchardet.version>2.5.0</juniversalchardet.version>
-    <junrar.version>7.5.10</junrar.version>
+    <junrar.version>7.6.0</junrar.version>
     <jwarc.version>0.36.0</jwarc.version>
-    <kafka.version>4.2.0</kafka.version>
-    <kotlin-stdlib.version>2.3.21</kotlin-stdlib.version>
+    <kafka.version>4.3.1</kafka.version>
+    <kotlin-stdlib.version>2.4.10</kotlin-stdlib.version>
     <libpst.version>0.9.3</libpst.version>
-    <log4j2.version>2.25.4</log4j2.version>
-    <lombok.version>1.18.46</lombok.version>
+    <log4j2.version>2.26.1</log4j2.version>
     <!-- can't update to 10, needs jdk21 -->
     <lucene.version>9.12.3</lucene.version>
     <maven.plugin.annotations.version>3.15.2</maven.plugin.annotations.version>
     <metadata.extractor.version>2.20.0</metadata.extractor.version>
     <microsoft.translator.version>0.6.2</microsoft.translator.version>
-    <micronaut.version>3.10.6</micronaut.version>
+    <!-- can't update to 4 because Apache Ignite needs io.micronaut.core.convert.DefaultConversionService
+         which no longer exists in 4.0: https://stackoverflow.com/questions/79937141/    -->
+    <micronaut.version>3.10.10</micronaut.version>
     <mime4j.version>0.8.14</mime4j.version>
     <mockito.version>5.23.0</mockito.version>
     <mockito-junit-jupiter.version>5.23.0</mockito-junit-jupiter.version>
     <netcdf-java.version>4.5.5</netcdf-java.version>
-    <netty.version>4.2.13.Final</netty.version>
-    <oak.jackrabbit.version>2.0.0</oak.jackrabbit.version>
+    <netty.version>4.2.16.Final</netty.version>
+    <oak.jackrabbit.version>2.4.0</oak.jackrabbit.version>
     <openjson.version>1.0.13</openjson.version>
-    <opennlp.version>2.5.9</opennlp.version>
+    <opennlp.version>2.5.10</opennlp.version>
     <ops4j.version>1.5.1</ops4j.version>
     <optimaize.version>0.6</optimaize.version>
     <osgi.compendium.version>5.0.0</osgi.compendium.version>
@@ -428,40 +419,35 @@
     <osgi.util.version>1.2.0</osgi.util.version>
     <parso.version>2.0.14</parso.version>
     <pax.exam.version>4.14.0</pax.exam.version>
-    <pdfbox.version>3.0.7</pdfbox.version>
+    <pdfbox.version>3.0.8</pdfbox.version>
     <poi.version>5.5.1</poi.version>
     <protobuf.version>3.25.9</protobuf.version>
     <quartz.version>2.5.2</quartz.version>
-    <reactor.core.version>3.8.5</reactor.core.version>
-    <reactor.netty.version>1.3.5</reactor.netty.version>
+    <reactor.core.version>3.8.6</reactor.core.version>
+    <reactor.netty.version>1.3.6</reactor.netty.version>
     <rome.version>2.1.0</rome.version>
-    <slf4j.version>2.0.17</slf4j.version>
+    <slf4j.version>2.0.18</slf4j.version>
     <sis.version>1.6</sis.version>
     <snappy.version>1.1.10.8</snappy.version>
-    <!-- TODO (incomplete) if updating to solrj 10:
-     https://solr.apache.org/guide/solr/latest/upgrade-notes/major-changes-in-solr-10.html
-     add solr-solrj-jetty artifact, add log4j
-     Http2SolrClient -> HttpJettySolrClient
-     LBHttpSolrClient -> LBHttp2SolrClient -> LBJettySolrClient (doesn't work)
-     -->
-    <solrj.version>9.10.1</solrj.version>
-    <spring.version>7.0.7</spring.version>
-    <sqlite.version>3.53.0.0</sqlite.version>
+    <!-- SolrJ 10 splits the Jetty client/ZK code into solr-solrj-jetty / solr-solrj-zookeeper -->
+    <solrj.version>10.0.0</solrj.version>
+    <spring.version>7.0.8</spring.version>
+    <sqlite.version>3.53.2.0</sqlite.version>
     <stax.ex.version>2.1.0</stax.ex.version>
     <testcontainers.version>2.0.5</testcontainers.version>
     <!-- NOTE: sync tukaani version with commons-compress in tika-parent -->
     <tukaani.version>1.12</tukaani.version>
-    <twelvemonkeys.version>3.13.1</twelvemonkeys.version>
+    <twelvemonkeys.version>3.14.0</twelvemonkeys.version>
     <uimafit.version>3.6.1</uimafit.version>
     <uimaj.core.version>3.6.1</uimaj.core.version>
     <uimaj.cpe.version>3.6.1</uimaj.cpe.version>
     <unit.api.version>2.2</unit.api.version>
     <vorbis.version>0.8</vorbis.version>
-    <woodstox.core.version>7.1.1</woodstox.core.version>
+    <woodstox.core.version>7.2.1</woodstox.core.version>
     <xmpcore.version>6.1.11</xmpcore.version>
     <zookeeper.version>3.9.5</zookeeper.version>
-    <zstd.version>1.5.7-8</zstd.version>
-    <nimbus-jose-jwt.version>10.9</nimbus-jose-jwt.version>
+    <zstd.version>1.5.7-11</zstd.version>
+    <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
     <javacpp.version>1.5.13</javacpp.version>
     <maven.exec.version>3.6.3</maven.exec.version>
 
@@ -484,7 +470,7 @@
       <dependency>
         <groupId>org.codehaus.plexus</groupId>
         <artifactId>plexus-classworlds</artifactId>
-        <version>2.10.0</version>
+        <version>2.12.0</version>
       </dependency>
       <!-- boms -->
       <dependency>
@@ -571,30 +557,29 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
-      <!-- avoid outdated http2 dependencies when using solr 8 -->
       <dependency>
         <groupId>org.eclipse.jetty.http2</groupId>
-        <artifactId>http2-http-client-transport</artifactId>
+        <artifactId>jetty-http2-client-transport</artifactId>
         <version>${jetty.http2.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.http2</groupId>
-        <artifactId>http2-hpack</artifactId>
+        <artifactId>jetty-http2-hpack</artifactId>
         <version>${jetty.http2.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.http2</groupId>
-        <artifactId>http2-client</artifactId>
+        <artifactId>jetty-http2-client</artifactId>
         <version>${jetty.http2.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.http2</groupId>
-        <artifactId>http2-common</artifactId>
+        <artifactId>jetty-http2-common</artifactId>
         <version>${jetty.http2.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.http2</groupId>
-        <artifactId>http2-server</artifactId>
+        <artifactId>jetty-http2-server</artifactId>
         <version>${jetty.http2.version}</version>
       </dependency>
       <dependency>
@@ -683,14 +668,7 @@
       <dependency>
         <groupId>com.google.errorprone</groupId>
         <artifactId>error_prone_annotations</artifactId>
-        <version>2.49.0</version>
-      </dependency>
-      <!-- avoid dependency convergence error in Google Cloud Storage fetcher
-           starting with grpc 1.79.0 with google cloud 2.62.1 -->
-      <dependency>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>animal-sniffer-annotations</artifactId>
-        <version>1.27</version>
+        <version>2.50.0</version>
       </dependency>
       <dependency>
         <groupId>com.googlecode.json-simple</groupId>
@@ -824,6 +802,11 @@
         <groupId>jakarta.xml.bind</groupId>
         <artifactId>jakarta.xml.bind-api</artifactId>
         <version>${jakarta.xml.bind.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.servlet</groupId>
+        <artifactId>jakarta.servlet-api</artifactId>
+        <version>${jakarta.servlet.version}</version>
       </dependency>
       <dependency>
         <groupId>jakarta.xml.soap</groupId>
@@ -1025,6 +1008,21 @@
         <version>${bouncycastle.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark</artifactId>
+        <version>${commonmark.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-gfm-strikethrough</artifactId>
+        <version>${commonmark.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-gfm-tables</artifactId>
+        <version>${commonmark.version}</version>
+      </dependency>
+      <dependency>
         <groupId>org.freemarker</groupId>
         <artifactId>freemarker</artifactId>
         <version>${freemarker.version}</version>
@@ -1217,7 +1215,7 @@
       <dependency>
         <groupId>io.swagger.core.v3</groupId>
         <artifactId>swagger-annotations</artifactId>
-        <version>2.2.49</version>
+        <version>2.2.52</version>
       </dependency>
       <dependency>
         <groupId>org.jetbrains.kotlin</groupId>
@@ -1233,6 +1231,12 @@
         <groupId>jakarta.inject</groupId>
         <artifactId>jakarta.inject-api</artifactId>
         <version>2.0.1.MR</version>
+      </dependency>
+      <!-- TODO try removing after updating aws2, last tested with 2.46.17, trouble with transcribe -->
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5</artifactId>
+        <version>5.4.3</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -1256,7 +1260,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-dependency-plugin</artifactId>
-          <version>3.10.0</version>
+          <version>3.11.0</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
@@ -1266,7 +1270,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-enforcer-plugin</artifactId>
-          <version>3.6.2</version>
+          <version>3.6.3</version>
         </plugin>
         <plugin>
           <groupId>org.apache.rat</groupId>
@@ -1304,7 +1308,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.14</version>
+        <version>0.8.15</version>
         <configuration>
           <skip>${skipTests}</skip>
         </configuration>
@@ -1359,17 +1363,11 @@
         <version>3.2.0</version>
         <configuration>
           <excludeCoordinates>
-            <!-- solr emitter -->
-            <coordinate>
-              <groupId>org.eclipse.jetty</groupId>
-              <artifactId>jetty-http</artifactId>
-              <version>11.0.26</version>
-            </coordinate>
-            <!-- [CVE-2025-1948], used in the Solr emitter. No apparent upgrade available yet. -->
+            <!-- [CVE-2025-1948] excluded; re-check whether still present in ${jetty.http2.version} -->
             <coordinate>
               <groupId>org.eclipse.jetty.http2</groupId>
-              <artifactId>http2-common</artifactId>
-              <version>11.0.26</version>
+              <artifactId>jetty-http2-common</artifactId>
+              <version>${jetty.http2.version}</version>
             </coordinate>
             <!-- used only in tests and in tika-eval, and this problem requires the use of the console.
                  https://github.com/h2database/h2database/issues/1294 -->
@@ -1500,6 +1498,10 @@
         <version>3.3.1</version>
         <configuration>
           <autoVersionSubmodules>true</autoVersionSubmodules>
+          <!-- 'install' (not the default 'verify') so the install-only pf4j plugin zips
+               (attach=false, installed via install:install-file; see tika-pipes plugins)
+               are available in the local repo for sibling modules that depend on them. -->
+          <preparationGoals>clean install</preparationGoals>
         </configuration>
         <dependencies>
           <dependency>
@@ -1579,7 +1581,7 @@
       <plugin>
         <groupId>com.diffplug.spotless</groupId>
         <artifactId>spotless-maven-plugin</artifactId>
-        <version>3.4.0</version>
+        <version>3.8.0</version>
         <configuration>
           <lineEndings>UNIX</lineEndings>
           <java>
@@ -1669,6 +1671,7 @@
                 <inputExclude>nbactions.xml</inputExclude> <!-- local netbeans -->
                 <inputExclude>**/test-documents/**</inputExclude>
                 <inputExclude>**/target/**</inputExclude> <!-- generated files -->
+                <inputExclude>**/sample-configs/**/*.json</inputExclude> <!-- JSON has no comment syntax for headers -->
               </inputExcludes>
             </configuration>
             <executions>
@@ -1712,7 +1715,17 @@
             <version>${maven.javadoc.version}</version>
             <configuration>
               <doclint>none</doclint>
-              <sourcepath>src/main/java</sourcepath>
+              <!-- TIKA-4318: an explicit multi-root sourcepath forces the javadoc plugin onto its
+                   legacy (pre-JPMS) -sourcepath code path, so javadoc:aggregate actually produces a
+                   combined report. Tika modules carry Automatic-Module-Name manifest hints but have no
+                   module-info.java; without this, the plugin runs javadoc in modular (module source
+                   path) mode, classifies the reactor modules inconsistently as named vs unnamed, and
+                   javadoc aborts ('aggregated report for both named and unnamed modules is not
+                   possible'). tika-grpc is excluded: its protobuf generated-sources and compile deps
+                   are not on the aggregate classpath. NOTE: keep this list in sync when modules are
+                   added or removed (see TIKA-4318). -->
+              <sourcepath>tika-annotation-processor/src/main/java;tika-app/src/main/java;tika-bundles/tika-bundle-standard/src/main/java;tika-core/src/main/java;tika-detectors/tika-detector-magika/src/main/java;tika-detectors/tika-detector-siegfried/src/main/java;tika-encoding-detectors/tika-encoding-detector-html/src/main/java;tika-encoding-detectors/tika-encoding-detector-icu4j/src/main/java;tika-encoding-detectors/tika-encoding-detector-mojibuster/src/main/java;tika-encoding-detectors/tika-encoding-detector-universal/src/main/java;tika-eval/tika-eval-app/src/main/java;tika-eval/tika-eval-core/src/main/java;tika-example/src/main/java;tika-handlers/tika-handler-boilerpipe/src/main/java;tika-java7/src/main/java;tika-langdetect/tika-langdetect-charsoup-core/src/main/java;tika-langdetect/tika-langdetect-charsoup/src/main/java;tika-langdetect/tika-langdetect-lingo24/src/main/java;tika-langdetect/tika-langdetect-mitll-text/src/main/java;tika-langdetect/tika-langdetect-opennlp/src/main/java;tika-langdetect/tika-langdetect-optimaize/src/main/java;tika-langdetect/tika-langdetect-test-commons/src/main/java;tika-ml/tika-ml-chardetect/src/main/java;tika-ml/tika-ml-core/src/main/java;tika-ml/tika-ml-junkdetect/src/main/java;tika-ml/tika-ml-junkdetect-tools/src/main/java;tika-parsers/tika-http-jdk/src/main/java;tika-parsers/tika-parsers-extended/tika-parser-ocr-encode-module/src/main/java;tika-parsers/tika-parsers-extended/tika-parser-scientific-module/src/main/java;tika-parsers/tika-parsers-extended/tika-parser-sqlite3-module/src/main/java;tika-parsers/tika-parsers-ml/tika-inference/src/main/java;tika-parsers/tika-parsers-ml/tika-parser-nlp-module/src/main/java;tika-parsers/tika-parsers-ml/tika-parser-tess4j-module/src/main/java;tika-parsers/tika-parsers-ml/tika-transcribe-aws/src/main/java;tika-parsers/tika-parsers-ml/tika-vlm/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-crypto-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-datauri-commons/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-digest-commons/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-font-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-jdbc-commons/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-commons/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-mail-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-news-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-ocr-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-text-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-webarchive-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xmp-commons/src/main/java;tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-zip-commons/src/main/java;tika-pipes/tika-async-cli/src/main/java;tika-pipes/tika-httpclient-commons/src/main/java;tika-pipes/tika-pipes-api/src/main/java;tika-pipes/tika-pipes-config-store-ignite/src/main/java;tika-pipes/tika-pipes-core/src/main/java;tika-pipes/tika-pipes-fork-parser/src/main/java;tika-pipes/tika-pipes-iterator-commons/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-atlassian-jwt/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-az-blob/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-csv/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-es/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-file-system/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-gcs/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-google-drive/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-http/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-jdbc/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-json/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-kafka/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-microsoft-graph/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-opensearch/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-s3/src/main/java;tika-pipes/tika-pipes-plugins/tika-pipes-solr/src/main/java;tika-pipes/tika-pipes-reporter-commons/src/main/java;tika-plugins-core/src/main/java;tika-serialization/src/main/java;tika-server/tika-server-client/src/main/java;tika-server/tika-server-core/src/main/java;tika-server/tika-server-standard/src/main/java;tika-translate/src/main/java;tika-xmp/src/main/java</sourcepath>
+              <subpackages>org.apache.tika</subpackages>
             </configuration>
           </plugin>
         </plugins>

@@ -57,13 +57,13 @@ import org.junit.jupiter.api.TestInstance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.config.loader.TikaJsonConfig;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.pipes.core.EmitStrategy;
 import org.apache.tika.pipes.core.EmitStrategyConfig;
 import org.apache.tika.pipes.core.PipesConfig;
 import org.apache.tika.pipes.core.PipesParser;
+import org.apache.tika.serialization.config.JsonConfigHelper;
 import org.apache.tika.server.core.resource.PipesParsingHelper;
 import org.apache.tika.server.core.resource.TikaResource;
 
@@ -214,9 +214,9 @@ public abstract class CXFTestBase {
             pipesConfig.setEmitStrategy(new EmitStrategyConfig(EmitStrategy.PASSBACK_ALL));
             this.pipesParser = PipesParser.load(tikaJsonConfig, pipesConfig, this.pipesConfigPath);
             PipesParsingHelper pipesParsingHelper = new PipesParsingHelper(this.pipesParser, pipesConfig,
-                    inputTempDirectory, getUnpackEmitterBasePath());
+                    inputTempDirectory, getUnpackEmitterBasePath(), false);
 
-            TikaResource.init(tika, new ServerStatus(), pipesParsingHelper);
+            TikaResource.init(tika, new ServerStatus(), pipesParsingHelper, isAllowPerRequestConfig());
         } finally {
             // Only delete tika config, keep pipes config for child processes
             Files.deleteIfExists(tmp);
@@ -365,6 +365,15 @@ public abstract class CXFTestBase {
      */
     protected Path getUnpackEmitterBasePath() throws IOException {
         return null;
+    }
+
+    /**
+     * Whether per-request config injection is permitted. Defaults to false, matching
+     * the production default. Tests that POST a multipart "config" part must override
+     * this to return true, otherwise the config part is rejected with 403.
+     */
+    protected boolean isAllowPerRequestConfig() {
+        return false;
     }
 
     protected InputStream getPipesConfigInputStream() throws IOException {

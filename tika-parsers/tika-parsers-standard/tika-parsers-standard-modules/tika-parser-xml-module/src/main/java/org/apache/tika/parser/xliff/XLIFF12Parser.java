@@ -23,7 +23,7 @@ import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -66,12 +66,13 @@ public class XLIFF12Parser implements Parser {
         metadata.set(Metadata.CONTENT_TYPE, XLF_CONTENT_TYPE.toString());
 
         final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-
+        xhtml.startDocument();
         tis.setCloseShield();
         try {
             XMLReaderUtils.parseSAX(tis, new XLIFF12ContentHandler(xhtml, metadata), context);
         } finally {
             tis.removeCloseShield();
+            xhtml.endDocument();
         }
 
     }

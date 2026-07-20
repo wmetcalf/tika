@@ -83,7 +83,15 @@ class EmitHandler {
             }
             EmitDataImpl emitDataTuple = new EmitDataImpl(t.getEmitKey().getEmitKey(), parseData.getMetadataList(), stack);
             ParseMode parseMode = parseContext.get(ParseMode.class);
-            if (shouldEmit(parseMode, parseData, emitDataTuple, parseContext)) {
+            String emitterId = emitKey.getEmitterId();
+            // For CONTENT_ONLY mode: force direct emission only when a real emitter is configured,
+            // so the content is emitted as a raw byte stream via emitContentOnly() instead of
+            // being returned as passback JSON to the parent AsyncEmitter.
+            boolean forceEmit = parseMode == ParseMode.CONTENT_ONLY
+                    && emitterId != null
+                    && emitterManager.getSupported().contains(emitterId);
+            boolean willEmit = forceEmit || shouldEmit(parseMode, parseData, emitDataTuple, parseContext);
+            if (willEmit) {
                 return emit(t.getId(), emitKey, parseMode == ParseMode.UNPACK,
                         parseData, stack, parseContext);
             } else {
@@ -107,10 +115,10 @@ class EmitHandler {
             emitter = emitterManager.getEmitter(emitKey.getEmitterId());
         } catch (org.apache.tika.pipes.api.emitter.EmitterNotFoundException e) {
             String noEmitterMsg = getNoEmitterMsg(taskId);
-            LOG.info(noEmitterMsg);
+            LOG.warn(noEmitterMsg);
             return new PipesResult(PipesResult.RESULT_STATUS.EMITTER_NOT_FOUND, noEmitterMsg);
         } catch (IOException | TikaException e) {
-            LOG.info("Couldn't initialize emitter for task id '" + taskId + "'", e);
+            LOG.warn("Couldn't initialize emitter for task id '" + taskId + "'", e);
             return new PipesResult(PipesResult.RESULT_STATUS.EMITTER_INITIALIZATION_EXCEPTION, ExceptionUtils.getStackTrace(e));
         }
         try {
@@ -124,7 +132,7 @@ class EmitHandler {
                 emitter.emit(emitKey.getEmitKey(), parseData.getMetadataList(), parseContext);
             }
         } catch (IOException e) {
-            LOG.info("emit exception", e);
+            LOG.warn("emit exception", e);
             String msg = ExceptionUtils.getStackTrace(e);
             //for now, we're hiding the parse exception if there was also an emit exception
             return new PipesResult(PipesResult.RESULT_STATUS.EMIT_EXCEPTION, msg);
@@ -134,7 +142,7 @@ class EmitHandler {
             try {
                 passbackFilter.filter(parseData.metadataList);
             } catch (TikaException e) {
-                LOG.info("problem filtering for pass back", e);
+                LOG.warn("problem filtering for pass back", e);
             }
             if (StringUtils.isBlank(parseExceptionStack)) {
                 return new PipesResult(PipesResult.RESULT_STATUS.EMIT_SUCCESS_PASSBACK, new EmitDataImpl(emitKey.getEmitKey(), parseData.metadataList));
@@ -223,12 +231,19 @@ class EmitHandler {
     }
 
     private void injectUserMetadata(Metadata userMetadata, List<Metadata> metadataList) {
-        for (String n : userMetadata.names()) {
-            //overwrite whatever was there
-            metadataList.get(0).set(n, null);
-            for (String val : userMetadata.getValues(n)) {
-                metadataList.get(0).add(n, val);
+        Metadata target = metadataList.get(0);
+        boolean prev = target.isTrusted();
+        target.setTrusted(true);
+        try {
+            for (String n : userMetadata.names()) {
+                //overwrite whatever was there
+                target.set(n, null);
+                for (String val : userMetadata.getValues(n)) {
+                    target.add(n, val);
+                }
             }
+        } finally {
+            target.setTrusted(prev);
         }
     }
 
@@ -250,7 +265,7 @@ class EmitHandler {
         try {
             parseData.filter(filter, parseContext);
         } catch (TikaException e) {
-            LOG.info("failed to filter metadata list", e);
+            LOG.warn("failed to filter metadata list", e);
         }
     }
 

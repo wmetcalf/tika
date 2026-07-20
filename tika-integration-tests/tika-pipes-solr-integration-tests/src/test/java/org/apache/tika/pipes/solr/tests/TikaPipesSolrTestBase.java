@@ -36,8 +36,8 @@ import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.solr.client.solrj.SolrClient;
-import org.apache.solr.client.solrj.SolrQuery;
-import org.apache.solr.client.solrj.impl.Http2SolrClient;
+import org.apache.solr.client.solrj.jetty.HttpJettySolrClient;
+import org.apache.solr.client.solrj.request.SolrQuery;
 import org.apache.solr.common.SolrInputDocument;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
@@ -51,9 +51,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.utility.DockerImageName;
 
 import org.apache.tika.cli.TikaCLI;
-import org.apache.tika.config.JsonConfigHelper;
 import org.apache.tika.pipes.api.ParseMode;
 import org.apache.tika.pipes.emitter.solr.SolrEmitterConfig;
+import org.apache.tika.serialization.config.JsonConfigHelper;
 import org.apache.tika.utils.SystemUtils;
 
 
@@ -180,8 +180,9 @@ public abstract class TikaPipesSolrTestBase {
         zkPort = solr.getMappedPort(9983);
         solrEndpoint = "http://" + solrHost + ":" + solrPort + "/solr";
 
+        // "create" (not the deprecated "create_collection", removed in Solr 10) works on 8/9/10
         org.testcontainers.containers.Container.ExecResult createResult =
-                solr.execInContainer("/opt/solr/bin/solr", "create_collection", "-c", collection);
+                solr.execInContainer("/opt/solr/bin/solr", "create", "-c", collection);
         if (createResult.getExitCode() != 0) {
             LOG.error("Failed to create Solr collection '{}'. Exit code: {}, stdout: {}, stderr: {}",
                     collection, createResult.getExitCode(),
@@ -190,7 +191,7 @@ public abstract class TikaPipesSolrTestBase {
         }
         LOG.info("Created Solr collection '{}': {}", collection, createResult.getStdout().trim());
 
-        try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
+        try (SolrClient solrClient = new HttpJettySolrClient.Builder(solrEndpoint).build()) {
 
             addBasicSchemaFields(solrEndpoint + "/" + collection);
             addSchemaFieldsForNestedDocs(solrEndpoint + "/" + collection);
@@ -262,7 +263,7 @@ public abstract class TikaPipesSolrTestBase {
 
         TikaCLI.main(new String[]{"-a", "-c", tikaConfigFile.toAbsolutePath().toString()});
 
-        try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
+        try (SolrClient solrClient = new HttpJettySolrClient.Builder(solrEndpoint).build()) {
             solrClient.commit(collection, true, true);
             assertEquals(numDocs, solrClient.query(collection,
                             new SolrQuery("mime_s:text/html*")).getResults()
@@ -296,7 +297,7 @@ public abstract class TikaPipesSolrTestBase {
 
         TikaCLI.main(new String[]{"-a", "-c", tikaConfigFile.toAbsolutePath().toString()});
 
-        try (SolrClient solrClient = new Http2SolrClient.Builder(solrEndpoint).build()) {
+        try (SolrClient solrClient = new HttpJettySolrClient.Builder(solrEndpoint).build()) {
             solrClient.commit(collection, true, true);
             assertEquals(numDocs, solrClient.query(collection,
                             new SolrQuery("mime_s:text/html*")).getResults()

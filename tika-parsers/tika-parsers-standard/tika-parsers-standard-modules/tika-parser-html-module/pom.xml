@@ -30,10 +30,13 @@
   <name>Apache Tika html parser module</name>
 
   <dependencies>
+    <!-- Test scope: shipped parser stays decoupled from any specific
+         EncodingDetector; tests still exercise real <meta charset> handling. -->
     <dependency>
       <groupId>org.apache.tika</groupId>
       <artifactId>tika-encoding-detector-html</artifactId>
       <version>${project.version}</version>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -42,8 +45,9 @@
     </dependency>
 
     <dependency>
-      <groupId>commons-codec</groupId>
-      <artifactId>commons-codec</artifactId>
+      <groupId>org.apache.tika</groupId>
+      <artifactId>tika-parser-datauri-commons</artifactId>
+      <version>${project.version}</version>
     </dependency>
 
     <!-- HtmlColorQRExtractor calls ZXingCPPScanner from image-module to
@@ -68,15 +72,10 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- junk arbiter so tests use the full default chain -->
     <dependency>
       <groupId>${project.groupId}</groupId>
-      <artifactId>tika-encoding-detector-universal</artifactId>
-      <version>${project.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>${project.groupId}</groupId>
-      <artifactId>tika-encoding-detector-icu4j</artifactId>
+      <artifactId>tika-ml-junkdetect</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>

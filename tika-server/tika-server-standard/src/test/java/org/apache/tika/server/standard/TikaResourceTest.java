@@ -20,6 +20,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.cxf.helpers.HttpHeaderHelper.CONTENT_ENCODING;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -45,9 +46,11 @@ import org.apache.cxf.jaxrs.lifecycle.SingletonResourceProvider;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.config.loader.TikaObjectMapperFactory;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.OfficeOpenXMLExtended;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.serialization.JsonMetadata;
 import org.apache.tika.server.core.CXFTestBase;
@@ -63,6 +66,11 @@ public class TikaResourceTest extends CXFTestBase {
 
     private static final String TIKA_PATH = "/tika";
     private static final int UNPROCESSEABLE = 422;
+
+    @Override
+    protected boolean isAllowPerRequestConfig() {
+        return true; // exercises per-request config injection
+    }
 
     @Override
     protected void setUpResources(JAXRSServerFactoryBean sf) {
@@ -258,7 +266,9 @@ public class TikaResourceTest extends CXFTestBase {
         String configJson = """
                 {
                   "pdf-parser": {
-                    "ocrStrategy": "OCR_ONLY"
+                    "ocr": {
+                      "strategy": "OCR_ONLY"
+                    }
                   },
                   "tesseract-ocr-parser": {
                     "language": "eng+fra",
@@ -292,7 +302,9 @@ public class TikaResourceTest extends CXFTestBase {
         String configJson = """
                 {
                   "pdf-parser": {
-                    "ocrStrategy": "NO_OCR"
+                    "ocr": {
+                      "strategy": "NO_OCR"
+                    }
                   }
                 }
                 """;
@@ -330,7 +342,9 @@ public class TikaResourceTest extends CXFTestBase {
         configJson = """
                 {
                   "pdf-parser": {
-                    "ocrStrategy": "OCR_ONLY"
+                    "ocr": {
+                      "strategy": "OCR_ONLY"
+                    }
                   }
                 }
                 """;
@@ -351,7 +365,9 @@ public class TikaResourceTest extends CXFTestBase {
         configJson = """
                 {
                   "pdf-parser": {
-                    "ocrStrategy": "non-sense-value"
+                    "ocr": {
+                      "strategy": "non-sense-value"
+                    }
                   }
                 }
                 """;
@@ -417,6 +433,29 @@ public class TikaResourceTest extends CXFTestBase {
                 .replaceAll("[\r\n ]+", " ")
                 .trim();
         assertEquals("Left column line 1 Right column line 1 Left colu mn line 2 Right column line 2", responseMsg);
+    }
+
+    @Test
+    public void testConfigRejectsWireBlockedComponent() {
+        // A request "config" may tune already-loaded parsers but must not introduce a wire-blocked
+        // component (parser, detector, ...). mergeParseContextFromConfig uses the restricted
+        // deserializer, which refuses such references before anything is constructed. The
+        // deserializer is covered exhaustively by WireRestrictedParseContextTest; this pins the
+        // server-side wiring. Build a Tika mapper first so the component registries are loaded.
+        TikaObjectMapperFactory.getMapper();
+        String configJson = "{\"metadata-filters\":[{\"external-parser\":{}}]}";
+        Exception e = assertThrows(Exception.class,
+                () -> TikaResource.mergeParseContextFromConfig(configJson, new ParseContext()));
+        assertTrue(rootMessage(e).contains("may not be supplied via a request parseContext"),
+                "expected wire-blocked rejection, got: " + rootMessage(e));
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable r = t;
+        while (r.getCause() != null && r.getCause() != r) {
+            r = r.getCause();
+        }
+        return String.valueOf(r.getMessage());
     }
 
     @Test

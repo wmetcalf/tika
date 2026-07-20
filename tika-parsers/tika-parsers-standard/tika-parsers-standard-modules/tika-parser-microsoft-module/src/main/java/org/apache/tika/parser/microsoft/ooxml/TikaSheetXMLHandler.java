@@ -148,11 +148,8 @@ class TikaSheetXMLHandler extends DefaultHandler {
                 String ref = attributes.getValue("ref");
                 if (ref != null) {
                     fIsOpen = true;
-                } else {
-                    if (formulasNotResults) {
-                        LOG.warn("shared formulas not yet supported!");
-                    }
                 }
+                // shared-formula reference without a `ref` attribute is not yet supported
             } else {
                 fIsOpen = true;
             }

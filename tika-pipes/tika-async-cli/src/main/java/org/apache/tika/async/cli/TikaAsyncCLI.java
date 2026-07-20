@@ -57,7 +57,11 @@ import org.apache.tika.utils.StringUtils;
 public class TikaAsyncCLI {
 
     private static final long TIMEOUT_MS = 600_000;
-    private static final Logger LOG = LoggerFactory.getLogger(TikaAsyncCLI.class);
+    // Use the user-facing "tika.pipes" name rather than the FQ class name so
+    // the internal TikaAsyncCLI detail doesn't leak into user-visible logs.
+    // tika-app users invoke the Pipes processor via -i/-o flags and shouldn't
+    // need to know about the underlying async CLI class.
+    private static final Logger LOG = LoggerFactory.getLogger("tika.pipes");
 
     private static Options getOptions() {
         Options options = new Options();
@@ -65,9 +69,9 @@ public class TikaAsyncCLI {
         options.addOption("o", "outputDir", true, "output directory");
         options.addOption("n", "numClients", true, "number of forked clients");
         options.addOption(null, "Xmx", true, "heap for the forked clients, e.g. --Xmx 1g");
-        options.addOption("h", "help", false, "this help message");
+        options.addOption(null, "help", false, "this help message");
         options.addOption("T", "timeoutMs", true, "timeout for each parse in milliseconds");
-        options.addOption(null, "handler", true, "handler type: t=text, h=html, x=xml, m=markdown, b=body, i=ignore");
+        options.addOption(null, "handler", true, "handler type: t=text, h=html, x=xml, m=markdown, b=body, i=ignore (default: m)");
         options.addOption("p", "pluginsDir", true, "plugins directory");
         options.addOption("l", "fileList", true,
                 "file containing one path per line (relative to inputDir or absolute)");
@@ -82,6 +86,8 @@ public class TikaAsyncCLI {
                 "output mode for unpacking: ZIPPED (default) or DIRECTORY");
         options.addOption(null, "unpack-include-metadata", false,
                 "include metadata.json in Frictionless output");
+        options.addOption(null, "on-exists", true,
+                "behavior when an output file already exists: exception (default), replace or skip");
 
         return options;
     }
@@ -158,7 +164,7 @@ public class TikaAsyncCLI {
         if (args.length == 2 && ! args[0].startsWith("-")) {
             return new SimpleAsyncConfig(args[0], args[1], 1,
                     30000L, "-Xmx1g", null, null,
-                    BasicContentHandlerFactory.HANDLER_TYPE.TEXT,
+                    BasicContentHandlerFactory.HANDLER_TYPE.MARKDOWN,
                     SimpleAsyncConfig.ExtractBytesMode.NONE, null);
         }
 
@@ -179,7 +185,7 @@ public class TikaAsyncCLI {
         String tikaConfig = null;
         String asyncConfig = null;
         String pluginsDir = null;
-        BasicContentHandlerFactory.HANDLER_TYPE handlerType = BasicContentHandlerFactory.HANDLER_TYPE.TEXT;
+        BasicContentHandlerFactory.HANDLER_TYPE handlerType = BasicContentHandlerFactory.HANDLER_TYPE.MARKDOWN;
         SimpleAsyncConfig.ExtractBytesMode extractBytesMode = SimpleAsyncConfig.ExtractBytesMode.NONE;
         if (line.hasOption("i")) {
             inputDir = line.getOptionValue("i");
@@ -235,6 +241,16 @@ public class TikaAsyncCLI {
             unpackIncludeMetadata = true;
         }
 
+        String onExists = null;
+        if (line.hasOption("on-exists")) {
+            String v = line.getOptionValue("on-exists").toUpperCase(java.util.Locale.ROOT);
+            if (!v.equals("EXCEPTION") && !v.equals("REPLACE") && !v.equals("SKIP")) {
+                throw new TikaConfigException("Can't understand --on-exists=" +
+                        line.getOptionValue("on-exists") + "; must be one of: exception, replace, skip");
+            }
+            onExists = v;
+        }
+
         if (line.getArgList().size() > 2) {
             throw new TikaConfigException("Can't have more than 2 unknown args: " + line.getArgList());
         }
@@ -282,10 +298,12 @@ public class TikaAsyncCLI {
             outputDir = Paths.get("output").toAbsolutePath().toString();
         }
 
-        return new SimpleAsyncConfig(inputDir, outputDir,
+        SimpleAsyncConfig config = new SimpleAsyncConfig(inputDir, outputDir,
                 numClients, timeoutMs, xmx, fileList, tikaConfig, handlerType,
                 extractBytesMode, pluginsDir, concatenate, contentOnly,
                 unpackFormat, unpackMode, unpackIncludeMetadata);
+        config.setOnExists(onExists);
+        return config;
     }
 
     private static BasicContentHandlerFactory.HANDLER_TYPE getHandlerType(String t) throws TikaConfigException {

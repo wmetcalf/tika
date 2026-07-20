@@ -1193,7 +1193,11 @@ final class Biff12XlmFormulaDecoder {
                 return null;
             }
             return top.stringify(stack);
-        } catch (Exception e) {
+        } catch (Exception | StackOverflowError e) {
+            // stringify() recurses one frame per token; a crafted formula of ~65k
+            // unary Ptg tokens overflows the stack. StackOverflowError is an Error,
+            // not an Exception, so catch it here too — a malformed formula degrades
+            // to "no decoded text" instead of escaping the parser as an uncaught Error.
             return null;
         }
     }

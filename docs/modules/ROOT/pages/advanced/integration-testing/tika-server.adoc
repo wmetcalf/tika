@@ -28,8 +28,8 @@ mkdir -p /tmp/tika-server-test
 cd /tmp/tika-server-test
 
 # Copy and extract distribution
-cp /path/to/tika-server-standard-4.0.0-SNAPSHOT-bin.zip .
-unzip tika-server-standard-4.0.0-SNAPSHOT-bin.zip
+cp /path/to/tika-server-standard-4.0.0-SNAPSHOT.zip .
+unzip tika-server-standard-4.0.0-SNAPSHOT.zip
 
 # Copy test files
 cp /path/to/test-documents/testPDF.pdf .
@@ -43,7 +43,7 @@ Start server in default mode (config endpoints disabled):
 
 [source,bash]
 ----
-java -jar tika-server.jar --port 9998 &
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar --port 9998 &
 sleep 8
 curl -s http://localhost:9998/version
 ----
@@ -209,25 +209,49 @@ curl -s -X POST -F "upload=@test_recursive_embedded.docx" http://localhost:9998/
 curl -s -w "\nHTTP Status: %{http_code}\n" -X POST -F "file=@testPDF.pdf" http://localhost:9998/meta/config
 curl -s -w "\nHTTP Status: %{http_code}\n" -X POST -F "file=@testPDF.pdf" http://localhost:9998/rmeta/config
 curl -s -w "\nHTTP Status: %{http_code}\n" -X POST -F "file=@testPDF.pdf" http://localhost:9998/tika/config
-curl -s -w "\nHTTP Status: %{http_code}\n" -X POST -F "file=@testPDF.pdf" http://localhost:9998/unpack/config
+curl -s -w "\nHTTP Status: %{http_code}\n" -X POST -F "file=@testPDF.pdf" http://localhost:9998/unpack/all/config
 ----
 
-*Expected:* All return HTTP 403 with message: "Config endpoints are disabled. Set enableUnsecureFeatures=true in server config."
+*Expected:* All return HTTP 403 with message: "Config endpoints are disabled. Set allowPerRequestConfig=true in server config."
 
-== Part 2: Tests with enableUnsecureFeatures
+NOTE: The unpack config-variant path is `/unpack/all/config`; there is no `/unpack/config`
+(the `{id}` path template requires a leading slash, so `/unpack/config` returns 404, not 403).
+The second enforcement point — a multipart `config` *part* on a parse endpoint that accepts one
+(e.g. `POST /unpack` with `-F 'config=...'`) — is also rejected with HTTP 403 and the message
+"Per-request configuration is disabled. Set allowPerRequestConfig=true in server config."
+
+=== Test 18b: `/pipes` and `/async` Require allowPipes
+
+[source,bash]
+----
+cat > tika-config-pipes-no-flags.json << 'EOF'
+{
+  "server": {"port": 9998, "endpoints": ["tika", "pipes"]},
+  "pipes": {"numClients": 2},
+  "plugin-roots": "/tmp/tika-server-test/plugins"
+}
+EOF
+
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar -c tika-config-pipes-no-flags.json
+----
+
+*Expected:* The server refuses to start, failing with a `TikaConfigException` stating that the `pipes` endpoint requires `allowPipes` to be `true`. The same applies to `async`. (`/status` is no longer gated — it can be enabled simply by listing `status` under `endpoints`.)
+
+== Part 2: Tests with allowPipes / allowPerRequestConfig
 
 Stop the default server and create a config file:
 
 [source,bash]
 ----
-pkill -f "tika-server.jar"
+pkill -f "tika-server-standard-4.0.0-SNAPSHOT.jar"
 
-cat > tika-config-unsecure.json << 'EOF'
+cat > tika-config-capabilities.json << 'EOF'
 {
   "server": {
     "port": 9998,
     "host": "localhost",
-    "enableUnsecureFeatures": true
+    "allowPipes": true,
+    "allowPerRequestConfig": true
   },
   "parsers": [
     {"default-parser": {}}
@@ -236,7 +260,7 @@ cat > tika-config-unsecure.json << 'EOF'
 }
 EOF
 
-java -jar tika-server.jar -c tika-config-unsecure.json &
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar -c tika-config-capabilities.json &
 sleep 10
 curl -s http://localhost:9998/version
 ----
@@ -255,22 +279,32 @@ curl -s -X POST -F "file=@testPDF.pdf" -H "Accept: application/json" http://loca
 [source,bash]
 ----
 curl -s -X POST -F "file=@testPDF.pdf" \
-  -F 'config={"parsers":[{"pdf-parser":{"ocrStrategy":"NO_OCR"}}]}' \
+  -F 'config={"pdf-parser":{"ocr":{"strategy":"NO_OCR"}}}' \
   -H "Accept: application/json" \
   http://localhost:9998/meta/config
 ----
 
 *Expected:* JSON metadata with custom PDF parser config applied.
 
-=== Test 21: POST /unpack/config
+IMPORTANT: The per-request `config` must use the *top-level self-configuring* form
+(`{"pdf-parser":{...}}`), NOT the server-config `{"parsers":[{"pdf-parser":{...}}]}` wrapper.
+Under the TIKA-4763 wire restriction, a `Parser`/`Detector` name nested inside a `parsers`
+array is rejected (only top-level self-configuring keys such as `pdf-parser` are honored at
+request time). Supplying the nested form currently returns HTTP 500 (the blocked-component
+`IOException` is not mapped to 400) — track as a usability/status-code fix.
+
+=== Test 21: POST /unpack/all/config with per-request config
 
 [source,bash]
 ----
-curl -s -X POST -F "file=@test_recursive_embedded.docx" http://localhost:9998/unpack/config -o /tmp/unpack-config.zip
+curl -s -X POST -F "file=@test_recursive_embedded.docx" \
+  -F 'config={"pdf-parser":{"ocr":{"strategy":"NO_OCR"}}}' \
+  http://localhost:9998/unpack/all/config -o /tmp/unpack-config.zip
 unzip -l /tmp/unpack-config.zip
 ----
 
-*Expected:* ZIP with extracted embedded files.
+*Expected:* ZIP with extracted embedded files (config applied). Note there is no
+`/unpack/config` path — the config-variant of unpack is `/unpack/all/config`.
 
 === Test 22: POST /unpack/all/config
 
@@ -288,7 +322,7 @@ unzip -l /tmp/unpack-all.zip
 
 [source,bash]
 ----
-java -jar tika-server.jar --port 9999 &
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar --port 9999 &
 sleep 8
 curl -s http://localhost:9999/version
 ----
@@ -299,7 +333,7 @@ curl -s http://localhost:9999/version
 
 [source,bash]
 ----
-java -jar tika-server.jar --host 0.0.0.0 --port 9998 &
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar --host 0.0.0.0 --port 9998 &
 ----
 
 *Expected:* Server binds to all interfaces.
@@ -308,7 +342,7 @@ java -jar tika-server.jar --host 0.0.0.0 --port 9998 &
 
 [source,bash]
 ----
-java -jar tika-server.jar -c tika-config.json &
+java -jar tika-server-standard-4.0.0-SNAPSHOT.jar -c tika-config.json &
 ----
 
 *Expected:* Server uses custom configuration.
@@ -357,7 +391,7 @@ curl -s -w "\nHTTP Status: %{http_code}\n" -X DELETE http://localhost:9998/tika/
 
 [source,bash]
 ----
-pkill -f "tika-server.jar"
+pkill -f "tika-server-standard-4.0.0-SNAPSHOT.jar"
 rm -rf /tmp/tika-server-test
 ----
 
@@ -365,7 +399,7 @@ rm -rf /tmp/tika-server-test
 
 The following endpoints were tested and verified working:
 
-=== Default Mode (enableUnsecureFeatures=false)
+=== Default Mode (allowPipes=false, allowPerRequestConfig=false)
 
 [cols="1,1,1", options="header"]
 |===
@@ -392,10 +426,10 @@ The following endpoints were tested and verified working:
 |`/meta/config` |POST |BLOCKED (403) - Expected
 |`/rmeta/config` |POST |BLOCKED (403) - Expected
 |`/tika/config` |POST |BLOCKED (403) - Expected
-|`/unpack/config` |POST |BLOCKED (403) - Expected
+|`/unpack/all/config` |POST |BLOCKED (403) - Expected
 |===
 
-=== With enableUnsecureFeatures=true
+=== With allowPerRequestConfig=true
 
 [cols="1,1,1", options="header"]
 |===
@@ -404,7 +438,6 @@ The following endpoints were tested and verified working:
 |`/meta/config` |POST |PASS
 |`/rmeta/config` |POST |PASS
 |`/tika/config` |POST |PASS
-|`/unpack/config` |POST |PASS
 |`/unpack/all/config` |POST |PASS
 |===
 

@@ -44,6 +44,20 @@
       <groupId>commons-io</groupId>
       <artifactId>commons-io</artifactId>
     </dependency>
+    <!-- Markdown serialization (ToMarkdownContentHandler). BSD 2-Clause, ASF Category A,
+         zero transitive dependencies. -->
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark-ext-gfm-tables</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark-ext-gfm-strikethrough</artifactId>
+    </dependency>
 
     <!-- rosetta-squint: byte-exact-with-Python-imagehash perceptual-hash
          algorithms (phash / dhash / ahash / colorhash / whash / crop-resistant).

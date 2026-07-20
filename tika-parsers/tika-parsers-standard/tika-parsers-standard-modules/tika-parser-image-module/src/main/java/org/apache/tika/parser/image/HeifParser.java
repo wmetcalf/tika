@@ -31,9 +31,10 @@ import javax.imageio.ImageIO;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
+import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -70,7 +71,23 @@ public class HeifParser extends AbstractImageParser {
     void extractMetadata(InputStream stream, ContentHandler contentHandler, Metadata metadata,
                          ParseContext parseContext)
             throws IOException, SAXException, TikaException {
-        new ImageMetadataExtractor(metadata).parseHeif(stream);
+        TemporaryResources tmp = new TemporaryResources();
+        try {
+            TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
+            File file = tis.getFile();   // spool so the file can be re-read below
+            // XMP first so it is canonical; metadata-extractor (EXIF/GPS) fills gaps.
+            // Locate the XMP item precisely via meta/iinf/iloc first, so an embedded resource's XMP
+            // (e.g. a motion-photo video in mdat) can't be attributed to the image; fall back to the
+            // byte scanner for packets not reachable through the boxes.
+            if (!HeifXmp.extract(file, metadata, parseContext)) {
+                ImageXmp.scanAndExtract(tis, metadata, parseContext);
+            }
+            try (InputStream heif = Files.newInputStream(file.toPath())) {
+                new ImageMetadataExtractor(metadata).parseHeif(heif);
+            }
+        } finally {
+            tmp.dispose();
+        }
     }
 
     /**

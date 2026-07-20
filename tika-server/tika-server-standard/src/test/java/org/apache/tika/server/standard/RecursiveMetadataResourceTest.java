@@ -64,6 +64,11 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
     private static final String TEST_RECURSIVE_DOC = "test-documents/test_recursive_embedded.docx";
 
     @Override
+    protected boolean isAllowPerRequestConfig() {
+        return true; // exercises per-request config injection
+    }
+
+    @Override
     protected void setUpResources(JAXRSServerFactoryBean sf) {
         sf.setResourceClasses(RecursiveMetadataResource.class);
         sf.setResourceProvider(RecursiveMetadataResource.class, new SingletonResourceProvider(new RecursiveMetadataResource()));
@@ -259,7 +264,8 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
                 .get(6)
                 .get(TikaCoreProperties.TIKA_CONTENT)
                 .trim();
-        assertTrue(content.startsWith("<html xmlns=\"http://www.w3.org/1999/xhtml\">"));
+        assertFalse(content.startsWith("<html"));
+        assertContains("plundered our seas", content);
 
         //extra slash
         response = WebClient
@@ -273,7 +279,8 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
                 .get(6)
                 .get(TikaCoreProperties.TIKA_CONTENT)
                 .trim();
-        assertTrue(content.startsWith("<html xmlns=\"http://www.w3.org/1999/xhtml\">"));
+        assertFalse(content.startsWith("<html"));
+        assertContains("plundered our seas", content);
 
         //unparseable
         response = WebClient
@@ -287,7 +294,8 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
                 .get(6)
                 .get(TikaCoreProperties.TIKA_CONTENT)
                 .trim();
-        assertTrue(content.startsWith("<html xmlns=\"http://www.w3.org/1999/xhtml\">"));
+        assertFalse(content.startsWith("<html"));
+        assertContains("plundered our seas", content);
 
         //xml
         response = WebClient
@@ -366,7 +374,8 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
                 .get(6)
                 .get(TikaCoreProperties.TIKA_CONTENT)
                 .trim();
-        assertTrue(content.startsWith("<html xmlns=\"http://www.w3.org/1999/xhtml\">"));
+        assertFalse(content.startsWith("<html"));
+        assertContains("plundered our seas", content);
 
         //unparseable
         attachmentPart =
@@ -384,7 +393,8 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
                 .get(6)
                 .get(TikaCoreProperties.TIKA_CONTENT)
                 .trim();
-        assertTrue(content.startsWith("<html xmlns=\"http://www.w3.org/1999/xhtml\">"));
+        assertFalse(content.startsWith("<html"));
+        assertContains("plundered our seas", content);
 
         //xml
         attachmentPart =

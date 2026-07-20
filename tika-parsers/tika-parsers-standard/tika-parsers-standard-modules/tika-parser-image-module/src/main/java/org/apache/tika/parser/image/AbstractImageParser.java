@@ -174,10 +174,24 @@ public abstract class AbstractImageParser implements Parser {
         if (ocrMediaType == null ||
                 ocrParser == null || !ocrParser.getSupportedTypes(context).contains(ocrMediaType)) {
             prepareBarcodePathLookup(tis, context);
-            extractMetadata(tis, handler, metadata, context);
-            Path barcodePath = getBarcodePath(tis, context);
-            addImageHashMetadata(barcodePath, metadata);
-            addBarcodeMetadata(barcodePath, metadata, context);
+            // Mirror the OCR branch below: metadata extraction / image hashing
+            // (ImageIO.read) / barcode scanning can throw unchecked exceptions on a
+            // malformed/adversarial image. Wrap them so a raw RuntimeException never
+            // escapes parse() — the Tika parser contract requires TikaException.
+            try {
+                extractMetadata(tis, handler, metadata, context);
+                Path barcodePath = getBarcodePath(tis, context);
+                addImageHashMetadata(barcodePath, metadata);
+                addBarcodeMetadata(barcodePath, metadata, context);
+            } catch (IOException | SAXException | TikaException e) {
+                throw e;
+            } catch (SecurityException e) {
+                // Mirror the OCR branch: let a SecurityException propagate unwrapped
+                // rather than masking it as a generic TikaException.
+                throw e;
+            } catch (RuntimeException e) {
+                throw new TikaException("problem extracting image metadata", e);
+            }
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
             xhtml.endDocument();

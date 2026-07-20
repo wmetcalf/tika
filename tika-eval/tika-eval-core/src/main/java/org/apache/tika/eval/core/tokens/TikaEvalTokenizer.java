@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 
-import org.apache.tika.langdetect.charsoup.CharSoupFeatureExtractor;
+import org.apache.tika.langdetect.charsoup.core.CharSoupFeatureExtractor;
 
 /**
  * Tokenizer for tika-eval text analysis. Provides two modes:
@@ -53,7 +53,7 @@ import org.apache.tika.langdetect.charsoup.CharSoupFeatureExtractor;
  * </ol>
  * <p>
  * This class is intentionally separate from
- * {@link org.apache.tika.langdetect.charsoup.WordTokenizer} to avoid
+ * {@link org.apache.tika.langdetect.charsoup.core.WordTokenizer} to avoid
  * parameterization in the language-detection hot path.
  */
 public class TikaEvalTokenizer {
@@ -102,6 +102,43 @@ public class TikaEvalTokenizer {
                     "form", "iframe", "section", "colspan", "rowspan")));
 
     private TikaEvalTokenizer() {
+    }
+
+    /**
+     * Tests whether {@code token} could be a {@link Mode#COMMON_TOKENS} candidate, i.e. whether
+     * it is the kind of token the common-token lists are built from. Use this to gate
+     * common-token membership lookups on tokens produced in {@link Mode#STANDARD} mode (which
+     * also emits numbers and short tokens): a token that could never be in a list should not be
+     * tested against it, since the only possible outcome is a false positive.
+     * <p>
+     * Mirrors {@link #flushWord}: alphabetic/ideographic only (no digits or punctuation),
+     * length 1..{@link #MAX_TOKEN_LENGTH}, at least {@link #MIN_ALPHA_TOKEN_LENGTH} characters
+     * for non-ideographic tokens (CJK tokens are exempt), and not an excluded HTML term.
+     */
+    public static boolean isCommonTokenCandidate(String token) {
+        int len = token.length();
+        if (len == 0 || len > MAX_TOKEN_LENGTH) {
+            return false;
+        }
+        boolean ideographic = false;
+        int i = 0;
+        while (i < len) {
+            int cp = token.codePointAt(i);
+            i += Character.charCount(cp);
+            if (Character.isDigit(cp)) {
+                return false;
+            }
+            if (!Character.isAlphabetic(cp) && !Character.isIdeographic(cp) && cp != '_') {
+                return false;
+            }
+            if (Character.isIdeographic(cp)) {
+                ideographic = true;
+            }
+        }
+        if (!ideographic && len < MIN_ALPHA_TOKEN_LENGTH) {
+            return false;
+        }
+        return !SKIP_SET.contains(token);
     }
 
     /**

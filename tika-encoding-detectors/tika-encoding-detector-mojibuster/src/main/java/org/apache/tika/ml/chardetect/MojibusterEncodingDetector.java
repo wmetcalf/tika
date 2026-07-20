@@ -24,13 +24,15 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.EncodingDetector;
+import org.apache.tika.detect.EncodingDetectorContext;
+import org.apache.tika.detect.EncodingProbeCache;
 import org.apache.tika.detect.EncodingResult;
+import org.apache.tika.detect.HighByteLetterStats;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -76,7 +78,12 @@ public class MojibusterEncodingDetector implements EncodingDetector {
     public static final String DEFAULT_MODEL_RESOURCE =
             "/org/apache/tika/ml/chardetect/nb-bigram.bin";
 
-    private static final int MAX_PROBE_BYTES = 4096;
+    // Probe sized by tag-stripped content (16 KB target), capped at 512 KB raw.
+    // Markup-heavy pages whose distinguishing bytes (esp. UTF-8 multi-byte
+    // sequences) sit past a fixed 16 KB raw window would otherwise starve the
+    // structural UTF-8 check and NB scoring. See AdaptiveProbe.
+    private static final int PROBE_CONTENT_TARGET = AdaptiveProbe.DEFAULT_CONTENT_TARGET;
+    private static final int PROBE_RAW_CAP = AdaptiveProbe.DEFAULT_RAW_CAP;
 
     /**
      * Minimum number of successfully-parsed well-formed tags required
@@ -95,6 +102,15 @@ public class MojibusterEncodingDetector implements EncodingDetector {
     private static final int MIN_TAG_COUNT_TO_USE_STRIP = 1;
 
     /**
+     * Minimum HTML entity count to apply the stripper even when no
+     * well-formed tags are present.  A single stray {@code &amp;}
+     * mention in plain prose shouldn't trigger the strip path, but
+     * entity-heavy content (HTML-quoted text in a plain-text file,
+     * truncated reads where the leading tag was lost, etc.) should.
+     */
+    private static final int MIN_ENTITY_COUNT_TO_USE_STRIP = 3;
+
+    /**
      * Confidence attached to UTF-32 structural candidates — high but
      * sub-1.0 so the ResultType.STRUCTURAL flag carries meaning
      * without blocking downstream override on mislabeled content.
@@ -111,17 +127,18 @@ public class MojibusterEncodingDetector implements EncodingDetector {
      */
     private static final float UTF8_STRUCTURAL_CONF = 0.95f;
 
-    /**
-     * Low-evidence threshold (number of high bytes &ge; 0x80) below
-     * which {@link #applyLatinSiblingFallback} fires.  Short probes
-     * (sparse Latin in HTML, vCard fragments) get non-1252 Latin
-     * sibling picks from NB on bias / hash-bucket accidents; when
-     * the probe decodes byte-identically under windows-1252 we
-     * relabel to windows-1252 — the WHATWG-canonical answer.  Above
-     * this threshold the model has genuine evidence to discriminate
-     * sibling code pages.
-     */
-    private static final int LATIN_FALLBACK_HIGH_BYTE_THRESHOLD = 5;
+    /** Confidence for an ISO-2022-JP/KR/CN structural candidate (7-bit, escape-based). */
+    private static final float ISO2022_STRUCTURAL_CONF = 0.95f;
+
+    /** ISO-2022 decode-verify: a stray {@code ESC $} in plain ASCII must not win, so
+     *  require the decode to yield real CJK at near-zero replacement rate. */
+    private static final int ISO2022_MIN_CJK = 4;
+    private static final double ISO2022_MAX_FFFD_RATE = 0.05;
+
+    /** False-CJK veto: drop an NB legacy-CJK candidate whose UTF-8-stripped decode
+     *  fails above this rate.  Post-strip, real CJK (pure or mixed) is ≤1.6% and
+     *  genuine false-CJK ≥5.3%, so ~2.5% separates them (see CjkDecodeValidator). */
+    private static final double CJK_FAILURE_VETO_THRESHOLD = 0.025;
 
     /** Confidence for the windows-1252 fallback emitted on empty/ASCII probes. */
     private static final float FALLBACK_CONFIDENCE = 0.1f;
@@ -134,15 +151,28 @@ public class MojibusterEncodingDetector implements EncodingDetector {
      * to drop a high-confidence UTF-8 classification on otherwise-valid
      * text and fall through to {@code AutoDetectReader.detect}, which
      * raises {@code TikaException} when the chain returns no candidates.
-     * 0.5% (1 byte per 200) accommodates "tiny corruption" while still
-     * rejecting genuinely-non-UTF-8 streams (which would have many more
-     * malformed bytes).
+     * Per-byte error rate governing LONG probes (the absolute cap below is a
+     * floor for short ones).  0.01% (~1 malformed sequence per 10 KB)
+     * accommodates real UTF-8 with a few stray/corrupt bytes (e.g. a 150 KB
+     * page with 4 errors = 0.003%) while still rejecting a win-1252 page
+     * misread as UTF-8 (a 20 KB Western page surfaces ~14 invalid sequences =
+     * 0.07%, 7× over).
      *
      * <p>TACTICAL: remove or revisit when Mojibuster's UTF-8 grammar
      * check is replaced with a probabilistic decoder that returns a
      * confidence score directly.</p>
      */
-    private static final double UTF8_MALFORMED_TOLERANCE = 0.005;
+    private static final double UTF8_MALFORMED_TOLERANCE = 0.0001;
+
+    /**
+     * Absolute floor on tolerated UTF-8 error events for SHORT probes, where a
+     * rate is meaningless (a 20-byte string with 1 bad byte is 5%).  The
+     * effective cap is {@code max(this, probeLen * UTF8_MALFORMED_TOLERANCE)} —
+     * so short probes allow 1, long probes are governed by the rate.  (Earlier
+     * this was a hard cap applied at all lengths, which wrongly rejected long,
+     * genuinely-UTF-8 pages carrying a couple of stray bytes.)
+     */
+    private static final int UTF8_MAX_TOLERATED_ERRORS = 1;
 
     /** Windows-1252: the WHATWG-canonical default for unlabeled Western content. */
     private static final String WIN1252 = "windows-1252";
@@ -180,7 +210,7 @@ public class MojibusterEncodingDetector implements EncodingDetector {
     @Override
     public List<EncodingResult> detect(TikaInputStream tis, Metadata metadata,
                                        ParseContext parseContext) throws IOException {
-        byte[] probe = readProbe(tis);
+        byte[] probe = readProbe(tis, parseContext);
         return detect(probe, metadata);
     }
 
@@ -198,7 +228,7 @@ public class MojibusterEncodingDetector implements EncodingDetector {
     public List<EncodingResult> detect(byte[] probe, Metadata metadata) {
         if (LOG.isTraceEnabled()) {
             int probeLen = probe == null ? 0 : probe.length;
-            int highBytes = probe == null ? 0 : countHighBytes(probe);
+            int highBytes = probe == null ? 0 : HighByteLetterStats.countHighBytes(probe);
             LOG.trace("mojibuster enter probe={}B highBytes={}", probeLen, highBytes);
         }
         // Empty / near-empty probes: return the WHATWG default so
@@ -219,6 +249,18 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         // consulting NB so we don't hand back a bias-driven x-MacRoman
         // or IBM850 pick.
         if (isPureAscii(probe)) {
+            // ISO-2022-JP/KR/CN are 7-bit escape-based encodings: NB sees no high
+            // bytes, so without this they fall to the windows-1252 default and
+            // decode to gibberish (a 4.x-vs-3.x regression; icu4j catches them).
+            // Gated to the pure-ASCII branch on purpose — high-byte binary that
+            // happens to contain an ESC sequence never reaches here, it takes the
+            // normal NB path.  decode-verify guards the rare 7-bit stray-ESC case.
+            Charset iso2022 = detectIso2022Verified(probe);
+            if (iso2022 != null) {
+                LOG.trace("mojibuster -> {} (iso-2022 structural)", iso2022.name());
+                return List.of(new EncodingResult(iso2022, ISO2022_STRUCTURAL_CONF,
+                        iso2022.name(), EncodingResult.ResultType.STRUCTURAL));
+            }
             LOG.trace("mojibuster -> windows-1252 fallback (pure ASCII)");
             return windows1252Fallback();
         }
@@ -251,9 +293,9 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         // When the gate fires and the specialist has a confident
         // winner, short-circuit: return a single UTF-16LE/BE
         // STRUCTURAL candidate.  Stride-1 byte bigrams cannot
-        // discriminate UTF-16 reliably (see
-        // why-stride1-bigrams-dont-work-for-utf16.md), so we keep
-        // UTF-16 out of NB training and delegate to the specialist.
+        // discriminate UTF-16 reliably (CJK in UTF-16 produces byte
+        // pairs that alias common ASCII bigrams), so we keep UTF-16
+        // out of NB training and delegate to the specialist.
         boolean utf16Gate = StructuralEncodingRules.has2ByteColumnAsymmetryEvidence(probe);
         LOG.trace("mojibuster utf16Gate={}", utf16Gate);
         if (utf16Gate) {
@@ -296,8 +338,10 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         boolean utf8Tolerated = false;
         if (utf8 == StructuralEncodingRules.Utf8Result.NOT_UTF8) {
             int errors = StructuralEncodingRules.countUtf8Errors(probe);
-            if (errors > 0
-                    && (double) errors / probe.length <= UTF8_MALFORMED_TOLERANCE) {
+            // Length-aware: absolute floor for short probes, rate for long ones.
+            int maxTolerated = Math.max(UTF8_MAX_TOLERATED_ERRORS,
+                    (int) (probe.length * UTF8_MALFORMED_TOLERANCE));
+            if (errors > 0 && errors <= maxTolerated) {
                 utf8Tolerated = true;
                 LOG.trace("mojibuster utf8 NOT_UTF8 tolerated: {} error events in {}B ({}%)",
                         errors, probe.length,
@@ -311,6 +355,15 @@ public class MojibusterEncodingDetector implements EncodingDetector {
             }
         }
         LOG.trace("mojibuster utf8Check={} tolerated={}", utf8, utf8Tolerated);
+        // Emit a structural UTF-8 candidate only when the grammar is definitively
+        // clean (LIKELY_UTF8).  When the probe is NOT_UTF8 but within the error
+        // tolerance (utf8Tolerated), NB's UTF-8 result is already kept as a
+        // STATISTICAL candidate (see NOT_UTF8 disqualifier above) — promoting it
+        // to STRUCTURAL here would cause the "return only top-1 STRUCTURAL" path
+        // to short-circuit JunkFilter, preventing it from comparing UTF-8 against
+        // windows-1252.  For short probes a single bad byte in otherwise-ASCII
+        // content is more likely a genuine Latin-1/windows-1252 byte than a
+        // corrupt UTF-8 sequence; JunkFilter has enough signal to arbitrate.
         if (utf8 == StructuralEncodingRules.Utf8Result.LIKELY_UTF8) {
             pool.add(new EncodingResult(
                     java.nio.charset.StandardCharsets.UTF_8,
@@ -345,6 +398,18 @@ public class MojibusterEncodingDetector implements EncodingDetector {
                     && !utf8Tolerated) {
                 continue;
             }
+            // False-CJK veto: a legacy multi-byte CJK pick whose bytes don't
+            // validate (high decode-failure on the UTF-8-stripped remainder) is
+            // Latin/Cyrillic/garbage mis-read as CJK.  Drop it — if it was NB's
+            // only candidate the pool empties and the windows-1252 fallback wins.
+            if (CjkDecodeValidator.appliesTo(name)) {
+                double failRate = CjkDecodeValidator.strippedFailureRate(nbInput, r.getCharset());
+                if (failRate >= CJK_FAILURE_VETO_THRESHOLD) {
+                    LOG.trace("mojibuster veto {} (cjk decode-failure {}%)", name,
+                            String.format(Locale.ROOT, "%.2f", failRate * 100));
+                    continue;
+                }
+            }
             pool.add(r);
         }
 
@@ -365,17 +430,30 @@ public class MojibusterEncodingDetector implements EncodingDetector {
             LOG.trace("mojibuster pool empty -> windows-1252 fallback");
             return windows1252Fallback();
         }
+        // When the top result is STRUCTURAL (clean UTF-8/UTF-32/ISO-2022 grammar),
+        // return only that one result.  JunkFilter must not re-open Mojibuster's
+        // internal ordering and pick a lower-ranked STATISTICAL CJK candidate
+        // over the STRUCTURAL winner on non-languagey content — that was the 11k
+        // regression root cause.  With a single STRUCTURAL result, JunkFilter
+        // still arbitrates when *another* detector disagrees (lying HTML headers),
+        // which is the intended use case.
+        //
+        // When the top result is STATISTICAL, keep the full ranked list so that
+        // JunkFilter can arbitrate within-family ambiguities (e.g. GB18030 vs
+        // x-windows-949: NB scores Chinese higher than Korean on JS-heavy files
+        // because ASCII bigram distributions differ between training corpora, but
+        // JunkFilter's language-quality scoring correctly prefers Korean text).
+        EncodingResult top = finalResults.get(0);
+        List<EncodingResult> toReturn = (top.getResultType() == EncodingResult.ResultType.STRUCTURAL)
+                ? List.of(top) : finalResults;
         if (LOG.isTraceEnabled()) {
-            StringBuilder sb = new StringBuilder();
-            for (EncodingResult r : finalResults) {
-                if (sb.length() > 0) sb.append(", ");
-                sb.append(r.getCharset().name())
-                  .append("[").append(r.getResultType()).append("]")
-                  .append("@").append(String.format(Locale.ROOT, "%.2f", r.getConfidence()));
-            }
-            LOG.trace("mojibuster exit ({} results) [{}]", finalResults.size(), sb);
+            LOG.trace("mojibuster exit ({}) {}[{}]@{}",
+                    top.getResultType() == EncodingResult.ResultType.STRUCTURAL ? "top1" : "full",
+                    top.getCharset().name(),
+                    top.getResultType(),
+                    String.format(Locale.ROOT, "%.2f", top.getConfidence()));
         }
-        return finalResults;
+        return toReturn;
     }
 
     /**
@@ -386,6 +464,50 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         Charset cs = Charset.forName(WIN1252);
         return List.of(new EncodingResult(cs, FALLBACK_CONFIDENCE, WIN1252,
                 EncodingResult.ResultType.STATISTICAL));
+    }
+
+    /**
+     * Detect ISO-2022-JP/KR/CN by escape sequence, then verify the decode is
+     * real CJK (not a stray {@code ESC $} in ASCII text).  Returns the charset
+     * or {@code null}.  Caller guarantees {@code probe} is pure 7-bit ASCII.
+     */
+    private static Charset detectIso2022Verified(byte[] probe) {
+        Charset cs = StructuralEncodingRules.detectIso2022(probe);
+        if (cs == null) {
+            return null;
+        }
+        String decoded;
+        try {
+            decoded = new String(probe, cs); // REPLACE on malformed/unmappable
+        } catch (Exception e) {
+            return null;
+        }
+        int cjk = 0;
+        int fffd = 0;
+        for (int i = 0; i < decoded.length(); ) {
+            int cp = decoded.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp == 0xFFFD) {
+                fffd++;
+            } else if (isCjkChar(cp)) {
+                cjk++;
+            }
+        }
+        if (cjk >= ISO2022_MIN_CJK
+                && fffd <= decoded.length() * ISO2022_MAX_FFFD_RATE) {
+            return cs;
+        }
+        return null;
+    }
+
+    /** Han / kana / hangul / CJK punctuation — the scripts ISO-2022-JP/KR/CN carry. */
+    private static boolean isCjkChar(int cp) {
+        return (cp >= 0x3040 && cp <= 0x30FF)     // hiragana + katakana
+                || (cp >= 0x4E00 && cp <= 0x9FFF) // CJK unified
+                || (cp >= 0x3400 && cp <= 0x4DBF) // CJK ext A
+                || (cp >= 0xAC00 && cp <= 0xD7A3) // hangul syllables
+                || (cp >= 0xFF66 && cp <= 0xFF9F) // halfwidth katakana
+                || (cp >= 0x3000 && cp <= 0x303F); // CJK symbols/punctuation
     }
 
     /**
@@ -482,28 +604,30 @@ public class MojibusterEncodingDetector implements EncodingDetector {
     }
 
     /**
-     * Relabel the top result to windows-1252 when all of the following
-     * hold:
-     * <ul>
-     *   <li>top candidate is a non-1252 member of
-     *       {@link CharsetConfusables#SBCS_LATIN_FAMILY};</li>
-     *   <li>high-byte count &lt;
-     *       {@link #LATIN_FALLBACK_HIGH_BYTE_THRESHOLD};</li>
-     *   <li>the probe decodes byte-identically under the candidate
-     *       and under windows-1252 — no information is lost by the
-     *       rewrite.</li>
-     * </ul>
-     * Rationale: on sparse-Latin probes NB picks sibling code pages
-     * (ISO-8859-3, x-MacRoman, IBM850) on bias.  windows-1252 is the
-     * WHATWG-canonical answer and matches downstream test
-     * expectations.  Mirrors Mojibuster's LATIN_FALLBACK_WIN1252 rule.
+     * Relabel the top result to windows-1252 when top is a non-1252
+     * member of {@link CharsetConfusables#SBCS_LATIN_FAMILY} and
+     * windows-1252 decodes at least as many Unicode-Letter codepoints
+     * at high-byte positions as the candidate does.
+     *
+     * <p>Rationale: NB has a residual bias toward MacRoman / IBM850 /
+     * IBM852 / ISO-8859-X siblings on Western European text where the
+     * underlying bytes are actually windows-1252.  Under the wrong
+     * sibling, the high bytes decode to symbols / punctuation /
+     * unassigned codepoints — not letters.  Under the correct
+     * windows-1252, they decode to letters (ä, ö, ü, é, ñ, …).  So a
+     * letter-count compare directly distinguishes "this is actually
+     * windows-1252 mis-labeled" from "this is genuinely MacRoman".
+     * A real MacRoman document with bytes like 0x88 (à in MacRoman)
+     * decodes to a letter under MacRoman but a symbol (ˆ) under
+     * windows-1252 — letter compare correctly keeps MacRoman.</p>
+     *
+     * <p>Replaces the prior strict gates ({@code countHighBytes &lt; 5}
+     * AND {@code byteIdenticalOnProbe(top, win-1252)}) which left
+     * ≥ 5-high-byte Western European pages unprotected.</p>
      */
     private static List<EncodingResult> applyLatinSiblingFallback(byte[] probe,
                                                                   List<EncodingResult> ranked) {
         if (ranked.isEmpty()) {
-            return ranked;
-        }
-        if (countHighBytes(probe) >= LATIN_FALLBACK_HIGH_BYTE_THRESHOLD) {
             return ranked;
         }
         EncodingResult top = ranked.get(0);
@@ -511,11 +635,23 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         if (WIN1252.equals(topName)) {
             return ranked;
         }
-        if (!CharsetConfusables.SBCS_LATIN_FAMILY.contains(topName)) {
+        // Scoped to Western European Latin family only.  Central
+        // European (win-1250 / ISO-8859-2 / IBM852), Baltic (win-1257 /
+        // ISO-8859-13), Turkish (win-1254), Maltese (ISO-8859-3),
+        // Romanian (ISO-8859-16) etc. are NOT in scope — those
+        // represent different language regions, and rewriting them to
+        // windows-1252 corrupts genuine non-Western content (the
+        // letter-count compare ties on most of their Latin letters
+        // because Unicode classifies both decodings as Letters,
+        // misleading the rule into a wrong flip).
+        if (!CharsetConfusables.WESTERN_LATIN_FAMILY.contains(topName)) {
             return ranked;
         }
         Charset win1252 = Charset.forName(WIN1252);
-        if (!DecodeEquivalence.byteIdenticalOnProbe(probe, top.getCharset(), win1252)) {
+        int winLetters = HighByteLetterStats.countCasedHighByteLetters(probe, win1252);
+        int topLetters = HighByteLetterStats.countCasedHighByteLetters(probe, top.getCharset());
+        // Tie goes to windows-1252 (WHATWG-canonical default).
+        if (winLetters < topLetters) {
             return ranked;
         }
         List<EncodingResult> out = new java.util.ArrayList<>(ranked.size());
@@ -527,27 +663,24 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         return out;
     }
 
-    private static int countHighBytes(byte[] probe) {
-        int n = 0;
-        for (byte b : probe) {
-            if ((b & 0xFF) >= 0x80) {
-                n++;
-            }
-        }
-        return n;
-    }
-
     /**
-     * Sort pool by confidence descending, deduplicate by charset name
-     * keeping the highest-confidence instance.  Stable ordering is
-     * good enough for current needs; if we need trust-type tiebreaks
-     * (STRUCTURAL > DECLARATIVE > STATISTICAL) later, add here.
+     * Sort pool by trust type (STRUCTURAL &gt; DECLARATIVE &gt; STATISTICAL),
+     * then by confidence within a type, and deduplicate by charset name keeping
+     * the first (highest-priority) instance.  Type priority is load-bearing:
+     * NB pins its statistical winner to confidence 1.0, so a structural
+     * candidate (UTF-8 grammar proof, UTF-32 codepoint validity) emitted below
+     * 1.0 would otherwise lose the sort to NB despite being the stronger signal.
      */
     private static List<EncodingResult> sortAndDedup(List<EncodingResult> pool) {
         if (pool.isEmpty()) {
             return Collections.emptyList();
         }
-        pool.sort((a, b) -> Float.compare(b.getConfidence(), a.getConfidence()));
+        pool.sort((a, b) -> {
+            int byType = Integer.compare(typeRank(a.getResultType()),
+                    typeRank(b.getResultType()));
+            return byType != 0 ? byType
+                    : Float.compare(b.getConfidence(), a.getConfidence());
+        });
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
         List<EncodingResult> out = new java.util.ArrayList<>(pool.size());
         for (EncodingResult r : pool) {
@@ -556,6 +689,18 @@ public class MojibusterEncodingDetector implements EncodingDetector {
             }
         }
         return out;
+    }
+
+    /** Trust-type priority for sorting: lower wins. */
+    private static int typeRank(EncodingResult.ResultType t) {
+        switch (t) {
+            case STRUCTURAL:
+                return 0;
+            case DECLARATIVE:
+                return 1;
+            default:
+                return 2;
+        }
     }
 
     /**
@@ -597,10 +742,11 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         byte[] dst = new byte[probe.length];
         HtmlByteStripper.Result stripped =
                 HtmlByteStripper.strip(probe, 0, probe.length, dst, 0);
-        if (stripped.tagCount < MIN_TAG_COUNT_TO_USE_STRIP) {
-            // No well-formed tags found — probe isn't markup (or the
-            // bytes don't parse as markup in any ASCII-compatible
-            // reading).  Use original.
+        if (stripped.tagCount < MIN_TAG_COUNT_TO_USE_STRIP
+                && stripped.entityCount < MIN_ENTITY_COUNT_TO_USE_STRIP) {
+            // No well-formed tags AND not enough entities to be markup —
+            // probe isn't markup (or the bytes don't parse as markup in
+            // any ASCII-compatible reading).  Use original.
             return probe;
         }
         byte[] trimmed = new byte[stripped.length];
@@ -621,19 +767,21 @@ public class MojibusterEncodingDetector implements EncodingDetector {
         return lower.contains("html") || lower.contains("xml");
     }
 
-    private static byte[] readProbe(TikaInputStream tis) throws IOException {
-        tis.mark(MAX_PROBE_BYTES);
-        byte[] buf = new byte[MAX_PROBE_BYTES];
-        try {
-            int n = IOUtils.read(tis, buf);
-            if (n < buf.length) {
-                byte[] trimmed = new byte[n];
-                System.arraycopy(buf, 0, trimmed, 0, n);
-                return trimmed;
+    private static byte[] readProbe(TikaInputStream tis, ParseContext parseContext)
+            throws IOException {
+        EncodingDetectorContext context =
+                parseContext == null ? null : parseContext.get(EncodingDetectorContext.class);
+        EncodingProbeCache cache = context == null ? null : context.getProbeCache();
+        if (cache != null) {
+            byte[] cached = cache.get(PROBE_CONTENT_TARGET, PROBE_RAW_CAP);
+            if (cached != null) {
+                return cached;
             }
-            return buf;
-        } finally {
-            tis.reset();
         }
+        byte[] probe = AdaptiveProbe.read(tis, PROBE_CONTENT_TARGET, PROBE_RAW_CAP);
+        if (cache != null) {
+            cache.put(probe, PROBE_CONTENT_TARGET, PROBE_RAW_CAP);
+        }
+        return probe;
     }
 }

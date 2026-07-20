@@ -37,7 +37,7 @@ import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -133,7 +133,10 @@ public class PpkgParser implements Parser {
             throw new TikaException("WIM uses unsupported compression (not XPRESS)");
         }
         int chunkSize = buf.getInt(20);
-        if (chunkSize <= 0) {
+        // Clamp to a sane maximum: WIM chunk size is normally 32 KB. A hostile
+        // multi-GB value overflows the (uncompLen + chunkSize) chunk-count math in
+        // decompressResource into a negative nChunks -> uncaught exception.
+        if (chunkSize <= 0 || chunkSize > 64 * 1024 * 1024) {
             chunkSize = 32768;
         }
         int imageCount = buf.getInt(44);
@@ -144,7 +147,11 @@ public class PpkgParser implements Parser {
 
         // WIM XML descriptor (uncompressed UTF-16LE) — package-level metadata
         String wimXml = "";
-        if (xmlHdr.size > 0 && xmlHdr.size < 4 * 1024 * 1024) {
+        // offset + size is computed overflow-safe: offset is bounded to raw.length
+        // first, so (raw.length - offset) can't underflow, then size is compared to it.
+        if (xmlHdr.size > 0 && xmlHdr.size < 4 * 1024 * 1024
+                && xmlHdr.offset >= 0 && xmlHdr.offset <= raw.length
+                && xmlHdr.size <= raw.length - xmlHdr.offset) {
             byte[] xmlBytes = Arrays.copyOfRange(raw, (int) xmlHdr.offset,
                     (int) (xmlHdr.offset + xmlHdr.size));
             // UTF-16LE with optional BOM
@@ -174,25 +181,34 @@ public class PpkgParser implements Parser {
             if ((rh.flags & 0x04) == 0) {
                 continue;
             }
-            byte[] metaRes = decompressResource(raw, rh, chunkSize);
-            if (metaRes == null || metaRes.length < 8) {
-                continue;
-            }
-            // Security descriptor set precedes the root dentry.
-            // u32 total_length at offset 0 gives its byte length; round up to 8.
-            long sdLen = ((ByteBuffer.wrap(metaRes).order(ByteOrder.LITTLE_ENDIAN)
-                    .getInt(0)) & 0xFFFFFFFFL);
-            long rootOff = (sdLen + 7L) & ~7L;
-            // Root dentry has subdir_offset pointing at its children
-            ByteBuffer mbuf = ByteBuffer.wrap(metaRes).order(ByteOrder.LITTLE_ENDIAN);
-            if (rootOff + 24 > metaRes.length) {
-                continue;
-            }
-            long childOff = mbuf.getLong((int) rootOff + 16);
-            if (childOff > 0 && childOff < metaRes.length) {
-                walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
-                        commands, warnings, allDataRefs, pkgMeta, xhtml, context,
-                        metadata);
+            try {
+                byte[] metaRes = decompressResource(raw, rh, chunkSize);
+                if (metaRes == null || metaRes.length < 8) {
+                    continue;
+                }
+                // Security descriptor set precedes the root dentry.
+                // u32 total_length at offset 0 gives its byte length; round up to 8.
+                long sdLen = ((ByteBuffer.wrap(metaRes).order(ByteOrder.LITTLE_ENDIAN)
+                        .getInt(0)) & 0xFFFFFFFFL);
+                long rootOff = (sdLen + 7L) & ~7L;
+                // Root dentry has subdir_offset pointing at its children
+                ByteBuffer mbuf = ByteBuffer.wrap(metaRes).order(ByteOrder.LITTLE_ENDIAN);
+                if (rootOff + 24 > metaRes.length) {
+                    continue;
+                }
+                long childOff = mbuf.getLong((int) rootOff + 16);
+                if (childOff > 0 && childOff < metaRes.length) {
+                    // Fresh visited-set per resource: walkDirectory dedups directory
+                    // listing offsets so a self-referential/cyclic dentry graph cannot
+                    // fan out into exponential recursion (DoS).
+                    walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
+                            commands, warnings, allDataRefs, pkgMeta, xhtml, context,
+                            metadata, new HashSet<>());
+                }
+            } catch (RuntimeException e) {
+                // A malformed metadata resource must not abort the whole package
+                // parse with an uncaught runtime exception (Tika parser contract).
+                warnings.add("Skipped malformed WIM metadata resource: " + e);
             }
         }
 
@@ -296,6 +312,12 @@ public class PpkgParser implements Parser {
         byte[] out = new byte[uncompLen];
         int outPos = 0;
         int nChunks = (uncompLen + chunkSize - 1) / chunkSize;
+        // A tiny chunkSize (e.g. 1) yields nChunks ~= uncompLen (up to 256M) and thus
+        // a multi-hundred-MB int[] chunk table + O(nChunks) work. A legitimate WIM
+        // resource needs very few chunks; reject an absurd count.
+        if (nChunks < 1 || nChunks > 262_144) {
+            return null;
+        }
         int dataOff = (int) hdr.offset;
 
         if (nChunks == 1) {
@@ -324,8 +346,18 @@ public class PpkgParser implements Parser {
         int prevEnd = 0;
         for (int ci = 0; ci < nChunks; ci++) {
             int chunkCompEnd = chunkEnds[ci];
-            int chunkCompLen = chunkCompEnd - prevEnd;
             int chunkUncomp = Math.min(chunkSize, uncompLen - outPos);
+            // The chunk-end offsets come straight from attacker bytes: reject a
+            // non-monotonic or out-of-range table instead of letting copyOfRange
+            // throw an uncaught IllegalArgumentException / IndexOutOfBoundsException.
+            // Test chunkCompEnd < prevEnd directly (not chunkCompEnd - prevEnd) so a
+            // hostile chunkCompEnd near Integer.MIN_VALUE can't wrap the subtraction
+            // into a positive "length" that slips past the guard.
+            if (chunkCompEnd < prevEnd || prevEnd < 0
+                    || (long) chunkDataStart + chunkCompEnd > raw.length) {
+                return null;
+            }
+            int chunkCompLen = chunkCompEnd - prevEnd;
             byte[] cdata = Arrays.copyOfRange(raw,
                     chunkDataStart + prevEnd, chunkDataStart + chunkCompEnd);
             byte[] dec;
@@ -543,10 +575,10 @@ public class PpkgParser implements Parser {
                                List<String> commands, List<String> warnings,
                                List<String> dataRefs, Map<String, String> pkgMeta,
                                XHTMLContentHandler xhtml, ParseContext context,
-                               Metadata rootMeta)
+                               Metadata rootMeta, Set<Integer> visited)
             throws IOException, SAXException, TikaException {
         walkDirectory(meta, dirOff, raw, lut, chunkSize, commands, warnings,
-                dataRefs, pkgMeta, xhtml, context, rootMeta, 0);
+                dataRefs, pkgMeta, xhtml, context, rootMeta, visited, 0);
     }
 
     private void walkDirectory(byte[] meta, int dirOff, byte[] raw,
@@ -554,9 +586,12 @@ public class PpkgParser implements Parser {
                                List<String> commands, List<String> warnings,
                                List<String> dataRefs, Map<String, String> pkgMeta,
                                XHTMLContentHandler xhtml, ParseContext context,
-                               Metadata rootMeta, int depth)
+                               Metadata rootMeta, Set<Integer> visited, int depth)
             throws IOException, SAXException, TikaException {
-        if (dirOff < 0 || dirOff >= meta.length || depth > WALK_MAX_DEPTH) {
+        // visited-set dedups directory listing offsets: a self-referential or cyclic
+        // dentry graph would otherwise recurse fanout^depth times (exponential DoS).
+        if (dirOff < 0 || dirOff >= meta.length || depth > WALK_MAX_DEPTH
+                || !visited.add(dirOff)) {
             return;
         }
         ByteBuffer mbuf = ByteBuffer.wrap(meta).order(ByteOrder.LITTLE_ENDIAN);
@@ -585,7 +620,7 @@ public class PpkgParser implements Parser {
             if (isDir && subdirOff > 0 && subdirOff < meta.length) {
                 walkDirectory(meta, (int) subdirOff, raw, lut, chunkSize,
                         commands, warnings, dataRefs, pkgMeta, xhtml, context,
-                        rootMeta, depth + 1);
+                        rootMeta, visited, depth + 1);
             } else if (!isDir) {
                 ResHdr rh = lut.get(sha1Hex);
                 if (rh != null && (nameLower.endsWith(".xml")

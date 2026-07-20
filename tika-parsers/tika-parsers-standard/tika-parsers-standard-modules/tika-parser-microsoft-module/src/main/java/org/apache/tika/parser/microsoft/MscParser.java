@@ -35,7 +35,7 @@ import java.util.regex.Pattern;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import org.apache.tika.config.TikaComponent;
+import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -89,6 +89,9 @@ public class MscParser implements Parser {
 
     private static final MediaType MSC_TYPE = MediaType.application("x-msc");
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(MSC_TYPE);
+    // Cap input like the sibling parsers (ICalParser=32MB, UrlShortcutParser=256KB):
+    // an uncapped readAllBytes() OOMs on a multi-GB file (Error, not TikaException).
+    private static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
 
     // Shell execution keywords that indicate a dangerous command
     private static final String[] EXEC_KEYWORDS = {
@@ -165,7 +168,11 @@ public class MscParser implements Parser {
                       Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        byte[] raw = stream.readAllBytes();
+        byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
+        if (raw.length == MAX_INPUT_BYTES && stream.read() != -1) {
+            metadata.add("msc:warning",
+                    "Input truncated at " + MAX_INPUT_BYTES + " bytes");
+        }
         String xml = new String(raw, detectCharset(raw));
 
         // Quick sanity check — must look like an MMC console file

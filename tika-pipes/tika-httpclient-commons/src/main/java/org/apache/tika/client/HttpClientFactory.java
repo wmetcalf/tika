@@ -238,6 +238,10 @@ public class HttpClientFactory {
         this.disableContentCompression = disableContentCompression;
     }
 
+    public boolean isVerifySsl() {
+        return verifySsl;
+    }
+
     public void setVerifySsl(boolean verifySsl) {
         this.verifySsl = verifySsl;
     }
@@ -272,7 +276,7 @@ public class HttpClientFactory {
             sslsf = new SSLConnectionSocketFactory(sslContext,
                     SSLConnectionSocketFactory.getDefaultHostnameVerifier());
         } else {
-            LOG.info("http client does not verify ssl at this point.  " +
+            LOG.warn("http client does not verify ssl at this point.  " +
                     "If you need that, please open a ticket.");
             TrustStrategy acceptingTrustStrategy = (cert, authType) -> true;
             try {
@@ -438,7 +442,7 @@ public class HttpClientFactory {
                     return true;
                 }
                 if (!allowedHosts.isEmpty() && !allowedHosts.contains(uri.getHost())) {
-                    LOG.info("Not allowing external redirect. OriginalUrl={}," +
+                    LOG.warn("Not allowing external redirect. OriginalUrl={}," +
                             " RedirectLocation={}", request.getRequestLine().getUri(), location);
                     return false;
                 }

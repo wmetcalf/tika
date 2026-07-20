@@ -21,7 +21,7 @@
 
 == Overview
 
-Tika Server 4.x introduces pipes-based parsing, which provides process isolation for all parsing operations. This improves stability and resource management but introduces some breaking changes.
+Tika Server 4.x introduces pipes-based parsing for the main content-extraction endpoints (`/tika`, `/rmeta`, `/unpack`), which provides process isolation for those operations. This improves stability and resource management but introduces some breaking changes. A few endpoints (notably `/meta`) still parse in-process in the request-handling JVM.
 
 == New `/tika` Endpoint Structure
 
@@ -64,7 +64,7 @@ POST endpoints accept multipart requests with a `file` part and optional `config
 # Parse with custom PDF parser settings
 curl -X POST http://localhost:9998/tika/json \
   -F "file=@document.pdf" \
-  -F "config={\"pdf-parser\":{\"ocrStrategy\":\"no_ocr\"}};type=application/json"
+  -F "config={\"pdf-parser\":{\"ocr\":{\"strategy\":\"no_ocr\"}}};type=application/json"
 ----
 
 == Breaking Changes
@@ -89,6 +89,29 @@ The separate `/config` endpoints have been removed. Configuration is now handled
 
 **Migration:** Use `POST /tika` or `POST /tika/json` with a `config` part in your multipart request.
 
+=== Error Response Bodies Are Now JSON
+
+In 3.x, error responses from `/tika`, `/rmeta`, and `/unpack` returned a plain-text
+body such as "Parse failed: TIMEOUT". In 4.x these endpoints return a JSON body with
+at least a `status` field:
+
+[source,json]
+----
+{"status": "TIMEOUT"}
+----
+
+When the server is configured with `returnStackTrace=true`, a `message` field is also
+included (it may contain a server-side stack trace), e.g. `{"status": "TIMEOUT", "message": "Task timed out after 60000ms"}`.
+
+The HTTP status codes are also more precise:
+
+* `UNSPECIFIED_CRASH` changed from `500` to `503` — it is a transient process failure
+  in the same category as `TIMEOUT` and `OOM`, not a server misconfiguration.
+
+**Migration:** Clients that parse plain-text error bodies must switch to JSON. Clients
+that branch only on HTTP status code are unaffected unless they were treating
+`UNSPECIFIED_CRASH` as a `500`.
+
 === Accept Header Routing Removed
 
 The `/tika` endpoint no longer routes based on `Accept` headers. Use explicit paths instead:
@@ -101,13 +124,35 @@ The `/tika` endpoint no longer routes based on `Accept` headers. Use explicit pa
 
 The following `TikaServerConfig` options have been removed:
 
-* `taskTimeoutMillis` - Now configured via `pipes.timeoutMillis`
+* `taskTimeoutMillis` - Now configured via `parse-context.timeout-limits.progressTimeoutMillis` (and optionally `totalTaskTimeoutMillis`); see xref:pipes/timeouts.adoc[Timeouts].
 * `taskPulseMillis` - No longer needed
 * `minimumTimeoutMillis` - No longer needed
 
 === Removed Features
 
 * **Fetcher-based streaming** - The `InputStreamFactory` pattern for fetching documents via HTTP headers (`fetcherName`, `fetchKey`) has been removed. All documents are now processed via temp files through the pipes infrastructure.
+
+=== `/pipes` and `/async` Require `allowPipes`; Per-Request Config Requires `allowPerRequestConfig`
+
+Previously these endpoints (and per-request parser configuration) were enabled simply by listing endpoints under `server.endpoints`. The capabilities are now split into two default-`false` flags in the `server` section:
+
+* `allowPipes` gates the `/pipes` and `/async` endpoints, which drive process-isolated batch parsing through your fetchers and emitters. Selecting either without `allowPipes` causes the server to refuse to start with a clear error.
+* `allowPerRequestConfig` gates per-request parser configuration: the `/config` family of endpoints and the multipart `config` part. When off, such requests are rejected with 403.
+
+`/status` is no longer gated: it exposes only aggregate counters, so it is enabled simply by listing `status` under `endpoints`.
+
+**Migration:** if your config selects `pipes` or `async`, add `"allowPipes": true`; if you rely on per-request config, add `"allowPerRequestConfig": true`:
+
+[source,json]
+----
+{
+  "server": {
+    "allowPipes": true,
+    "allowPerRequestConfig": true,
+    "endpoints": ["tika", "rmeta", "pipes", "async", "status"]
+  }
+}
+----
 
 == Configuration Changes
 
@@ -125,9 +170,13 @@ All tika-server configurations must now include a `pipes` section and a `file-sy
       }
     }
   },
+  "parse-context": {
+    "timeout-limits": {
+      "progressTimeoutMillis": 30000
+    }
+  },
   "pipes": {
-    "numClients": 2,
-    "timeoutMillis": 30000
+    "numClients": 2
   },
   "plugin-roots": "path/to/plugins"
 }
