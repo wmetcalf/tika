@@ -24,6 +24,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,6 +80,33 @@ public class WinShortcutParserTest {
 
         assertNotNull(result.metadata.get("lnk:ExploitClass"),
                 "exploit signatures after the first 64 KiB must not evade classification");
+    }
+
+    @Test
+    public void testUtf16LittleEndianExploitIndicatorIsClassified() throws Exception {
+        ParseResult result = parse(buildUtf16IndicatorLnk(
+                StandardCharsets.UTF_16LE, new byte[]{(byte) 0xff, (byte) 0xfe}));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "UTF-16LE appended HTML must not hide execution indicators");
+    }
+
+    @Test
+    public void testUtf16BigEndianExploitIndicatorIsClassified() throws Exception {
+        ParseResult result = parse(buildUtf16IndicatorLnk(
+                StandardCharsets.UTF_16BE, new byte[]{(byte) 0xfe, (byte) 0xff}));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "UTF-16BE appended HTML must not hide execution indicators");
+    }
+
+    @Test
+    public void testBomlessUtf16ExploitIndicatorIsClassified() throws Exception {
+        ParseResult result = parse(buildUtf16IndicatorLnk(
+                StandardCharsets.UTF_16LE, new byte[0]));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "byte-order heuristics must cover UTF-16 payloads without a BOM");
     }
 
     @Test
@@ -172,6 +200,21 @@ public class WinShortcutParserTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(header);
         out.write(new byte[4]);
+        out.write(payload);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildUtf16IndicatorLnk(Charset charset, byte[] bom)
+            throws IOException {
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        byte[] payload = ("<!doctype html><script>"
+                + "new ActiveXObject('WScript.Shell')"
+                + "</script>").getBytes(charset);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(new byte[4]);
+        out.write(bom);
         out.write(payload);
         return out.toByteArray();
     }

@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Locale;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -193,6 +194,16 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void incompleteXpressOutputFailsClosed() throws Exception {
+        Metadata metadata = parseMetadata(buildIncompleteXpressMetadataResource());
+
+        assertNotNull(metadata.get("ppkg:warning"),
+                "premature XPRESS termination must be reported");
+        assertNotNull(metadata.get("ExploitClass"),
+                "an incomplete metadata decode can hide provisioning commands");
+    }
+
+    @Test
     public void oversizedLookupTableFailsClosed() throws Exception {
         byte[] wim = header(300, 32768);
         ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
@@ -253,6 +264,17 @@ public class PpkgParserSecurityTest {
         assertTimeoutPreemptively(Duration.ofSeconds(5),
                 () -> parse(wim),
                 "an overflowing directory-entry length must not prevent cursor progress");
+    }
+
+    @Test
+    public void aliasedResourceIsParsedOnce() throws Exception {
+        ParseResult result = parseResult(buildAliasedWim(32,
+                "<provisioning><CommandLine>" + COMMAND
+                        + "</CommandLine></provisioning>"));
+
+        assertEquals(1, result.metadata.getValues("ppkg:command").length);
+        assertEquals(1, countOccurrences(result.body, "Source: "),
+                "content-addressed WIM aliases must not repeatedly expand one resource");
     }
 
     @Test
@@ -456,6 +478,63 @@ public class PpkgParserSecurityTest {
         putLookupEntry(wim, buffer, 208, size, flags, 258, uncompressed,
                 repeated((byte) 0x55));
         return wim;
+    }
+
+    private static byte[] buildIncompleteXpressMetadataResource() {
+        int metadataOffset = 258;
+        int compressedSize = 256;
+        byte[] wim = header(metadataOffset + compressedSize, 32768);
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+        putResourceHeader(wim, buffer, 48, 50, 0, 208, 50);
+        putLookupEntry(wim, buffer, 208, compressedSize, 0x06,
+                metadataOffset, 512, repeated((byte) 0x55));
+        return wim;
+    }
+
+    private static byte[] buildAliasedWim(int entries, String xml) {
+        byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
+        int lookupOffset = 208;
+        int lookupLength = 100;
+        int metadataOffset = lookupOffset + lookupLength;
+        int dentrySize = 136;
+        int metadataLength = 32 + entries * dentrySize + 8;
+        int xmlOffset = metadataOffset + metadataLength;
+        byte[] wim = header(xmlOffset + xmlBytes.length, 32768);
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(44, 1);
+        putResourceHeader(wim, buffer, 48, lookupLength, 0,
+                lookupOffset, lookupLength);
+
+        byte[] metadataHash = repeated((byte) 0x11);
+        byte[] xmlHash = repeated((byte) 0x42);
+        putLookupEntry(wim, buffer, lookupOffset, metadataLength, 0x04,
+                metadataOffset, metadataLength, metadataHash);
+        putLookupEntry(wim, buffer, lookupOffset + 50, xmlBytes.length, 0,
+                xmlOffset, xmlBytes.length, xmlHash);
+
+        buffer.putInt(metadataOffset, 8);
+        buffer.putLong(metadataOffset + 24, 32);
+        for (int i = 0; i < entries; i++) {
+            int dentry = metadataOffset + 32 + i * dentrySize;
+            byte[] name = String.format(Locale.ROOT, "p%05d.provxml", i)
+                    .getBytes(StandardCharsets.UTF_16LE);
+            buffer.putLong(dentry, 102L + name.length);
+            System.arraycopy(xmlHash, 0, wim, dentry + 64, xmlHash.length);
+            buffer.putShort(dentry + 100, (short) name.length);
+            System.arraycopy(name, 0, wim, dentry + 102, name.length);
+        }
+        System.arraycopy(xmlBytes, 0, wim, xmlOffset, xmlBytes.length);
+        return wim;
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private static void putResourceHeader(byte[] bytes, ByteBuffer buffer, int offset,

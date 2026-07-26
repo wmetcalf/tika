@@ -1691,17 +1691,44 @@ public class WinShortcutParser implements Parser {
         }
         // The parser already bounds the complete input, so scan every retained
         // appended byte rather than letting padding hide late indicators.
-        String lower = new String(payload, 0, payload.length,
-                StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
+        List<String> normalizedViews = new ArrayList<>();
+        normalizedViews.add(new String(payload, 0, payload.length,
+                StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT));
+        if (payload.length >= 2
+                && (payload[0] & 0xff) == 0xff
+                && (payload[1] & 0xff) == 0xfe) {
+            normalizedViews.add(new String(payload, 2, payload.length - 2,
+                    StandardCharsets.UTF_16LE).toLowerCase(Locale.ROOT));
+        } else if (payload.length >= 2
+                && (payload[0] & 0xff) == 0xfe
+                && (payload[1] & 0xff) == 0xff) {
+            normalizedViews.add(new String(payload, 2, payload.length - 2,
+                    StandardCharsets.UTF_16BE).toLowerCase(Locale.ROOT));
+        } else {
+            int utf16ByteOrder = detectUtf16ByteOrder(payload);
+            if (utf16ByteOrder < 0) {
+                normalizedViews.add(new String(payload, StandardCharsets.UTF_16LE)
+                        .toLowerCase(Locale.ROOT));
+            } else if (utf16ByteOrder > 0) {
+                normalizedViews.add(new String(payload, StandardCharsets.UTF_16BE)
+                        .toLowerCase(Locale.ROOT));
+            }
+        }
 
         List<String> matchedCves = new ArrayList<>();
         List<String> matchedDescs = new ArrayList<>();
 
         for (ExploitSignature sig : EXPLOIT_SIGNATURES) {
-            boolean allMatch = true;
-            for (String term : sig.allOf) {
-                if (!lower.contains(term)) {
-                    allMatch = false;
+            boolean allMatch = false;
+            for (String normalizedView : normalizedViews) {
+                allMatch = true;
+                for (String term : sig.allOf) {
+                    if (!normalizedView.contains(term)) {
+                        allMatch = false;
+                        break;
+                    }
+                }
+                if (allMatch) {
                     break;
                 }
             }
@@ -1726,6 +1753,32 @@ public class WinShortcutParser implements Parser {
                 }
             }
         }
+    }
+
+    private static int detectUtf16ByteOrder(byte[] payload) {
+        int pairs = Math.min(payload.length / 2, 2048);
+        if (pairs < 8) {
+            return 0;
+        }
+        int evenZeros = 0;
+        int oddZeros = 0;
+        for (int i = 0; i < pairs * 2; i += 2) {
+            if (payload[i] == 0) {
+                evenZeros++;
+            }
+            if (payload[i + 1] == 0) {
+                oddZeros++;
+            }
+        }
+        int commonZeroThreshold = pairs / 4;
+        int uncommonZeroThreshold = pairs / 16;
+        if (oddZeros > commonZeroThreshold && evenZeros < uncommonZeroThreshold) {
+            return -1;
+        }
+        if (evenZeros > commonZeroThreshold && oddZeros < uncommonZeroThreshold) {
+            return 1;
+        }
+        return 0;
     }
 
     // ── Appended data ─────────────────────────────────────────────────────────

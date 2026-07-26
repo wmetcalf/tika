@@ -92,13 +92,17 @@ public class PpkgParser implements Parser {
     private static final int RESHDR_FLAG_COMPRESSED = 0x02;
     private static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
     private static final int MAX_LOOKUP_ENTRIES = 100_000;
+    private static final int MAX_PROCESSED_RESOURCES = 1_024;
     private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 8L * 1024 * 1024;
+    private static final long MAX_CUMULATIVE_EXPANDED_BYTES = 16L * 1024 * 1024;
     private static final String RESOURCE_LIMIT_WARNING =
             "PPKG WIM resource exceeded the 8 MB extraction limit and was skipped";
     private static final String INCOMPLETE_RESOURCE_WARNING =
             "PPKG WIM resource extraction incomplete; one or more resources were skipped";
     private static final String LOOKUP_LIMIT_WARNING =
             "PPKG WIM lookup table exceeded the entry limit and was skipped";
+    private static final String CUMULATIVE_RESOURCE_LIMIT_WARNING =
+            "PPKG WIM cumulative resource extraction limit was reached";
 
     // Extensions considered high-risk when referenced by provisioning commands
     private static final Set<String> DANGEROUS_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -183,6 +187,7 @@ public class PpkgParser implements Parser {
         List<String> warnings   = new ArrayList<>();
         List<String> allDataRefs = new ArrayList<>();
         Map<String, String> pkgMeta = new LinkedHashMap<>();
+        ResourceProcessingState resourceState = new ResourceProcessingState();
 
         // Parse lookup table (always uncompressed)
         Map<String, ResHdr> lookupTable = parseLookupTable(raw, lookupHdr, warnings);
@@ -194,6 +199,9 @@ public class PpkgParser implements Parser {
         // Either compressed (0x06) or uncompressed (0x04) metadata resources are valid.
         for (ResHdr rh : lookupTable.values()) {
             if ((rh.flags & 0x04) == 0) {
+                continue;
+            }
+            if (!resourceState.reserve(null, rh, warnings)) {
                 continue;
             }
             try {
@@ -223,7 +231,7 @@ public class PpkgParser implements Parser {
                     // fan out into exponential recursion (DoS).
                     walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
                             commands, warnings, allDataRefs, pkgMeta, xhtml, context,
-                            metadata, new HashSet<>());
+                            metadata, new HashSet<>(), resourceState);
                 } else if (childOff < 0 || childOff >= metaRes.length) {
                     markResourceIncomplete(warnings);
                 }
@@ -552,10 +560,13 @@ public class PpkgParser implements Parser {
             int idx = bitbuf >>> (32 - XPRESS_MAX_CODE_LEN);
             int entry = decTable[idx];
             if (entry == 0) {
-                break;
+                return null;
             }
             int sym     = entry & 0x1ff;
             int codeLen = (entry >> 9) & 0x0f;
+            if (codeLen <= 0 || codeLen > bitsleft) {
+                return null;
+            }
             bitbuf <<= codeLen;
             bitsleft -= codeLen;
 
@@ -576,6 +587,9 @@ public class PpkgParser implements Parser {
                 }
                 // Guard: Java's x >>> 32 = x (not 0) due to shift masking.
                 // log2Offset=0 means offset=1 (RLE of preceding byte); offsetLow=0.
+                if (log2Offset > bitsleft) {
+                    return null;
+                }
                 int offsetLow = (log2Offset > 0) ? (bitbuf >>> (32 - log2Offset)) : 0;
                 bitbuf <<= log2Offset;
                 bitsleft -= log2Offset;
@@ -587,17 +601,17 @@ public class PpkgParser implements Parser {
                     matchLen = lenSlot + 3;
                 } else {
                     if (inPos >= in.length) {
-                        break;
+                        return null;
                     }
                     int extra = in[inPos++] & 0xff;
                     if (extra == 255) {
                         if (inPos + 1 >= in.length) {
-                            break;
+                            return null;
                         }
                         matchLen = (in[inPos] & 0xff) | ((in[inPos + 1] & 0xff) << 8);
                         inPos += 2;
                         if (matchLen == 0) {
-                            break;
+                            return null;
                         }
                     } else {
                         matchLen = extra + 15 + 3;
@@ -606,20 +620,20 @@ public class PpkgParser implements Parser {
 
                 int matchSrc = outPos - matchOffset;
                 if (matchSrc < 0 || matchSrc >= outLen) {
-                    break;
+                    return null;
                 }
                 for (int k = 0; k < matchLen && outPos < outLen; k++) {
                     // matchSrc + k must stay within the output buffer
                     int srcIdx = matchSrc + k;
                     if (srcIdx >= outLen) {
-                        break;
+                        return null;
                     }
                     out[outPos] = out[srcIdx];
                     outPos++;
                 }
             }
         }
-        return out;
+        return outPos == outLen ? out : null;
     }
 
     private static int[] buildDecodeTable(int[] codeLens) {
@@ -683,10 +697,11 @@ public class PpkgParser implements Parser {
                                List<String> commands, List<String> warnings,
                                List<String> dataRefs, Map<String, String> pkgMeta,
                                XHTMLContentHandler xhtml, ParseContext context,
-                               Metadata rootMeta, Set<Integer> visited)
+                               Metadata rootMeta, Set<Integer> visited,
+                               ResourceProcessingState resourceState)
             throws IOException, SAXException, TikaException {
         walkDirectory(meta, dirOff, raw, lut, chunkSize, commands, warnings,
-                dataRefs, pkgMeta, xhtml, context, rootMeta, visited, 0);
+                dataRefs, pkgMeta, xhtml, context, rootMeta, visited, resourceState, 0);
     }
 
     private void walkDirectory(byte[] meta, int dirOff, byte[] raw,
@@ -694,7 +709,8 @@ public class PpkgParser implements Parser {
                                List<String> commands, List<String> warnings,
                                List<String> dataRefs, Map<String, String> pkgMeta,
                                XHTMLContentHandler xhtml, ParseContext context,
-                               Metadata rootMeta, Set<Integer> visited, int depth)
+                               Metadata rootMeta, Set<Integer> visited,
+                               ResourceProcessingState resourceState, int depth)
             throws IOException, SAXException, TikaException {
         // visited-set dedups directory listing offsets: a self-referential or cyclic
         // dentry graph would otherwise recurse fanout^depth times (exponential DoS).
@@ -733,11 +749,19 @@ public class PpkgParser implements Parser {
             if (isDir && subdirOff > 0 && subdirOff < meta.length) {
                 walkDirectory(meta, (int) subdirOff, raw, lut, chunkSize,
                         commands, warnings, dataRefs, pkgMeta, xhtml, context,
-                        rootMeta, visited, depth + 1);
+                        rootMeta, visited, resourceState, depth + 1);
             } else if (!isDir) {
                 ResHdr rh = lut.get(sha1Hex);
-                if (rh != null && (nameLower.endsWith(".xml")
-                        || nameLower.endsWith(".provxml"))) {
+                boolean xmlResource = nameLower.endsWith(".xml")
+                        || nameLower.endsWith(".provxml");
+                if (rh != null) {
+                    recordDangerousReference(name, dataRefs);
+                }
+                String processingKey = sha1Hex + (xmlResource ? ":xml" : ":embedded");
+                if (rh != null && !resourceState.reserve(processingKey, rh, warnings)) {
+                    rh = null;
+                }
+                if (rh != null && xmlResource) {
                     byte[] xmlBytes = decompressResource(raw, rh, chunkSize, warnings);
                     if (xmlBytes != null) {
                         parseXmlContent(xmlBytes, name, commands, warnings,
@@ -814,15 +838,6 @@ public class PpkgParser implements Parser {
                               Metadata rootMeta, List<String> dataRefs,
                               List<String> warnings)
             throws IOException, SAXException, TikaException {
-        // Check extension before decompressing
-        String nameLower = name.toLowerCase(Locale.ROOT);
-        int dot = nameLower.lastIndexOf('.');
-        if (dot >= 0) {
-            String ext = nameLower.substring(dot);
-            if (DANGEROUS_EXTENSIONS.contains(ext)) {
-                dataRefs.add(name);
-            }
-        }
         byte[] data = decompressResource(raw, rh, chunkSize, warnings);
         if (data == null) {
             return;
@@ -926,6 +941,14 @@ public class PpkgParser implements Parser {
             if (DANGEROUS_EXTENSIONS.contains(ext)) {
                 out.add(token);
             }
+        }
+    }
+
+    private static void recordDangerousReference(String name, List<String> dataRefs) {
+        String nameLower = name.toLowerCase(Locale.ROOT);
+        int dot = nameLower.lastIndexOf('.');
+        if (dot >= 0 && DANGEROUS_EXTENSIONS.contains(nameLower.substring(dot))) {
+            dataRefs.add(name);
         }
     }
 
@@ -1169,6 +1192,34 @@ public class PpkgParser implements Parser {
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────
+
+    private static final class ResourceProcessingState {
+        private final Set<String> processedKeys = new HashSet<>();
+        private long expandedBytes;
+        private int resourceCount;
+
+        private boolean reserve(String processingKey, ResHdr resource,
+                                List<String> warnings) {
+            if (processingKey != null && processedKeys.contains(processingKey)) {
+                return false;
+            }
+            if (resource.uncompressed <= 0
+                    || resourceCount >= MAX_PROCESSED_RESOURCES
+                    || resource.uncompressed > MAX_CUMULATIVE_EXPANDED_BYTES - expandedBytes) {
+                if (!warnings.contains(CUMULATIVE_RESOURCE_LIMIT_WARNING)) {
+                    warnings.add(CUMULATIVE_RESOURCE_LIMIT_WARNING);
+                }
+                markResourceIncomplete(warnings);
+                return false;
+            }
+            if (processingKey != null) {
+                processedKeys.add(processingKey);
+            }
+            resourceCount++;
+            expandedBytes += resource.uncompressed;
+            return true;
+        }
+    }
 
     private static final class ResHdr {
         long size;
