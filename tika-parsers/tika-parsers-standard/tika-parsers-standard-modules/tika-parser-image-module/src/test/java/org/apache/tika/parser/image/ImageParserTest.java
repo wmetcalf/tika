@@ -406,6 +406,10 @@ public class ImageParserTest extends TikaTest {
                         + "\"position\":\"20x20 30x20 30x30 20x30\","
                         + "\"errorCorrectionLevel\":\"H\",\"mirrored\":\"true\"}"
         }, metadata.getValues(Barcode.BARCODE_RECORD));
+        assertArrayEquals(new String[]{"", "7365636f6e64"},
+                metadata.getValues(Barcode.BARCODE_RAW_BYTES));
+        assertArrayEquals(new String[]{"", "20x20 30x20 30x30 20x30"},
+                metadata.getValues(Barcode.BARCODE_POSITION));
     }
 
     @Test

@@ -82,5 +82,9 @@ public class OfficeLinkMetadataUtilTest {
                         + "\"relationshipType\":\"hlinkClick\",\"id\":\"rId2\","
                         + "\"trigger\":\"click\",\"actionType\":\"external_url\"}"
         }, metadata.getValues(Office.OFFICE_LINK_RECORD));
+        assertArrayEquals(new String[]{"", "second-visible-text"},
+                metadata.getValues(Office.OFFICE_LINK_TEXT));
+        assertArrayEquals(new String[]{"", "rId2"},
+                metadata.getValues(Office.OFFICE_LINK_ID));
     }
 }

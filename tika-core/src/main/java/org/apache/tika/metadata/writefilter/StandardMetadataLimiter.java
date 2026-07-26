@@ -28,7 +28,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.tika.metadata.AccessPermissions;
+import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.utils.StringUtils;
 
@@ -76,6 +78,28 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     public static final Set<String> ATOMIC_ADD_FIELDS = Set.of(
             "msoffice:link:record",
             "barcode:record");
+
+    /**
+     * Compatibility fields that represent parallel records. Empty placeholders must
+     * survive filtering or later values become associated with the wrong record.
+     */
+    public static final Set<String> ALIGNED_ADD_FIELDS = Set.of(
+            Office.OFFICE_LINK_URL.getName(),
+            Office.OFFICE_LINK_TYPE.getName(),
+            Office.OFFICE_LINK_TEXT.getName(),
+            Office.OFFICE_LINK_OCR_TEXT.getName(),
+            Office.OFFICE_LINK_SOURCE.getName(),
+            Office.OFFICE_LINK_CONTEXT.getName(),
+            Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
+            Office.OFFICE_LINK_ID.getName(),
+            Office.OFFICE_LINK_TRIGGER.getName(),
+            Office.OFFICE_LINK_ACTION_TYPE.getName(),
+            Barcode.BARCODE_VALUE.getName(),
+            Barcode.BARCODE_FORMAT.getName(),
+            Barcode.BARCODE_RAW_BYTES.getName(),
+            Barcode.BARCODE_POSITION.getName(),
+            Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
+            Barcode.BARCODE_IS_MIRRORED.getName());
 
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
@@ -433,7 +457,12 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     }
 
     private boolean include(String field, String value) {
-        return includeField(field) && includeValue(value);
+        return includeField(field) &&
+                (isAlignedPlaceholder(field, value) || includeValue(value));
+    }
+
+    private boolean isAlignedPlaceholder(String field, String value) {
+        return value != null && value.isEmpty() && ALIGNED_ADD_FIELDS.contains(field);
     }
 
     /**

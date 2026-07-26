@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.OfficeOpenXMLExtended;
@@ -241,6 +242,24 @@ public class StandardMetadataLimiterTest extends TikaTest {
         assertArrayEquals(new String[]{first},
                 metadata.getValues(Office.OFFICE_LINK_RECORD));
         assertTruncated(metadata);
+    }
+
+    @Test
+    public void testAlignedFieldPlaceholdersSurviveDefaultEmptyFiltering() {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+
+        metadata.add(Office.OFFICE_LINK_TEXT, "");
+        metadata.add(Office.OFFICE_LINK_TEXT, "second-link");
+        metadata.add(Barcode.BARCODE_POSITION, "");
+        metadata.add(Barcode.BARCODE_POSITION, "10x10 20x10 20x20 10x20");
+        metadata.add("ordinary:empty", "");
+
+        assertArrayEquals(new String[]{"", "second-link"},
+                metadata.getValues(Office.OFFICE_LINK_TEXT));
+        assertArrayEquals(new String[]{"", "10x10 20x10 20x20 10x20"},
+                metadata.getValues(Barcode.BARCODE_POSITION));
+        assertNull(metadata.get("ordinary:empty"));
     }
 
     @Test
