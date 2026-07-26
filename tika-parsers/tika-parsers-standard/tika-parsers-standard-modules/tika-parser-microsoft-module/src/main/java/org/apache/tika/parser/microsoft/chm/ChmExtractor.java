@@ -25,8 +25,6 @@ import java.util.List;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.output.UnsynchronizedByteArrayOutputStream;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.parser.microsoft.chm.ChmCommons.EntryType;
@@ -35,9 +33,6 @@ import org.apache.tika.parser.microsoft.chm.ChmCommons.EntryType;
  * Extracts text from chm file. Enumerates chm entries.
  */
 public class ChmExtractor {
-
-    private static final Logger LOG = LoggerFactory.getLogger(ChmExtractor.class);
-
 
     private List<ChmLzxBlock> lzxBlocksCache = null;
     private ChmDirectoryListingSet chmDirList = null;
@@ -130,15 +125,10 @@ public class ChmExtractor {
 
             setLzxBlocksCache(new ArrayList<>());
 
-        } catch (IOException e) {
-            // Fork: don't propagate — a broken stream should leave a usable (empty)
-            // extractor for the salvage path rather than aborting the whole parse.
-            LOG.warn("IOException parsing chm file", e);
+        } catch (IOException | TikaException e) {
+            throw e;
         } catch (Exception e) {
-            LOG.warn("Failed to parse chm file structure: {}", e.getMessage());
-        }
-        if (chmDirList == null) {
-            setChmDirList(new ChmDirectoryListingSet());
+            throw new TikaException("Failed to parse CHM file structure", e);
         }
     }
 

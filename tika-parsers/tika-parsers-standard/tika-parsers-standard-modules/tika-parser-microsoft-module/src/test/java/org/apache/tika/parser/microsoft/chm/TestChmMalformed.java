@@ -31,6 +31,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.BodyContentHandler;
 
 /**
  * Characterization harness for CHM parsing on malformed / hostile input.
@@ -100,6 +104,31 @@ public class TestChmMalformed {
         byte[] zeros = new byte[512];
         assertThrows(TikaException.class,
                 () -> new ChmExtractor(new ByteArrayInputStream(zeros)));
+    }
+
+    @Test
+    public void testCorruptedItsfSignatureFailsClosed() throws Exception {
+        byte[] valid;
+        try (InputStream stream = TestChmMalformed.class
+                .getResourceAsStream("/test-documents/testChm.chm")) {
+            valid = stream.readAllBytes();
+        }
+
+        BodyContentHandler control = new BodyContentHandler(-1);
+        try (TikaInputStream stream = TikaInputStream.get(valid)) {
+            new ChmParser().parse(stream, control, new Metadata(), new ParseContext());
+        }
+        assertTrue(control.toString().contains(
+                "The TCard method accepts only numeric arguments"));
+
+        byte[] corrupted = valid.clone();
+        Arrays.fill(corrupted, 0, 4, (byte) 0);
+        assertThrows(TikaException.class, () -> {
+            try (TikaInputStream stream = TikaInputStream.get(corrupted)) {
+                new ChmParser().parse(stream, new BodyContentHandler(-1),
+                        new Metadata(), new ParseContext());
+            }
+        });
     }
 
     @Test
