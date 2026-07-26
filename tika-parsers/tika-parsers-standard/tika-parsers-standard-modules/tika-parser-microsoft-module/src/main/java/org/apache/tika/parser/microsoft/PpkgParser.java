@@ -247,7 +247,7 @@ public class PpkgParser implements Parser {
             }
         }
 
-        for (String ref : allDataRefs) {
+        for (String ref : new LinkedHashSet<>(allDataRefs)) {
             metadata.add("ppkg:data_asset_ref", ref);
         }
         for (String w : warnings) {
@@ -819,6 +819,7 @@ public class PpkgParser implements Parser {
         private final List<String> dataRefs;
         private final Map<String, String> pkgMeta;
         private final List<ElementCapture> captures = new ArrayList<>();
+        private final StringBuilder elementText = new StringBuilder();
 
         private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
                                Map<String, String> pkgMeta) {
@@ -831,6 +832,7 @@ public class PpkgParser implements Parser {
         public void startElement(String uri, String localName, String qName,
                                  Attributes attributes) {
             String element = localName(localName, qName);
+            elementText.append(' ');
             if ("parm".equals(element)
                     && "CommandLine".equals(attribute(attributes, "name"))) {
                 addCommand(attribute(attributes, "value"));
@@ -845,6 +847,7 @@ public class PpkgParser implements Parser {
 
         @Override
         public void characters(char[] ch, int start, int length) {
+            elementText.append(ch, start, length);
             for (ElementCapture capture : captures) {
                 capture.text.append(ch, start, length);
             }
@@ -853,6 +856,7 @@ public class PpkgParser implements Parser {
         @Override
         public void endElement(String uri, String localName, String qName) {
             String element = localName(localName, qName);
+            elementText.append(' ');
             for (int i = captures.size() - 1; i >= 0; i--) {
                 ElementCapture capture = captures.get(i);
                 if (!capture.element.equals(element)) {
@@ -868,6 +872,13 @@ public class PpkgParser implements Parser {
                 extractDataRefs(value, dataRefs);
                 break;
             }
+        }
+
+        @Override
+        public void endDocument() {
+            // Preserve the original whole-document coverage, but scan decoded
+            // character data so entity spelling cannot bypass canonical matching.
+            extractDataRefs(elementText.toString(), dataRefs);
         }
 
         private void addCommand(String command) {

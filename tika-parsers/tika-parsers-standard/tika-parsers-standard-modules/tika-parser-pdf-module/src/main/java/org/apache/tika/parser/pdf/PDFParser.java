@@ -231,7 +231,9 @@ public class PDFParser implements Parser, RenderingParser {
                 } else if (hasMarkedContent && localConfig.isExtractMarkedContent()) {
                     PDFMarkedContent2XHTML
                             .process(pdfDocument, outputHandler, context, metadata,
-                                    localConfig, renderer);
+                                    localConfig, renderer,
+                                    originalPageCount > LEGACY_SLICE_THRESHOLD
+                                            ? LEGACY_OUTPUT_PAGE_LIMIT : -1);
                 } else {
                     PDF2XHTML.process(pdfDocument, outputHandler, context, metadata,
                             localConfig, renderer);

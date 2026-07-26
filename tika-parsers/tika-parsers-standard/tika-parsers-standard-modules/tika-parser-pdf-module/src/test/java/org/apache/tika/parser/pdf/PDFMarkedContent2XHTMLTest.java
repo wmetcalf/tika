@@ -17,6 +17,7 @@
 package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.util.List;
 
@@ -78,6 +79,15 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         //marked up content...victory!!!
         assertContains("<a href=\"http://www.irs.gov\">IRS.gov</a>", xml);
         assertContains("<a href=\"http://www.irs.gov/pub15\">www.irs.gov/pub15</a>", xml);
+    }
+
+    @Test
+    public void testMarkedContentHonorsLegacyVisiblePageLimit() throws Exception {
+        String xml = getXML("testJournalParser.pdf", MARKUP_CONTEXT).xml;
+
+        assertContains("I. INTRODUCTION", xml);
+        assertFalse(xml.contains("We now construct the control primitives"),
+                "marked-content text from page six must not bypass the two-page output limit");
     }
 
 }

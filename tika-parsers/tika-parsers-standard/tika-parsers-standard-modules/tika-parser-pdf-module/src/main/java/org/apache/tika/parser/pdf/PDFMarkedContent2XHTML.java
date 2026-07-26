@@ -89,12 +89,22 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
     //this stores state as we recurse through the structure tag tree
     private State state = new State();
+    private final int outputPageLimit;
+    private Set<ObjectRef> outputPageRefs = Collections.emptySet();
 
     private PDFMarkedContent2XHTML(PDDocument document, ContentHandler handler,
                                    ParseContext context, Metadata metadata, PDFParserConfig config,
                                    Renderer renderer)
             throws IOException {
+        this(document, handler, context, metadata, config, renderer, -1);
+    }
+
+    private PDFMarkedContent2XHTML(PDDocument document, ContentHandler handler,
+                                   ParseContext context, Metadata metadata, PDFParserConfig config,
+                                   Renderer renderer, int outputPageLimit)
+            throws IOException {
         super(document, handler, context, metadata, config, renderer);
+        this.outputPageLimit = outputPageLimit;
     }
 
     /**
@@ -114,12 +124,18 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                                ParseContext context,
                                Metadata metadata, PDFParserConfig config, Renderer renderer)
             throws SAXException, TikaException {
+        process(pdDocument, handler, context, metadata, config, renderer, -1);
+    }
 
+    static void process(PDDocument pdDocument, ContentHandler handler,
+                        ParseContext context, Metadata metadata, PDFParserConfig config,
+                        Renderer renderer, int outputPageLimit)
+            throws SAXException, TikaException {
         PDFMarkedContent2XHTML pdfMarkedContent2XHTML = null;
         try {
             pdfMarkedContent2XHTML =
                     new PDFMarkedContent2XHTML(pdDocument, handler, context, metadata, config,
-                            renderer);
+                            renderer, outputPageLimit);
         } catch (IOException e) {
             throw new TikaException("couldn't initialize PDFMarkedContent2XHTML", e);
         }
@@ -226,6 +242,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             super.processPages(pageTree);
             return;
         }
+        if (outputPageLimit >= 0) {
+            outputPageRefs = new HashSet<>(
+                    pageRefs.subList(0, Math.min(outputPageLimit, pageRefs.size())));
+        }
 
         PDStructureTreeRoot structureTreeRoot =
                 pdDocument.getDocumentCatalog().getStructureTreeRoot();
@@ -253,7 +273,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 xhtml.endElement("p");
             }
             for (MCID mcid : paragraphs.keySet()) {
-                if (!state.processedMCIDs.contains(mcid)) {
+                if (!state.processedMCIDs.contains(mcid) && isOutputAllowed(mcid)) {
                     if (mcid.mcid > -1) {
                         //TODO: LOG! piece of text that wasn't referenced  in the marked content
                         // tree
@@ -359,14 +379,16 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             int mcidInt = ((COSInteger) kids).intValue();
             MCID mcid = new MCID(currentPageRef, mcidInt);
             if (paragraphs.containsKey(mcid)) {
-                if (state.inLink) {
-                    state.hrefAnchorBuilder.append(paragraphs.get(mcid));
-                } else {
-                    try {
-                        //if it isn't a uri, output this anyhow
-                        writeString(paragraphs.get(mcid));
-                    } catch (IOException e) {
-                        handleCatchableIOE(e);
+                if (isOutputAllowed(mcid)) {
+                    if (state.inLink) {
+                        state.hrefAnchorBuilder.append(paragraphs.get(mcid));
+                    } else {
+                        try {
+                            //if it isn't a uri, output this anyhow
+                            writeString(paragraphs.get(mcid));
+                        } catch (IOException e) {
+                            handleCatchableIOE(e);
+                        }
                     }
                 }
                 state.processedMCIDs.add(mcid);
@@ -393,6 +415,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         } else {
             //TODO: handle a different object?
         }
+    }
+
+    private boolean isOutputAllowed(MCID mcid) {
+        return outputPageLimit < 0 || outputPageRefs.contains(mcid.objectRef);
     }
 
     private void writeLink() throws SAXException, IOException {

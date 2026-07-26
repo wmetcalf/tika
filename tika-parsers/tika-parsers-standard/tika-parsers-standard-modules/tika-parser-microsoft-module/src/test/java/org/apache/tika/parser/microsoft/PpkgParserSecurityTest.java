@@ -186,7 +186,23 @@ public class PpkgParserSecurityTest {
 
         Metadata metadata = parseMetadata(buildWim(xml));
         assertEquals(COMMAND, metadata.get("ppkg:command"));
+        assertEquals(1, metadata.getValues("ppkg:data_asset_ref").length);
+        assertEquals("powershell.exe", metadata.get("ppkg:data_asset_ref"));
         assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void dangerousReferencesInOrdinaryElementTextArePreserved() throws Exception {
+        String xml = """
+                <wap-provisioningdoc>
+                  <CustomData>\\\\server\\share\\stage.ps1</CustomData>
+                </wap-provisioningdoc>
+                """;
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        assertEquals(1, metadata.getValues("ppkg:data_asset_ref").length);
+        assertEquals("\\\\server\\share\\stage.ps1",
+                metadata.get("ppkg:data_asset_ref"));
     }
 
     @Test
