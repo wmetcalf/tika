@@ -98,9 +98,15 @@ public class MscParser implements Parser {
     private static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
     private static final int MAX_RETAINED_XML_VALUES = 4_096;
     private static final int MAX_RETAINED_XML_VALUE_CHARS = 1024 * 1024;
+    private static final int MAX_BINARY_BLOBS = 256;
+    private static final int MAX_BINARY_ENCODED_CHARS = 8 * 1024 * 1024;
+    private static final int MAX_CUMULATIVE_BINARY_BYTES = 16 * 1024 * 1024;
     private static final String RETAINED_VALUE_LIMIT_WARNING =
             "MSC XML retained-value limit reached; additional structured values "
                     + "were skipped";
+    private static final String BINARY_RESOURCE_LIMIT_WARNING =
+            "MSC binary extraction resource limit reached; additional binary "
+                    + "content was skipped";
 
     // Shell execution keywords that indicate a dangerous command
     private static final String[] EXEC_KEYWORDS = {
@@ -351,7 +357,12 @@ public class MscParser implements Parser {
         // Process Binary/BinaryData blobs through embedded pipeline
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        parseBinaryBlobs(xml, raw, metadata, xhtml, context, extractor, warnings);
+        boolean binaryExtractionIncomplete =
+                parseBinaryBlobs(xml, metadata, xhtml, context, extractor, warnings);
+        if (binaryExtractionIncomplete && metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "MSC binary extraction incomplete; executable content may be hidden");
+        }
 
         for (String w : warnings) {
             metadata.add("msc:warning", w);
@@ -387,23 +398,51 @@ public class MscParser implements Parser {
     private static final byte IMAGELIST_MAGIC_0 = 0x49;
     private static final byte IMAGELIST_MAGIC_1 = 0x4C;
 
-    private void parseBinaryBlobs(String xml, byte[] rawXml, Metadata rootMeta,
-                                  XHTMLContentHandler xhtml, ParseContext context,
-                                  EmbeddedDocumentExtractor extractor,
-                                  List<String> warnings)
+    private boolean parseBinaryBlobs(String xml, Metadata rootMeta,
+                                     XHTMLContentHandler xhtml, ParseContext context,
+                                     EmbeddedDocumentExtractor extractor,
+                                     List<String> warnings)
             throws IOException, SAXException, TikaException {
         Matcher bm = BINARY_ELEMENT.matcher(xml);
         int idx = 0;
+        long decodedBytes = 0;
+        boolean incomplete = false;
         while (bm.find()) {
+            if (idx >= MAX_BINARY_BLOBS) {
+                addBinaryResourceLimitWarning(warnings);
+                incomplete = true;
+                break;
+            }
+            idx++;
+            int encodedChars = bm.end(1) - bm.start(1);
+            if (encodedChars > MAX_BINARY_ENCODED_CHARS) {
+                addBinaryResourceLimitWarning(warnings);
+                incomplete = true;
+                continue;
+            }
             String b64 = bm.group(1).replaceAll("[\\s]", "");
+            long estimatedDecodedBytes = ((long) b64.length() + 3L) / 4L * 3L;
+            if (estimatedDecodedBytes
+                    > MAX_CUMULATIVE_BINARY_BYTES - decodedBytes) {
+                addBinaryResourceLimitWarning(warnings);
+                incomplete = true;
+                break;
+            }
             byte[] data;
             try {
                 data = Base64.getDecoder().decode(b64);
             } catch (IllegalArgumentException e) {
-                warnings.add("Binary blob " + idx + " base64 decode failed: " + e.getMessage());
-                idx++;
+                warnings.add("Binary blob " + (idx - 1)
+                        + " base64 decode failed: " + e.getMessage());
+                incomplete = true;
                 continue;
             }
+            if (data.length > MAX_CUMULATIVE_BINARY_BYTES - decodedBytes) {
+                addBinaryResourceLimitWarning(warnings);
+                incomplete = true;
+                break;
+            }
+            decodedBytes += data.length;
 
             // SHA-256 always computed on the raw blob
             String sha256 = sha256Hex(data);
@@ -419,14 +458,16 @@ public class MscParser implements Parser {
 
             Metadata embMeta = new Metadata();
             embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY,
-                    "msc-binary-" + idx + (isImageList ? ".bmp" : ""));
+                    "msc-binary-" + (idx - 1) + (isImageList ? ".bmp" : ""));
             String mime = "application/octet-stream";
             try (TikaInputStream tis = TikaInputStream.get(imageData)) {
                 mime = new DefaultDetector()
                         .detect(tis, embMeta, context)
                         .getBaseType().toString();
             } catch (Exception e) {
-                warnings.add("MIME detect failed for binary " + idx + ": " + e.getMessage());
+                warnings.add("MIME detect failed for binary "
+                        + (idx - 1) + ": " + e.getMessage());
+                incomplete = true;
             }
             embMeta.set(Metadata.CONTENT_TYPE, mime);
             rootMeta.add("msc:binary_mime", mime);
@@ -436,9 +477,17 @@ public class MscParser implements Parser {
                     extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
                 }
             } catch (Exception e) {
-                warnings.add("Binary " + idx + " parse error: " + e.getMessage());
+                warnings.add("Binary " + (idx - 1)
+                        + " parse error: " + e.getMessage());
+                incomplete = true;
             }
-            idx++;
+        }
+        return incomplete;
+    }
+
+    private static void addBinaryResourceLimitWarning(List<String> warnings) {
+        if (!warnings.contains(BINARY_RESOURCE_LIMIT_WARNING)) {
+            warnings.add(BINARY_RESOURCE_LIMIT_WARNING);
         }
     }
 

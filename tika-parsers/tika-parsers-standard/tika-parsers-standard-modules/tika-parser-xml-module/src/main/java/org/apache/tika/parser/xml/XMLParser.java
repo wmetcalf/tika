@@ -383,6 +383,11 @@ public class XMLParser implements Parser {
     private static final class SvgEnrichingHandler implements ContentHandler {
 
         private static final String XLINK_NS = "http://www.w3.org/1999/xlink";
+        private static final int MAX_SECURITY_REFERENCES = 4_096;
+        private static final int MAX_SECURITY_REFERENCE_CHARS = 1024 * 1024;
+        private static final String SECURITY_REFERENCE_LIMIT_WARNING =
+                "SVG security-reference limit reached; additional external "
+                        + "references were skipped";
 
         private static final Set<String> EVENT_ATTRS;
         static {
@@ -399,6 +404,9 @@ public class XMLParser implements Parser {
 
         private final ContentHandler delegate;
         private final Metadata metadata;
+        private int securityReferenceCount;
+        private int securityReferenceChars;
+        private boolean securityReferenceLimitExceeded;
 
         SvgEnrichingHandler(ContentHandler delegate, Metadata metadata) {
             this.delegate = delegate;
@@ -448,21 +456,47 @@ public class XMLParser implements Parser {
             if ("use".equals(local)) {
                 String href = getHref(atts);
                 if (href != null && !href.isEmpty() && !href.startsWith("#")) {
-                    metadata.add("svg:externalUseRef", href);
+                    addSecurityReference("svg:externalUseRef", href);
                 }
             } else if ("a".equals(local)) {
                 String href = getHref(atts);
                 if (href != null && !href.isEmpty() && !href.startsWith("#")) {
-                    metadata.add("svg:link", href);
+                    addSecurityReference("svg:link", href);
                 }
             } else if ("script".equals(local)) {
                 String src = atts.getValue("src");
                 if (src != null && !src.isEmpty()) {
-                    metadata.add("svg:externalScript", src);
+                    addSecurityReference("svg:externalScript", src);
                 }
             }
 
             delegate.startElement(uri, localName, qName, atts);
+        }
+
+        private void addSecurityReference(String field, String value) {
+            if (securityReferenceCount >= MAX_SECURITY_REFERENCES
+                    || value.length()
+                    > MAX_SECURITY_REFERENCE_CHARS - securityReferenceChars) {
+                markSecurityReferenceLimitExceeded();
+                return;
+            }
+            securityReferenceCount++;
+            securityReferenceChars += value.length();
+            metadata.add(field, value);
+        }
+
+        private void markSecurityReferenceLimitExceeded() {
+            if (securityReferenceLimitExceeded) {
+                return;
+            }
+            securityReferenceLimitExceeded = true;
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    SECURITY_REFERENCE_LIMIT_WARNING);
+            if (metadata.get("ExploitClass") == null) {
+                metadata.set("ExploitClass",
+                        "SVG security-reference extraction incomplete; external "
+                                + "executable content may be hidden");
+            }
         }
 
         @Override

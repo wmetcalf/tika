@@ -196,6 +196,8 @@ public class WinShortcutParserTest {
     public void testJScriptConstantConcatenationIndicatorsAreClassified() throws Exception {
         for (String script : List.of(
                 "new window['Active'+'XObject']('WScript.Shell')",
+                "new window['Active'+('XObject')]('WScript.Shell')",
+                "new window['Act'+(('ive'))+(('XObject'))]('WScript.Shell')",
                 "new window['Act' /* split */ + 'ive' +\n 'XObject']"
                         + "('WScript.Shell')")) {
             for (Charset charset : List.of(
@@ -209,6 +211,19 @@ public class WinShortcutParserTest {
                         "constant string joins must not hide indicators in " + charset);
             }
         }
+    }
+
+    @Test
+    public void testUnterminatedJoinCommentFailsClosedWithoutRepeatedSuffixScans()
+            throws Exception {
+        ParseResult result = parse(buildIndicatorLnk(
+                StandardCharsets.US_ASCII, new byte[0], "",
+                "active'/*".repeat(2_000)));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "incomplete JScript join analysis must be signaled");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "an unterminated join comment after an indicator prefix must fail closed");
     }
 
     @Test

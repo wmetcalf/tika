@@ -1612,6 +1612,11 @@ public class WinShortcutParser implements Parser {
             "period;", (int) '.',
             "quot;", (int) '"');
     private static final int SKIP_ASCII = -2;
+    private static final int RESET_ASCII = -3;
+    private static final long INCOMPLETE_JSCRIPT_JOIN = -2L;
+    private static final int MAX_JSCRIPT_JOIN_GROUPING = 8;
+    private static final String INCOMPLETE_JSCRIPT_JOIN_WARNING =
+            "JScript constant-join analysis stopped at an unterminated comment";
     static {
         EXPLOIT_SIGNATURES = new ArrayList<>();
 
@@ -1648,6 +1653,26 @@ public class WinShortcutParser implements Parser {
             this.cve = cve;
             this.description = description;
             this.allOf = allOf;
+        }
+    }
+
+    private static final class ExploitScanState {
+        private final int[][] incompleteOffsets = {
+                {Integer.MAX_VALUE, Integer.MAX_VALUE},
+                {Integer.MAX_VALUE, Integer.MAX_VALUE},
+                {Integer.MAX_VALUE, Integer.MAX_VALUE}
+        };
+        private boolean incompleteJScriptJoin;
+
+        private void markIncompleteJScriptJoin(
+                int encoding, int alignment, int offset) {
+            incompleteJScriptJoin = true;
+            incompleteOffsets[encoding][alignment] =
+                    Math.min(incompleteOffsets[encoding][alignment], offset);
+        }
+
+        private int incompleteOffset(int encoding, int alignment) {
+            return incompleteOffsets[encoding][alignment];
         }
     }
 
@@ -1727,13 +1752,15 @@ public class WinShortcutParser implements Parser {
 
         List<String> matchedCves = new ArrayList<>();
         List<String> matchedDescs = new ArrayList<>();
+        ExploitScanState scanState = new ExploitScanState();
 
         for (ExploitSignature sig : EXPLOIT_SIGNATURES) {
             boolean allMatch = false;
             for (int encoding = 0; encoding < 3; encoding++) {
                 allMatch = true;
                 for (String term : sig.allOf) {
-                    if (!containsEncodedAsciiTerm(payload, term, encoding)) {
+                    if (!containsEncodedAsciiTerm(
+                            payload, term, encoding, scanState)) {
                         allMatch = false;
                         break;
                     }
@@ -1763,10 +1790,24 @@ public class WinShortcutParser implements Parser {
                 }
             }
         }
+        if (scanState.incompleteJScriptJoin) {
+            if (!warnings.contains(INCOMPLETE_JSCRIPT_JOIN_WARNING)) {
+                warnings.add(INCOMPLETE_JSCRIPT_JOIN_WARNING);
+            }
+            fields.putIfAbsent("ExploitClass",
+                    "LNK script-indicator analysis incomplete; executable "
+                            + "content may be hidden");
+        }
     }
 
     private static boolean containsEncodedAsciiTerm(byte[] payload, String term,
                                                     int encoding) {
+        return containsEncodedAsciiTerm(
+                payload, term, encoding, new ExploitScanState());
+    }
+
+    private static boolean containsEncodedAsciiTerm(
+            byte[] payload, String term, int encoding, ExploitScanState scanState) {
         int stride = encoding == 0 ? 1 : 2;
         int alignments = stride;
         int[] failure = buildFailureTable(term);
@@ -1774,6 +1815,9 @@ public class WinShortcutParser implements Parser {
             int matched = 0;
             for (int offset = alignment; offset + stride <= payload.length;
                     offset += stride) {
+                if (offset >= scanState.incompleteOffset(encoding, alignment)) {
+                    break;
+                }
                 long normalized = readHtmlNormalizedAscii(payload, offset, encoding);
                 int value = (int) normalized;
                 int consumedCodeUnits = (int) (normalized >>> 32);
@@ -1786,13 +1830,25 @@ public class WinShortcutParser implements Parser {
                 }
                 if (matched > 0 && (value == '\'' || value == '"')) {
                     long stringJoin = decodeJScriptStringJoin(payload, offset, encoding);
+                    if (stringJoin == INCOMPLETE_JSCRIPT_JOIN) {
+                        scanState.markIncompleteJScriptJoin(
+                                encoding, alignment, offset);
+                        break;
+                    }
                     if (stringJoin >= 0) {
                         value = SKIP_ASCII;
                         consumedCodeUnits = (int) (stringJoin >>> 32);
+                        if ((int) stringJoin == RESET_ASCII) {
+                            value = RESET_ASCII;
+                        }
                     }
                 }
                 offset += (consumedCodeUnits - 1) * stride;
                 if (value == SKIP_ASCII) {
+                    continue;
+                }
+                if (value == RESET_ASCII) {
+                    matched = 0;
                     continue;
                 }
                 value = lowerAscii(value);
@@ -1966,23 +2022,51 @@ public class WinShortcutParser implements Parser {
         int cursor = offset + (int) (closingQuote >>> 32) * stride;
         cursor = skipJScriptTrivia(payload, cursor, encoding);
         if (cursor < 0) {
-            return -1L;
+            return INCOMPLETE_JSCRIPT_JOIN;
         }
-        long plus = readHtmlNormalizedAscii(payload, cursor, encoding);
-        if ((int) plus != '+') {
-            return -1L;
+        int grouping = 0;
+        long token = readHtmlNormalizedAscii(payload, cursor, encoding);
+        while ((int) token == ')') {
+            if (++grouping > MAX_JSCRIPT_JOIN_GROUPING) {
+                return packAscii(
+                        RESET_ASCII, Math.max(1, (cursor - offset) / stride));
+            }
+            cursor += (int) (token >>> 32) * stride;
+            cursor = skipJScriptTrivia(payload, cursor, encoding);
+            if (cursor < 0) {
+                return INCOMPLETE_JSCRIPT_JOIN;
+            }
+            token = readHtmlNormalizedAscii(payload, cursor, encoding);
         }
-        cursor += (int) (plus >>> 32) * stride;
+        if ((int) token != '+') {
+            return packAscii(
+                    RESET_ASCII, Math.max(1, (cursor - offset) / stride));
+        }
+        cursor += (int) (token >>> 32) * stride;
         cursor = skipJScriptTrivia(payload, cursor, encoding);
         if (cursor < 0) {
-            return -1L;
+            return INCOMPLETE_JSCRIPT_JOIN;
         }
-        long openingQuote = readHtmlNormalizedAscii(payload, cursor, encoding);
-        int opening = (int) openingQuote;
+        grouping = 0;
+        token = readHtmlNormalizedAscii(payload, cursor, encoding);
+        while ((int) token == '(') {
+            if (++grouping > MAX_JSCRIPT_JOIN_GROUPING) {
+                return packAscii(
+                        RESET_ASCII, Math.max(1, (cursor - offset) / stride));
+            }
+            cursor += (int) (token >>> 32) * stride;
+            cursor = skipJScriptTrivia(payload, cursor, encoding);
+            if (cursor < 0) {
+                return INCOMPLETE_JSCRIPT_JOIN;
+            }
+            token = readHtmlNormalizedAscii(payload, cursor, encoding);
+        }
+        int opening = (int) token;
         if (opening != '\'' && opening != '"') {
-            return -1L;
+            return packAscii(
+                    RESET_ASCII, Math.max(1, (cursor - offset) / stride));
         }
-        cursor += (int) (openingQuote >>> 32) * stride;
+        cursor += (int) (token >>> 32) * stride;
         return packAscii(SKIP_ASCII, (cursor - offset) / stride);
     }
 

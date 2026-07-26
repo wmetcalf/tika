@@ -180,6 +180,26 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     }
 
     @Test
+    public void testSamePageExcludedNonLinkActionDoesNotReplaceLinkOwnedUri()
+            throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addSamePageExcludedNonLinkActionStructure(document);
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            String xml = handler.toString();
+            assertContains(
+                    "<a href=\"https://allowed-parent.invalid/\">ALLOWED_CHILD</a>",
+                    xml);
+            assertFalse(xml.contains("https://excluded-same-page-child.invalid/"));
+        }
+    }
+
+    @Test
     public void testNestedAllowedLinksRetainDistinctUris() throws Exception {
         try (PDDocument document = buildNestedAllowedLinkDocument()) {
             ToXMLContentHandler handler = new ToXMLContentHandler();
@@ -610,6 +630,48 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(allowedLink));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addSamePageExcludedNonLinkActionStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary allowedChild = new COSDictionary();
+        allowedChild.setItem(COSName.S, COSName.P);
+        allowedChild.setItem(COSName.PG, pageRefs.get(0));
+        allowedChild.setItem(COSName.K, COSInteger.ZERO);
+
+        COSDictionary allowedAction = new COSDictionary();
+        allowedAction.setItem(COSName.S, COSName.URI);
+        allowedAction.setString(COSName.URI, "https://allowed-parent.invalid/");
+        COSDictionary allowedTarget = new COSDictionary();
+        allowedTarget.setItem(COSName.A, allowedAction);
+
+        COSDictionary excludedAction = new COSDictionary();
+        excludedAction.setItem(COSName.S, COSName.URI);
+        excludedAction.setString(
+                COSName.URI, "https://excluded-same-page-child.invalid/");
+        COSDictionary excludedTarget = new COSDictionary();
+        excludedTarget.setItem(COSName.A, excludedAction);
+        COSDictionary excludedChild = new COSDictionary();
+        excludedChild.setItem(COSName.S, COSName.getPDFName("Div"));
+        excludedChild.setItem(COSName.PG, pageRefs.get(5));
+        excludedChild.setItem(COSName.K, excludedTarget);
+
+        COSArray linkKids = new COSArray();
+        linkKids.add(new COSObject(allowedChild));
+        linkKids.add(allowedTarget);
+        linkKids.add(new COSObject(excludedChild));
+        COSDictionary excludedLink = new COSDictionary();
+        excludedLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        excludedLink.setItem(COSName.PG, pageRefs.get(5));
+        excludedLink.setItem(COSName.K, linkKids);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(excludedLink));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

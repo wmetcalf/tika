@@ -21,13 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.xml.sax.ContentHandler;
 
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
@@ -154,6 +157,37 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testBinaryBlobCardinalityIsBoundedAndSignaled() throws Exception {
+        StringBuilder xml = new StringBuilder("<MMC_ConsoleFile>");
+        for (int i = 0; i < 300; i++) {
+            xml.append("<Binary>AAAAAAAAAAAAAAAAAAAA</Binary>");
+        }
+        xml.append("</MMC_ConsoleFile>");
+
+        ParseResult result = parseWithoutEmbedded(xml.toString());
+        assertTrue(result.metadata.getValues("msc:binary_sha256").length <= 256,
+                "binary blob metadata and embedded dispatch must have a hard count limit");
+        assertNotNull(result.metadata.get("msc:warning"),
+                "dropping excess binary blobs must be signaled");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "skipped binary blobs may hide executable content");
+    }
+
+    @Test
+    public void testOversizedBinaryBlobIsSkippedAndSignaled() throws Exception {
+        String xml = "<MMC_ConsoleFile><Binary>"
+                + "A".repeat(8 * 1024 * 1024 + 4)
+                + "</Binary></MMC_ConsoleFile>";
+
+        ParseResult result = parseWithoutEmbedded(xml);
+        assertEquals(0, result.metadata.getValues("msc:binary_sha256").length,
+                "an oversized base64 capture must be rejected before copying or decoding it");
+        assertNotNull(result.metadata.get("msc:warning"));
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "skipped binary content must fail closed for classification");
+    }
+
+    @Test
     public void testIncompleteXmlFailsClosedForSecurityClassification() throws Exception {
         ParseResult result = parse(
                 "<MMC_ConsoleFile><CommandLine>powershell.exe -NoProfile");
@@ -216,11 +250,33 @@ public class MscParserSecurityTest {
     }
 
     private static ParseResult parse(String xml) throws Exception {
+        return parse(xml, new ParseContext());
+    }
+
+    private static ParseResult parseWithoutEmbedded(String xml) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException {
+                throw new AssertionError("embedded parsing should be disabled");
+            }
+        });
+        return parse(xml, context);
+    }
+
+    private static ParseResult parse(String xml, ParseContext context) throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler body = new BodyContentHandler(-1);
         try (TikaInputStream stream = TikaInputStream.get(
                 xml.getBytes(StandardCharsets.UTF_8))) {
-            new MscParser().parse(stream, body, metadata, new ParseContext());
+            new MscParser().parse(stream, body, metadata, context);
         }
         return new ParseResult(body.toString(), metadata);
     }

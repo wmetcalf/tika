@@ -60,6 +60,11 @@ public final class HtmlColorQRExtractor {
     /** Max clusters per HTML document. */
     private static final int MAX_CLUSTERS = 4;
 
+    /** A real QR code is at most 177x177 modules; leave room for noisy grids. */
+    private static final int MAX_GRID_UNITS = 256 * 1024;
+    private static final int MAX_DOCUMENT_GRID_UNITS = MAX_GRID_UNITS * MAX_CLUSTERS;
+    private static final long MAX_RENDERED_PIXELS = 16L * 1024 * 1024;
+
     /** Luminance threshold below which a colour counts as "dark". 0..255. */
     private static final int DARK_LUMA_THRESHOLD = 128;
 
@@ -145,17 +150,26 @@ public final class HtmlColorQRExtractor {
     static List<List<List<Cell>>> findClusters(Document doc,
                                                Map<String, String> classRules) {
         List<List<List<Cell>>> clusters = new ArrayList<>();
+        GridBudget budget = new GridBudget();
         // Mode 1: <pre>/<code>
         for (Element block : doc.select("pre, code")) {
-            List<List<Cell>> grid = buildGrid(block, classRules);
-            if (grid.size() >= MIN_CLUSTER_LINES && maxCols(grid) >= MIN_CLUSTER_COLS) {
+            if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                break;
+            }
+            List<List<Cell>> grid = buildGrid(block, classRules, budget);
+            if (grid != null && grid.size() >= MIN_CLUSTER_LINES
+                    && maxCols(grid) >= MIN_CLUSTER_COLS) {
                 clusters.add(grid);
             }
         }
         // Mode 2: <table> grids — one row per <tr>, one cell per <td>/<th>.
         for (Element table : doc.select("table")) {
-            List<List<Cell>> grid = buildTableGrid(table, classRules);
-            if (grid.size() >= MIN_CLUSTER_LINES && maxCols(grid) >= MIN_CLUSTER_COLS) {
+            if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                break;
+            }
+            List<List<Cell>> grid = buildTableGrid(table, classRules, budget);
+            if (grid != null && grid.size() >= MIN_CLUSTER_LINES
+                    && maxCols(grid) >= MIN_CLUSTER_COLS) {
                 clusters.add(grid);
             }
         }
@@ -178,11 +192,19 @@ public final class HtmlColorQRExtractor {
      * the cell's own bgcolor/style or the inherited row/table.
      */
     private static List<List<Cell>> buildTableGrid(Element table,
-                                                   Map<String, String> classRules) {
+                                                   Map<String, String> classRules,
+                                                   GridBudget budget) {
         List<List<Cell>> grid = new ArrayList<>();
+        int candidateUnits = 0;
         for (Element tr : table.select("tr")) {
+            if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
+                return null;
+            }
             List<Cell> row = new ArrayList<>();
             for (Element td : tr.select("td, th")) {
+                if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
+                    return null;
+                }
                 EffectiveStyle eff = resolveEffectiveStyle(td, classRules);
                 // Pick the most representative char inside the cell to make
                 // the same classifier do the work; whitespace-only cells
@@ -202,41 +224,107 @@ public final class HtmlColorQRExtractor {
      * new row.
      */
     private static List<List<Cell>> buildGrid(Element block,
-                                               Map<String, String> classRules) {
-        List<List<Cell>> grid = new ArrayList<>();
-        List<Cell> currentRow = new ArrayList<>();
-        grid.add(currentRow);
-
-        for (Node child : descendants(block)) {
-            if (child instanceof Element) {
-                Element el = (Element) child;
-                if ("br".equalsIgnoreCase(el.tagName())) {
-                    currentRow = new ArrayList<>();
-                    grid.add(currentRow);
-                }
-                continue;
-            }
-            if (!(child instanceof TextNode)) {
-                continue;
-            }
-            String text = ((TextNode) child).getWholeText();
-            Element parent = ((TextNode) child).parent() instanceof Element
-                    ? (Element) ((TextNode) child).parent() : null;
-            EffectiveStyle eff = resolveEffectiveStyle(parent, classRules);
-            for (int i = 0; i < text.length(); i++) {
-                char c = text.charAt(i);
-                if (c == '\n' || c == '\r') {
-                    currentRow = new ArrayList<>();
-                    grid.add(currentRow);
-                    continue;
-                }
-                currentRow.add(classifyCell(c, eff));
-            }
+                                               Map<String, String> classRules,
+                                               GridBudget budget) {
+        GridAccumulator accumulator =
+                new GridAccumulator(classRules, budget);
+        try {
+            block.traverse(accumulator);
+        } catch (GridLimitException e) {
+            return null;
         }
+        List<List<Cell>> grid = accumulator.grid;
         while (!grid.isEmpty() && grid.get(grid.size() - 1).isEmpty()) {
             grid.remove(grid.size() - 1);
         }
         return grid;
+    }
+
+    private static final class GridAccumulator implements NodeVisitor {
+        private final Map<String, String> classRules;
+        private final GridBudget budget;
+        private final List<List<Cell>> grid = new ArrayList<>();
+        private List<Cell> currentRow = new ArrayList<>();
+        private int candidateUnits;
+
+        private GridAccumulator(Map<String, String> classRules, GridBudget budget) {
+            this.classRules = classRules;
+            this.budget = budget;
+            grid.add(currentRow);
+        }
+
+        @Override
+        public void head(Node node, int depth) {
+            if (depth == 0) {
+                return;
+            }
+            consumeUnit();
+            if (node instanceof Element) {
+                Element element = (Element) node;
+                if ("br".equalsIgnoreCase(element.tagName())) {
+                    startRow();
+                }
+                return;
+            }
+            if (!(node instanceof TextNode)) {
+                return;
+            }
+            TextNode textNode = (TextNode) node;
+            Element parent = textNode.parent() instanceof Element
+                    ? (Element) textNode.parent() : null;
+            EffectiveStyle effectiveStyle =
+                    resolveEffectiveStyle(parent, classRules);
+            String text = textNode.getWholeText();
+            for (int i = 0; i < text.length(); i++) {
+                consumeUnit();
+                char character = text.charAt(i);
+                if (character == '\n' || character == '\r') {
+                    startRow();
+                } else {
+                    currentRow.add(classifyCell(character, effectiveStyle));
+                }
+            }
+        }
+
+        @Override
+        public void tail(Node node, int depth) {
+            // no-op
+        }
+
+        private void startRow() {
+            currentRow = new ArrayList<>();
+            grid.add(currentRow);
+        }
+
+        private void consumeUnit() {
+            if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
+                throw GridLimitException.INSTANCE;
+            }
+        }
+    }
+
+    private static final class GridBudget {
+        private int consumed;
+
+        private boolean consume() {
+            if (consumed >= MAX_DOCUMENT_GRID_UNITS) {
+                return false;
+            }
+            consumed++;
+            return true;
+        }
+
+        private boolean exhausted() {
+            return consumed >= MAX_DOCUMENT_GRID_UNITS;
+        }
+    }
+
+    private static final class GridLimitException extends RuntimeException {
+        private static final GridLimitException INSTANCE = new GridLimitException();
+
+        private GridLimitException() {
+            super(null, null, false, false);
+        }
     }
 
     /**
@@ -501,8 +589,14 @@ public final class HtmlColorQRExtractor {
             return null;
         }
         int quiet = 4;
-        int imgW = (maxCols + 2 * quiet) * MODULE_PX;
-        int imgH = (grid.size() + 2 * quiet) * MODULE_PX;
+        long imgWLong = ((long) maxCols + 2 * quiet) * MODULE_PX;
+        long imgHLong = ((long) grid.size() + 2 * quiet) * MODULE_PX;
+        if (imgWLong <= 0 || imgHLong <= 0
+                || imgWLong > MAX_RENDERED_PIXELS / imgHLong) {
+            return null;
+        }
+        int imgW = (int) imgWLong;
+        int imgH = (int) imgHLong;
         BufferedImage img = new BufferedImage(imgW, imgH, BufferedImage.TYPE_BYTE_GRAY);
         Graphics2D g = img.createGraphics();
         try {
@@ -525,21 +619,4 @@ public final class HtmlColorQRExtractor {
         return img;
     }
 
-    private static List<Node> descendants(Element root) {
-        final List<Node> out = new ArrayList<>();
-        root.traverse(new NodeVisitor() {
-            @Override
-            public void head(Node node, int depth) {
-                if (node != root) {
-                    out.add(node);
-                }
-            }
-
-            @Override
-            public void tail(Node node, int depth) {
-                // no-op
-            }
-        });
-        return out;
-    }
 }

@@ -165,6 +165,25 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
     }
 
+    @Test
+    void testExternalReferenceCardinalityIsBoundedAndSignaled() throws Exception {
+        StringBuilder svg = new StringBuilder(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\">");
+        for (int i = 0; i < 5_000; i++) {
+            svg.append("<a href=\"https://example.invalid/")
+                    .append(i).append("\"/>");
+        }
+        svg.append("</svg>");
+
+        ParseResult result = parse(svg.toString());
+
+        assertTrue(result.metadata.getValues("svg:link").length <= 4_096);
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "truncated external-script/reference extraction must fail closed");
+    }
+
     private static ParseResult parse(String svg) throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");

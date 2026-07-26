@@ -17,6 +17,7 @@
 package org.apache.tika.parser.html;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -24,7 +25,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.AbstractList;
+import java.util.List;
+import java.util.Map;
 
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -68,6 +74,42 @@ public class HtmlColorQRExtractorTest {
                 "one malformed candidate must not suppress an earlier valid color QR");
         assertEquals(0, metadata
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
+    }
+
+    @Test
+    public void clusterDiscoveryStopsAtItsAcceptedCandidateLimit() {
+        Document document = Jsoup.parse(
+                "<html><body>" + VALID_GRID.repeat(20) + "</body></html>");
+
+        assertEquals(4, HtmlColorQRExtractor.findClusters(document, Map.of()).size());
+    }
+
+    @Test
+    public void oversizedCandidateGridIsRejectedBeforeMaterialization() {
+        String row = "#".repeat(50_000);
+        Document document = Jsoup.parse("<html><body><pre>"
+                + String.join("\n", row, row, row, row, row, row)
+                + "</pre></body></html>");
+
+        assertTrue(HtmlColorQRExtractor.findClusters(document, Map.of()).isEmpty());
+    }
+
+    @Test
+    public void renderedDimensionsAreCheckedWithoutIntegerOverflow() {
+        List<HtmlColorQRExtractor.Cell> hugeRow = new AbstractList<>() {
+            @Override
+            public HtmlColorQRExtractor.Cell get(int index) {
+                return new HtmlColorQRExtractor.Cell(false);
+            }
+
+            @Override
+            public int size() {
+                return Integer.MAX_VALUE;
+            }
+        };
+
+        assertNull(HtmlColorQRExtractor.renderCluster(
+                List.of(hugeRow, hugeRow, hugeRow, hugeRow, hugeRow, hugeRow)));
     }
 
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,

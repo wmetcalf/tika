@@ -288,7 +288,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         //and the text bits from paragraphs
 
         try {
-            recurse(structureTreeRoot.getK(), null, 0, paragraphs, roleMap);
+            recurse(structureTreeRoot.getK(), null, 0, false, paragraphs, roleMap);
         } catch (SAXException e) {
             throw new IOException(e);
         }
@@ -332,6 +332,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     }
 
     private void recurse(COSBase kids, ObjectRef currentPageRef, int depth,
+                         boolean ownsActiveLinkAction,
                          Map<MCID, String> paragraphs, Map<String, HtmlTag> roleMap)
             throws IOException, SAXException {
 
@@ -351,7 +352,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
         if (kids instanceof COSArray) {
             for (COSBase k : ((COSArray) kids)) {
-                recurse(k, currentPageRef, depth + 1, paragraphs, roleMap);
+                recurse(k, currentPageRef, depth + 1, ownsActiveLinkAction,
+                        paragraphs, roleMap);
             }
         } else if (kids instanceof COSObject && 
                 ((COSObject) kids).getObject() instanceof COSDictionary) {
@@ -368,7 +370,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 ObjectRef objectPageRef =
                         resolveObjectReferencePage(dict, referencedObject, currentPageRef);
                 if (isKnownOutputAllowed(objectPageRef)) {
-                    recurse(referencedObject, objectPageRef, depth + 1, paragraphs, roleMap);
+                    recurse(referencedObject, objectPageRef, depth + 1, false,
+                            paragraphs, roleMap);
                 }
                 return;
             }
@@ -417,7 +420,11 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 }
             }
 
-            recurse(grandkids, currentPageRef, depth + 1, paragraphs, roleMap);
+            // Only an action directly within this Link's children belongs to
+            // the new LinkState. Descending through another structure element
+            // must not let that element's action overwrite its ancestor link.
+            recurse(grandkids, currentPageRef, depth + 1, startedLink,
+                    paragraphs, roleMap);
             if (startedLink) {
                 writeLink();
             }
@@ -454,7 +461,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 ObjectRef objectPageRef =
                         resolveObjectReferencePage(dict, referencedObject, currentPageRef);
                 if (isKnownOutputAllowed(objectPageRef)) {
-                    recurse(referencedObject, objectPageRef, depth + 1, paragraphs, roleMap);
+                    recurse(referencedObject, objectPageRef, depth + 1, false,
+                            paragraphs, roleMap);
                 }
                 return;
             }
@@ -465,8 +473,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 boolean anchorOutputAllowed = outputPageLimit < 0
                         || (currentPageRef != null && isOutputAllowed(currentPageRef));
                 LinkState linkState = state.linkStates.peek();
-                if (anchorOutputAllowed
-                        || Objects.equals(currentPageRef, linkState.pageRef)) {
+                if (anchorOutputAllowed || ownsActiveLinkAction) {
                     linkState.uri = anchor.getString(COSName.URI);
                 }
                 if (anchorOutputAllowed) {
@@ -475,10 +482,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             } else {
                 if (dict.containsKey(COSName.K)) {
                     recurse(dict.getDictionaryObject(COSName.K), currentPageRef, depth + 1,
-                            paragraphs, roleMap);
+                            false, paragraphs, roleMap);
                 } else if (dict.containsKey(COSName.OBJ)) {
                     recurse(dict.getDictionaryObject(COSName.OBJ), currentPageRef, depth + 1,
-                            paragraphs, roleMap);
+                            false, paragraphs, roleMap);
                 }
             }
         } else {
