@@ -17,15 +17,39 @@
 package org.apache.tika.parser.xml;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import org.apache.tika.config.EmbeddedLimits;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.ImageHash;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.BodyContentHandler;
 
 class XMLParserSvgSecurityTest {
+
+    private static final byte[] ONE_PIXEL_PNG = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+                    + "YAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+
+    @TempDir
+    Path temporaryDirectory;
 
     @Test
     void testSvgNormalizationRemovesExternalRefsAcrossQuoteStyles() throws Exception {
@@ -48,5 +72,111 @@ class XMLParserSvgSecurityTest {
 
         Files.deleteIfExists(input);
         Files.deleteIfExists(normalized);
+    }
+
+    @Test
+    void testOrdinarySvgProducesRasterHashes() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                  <text x="2" y="32">visible-svg-text</text>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg);
+
+        assertTrue(result.body.contains("visible-svg-text"));
+        assertNotNull(result.metadata.get(ImageHash.PHASH), warnings(result.metadata));
+        assertNotNull(result.metadata.get(ImageHash.DHASH));
+        assertNotNull(result.metadata.get(ImageHash.AHASH));
+    }
+
+    @Test
+    void testRasterizationDoesNotFetchExternalImages() throws Exception {
+        AtomicBoolean requested = new AtomicBoolean();
+        try (ServerSocket server = new ServerSocket(
+                0, 1, InetAddress.getLoopbackAddress())) {
+            Thread responder = new Thread(() -> respondOnce(server, requested));
+            responder.setDaemon(true);
+            responder.start();
+            String svg = """
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                      <rect width="64" height="64" fill="red"/>
+                      <image href='http://127.0.0.1:%d/pixel.png'
+                             width="64" height="64"/>
+                    </svg>
+                    """.formatted(server.getLocalPort());
+
+            ParseResult result = parse(svg);
+            server.close();
+            responder.join(2000);
+
+            assertFalse(requested.get());
+            assertNotNull(result.metadata.get(ImageHash.PHASH), warnings(result.metadata));
+        }
+    }
+
+    @Test
+    void testRasterizationDoesNotResolveExternalXmlEntities() throws Exception {
+        String secret = "SVG_XXE_SECRET_SHOULD_NOT_LEAK";
+        Path secretFile = temporaryDirectory.resolve("secret.txt");
+        Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
+        String svg = """
+                <!DOCTYPE svg [
+                  <!ENTITY xxe SYSTEM "%s">
+                ]>
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                  <text x="2" y="32">&xxe;</text>
+                </svg>
+                """.formatted(secretFile.toUri());
+
+        ParseResult result = parse(svg);
+
+        assertFalse(result.body.contains(secret));
+        assertNotNull(result.metadata.get(ImageHash.PHASH), warnings(result.metadata));
+    }
+
+    @Test
+    void testRasterFailureIsVisibleInWarningMetadata() throws Exception {
+        ParseResult result = parse("<not-svg/>");
+
+        assertNull(result.metadata.get(ImageHash.PHASH));
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+    }
+
+    private static ParseResult parse(String svg) throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        BodyContentHandler body = new BodyContentHandler(-1);
+        try (TikaInputStream stream = TikaInputStream.get(
+                svg.getBytes(StandardCharsets.UTF_8))) {
+            new XMLParser().parse(stream, body, metadata, context);
+        }
+        return new ParseResult(body.toString(), metadata);
+    }
+
+    private static void respondOnce(ServerSocket server, AtomicBoolean requested) {
+        try (Socket socket = server.accept()) {
+            requested.set(true);
+            socket.getOutputStream().write((
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: "
+                            + ONE_PIXEL_PNG.length + "\r\nConnection: close\r\n\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().write(ONE_PIXEL_PNG);
+            socket.getOutputStream().flush();
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static String warnings(Metadata metadata) {
+        return String.join("\n",
+                metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    private record ParseResult(String body, Metadata metadata) {
     }
 }

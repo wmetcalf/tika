@@ -20,7 +20,6 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,11 +28,25 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import javax.imageio.ImageIO;
-import javax.xml.parsers.SAXParserFactory;
 
+import org.apache.batik.anim.dom.SAXSVGDocumentFactory;
+import org.apache.batik.bridge.ExternalResourceSecurity;
+import org.apache.batik.bridge.NoLoadExternalResourceSecurity;
+import org.apache.batik.bridge.NoLoadScriptSecurity;
+import org.apache.batik.bridge.ScriptSecurity;
+import org.apache.batik.bridge.UserAgent;
+import org.apache.batik.transcoder.SVGAbstractTranscoder;
+import org.apache.batik.transcoder.TranscoderInput;
+import org.apache.batik.transcoder.TranscoderOutput;
+import org.apache.batik.transcoder.image.ImageTranscoder;
+import org.apache.batik.transcoder.image.PNGTranscoder;
+import org.apache.batik.util.SVGConstants;
+import org.apache.batik.util.XMLResourceDescriptor;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
-import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
@@ -136,21 +149,17 @@ public class XMLParser implements Parser {
                 "$1$2 xmlns:xlink=\"http://www.w3.org/1999/xlink\"$3");
         }
 
-        // 2. Convert bare href= → xlink:href= (SVG 2.0 → SVG 1.1)
-        fixed = fixed.replace(" href=", " xlink:href=");
-
-        // 3. Strip data URI content from image hrefs — Batik crashes while decoding
-        //    large or malformed inline images embedded as base64 data URIs.
-        //    Keep the <image> element so layout is preserved; just remove the data.
+        // 2. Convert bare href= to xlink:href= across whitespace and quote styles.
         fixed = fixed.replaceAll(
-            "(xlink:href|href)=\"data:[^\"]*\"",
-            "$1=\"\"");
+                "(?i)(\\s)href\\s*=",
+                "$1xlink:href=");
 
-        // 4. Strip external xlink:href values from <use> elements (SSRF protection for Batik).
-        //    Local fragment refs (#id) are preserved; only external URLs are cleared.
+        // 3. Strip non-fragment image/use resources across quote styles. Local
+        //    <use href="#id"> references remain available to Batik.
         fixed = fixed.replaceAll(
-            "(<use\\b[^>]*?)xlink:href=\"(?!#)[^\"]+\"",
-            "$1xlink:href=\"\"");
+                "(?is)(<(?:image|use)\\b[^>]*?\\sxlink:href\\s*=\\s*)(['\"])(?!#)"
+                        + "[^'\"]*\\2",
+                "$1$2$2");
 
         if (fixed.equals(content)) {
             return svgPath;
@@ -162,42 +171,94 @@ public class XMLParser implements Parser {
 
     /**
      * Rasterize {@code svgPath} to PNG bytes at the given max dimension.
-     * Returns null if Batik fails for any reason (including OOM).
+     * The input is parsed into Batik's SVG DOM with Tika's hardened XML reader,
+     * and Batik is configured to reject scripts and external resources.
      */
-    private static byte[] rasterizeSvg(Path svgPath, float maxDim) {
-        try {
-            org.apache.batik.transcoder.image.PNGTranscoder t =
-                new org.apache.batik.transcoder.image.PNGTranscoder();
-            t.addTranscodingHint(
-                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, maxDim);
-            t.addTranscodingHint(
-                org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, maxDim);
+    private static byte[] rasterizeSvg(Path svgPath, float maxDim) throws Exception {
+        String uri = svgPath.toUri().toString();
+        XMLReader xmlReader = XMLReaderUtils.getXMLReader();
+        // SAXDocumentFactory reconstructs namespaces from xmlns attributes and
+        // therefore requires namespace-prefix attributes in addition to namespace URIs.
+        xmlReader.setFeature("http://xml.org/sax/features/namespace-prefixes", true);
+        SAXSVGDocumentFactory documentFactory = new SAXSVGDocumentFactory(
+                XMLResourceDescriptor.getXMLParserClassName());
+        Document document = documentFactory.createDocument(
+                SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_SVG_TAG, uri, xmlReader);
+        sanitizeSvgDocument(document);
 
-            // Harden against XXE: use a pre-configured SAX reader with external entities
-            // disabled. Passing a raw file URI lets Batik's own parser resolve DOCTYPE
-            // entities; the XMLReader path blocks that without needing a custom UserAgent.
-            SAXParserFactory spf = SAXParserFactory.newInstance();
-            spf.setNamespaceAware(true);
-            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            spf.setFeature(
-                "http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-            spf.setXIncludeAware(false);
-            XMLReader xmlReader = spf.newSAXParser().getXMLReader();
-            // Belt-and-suspenders: null entity resolver returns empty for any surviving ref
-            xmlReader.setEntityResolver((publicId, systemId) ->
-                new InputSource(new StringReader("")));
+        PNGTranscoder transcoder = new SecurePngTranscoder();
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_MAX_WIDTH, maxDim);
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_MAX_HEIGHT, maxDim);
+        transcoder.addTranscodingHint(SVGAbstractTranscoder.KEY_EXECUTE_ONLOAD, Boolean.FALSE);
+        transcoder.addTranscodingHint(
+                SVGAbstractTranscoder.KEY_ALLOW_EXTERNAL_RESOURCES, Boolean.FALSE);
+        transcoder.addTranscodingHint(SVGAbstractTranscoder.KEY_ALLOWED_SCRIPT_TYPES, "");
 
-            org.apache.batik.transcoder.TranscoderInput input =
-                new org.apache.batik.transcoder.TranscoderInput(xmlReader);
-            input.setURI(svgPath.toUri().toString());
+        TranscoderInput input = new TranscoderInput(document);
+        input.setURI(uri);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        transcoder.transcode(input, new TranscoderOutput(out));
+        byte[] bytes = out.toByteArray();
+        if (bytes.length == 0) {
+            throw new IOException("Batik produced an empty SVG raster");
+        }
+        return bytes;
+    }
 
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            t.transcode(input, new org.apache.batik.transcoder.TranscoderOutput(out));
-            byte[] bytes = out.toByteArray();
-            return bytes.length > 0 ? bytes : null;
-        } catch (Throwable e) {
-            return null;
+    private static void sanitizeSvgDocument(Document document) {
+        removeSvgElements(document.getElementsByTagNameNS(
+                SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_IMAGE_TAG));
+        sanitizeSvgReferences(document.getElementsByTagNameNS(
+                SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_USE_TAG));
+    }
+
+    private static void removeSvgElements(NodeList elements) {
+        for (int i = elements.getLength() - 1; i >= 0; i--) {
+            Element element = (Element) elements.item(i);
+            element.getParentNode().removeChild(element);
+        }
+    }
+
+    private static void sanitizeSvgReferences(NodeList elements) {
+        for (int i = 0; i < elements.getLength(); i++) {
+            Element element = (Element) elements.item(i);
+            String href = element.getAttributeNS(SVGConstants.XLINK_NAMESPACE_URI,
+                    SVGConstants.XLINK_HREF_ATTRIBUTE);
+            if (href.isEmpty()) {
+                href = element.getAttribute("href");
+            }
+            element.removeAttribute("href");
+            element.removeAttributeNS(SVGConstants.XLINK_NAMESPACE_URI,
+                    SVGConstants.XLINK_HREF_ATTRIBUTE);
+            if (href.startsWith("#")) {
+                element.setAttributeNS(SVGConstants.XLINK_NAMESPACE_URI,
+                        "xlink:" + SVGConstants.XLINK_HREF_ATTRIBUTE, href);
+            } else {
+                element.setAttributeNS(SVGConstants.XLINK_NAMESPACE_URI,
+                        "xlink:" + SVGConstants.XLINK_HREF_ATTRIBUTE, "");
+            }
+        }
+    }
+
+    private static final class SecurePngTranscoder extends PNGTranscoder {
+
+        @Override
+        protected UserAgent createUserAgent() {
+            return new SVGAbstractTranscoderUserAgent() {
+                @Override
+                public ExternalResourceSecurity getExternalResourceSecurity(
+                        org.apache.batik.util.ParsedURL resourceUrl,
+                        org.apache.batik.util.ParsedURL documentUrl) {
+                    return new NoLoadExternalResourceSecurity();
+                }
+
+                @Override
+                public ScriptSecurity getScriptSecurity(String scriptType,
+                        org.apache.batik.util.ParsedURL scriptUrl,
+                        org.apache.batik.util.ParsedURL documentUrl) {
+                    return new NoLoadScriptSecurity(scriptType);
+                }
+            };
         }
     }
 
@@ -223,13 +284,21 @@ public class XMLParser implements Parser {
             // Full-resolution raster for OCR and phash (1200px max).
             // If Batik fails here (OOM on complex SVGs), fall through to the
             // lower-res phash fallback below.
-            byte[] pngBytes = rasterizeSvg(renderPath, 1200f);
+            Throwable rasterFailure = null;
+            byte[] pngBytes = null;
+            try {
+                pngBytes = rasterizeSvg(renderPath, 1200f);
+            } catch (Exception | LinkageError e) {
+                rasterFailure = e;
+            }
             if (pngBytes != null) {
                 // Phash/colorhash from the full-res render
                 try {
                     BufferedImage raster = ImageIO.read(new ByteArrayInputStream(pngBytes));
                     ImageHashUtils.setHashes(raster, metadata);
-                } catch (Exception ignored) { }
+                } catch (Exception e) {
+                    rasterFailure = e;
+                }
 
                 // OCR dispatch — only if Tesseract (or equivalent) is configured
                 org.apache.tika.parser.Parser ocrParser =
@@ -256,22 +325,43 @@ public class XMLParser implements Parser {
             // This keeps phash in the Tika fork for complex/large SVGs where high-res
             // Batik rendering fails, rather than delegating to the application layer.
             if (metadata.get(ImageHash.PHASH) == null) {
-                byte[] fallback = rasterizeSvg(renderPath, 512f);
+                byte[] fallback = null;
+                try {
+                    fallback = rasterizeSvg(renderPath, 512f);
+                } catch (Exception | LinkageError e) {
+                    rasterFailure = e;
+                }
                 if (fallback != null) {
                     try {
                         BufferedImage img = ImageIO.read(new ByteArrayInputStream(fallback));
                         ImageHashUtils.setHashes(img, metadata);
-                    } catch (Exception ignored) { }
+                    } catch (Exception e) {
+                        rasterFailure = e;
+                    }
                 }
             }
 
-        } catch (Throwable e) {
-            // non-fatal
+            if (metadata.get(ImageHash.PHASH) == null) {
+                addSvgRasterWarning(metadata, rasterFailure);
+            }
+        } catch (Exception | LinkageError e) {
+            addSvgRasterWarning(metadata, e);
         } finally {
             if (!renderPath.equals(svgPath)) {
                 try { Files.deleteIfExists(renderPath); } catch (IOException ignored) { }
             }
         }
+    }
+
+    private static void addSvgRasterWarning(Metadata metadata, Throwable failure) {
+        StringBuilder warning = new StringBuilder("SVG raster enrichment failed");
+        if (failure != null) {
+            warning.append(": ").append(failure.getClass().getSimpleName());
+            if (failure.getMessage() != null && !failure.getMessage().isBlank()) {
+                warning.append(": ").append(failure.getMessage());
+            }
+        }
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning.toString());
     }
 
     protected ContentHandler getContentHandler(ContentHandler handler, Metadata metadata,
