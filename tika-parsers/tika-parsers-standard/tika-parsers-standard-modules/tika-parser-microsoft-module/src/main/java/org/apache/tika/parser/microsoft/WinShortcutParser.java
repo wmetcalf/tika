@@ -328,7 +328,6 @@ public class WinShortcutParser implements Parser {
         xhtml.startDocument();
 
         int pos = HEADER_SIZE;
-        int consoleFePage = -1; // code page from ConsoleFEDataBlock
         try {
             parseHeader(buf, fields);
             int linkFlags = buf.getInt(20);
@@ -337,7 +336,7 @@ public class WinShortcutParser implements Parser {
             pos = parseIdList(buf, pos, linkFlags, raw.length, fields, warnings);
             pos = parseLinkInfo(buf, pos, linkFlags, raw.length, fields, warnings);
             pos = parseStringData(buf, pos, linkFlags, unicode, raw.length, fields, warnings);
-            consoleFePage = parseExtraData(buf, pos, raw.length, fields, warnings, xhtml, context);
+            pos = parseExtraData(buf, pos, raw.length, fields, warnings, xhtml, context);
             parseAppendedData(buf, pos, raw.length, fields, warnings, xhtml, context);
         } catch (Exception e) {
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
@@ -1046,7 +1045,7 @@ public class WinShortcutParser implements Parser {
     }
 
     // ── ExtraData §2.5 ────────────────────────────────────────────────────────
-    // Returns ConsoleFEDataBlock code page (or -1 if not found)
+    // Returns the cursor at the terminal block or the first invalid block.
 
     private int parseExtraData(ByteBuffer buf, int pos, int fileLen,
                                Map<String, String> fields, List<String> warnings,
@@ -1112,7 +1111,7 @@ public class WinShortcutParser implements Parser {
             }
             pos += blockSize;
         }
-        return consoleFePage;
+        return pos;
     }
 
     // §2.5.1 / §2.5.7
