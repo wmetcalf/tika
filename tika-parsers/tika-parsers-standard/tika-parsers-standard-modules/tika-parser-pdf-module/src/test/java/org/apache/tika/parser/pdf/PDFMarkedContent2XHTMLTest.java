@@ -140,6 +140,22 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         }
     }
 
+    @Test
+    public void testExcludedNestedLinkDoesNotResetAllowedOuterLink() throws Exception {
+        try (PDDocument document = buildNestedExcludedLinkDocument()) {
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertContains(
+                    "<a href=\"https://outer.invalid/\">OUTER_BEFOREOUTER_AFTER</a>",
+                    handler.toString());
+        }
+    }
+
     private static PDDocument buildPageOverrideDocument() throws IOException {
         PDDocument document = new PDDocument();
         List<PDPage> pages = new ArrayList<>();
@@ -169,6 +185,44 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDDocument loaded = Loader.loadPDF(output.toByteArray());
         addPageOverrideStructure(loaded);
         return loaded;
+    }
+
+    private static PDDocument buildNestedExcludedLinkDocument() throws IOException {
+        PDDocument document = new PDDocument();
+        List<PDPage> pages = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            PDPage page = new PDPage();
+            page.setResources(new PDResources());
+            document.addPage(page);
+            pages.add(page);
+        }
+
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+        try (PDPageContentStream contents =
+                     new PDPageContentStream(document, pages.get(0))) {
+            writeMarkedText(contents, font, 0, 720, "OUTER_BEFORE");
+            writeMarkedText(contents, font, 1, 700, "OUTER_AFTER");
+        }
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        document.save(output);
+        document.close();
+        PDDocument loaded = Loader.loadPDF(output.toByteArray());
+        addNestedExcludedLinkStructure(loaded);
+        return loaded;
+    }
+
+    private static void writeMarkedText(PDPageContentStream contents, PDType1Font font, int mcid,
+                                        float y, String text) throws IOException {
+        COSDictionary markedProperties = new COSDictionary();
+        markedProperties.setInt(COSName.MCID, mcid);
+        contents.beginMarkedContent(COSName.P, PDPropertyList.create(markedProperties));
+        contents.beginText();
+        contents.setFont(font, 12);
+        contents.newLineAtOffset(72, y);
+        contents.showText(text);
+        contents.endText();
+        contents.endMarkedContent();
     }
 
     private static void addPageOverrideStructure(PDDocument document) {
@@ -227,6 +281,42 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(excludedLink));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addNestedExcludedLinkStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary innerAction = new COSDictionary();
+        innerAction.setItem(COSName.S, COSName.URI);
+        innerAction.setString(COSName.URI, "https://excluded-inner.invalid/");
+        COSDictionary innerTarget = new COSDictionary();
+        innerTarget.setItem(COSName.A, innerAction);
+        COSDictionary excludedInnerLink = new COSDictionary();
+        excludedInnerLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        excludedInnerLink.setItem(COSName.PG, pageRefs.get(5));
+        excludedInnerLink.setItem(COSName.K, innerTarget);
+
+        COSDictionary outerAction = new COSDictionary();
+        outerAction.setItem(COSName.S, COSName.URI);
+        outerAction.setString(COSName.URI, "https://outer.invalid/");
+        COSDictionary outerTarget = new COSDictionary();
+        outerTarget.setItem(COSName.A, outerAction);
+        COSArray outerKids = new COSArray();
+        outerKids.add(COSInteger.ZERO);
+        outerKids.add(new COSObject(excludedInnerLink));
+        outerKids.add(COSInteger.ONE);
+        outerKids.add(outerTarget);
+        COSDictionary allowedOuterLink = new COSDictionary();
+        allowedOuterLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        allowedOuterLink.setItem(COSName.PG, pageRefs.get(0));
+        allowedOuterLink.setItem(COSName.K, outerKids);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(allowedOuterLink));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

@@ -91,6 +91,8 @@ public class PpkgParser implements Parser {
     // WIM resource flag: compressed
     private static final int RESHDR_FLAG_COMPRESSED = 0x02;
     private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 64L * 1024 * 1024;
+    private static final String RESOURCE_LIMIT_WARNING =
+            "PPKG WIM resource exceeded the 64 MB extraction limit and was skipped";
 
     // Extensions considered high-risk when referenced by provisioning commands
     private static final Set<String> DANGEROUS_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -101,7 +103,7 @@ public class PpkgParser implements Parser {
 
     // Shell invocation prefixes that indicate code execution
     private static final String[] EXEC_KEYWORDS = {
-            "powershell", "cmd.exe", "cmd /c", "wscript", "cscript", "mshta",
+            "powershell", "pwsh", "cmd.exe", "cmd /c", "wscript", "cscript", "mshta",
             "certutil", "bitsadmin", "regsvr32", "rundll32", "msiexec", "wmic"
     };
 
@@ -187,7 +189,7 @@ public class PpkgParser implements Parser {
                 continue;
             }
             try {
-                byte[] metaRes = decompressResource(raw, rh, chunkSize);
+                byte[] metaRes = decompressResource(raw, rh, chunkSize, warnings);
                 if (metaRes == null || metaRes.length < 8) {
                     continue;
                 }
@@ -243,6 +245,12 @@ public class PpkgParser implements Parser {
                         "PPKG provisioning command executes shell payload: " + cmd);
             }
         }
+        if (warnings.contains(RESOURCE_LIMIT_WARNING)
+                && metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "PPKG resource extraction incomplete; execution indicators "
+                            + "may be hidden");
+        }
 
         for (String ref : new LinkedHashSet<>(allDataRefs)) {
             metadata.add("ppkg:data_asset_ref", ref);
@@ -295,6 +303,21 @@ public class PpkgParser implements Parser {
     }
 
     private static byte[] decompressResource(byte[] raw, ResHdr hdr, int chunkSize) {
+        return decompressResource(raw, hdr, chunkSize, null);
+    }
+
+    private static byte[] decompressResource(byte[] raw, ResHdr hdr, int chunkSize,
+                                             List<String> warnings) {
+        // Apply the ceiling before both the uncompressed copy and compressed
+        // allocation paths. Checking the descriptor first also avoids requiring
+        // a container-sized backing array merely to reject a hostile declaration.
+        if (!isDecompressedResourceSizeAllowed(hdr.size)
+                || !isDecompressedResourceSizeAllowed(hdr.uncompressed)) {
+            if (warnings != null && !warnings.contains(RESOURCE_LIMIT_WARNING)) {
+                warnings.add(RESOURCE_LIMIT_WARNING);
+            }
+            return null;
+        }
         if (!isRangeWithin(raw, hdr.offset, hdr.size)) {
             return null;
         }
@@ -303,11 +326,6 @@ public class PpkgParser implements Parser {
         if (!compressed) {
             return Arrays.copyOfRange(raw, (int) hdr.offset,
                     (int) (hdr.offset + hdr.size));
-        }
-        // A resource can declare a huge expansion while occupying only a few
-        // hundred bytes. Bound the allocation independently of the container.
-        if (!isDecompressedResourceSizeAllowed(hdr.uncompressed)) {
-            return null;
         }
         // XPRESS chunk decompress
         int uncompLen = (int) hdr.uncompressed;
@@ -668,7 +686,7 @@ public class PpkgParser implements Parser {
                 ResHdr rh = lut.get(sha1Hex);
                 if (rh != null && (nameLower.endsWith(".xml")
                         || nameLower.endsWith(".provxml"))) {
-                    byte[] xmlBytes = decompressResource(raw, rh, chunkSize);
+                    byte[] xmlBytes = decompressResource(raw, rh, chunkSize, warnings);
                     if (xmlBytes != null) {
                         parseXmlContent(xmlBytes, name, commands, warnings,
                                 dataRefs, pkgMeta, sha1Hex, xhtml, context, rootMeta);
@@ -748,7 +766,7 @@ public class PpkgParser implements Parser {
                 dataRefs.add(name);
             }
         }
-        byte[] data = decompressResource(raw, rh, chunkSize);
+        byte[] data = decompressResource(raw, rh, chunkSize, warnings);
         if (data == null) {
             return;
         }
@@ -997,10 +1015,31 @@ public class PpkgParser implements Parser {
         }
 
         private void addCommand(String command) {
-            if (command != null && !command.isBlank()) {
-                commands.add(command.trim());
-                extractDataRefs(command, dataRefs);
+            if (command == null) {
+                return;
             }
+            int start = 0;
+            while (start < command.length()
+                    && Character.isWhitespace(command.charAt(start))) {
+                start++;
+            }
+            int end = command.length();
+            while (end > start && Character.isWhitespace(command.charAt(end - 1))) {
+                end--;
+            }
+            if (start == end) {
+                return;
+            }
+            int retainedEnd = Math.min(end, start + MAX_CAPTURE_CHARS);
+            if (retainedEnd < end) {
+                captureValueLimitExceeded = true;
+                if (!warnings.contains(CAPTURE_VALUE_WARNING)) {
+                    warnings.add(CAPTURE_VALUE_WARNING);
+                }
+            }
+            String retained = command.substring(start, retainedEnd);
+            commands.add(retained);
+            extractDataRefs(retained, dataRefs);
         }
 
         private static String attribute(Attributes attributes, String wanted) {

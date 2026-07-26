@@ -99,7 +99,7 @@ public class MscParser implements Parser {
 
     // Shell execution keywords that indicate a dangerous command
     private static final String[] EXEC_KEYWORDS = {
-            "powershell", "cmd.exe", "cmd /c", "wscript", "cscript", "mshta",
+            "powershell", "pwsh", "cmd.exe", "cmd /c", "wscript", "cscript", "mshta",
             "certutil", "bitsadmin", "regsvr32", "rundll32", "msiexec", "wmic",
             "mshta.exe", "wscript.exe", "cscript.exe", "conhost"
     };
@@ -206,6 +206,11 @@ public class MscParser implements Parser {
                     + MscXmlHandler.MAX_CAPTURE_CHARS
                     + " characters; the structured value was truncated");
         }
+        if (xmlHandler.canonicalTextLimitExceeded) {
+            warnings.add("MSC canonical XML text exceeded "
+                    + MscXmlHandler.MAX_CANONICAL_TEXT_CHARS
+                    + " characters; canonical fallback inspection was truncated");
+        }
         grimResource = xmlHandler.grimResourceDetected;
 
         // Extract CLSIDs from both the raw XML and canonical parsed content.
@@ -298,7 +303,8 @@ public class MscParser implements Parser {
             }
         }
         if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded
-                || xmlHandler.captureValueLimitExceeded)
+                || xmlHandler.captureValueLimitExceeded
+                || xmlHandler.canonicalTextLimitExceeded)
                 && metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "MSC XML field extraction incomplete; execution indicators "
@@ -490,6 +496,7 @@ public class MscParser implements Parser {
 
         private static final int MAX_CAPTURE_CHARS = 64 * 1024;
         private static final int MAX_ACTIVE_CAPTURES = 256;
+        private static final int MAX_CANONICAL_TEXT_CHARS = 256 * 1024;
 
         private final Set<String> commands;
         private final Set<String> taskNames;
@@ -502,6 +509,7 @@ public class MscParser implements Parser {
         private boolean grimResourceDetected;
         private boolean captureLimitExceeded;
         private boolean captureValueLimitExceeded;
+        private boolean canonicalTextLimitExceeded;
         private int skippedCaptureDepth;
         private int skippedShellCommandDepth;
 
@@ -544,17 +552,17 @@ public class MscParser implements Parser {
                 String attribute = localName(
                         attributes.getLocalName(i), attributes.getQName(i));
                 String value = attributes.getValue(i);
-                canonicalText.append(value).append(' ');
+                appendCanonical(value);
                 if ("Command".equalsIgnoreCase(attribute)
                         || "CommandLine".equalsIgnoreCase(attribute)) {
-                    addNonBlank(commands, value);
+                    addCommand(value);
                 }
             }
         }
 
         @Override
         public void characters(char[] ch, int start, int length) {
-            canonicalText.append(ch, start, length).append(' ');
+            appendCanonical(ch, start, length);
             if (skippedCaptureDepth == 0 && !captures.isEmpty()) {
                 captures.get(captures.size() - 1).append(ch, start, length);
             }
@@ -633,9 +641,57 @@ public class MscParser implements Parser {
                     || "String".equalsIgnoreCase(element);
         }
 
-        private static void addNonBlank(Set<String> values, String value) {
-            if (value != null && !value.isBlank()) {
-                values.add(value.trim());
+        private void addCommand(String value) {
+            if (value == null) {
+                return;
+            }
+            int start = 0;
+            while (start < value.length()
+                    && Character.isWhitespace(value.charAt(start))) {
+                start++;
+            }
+            int end = value.length();
+            while (end > start && Character.isWhitespace(value.charAt(end - 1))) {
+                end--;
+            }
+            if (start == end) {
+                return;
+            }
+            int retainedEnd = Math.min(end, start + MAX_CAPTURE_CHARS);
+            if (retainedEnd < end) {
+                captureValueLimitExceeded = true;
+            }
+            commands.add(value.substring(start, retainedEnd));
+        }
+
+        private void appendCanonical(String value) {
+            if (value == null) {
+                return;
+            }
+            int remaining = MAX_CANONICAL_TEXT_CHARS - canonicalText.length();
+            if (value.length() + 1 > remaining) {
+                canonicalTextLimitExceeded = true;
+            }
+            if (remaining > 0) {
+                int copy = Math.min(value.length(), remaining);
+                canonicalText.append(value, 0, copy);
+                if (copy < remaining) {
+                    canonicalText.append(' ');
+                }
+            }
+        }
+
+        private void appendCanonical(char[] ch, int start, int length) {
+            int remaining = MAX_CANONICAL_TEXT_CHARS - canonicalText.length();
+            if (length + 1 > remaining) {
+                canonicalTextLimitExceeded = true;
+            }
+            if (remaining > 0) {
+                int copy = Math.min(length, remaining);
+                canonicalText.append(ch, start, copy);
+                if (copy < remaining) {
+                    canonicalText.append(' ');
+                }
             }
         }
 

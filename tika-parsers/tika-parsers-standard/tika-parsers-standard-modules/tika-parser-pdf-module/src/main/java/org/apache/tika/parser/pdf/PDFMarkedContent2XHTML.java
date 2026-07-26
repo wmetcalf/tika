@@ -18,8 +18,10 @@ package org.apache.tika.parser.pdf;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -267,9 +269,12 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
         //STEP 5: handle all the potentially unprocessed bits
         try {
-            if (state.hrefAnchorBuilder.length() > 0) {
+            StringBuilder unwrittenLinkText = new StringBuilder();
+            state.linkStates.descendingIterator().forEachRemaining(
+                    linkState -> unwrittenLinkText.append(linkState.anchorBuilder));
+            if (unwrittenLinkText.length() > 0) {
                 xhtml.startElement("p");
-                writeString(state.hrefAnchorBuilder.toString());
+                writeString(unwrittenLinkText.toString());
                 xhtml.endElement("p");
             }
             for (MCID mcid : paragraphs.keySet()) {
@@ -349,11 +354,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             boolean startedLink = false;
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
-                state.inLink = true;
-                state.linkHasAllowedContent = false;
+                state.linkStates.push(new LinkState());
                 startedLink = true;
             }
-            if (outputAllowed && !state.inLink) {
+            if (outputAllowed && state.linkStates.isEmpty()) {
                 //TODO: currently suppressing span and lbody...
                 // is this what we want to do?  What else should we suppress?
                 if ("span".equals(tag.tag)) {
@@ -374,7 +378,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             if (startedLink) {
                 writeLink();
             }
-            if (outputAllowed && !state.inLink && !startedLink && !ignoreTag) {
+            if (outputAllowed && state.linkStates.isEmpty() && !startedLink && !ignoreTag) {
                 xhtml.endElement(tag.tag);
             }
         } else if (kids instanceof COSInteger) {
@@ -382,9 +386,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             MCID mcid = new MCID(currentPageRef, mcidInt);
             if (paragraphs.containsKey(mcid)) {
                 if (isOutputAllowed(mcid)) {
-                    if (state.inLink) {
-                        state.linkHasAllowedContent = true;
-                        state.hrefAnchorBuilder.append(paragraphs.get(mcid));
+                    if (!state.linkStates.isEmpty()) {
+                        LinkState linkState = state.linkStates.peek();
+                        linkState.hasAllowedContent = true;
+                        linkState.anchorBuilder.append(paragraphs.get(mcid));
                     } else {
                         try {
                             //if it isn't a uri, output this anyhow
@@ -404,8 +409,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             COSDictionary anchor = dict.getCOSDictionary(COSName.A);
             //check for subtype /Link ?
             //COSName subtype = obj.getCOSName(COSName.SUBTYPE);
-            if (anchor != null) {
-                state.uri = anchor.getString(COSName.URI);
+            if (anchor != null && !state.linkStates.isEmpty()) {
+                state.linkStates.peek().uri = anchor.getString(COSName.URI);
             } else {
                 if (dict.containsKey(COSName.K)) {
                     recurse(dict.getDictionaryObject(COSName.K), currentPageRef, depth + 1,
@@ -432,30 +437,33 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         //This is only for uris, obv.
         //If we want to catch within doc references (GOTO, we need to cache those in state.
         //See testPDF_childAttachments.pdf for examples
-        if (outputPageLimit >= 0 && !state.linkHasAllowedContent) {
-            resetLinkState();
+        LinkState linkState = state.linkStates.pop();
+        if (outputPageLimit >= 0 && !linkState.hasAllowedContent) {
             return;
         }
-        if (state.uri != null && !state.uri.isBlank()) {
-            xhtml.startElement("a", "href", state.uri);
-            xhtml.characters(state.hrefAnchorBuilder.toString());
+
+        if (!state.linkStates.isEmpty()) {
+            LinkState parent = state.linkStates.peek();
+            parent.hasAllowedContent |= linkState.hasAllowedContent;
+            parent.anchorBuilder.append(linkState.anchorBuilder);
+            if (parent.uri == null) {
+                parent.uri = linkState.uri;
+            }
+            return;
+        }
+
+        if (linkState.uri != null && !linkState.uri.isBlank()) {
+            xhtml.startElement("a", "href", linkState.uri);
+            xhtml.characters(linkState.anchorBuilder.toString());
             xhtml.endElement("a");
         } else {
             try {
                 //if it isn't a uri, output this anyhow
-                writeString(state.hrefAnchorBuilder.toString());
+                writeString(linkState.anchorBuilder.toString());
             } catch (IOException e) {
                 handleCatchableIOE(e);
             }
         }
-        resetLinkState();
-    }
-
-    private void resetLinkState() {
-        state.hrefAnchorBuilder.setLength(0);
-        state.inLink = false;
-        state.linkHasAllowedContent = false;
-        state.uri = null;
     }
 
     private HtmlTag getTag(String name, Map<String, HtmlTag> roleMap) {
@@ -543,12 +551,15 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
     private static class State {
         Set<MCID> processedMCIDs = new HashSet<>();
-        boolean inLink = false;
-        boolean linkHasAllowedContent = false;
         int tableDepth = 0;
-        private StringBuilder hrefAnchorBuilder = new StringBuilder();
-        private String uri = null;
+        private final Deque<LinkState> linkStates = new ArrayDeque<>();
         private int tdDepth = 0;
+    }
+
+    private static class LinkState {
+        private final StringBuilder anchorBuilder = new StringBuilder();
+        private boolean hasAllowedContent = false;
+        private String uri = null;
     }
 
     private static class HtmlTag {

@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -156,6 +157,30 @@ public class MscParserSecurityTest {
                 "truncating a security field must be signaled");
         assertNotNull(result.metadata.get("ExploitClass"),
                 "a command suffix beyond the capture bound must not fail open");
+    }
+
+    @Test
+    public void testOversizedCommandAttributeFailsClosed() throws Exception {
+        ParseResult result = parse("<MMC_ConsoleFile CommandLine=\""
+                + "A".repeat(80_000)
+                + "\"/>");
+
+        assertTrue(result.metadata.get("msc:command").length() <= 64 * 1024,
+                "command attributes must use the same bound as command elements");
+        assertNotNull(result.metadata.get("msc:warning"),
+                "truncating a command attribute must be signaled");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "a truncated command attribute must fail closed");
+    }
+
+    @Test
+    public void testPwshCommandIsClassified() throws Exception {
+        ParseResult result = parse(
+                "<MMC_ConsoleFile CommandLine=\"pwsh.exe -NoProfile -c whoami\"/>");
+
+        assertEquals("pwsh.exe -NoProfile -c whoami",
+                result.metadata.get("msc:command"));
+        assertNotNull(result.metadata.get("ExploitClass"));
     }
 
     @Test

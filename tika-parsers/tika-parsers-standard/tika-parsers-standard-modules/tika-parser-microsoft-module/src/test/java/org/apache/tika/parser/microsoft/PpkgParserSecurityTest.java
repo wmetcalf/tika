@@ -156,6 +156,29 @@ public class PpkgParserSecurityTest {
         assertTrue(PpkgParser.isDecompressedResourceSizeAllowed(64 * 1024 * 1024L));
     }
 
+    @Test
+    public void oversizedCompressedMetadataResourceFailsClosed() throws Exception {
+        Metadata metadata = parseMetadata(
+                buildOversizedMetadataResource(10, 0x06, 64L * 1024 * 1024 + 1));
+
+        assertNotNull(metadata.get("ppkg:warning"),
+                "skipping oversized compressed metadata must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "skipping command-bearing metadata must fail closed");
+    }
+
+    @Test
+    public void oversizedUncompressedMetadataResourceFailsClosed() throws Exception {
+        long oversized = 64L * 1024 * 1024 + 1;
+        Metadata metadata = parseMetadata(
+                buildOversizedMetadataResource(oversized, 0x04, oversized));
+
+        assertNotNull(metadata.get("ppkg:warning"),
+                "the resource cap must apply before the uncompressed copy path");
+        assertNotNull(metadata.get("ExploitClass"),
+                "skipping command-bearing metadata must fail closed");
+    }
+
     // ── Finding: line 585 — walkDirectory exponential fan-out (no visited-set) ─
     @Test
     public void selfReferentialDirectoryWalkTerminates() {
@@ -278,6 +301,34 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void oversizedCommandAttributeFailsClosed() throws Exception {
+        Metadata metadata = parseMetadata(buildWim(
+                "<wap-provisioningdoc><parm name=\"CommandLine\" value=\""
+                        + "A".repeat(80_000)
+                        + "\"/></wap-provisioningdoc>"));
+
+        assertTrue(metadata.get("ppkg:command").length() <= 64 * 1024,
+                "command attributes must use the same bound as command elements");
+        assertNotNull(metadata.get("ppkg:warning"),
+                "truncating a command attribute must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "a truncated command attribute must fail closed");
+    }
+
+    @Test
+    public void pwshCommandIsClassified() throws Exception {
+        Metadata metadata = parseMetadata(buildWim("""
+                <wap-provisioningdoc>
+                  <parm name="CommandLine" value="pwsh.exe -NoProfile -c whoami"/>
+                </wap-provisioningdoc>
+                """));
+
+        assertEquals("pwsh.exe -NoProfile -c whoami",
+                metadata.get("ppkg:command"));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void extensionlessCmdWithLeadingSwitchIsClassified() throws Exception {
         Metadata metadata = parseMetadata(buildWim("""
                 <wap-provisioningdoc>
@@ -355,6 +406,16 @@ public class PpkgParserSecurityTest {
         buffer.putShort(dentry + 100, (short) nameBytes.length);
         System.arraycopy(nameBytes, 0, wim, dentry + 102, nameBytes.length);
         System.arraycopy(xmlBytes, 0, wim, xmlOffset, xmlBytes.length);
+        return wim;
+    }
+
+    private static byte[] buildOversizedMetadataResource(long size, int flags,
+                                                         long uncompressed) {
+        byte[] wim = header(300, 32768);
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+        putResourceHeader(wim, buffer, 48, 50, 0, 208, 50);
+        putLookupEntry(wim, buffer, 208, size, flags, 258, uncompressed,
+                repeated((byte) 0x55));
         return wim;
     }
 
