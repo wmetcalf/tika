@@ -27,4 +27,9 @@ public interface Barcode {
     Property BARCODE_ERROR_CORRECTION_LEVEL =
             Property.internalTextBag("barcode:error-correction-level");
     Property BARCODE_IS_MIRRORED = Property.internalTextBag("barcode:is-mirrored");
+    /**
+     * One JSON object per decoded barcode. Each value preserves the complete result as
+     * one limiter-atomic record.
+     */
+    Property BARCODE_RECORD = Property.internalTextBag("barcode:record");
 }

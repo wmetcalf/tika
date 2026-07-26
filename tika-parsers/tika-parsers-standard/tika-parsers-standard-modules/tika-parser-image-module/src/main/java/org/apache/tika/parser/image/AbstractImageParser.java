@@ -23,7 +23,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import javax.imageio.ImageIO;
 
 import org.slf4j.Logger;
@@ -35,7 +34,6 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
-import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -96,14 +94,7 @@ public abstract class AbstractImageParser implements Parser {
         }
         try {
             for (ZXingCPPScanner.Result result : scanBarcodes(imagePath, context)) {
-                metadata.add(Barcode.BARCODE_VALUE, safe(result.getText()));
-                metadata.add(Barcode.BARCODE_FORMAT, safe(normalizeBarcodeFormat(result.getFormat())));
-                metadata.add(Barcode.BARCODE_RAW_BYTES, safe(result.getRawBytes()));
-                metadata.add(Barcode.BARCODE_POSITION, safe(result.getPosition()));
-                metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
-                        safe(result.getErrorCorrectionLevel()));
-                metadata.add(Barcode.BARCODE_IS_MIRRORED,
-                        Boolean.toString(result.isMirrored()));
+                BarcodeMetadataUtil.addResult(metadata, result, "");
             }
         } catch (ZXingCPPScanner.ScanException e) {
             LOG.warn("Unable to scan barcodes from image {}", imagePath, e);
@@ -122,19 +113,6 @@ public abstract class AbstractImageParser implements Parser {
         // hash library — byte-exact-compatible with Python imagehash 4.3.2. Sets
         // phash, dhash, ahash, and colorhash in one shot. Mirrors XMLParser.
         ImageHashUtils.setHashes(image, metadata);
-    }
-
-    private String normalizeBarcodeFormat(String format) {
-        if (format == null) {
-            return null;
-        }
-        String normalized = format.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")
-                .replaceAll("^_+|_+$", "");
-        return normalized.length() == 0 ? null : normalized;
-    }
-
-    private String safe(String value) {
-        return value == null ? "" : value;
     }
 
     void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {

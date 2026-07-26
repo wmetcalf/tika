@@ -16,6 +16,7 @@
  */
 package org.apache.tika.parser.image;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
@@ -38,6 +39,7 @@ import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -374,6 +376,36 @@ public class ImageParserTest extends TikaTest {
         assertEquals("", metadata.getValues(Barcode.BARCODE_ERROR_CORRECTION_LEVEL)[1]);
         assertEquals("false", metadata.getValues(Barcode.BARCODE_IS_MIRRORED)[0]);
         assertEquals("true", metadata.getValues(Barcode.BARCODE_IS_MIRRORED)[1]);
+    }
+
+    @Test
+    public void testBarcodeMetadataCanonicalRecordsSurviveDefaultLimiter() throws Exception {
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        Metadata metadata = new Metadata(factory.newInstance());
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new StubBarcodeParser(Arrays.asList(
+                new ZXingCPPScanner.Result("/tmp/code1.png", "first", "QR Code",
+                        null, null, null, false),
+                new ZXingCPPScanner.Result("/tmp/code2.png", "second", "Code 128",
+                        "7365636f6e64", "20x20 30x20 30x30 20x30", "H", true)));
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertArrayEquals(new String[]{
+                "{\"value\":\"first\",\"format\":\"qr_code\",\"rawBytes\":\"\","
+                        + "\"position\":\"\",\"errorCorrectionLevel\":\"\","
+                        + "\"mirrored\":\"false\"}",
+                "{\"value\":\"second\",\"format\":\"code_128\","
+                        + "\"rawBytes\":\"7365636f6e64\","
+                        + "\"position\":\"20x20 30x20 30x30 20x30\","
+                        + "\"errorCorrectionLevel\":\"H\",\"mirrored\":\"true\"}"
+        }, metadata.getValues(Barcode.BARCODE_RECORD));
     }
 
     @Test

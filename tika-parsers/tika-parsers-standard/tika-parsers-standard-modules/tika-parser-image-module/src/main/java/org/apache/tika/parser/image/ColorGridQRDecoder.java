@@ -126,10 +126,8 @@ public final class ColorGridQRDecoder {
     }
 
     /**
-     * Write each decoded result to the supplied {@link Metadata} as a
-     * {@link org.apache.tika.metadata.Barcode#BARCODE_VALUE} /
-     * {@link org.apache.tika.metadata.Barcode#BARCODE_FORMAT} pair so the
-     * decode lands in the same channel as image-based QR scans.
+     * Write each decoded result to the supplied metadata as a canonical barcode
+     * record and compatibility fields.
      */
     public static void emitBarcodes(List<ZXingCPPScanner.Result> results,
                                     org.apache.tika.metadata.Metadata metadata) {
@@ -141,27 +139,7 @@ public final class ColorGridQRDecoder {
             if (text == null || text.isEmpty()) {
                 continue;
             }
-            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_VALUE, text);
-            String fmt = r.getFormat();
-            String normalized = fmt == null ? "qrcode" :
-                    fmt.trim().toLowerCase(java.util.Locale.ROOT)
-                       .replaceAll("[^a-z0-9]+", "_")
-                       .replaceAll("^_+|_+$", "");
-            if (normalized.isEmpty()) {
-                normalized = "qrcode";
-            }
-            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_FORMAT, normalized);
-            String pos = r.getPosition();
-            if (pos != null && !pos.isEmpty()) {
-                metadata.add(org.apache.tika.metadata.Barcode.BARCODE_POSITION, pos);
-            }
-            String ecl = r.getErrorCorrectionLevel();
-            if (ecl != null && !ecl.isEmpty()) {
-                metadata.add(org.apache.tika.metadata.Barcode.BARCODE_ERROR_CORRECTION_LEVEL,
-                        ecl);
-            }
-            metadata.add(org.apache.tika.metadata.Barcode.BARCODE_IS_MIRRORED,
-                    Boolean.toString(r.isMirrored()));
+            BarcodeMetadataUtil.addResult(metadata, r, "qrcode");
         }
     }
 
