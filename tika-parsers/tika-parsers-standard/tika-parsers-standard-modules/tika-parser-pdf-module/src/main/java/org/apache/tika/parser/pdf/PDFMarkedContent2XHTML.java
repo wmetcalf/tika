@@ -354,7 +354,9 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             boolean startedLink = false;
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
-                state.linkStates.push(new LinkState());
+                LinkState linkState = new LinkState();
+                linkState.hasAllowedContent = outputAllowed;
+                state.linkStates.push(linkState);
                 startedLink = true;
             }
             if (outputAllowed && state.linkStates.isEmpty()) {

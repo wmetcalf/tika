@@ -172,6 +172,22 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         }
     }
 
+    @Test
+    public void testAllowedPageLinkWithoutTextRetainsUri() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addAllowedEmptyLinkStructure(document);
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertContains("href=\"https://empty-allowed.invalid/\"",
+                    handler.toString());
+        }
+    }
+
     private static PDDocument buildPageOverrideDocument() throws IOException {
         PDDocument document = new PDDocument();
         List<PDPage> pages = new ArrayList<>();
@@ -317,6 +333,28 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(excludedLink));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addAllowedEmptyLinkStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary action = new COSDictionary();
+        action.setItem(COSName.S, COSName.URI);
+        action.setString(COSName.URI, "https://empty-allowed.invalid/");
+        COSDictionary linkTarget = new COSDictionary();
+        linkTarget.setItem(COSName.A, action);
+
+        COSDictionary allowedLink = new COSDictionary();
+        allowedLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        allowedLink.setItem(COSName.PG, pageRefs.get(0));
+        allowedLink.setItem(COSName.K, linkTarget);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(allowedLink));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

@@ -1743,14 +1743,14 @@ public class WinShortcutParser implements Parser {
             int matched = 0;
             for (int offset = alignment; offset + stride <= payload.length;
                     offset += stride) {
-                int value;
-                if (encoding == 0) {
-                    value = lowerAscii(payload[offset] & 0xff);
-                } else {
-                    int characterOffset = encoding == 1 ? offset : offset + 1;
-                    int zeroOffset = encoding == 1 ? offset + 1 : offset;
-                    value = payload[zeroOffset] == 0
-                            ? lowerAscii(payload[characterOffset] & 0xff) : -1;
+                int value = readEncodedAscii(payload, offset, encoding);
+                if (value == '\\') {
+                    int escaped = decodeAsciiEscape(payload, offset, encoding);
+                    if (escaped >= 0) {
+                        value = escaped & 0xff;
+                        int consumedCodeUnits = escaped >>> 8;
+                        offset += (consumedCodeUnits - 1) * stride;
+                    }
                 }
                 while (matched > 0 && value != term.charAt(matched)) {
                     matched = failure[matched - 1];
@@ -1764,6 +1764,58 @@ public class WinShortcutParser implements Parser {
             }
         }
         return false;
+    }
+
+    private static int readEncodedAscii(byte[] payload, int offset, int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        if (offset < 0 || offset + stride > payload.length) {
+            return -1;
+        }
+        if (encoding == 0) {
+            return lowerAscii(payload[offset] & 0xff);
+        }
+        int characterOffset = encoding == 1 ? offset : offset + 1;
+        int zeroOffset = encoding == 1 ? offset + 1 : offset;
+        return payload[zeroOffset] == 0
+                ? lowerAscii(payload[characterOffset] & 0xff) : -1;
+    }
+
+    private static int decodeAsciiEscape(byte[] payload, int offset, int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        int marker = readEncodedAscii(payload, offset + stride, encoding);
+        int digits;
+        if (marker == 'u') {
+            digits = 4;
+        } else if (marker == 'x') {
+            digits = 2;
+        } else {
+            return -1;
+        }
+
+        int decoded = 0;
+        for (int i = 0; i < digits; i++) {
+            int digit = hexValue(readEncodedAscii(
+                    payload, offset + (i + 2) * stride, encoding));
+            if (digit < 0) {
+                return -1;
+            }
+            decoded = (decoded << 4) | digit;
+        }
+        if (decoded > 0x7f) {
+            return -1;
+        }
+        int consumedCodeUnits = digits + 2;
+        return (consumedCodeUnits << 8) | lowerAscii(decoded);
+    }
+
+    private static int hexValue(int value) {
+        if (value >= '0' && value <= '9') {
+            return value - '0';
+        }
+        if (value >= 'a' && value <= 'f') {
+            return value - 'a' + 10;
+        }
+        return -1;
     }
 
     private static int[] buildFailureTable(String term) {

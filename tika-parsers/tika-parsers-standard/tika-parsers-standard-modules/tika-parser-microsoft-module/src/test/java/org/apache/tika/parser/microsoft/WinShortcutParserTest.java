@@ -130,6 +130,24 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testJavaScriptEscapedExploitIndicatorIsClassified() throws Exception {
+        for (String script : List.of(
+                "new \\u0041ctiveXObject('WScript.Shell')",
+                "new window['\\x41ctiveXObject']('WScript.Shell')")) {
+            for (Charset charset : List.of(
+                    StandardCharsets.US_ASCII,
+                    StandardCharsets.UTF_16LE,
+                    StandardCharsets.UTF_16BE)) {
+                ParseResult result = parse(buildIndicatorLnk(
+                        charset, new byte[0], "", script));
+
+                assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                        "JavaScript escapes must not hide indicators in " + charset);
+            }
+        }
+    }
+
+    @Test
     public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
         byte[] oversized = new byte[16 * 1024 * 1024 + 1];
         System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
@@ -232,9 +250,16 @@ public class WinShortcutParserTest {
     private static byte[] buildUtf16IndicatorLnk(Charset charset, byte[] bom,
                                                   String prefix)
             throws IOException {
+        return buildIndicatorLnk(charset, bom, prefix,
+                "new ActiveXObject('WScript.Shell')");
+    }
+
+    private static byte[] buildIndicatorLnk(Charset charset, byte[] bom,
+                                            String prefix, String script)
+            throws IOException {
         byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
         byte[] payload = ("<!doctype html>" + prefix + "<script>"
-                + "new ActiveXObject('WScript.Shell')"
+                + script
                 + "</script>").getBytes(charset);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
