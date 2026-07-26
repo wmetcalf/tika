@@ -1603,12 +1603,15 @@ public class WinShortcutParser implements Parser {
     private static final Map<String, Integer> ASCII_HTML_ENTITIES = Map.of(
             "amp;", (int) '&',
             "apos;", (int) '\'',
+            "bsol;", (int) '\\',
             "colon;", (int) ':',
             "gt;", (int) '>',
             "lpar;", (int) '(',
             "lt;", (int) '<',
+            "NewLine;", (int) '\n',
             "period;", (int) '.',
             "quot;", (int) '"');
+    private static final int SKIP_ASCII = -2;
     static {
         EXPLOIT_SIGNATURES = new ArrayList<>();
 
@@ -1763,6 +1766,10 @@ public class WinShortcutParser implements Parser {
                     }
                 }
                 offset += (consumedCodeUnits - 1) * stride;
+                if (value == SKIP_ASCII) {
+                    continue;
+                }
+                value = lowerAscii(value);
                 while (matched > 0 && value != term.charAt(matched)) {
                     matched = failure[matched - 1];
                 }
@@ -1797,7 +1804,8 @@ public class WinShortcutParser implements Parser {
         cursor += stride;
 
         int radix = 10;
-        if (readEncodedAscii(payload, cursor, encoding) == 'x') {
+        int radixMarker = readEncodedAscii(payload, cursor, encoding);
+        if (radixMarker == 'x' || radixMarker == 'X') {
             radix = 16;
             cursor += stride;
         }
@@ -1823,7 +1831,7 @@ public class WinShortcutParser implements Parser {
             cursor += stride;
         }
         int consumedCodeUnits = (cursor - offset) / stride;
-        return packAscii(decoded <= 0x7f ? lowerAscii(decoded) : -1,
+        return packAscii(decoded <= 0x7f ? decoded : -1,
                 consumedCodeUnits);
     }
 
@@ -1845,12 +1853,13 @@ public class WinShortcutParser implements Parser {
             return -1;
         }
         if (encoding == 0) {
-            return lowerAscii(payload[offset] & 0xff);
+            int value = payload[offset] & 0xff;
+            return value <= 0x7f ? value : -1;
         }
         int characterOffset = encoding == 1 ? offset : offset + 1;
         int zeroOffset = encoding == 1 ? offset + 1 : offset;
-        return payload[zeroOffset] == 0
-                ? lowerAscii(payload[characterOffset] & 0xff) : -1;
+        int value = payload[characterOffset] & 0xff;
+        return payload[zeroOffset] == 0 && value <= 0x7f ? value : -1;
     }
 
     private static long decodeAsciiEscape(byte[] payload, int offset, int encoding) {
@@ -1861,6 +1870,9 @@ public class WinShortcutParser implements Parser {
         long markerValue = readHtmlNormalizedAscii(payload, cursor, encoding);
         int marker = (int) markerValue;
         int markerUnits = (int) (markerValue >>> 32);
+        cursor += markerUnits * stride;
+        consumedCodeUnits += markerUnits;
+
         int digits;
         int radix;
         if (marker == 'u') {
@@ -1872,12 +1884,22 @@ public class WinShortcutParser implements Parser {
         } else if (marker >= '0' && marker <= '7') {
             digits = 3;
             radix = 8;
+        } else if (marker == '\r' || marker == '\n') {
+            if (marker == '\r') {
+                long nextValue = readHtmlNormalizedAscii(payload, cursor, encoding);
+                if ((int) nextValue == '\n') {
+                    int nextUnits = (int) (nextValue >>> 32);
+                    consumedCodeUnits += nextUnits;
+                }
+            }
+            return packAscii(SKIP_ASCII, consumedCodeUnits);
+        } else if (marker == '8' || marker == '9'
+                || isJScriptNonEscapeCharacter(marker)) {
+            return packAscii(lowerAscii(marker), consumedCodeUnits);
         } else {
             return -1L;
         }
 
-        cursor += markerUnits * stride;
-        consumedCodeUnits += markerUnits;
         int decoded = 0;
         for (int i = 0; i < digits; i++) {
             long digitValue;
@@ -1918,6 +1940,9 @@ public class WinShortcutParser implements Parser {
         if (value >= 'a' && value <= 'f') {
             return value - 'a' + 10;
         }
+        if (value >= 'A' && value <= 'F') {
+            return value - 'A' + 10;
+        }
         return -1;
     }
 
@@ -1927,6 +1952,17 @@ public class WinShortcutParser implements Parser {
 
     private static int octalValue(int value) {
         return value >= '0' && value <= '7' ? value - '0' : -1;
+    }
+
+    private static boolean isJScriptNonEscapeCharacter(int value) {
+        if (value < 0 || value > 0x7f || value == '\r' || value == '\n'
+                || (value >= '0' && value <= '9')) {
+            return false;
+        }
+        return value != '\'' && value != '"' && value != '\\'
+                && value != 'b' && value != 'f' && value != 'n'
+                && value != 'r' && value != 't' && value != 'x'
+                && value != 'u';
     }
 
     private static int[] buildFailureTable(String term) {
