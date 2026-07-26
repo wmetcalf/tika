@@ -42,6 +42,12 @@ final class BarcodeMetadataUtil {
         String errorCorrectionLevel = safe(result.getErrorCorrectionLevel());
         String mirrored = Boolean.toString(result.isMirrored());
 
+        metadata.add(Barcode.BARCODE_VALUE, value);
+        metadata.add(Barcode.BARCODE_FORMAT, format);
+        metadata.add(Barcode.BARCODE_RAW_BYTES, rawBytes);
+        metadata.add(Barcode.BARCODE_POSITION, position);
+        metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL, errorCorrectionLevel);
+        metadata.add(Barcode.BARCODE_IS_MIRRORED, mirrored);
         metadata.add(Barcode.BARCODE_RECORD, MetadataRecord.encode(
                 "value", value,
                 "format", format,
@@ -49,12 +55,6 @@ final class BarcodeMetadataUtil {
                 "position", position,
                 "errorCorrectionLevel", errorCorrectionLevel,
                 "mirrored", mirrored));
-        metadata.add(Barcode.BARCODE_VALUE, value);
-        metadata.add(Barcode.BARCODE_FORMAT, format);
-        metadata.add(Barcode.BARCODE_RAW_BYTES, rawBytes);
-        metadata.add(Barcode.BARCODE_POSITION, position);
-        metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL, errorCorrectionLevel);
-        metadata.add(Barcode.BARCODE_IS_MIRRORED, mirrored);
     }
 
     private static String normalizeFormat(String format, String defaultFormat) {

@@ -206,6 +206,21 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void nestedCommandCapturesAreBounded() throws Exception {
+        String xml = "<wap-provisioningdoc>"
+                + "<CommandLine>".repeat(64)
+                + "A".repeat(80_000)
+                + "</CommandLine>".repeat(64)
+                + "</wap-provisioningdoc>";
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        for (String command : metadata.getValues("ppkg:command")) {
+            assertFalse(command.length() > 65_536,
+                    "a nested capture retained an unbounded command");
+        }
+    }
+
+    @Test
     public void externalXmlEntitiesAreNotResolved() throws Exception {
         String secret = "PPKG_XXE_SECRET_SHOULD_NOT_LEAK";
         Path secretFile = temporaryDirectory.resolve("secret.txt");

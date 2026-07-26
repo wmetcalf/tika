@@ -42,6 +42,16 @@ public final class OfficeLinkMetadataUtil {
         if (metadata == null || isBlank(type) || isBlank(url)) {
             return;
         }
+        metadata.add(Office.OFFICE_LINK_TYPE, type);
+        metadata.add(Office.OFFICE_LINK_URL, url);
+        metadata.add(Office.OFFICE_LINK_TEXT, safe(text));
+        metadata.add(Office.OFFICE_LINK_OCR_TEXT, safe(ocrText));
+        metadata.add(Office.OFFICE_LINK_SOURCE, safe(source));
+        metadata.add(Office.OFFICE_LINK_CONTEXT, safe(context));
+        metadata.add(Office.OFFICE_LINK_RELATIONSHIP_TYPE, safe(relationshipType));
+        metadata.add(Office.OFFICE_LINK_ID, safe(id));
+        metadata.add(Office.OFFICE_LINK_TRIGGER, safe(trigger));
+        metadata.add(Office.OFFICE_LINK_ACTION_TYPE, safe(actionType));
         metadata.add(Office.OFFICE_LINK_RECORD, MetadataRecord.encode(
                 "type", type,
                 "url", url,
@@ -53,16 +63,6 @@ public final class OfficeLinkMetadataUtil {
                 "id", id,
                 "trigger", trigger,
                 "actionType", actionType));
-        metadata.add(Office.OFFICE_LINK_TYPE, type);
-        metadata.add(Office.OFFICE_LINK_URL, url);
-        metadata.add(Office.OFFICE_LINK_TEXT, safe(text));
-        metadata.add(Office.OFFICE_LINK_OCR_TEXT, safe(ocrText));
-        metadata.add(Office.OFFICE_LINK_SOURCE, safe(source));
-        metadata.add(Office.OFFICE_LINK_CONTEXT, safe(context));
-        metadata.add(Office.OFFICE_LINK_RELATIONSHIP_TYPE, safe(relationshipType));
-        metadata.add(Office.OFFICE_LINK_ID, safe(id));
-        metadata.add(Office.OFFICE_LINK_TRIGGER, safe(trigger));
-        metadata.add(Office.OFFICE_LINK_ACTION_TYPE, safe(actionType));
     }
 
     public static String normalizeType(String rawType) {

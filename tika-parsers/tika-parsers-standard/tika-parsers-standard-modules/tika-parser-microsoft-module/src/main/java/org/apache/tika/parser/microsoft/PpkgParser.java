@@ -808,6 +808,9 @@ public class PpkgParser implements Parser {
 
     private static final class PpkgXmlHandler extends DefaultHandler {
 
+        private static final int MAX_CAPTURE_CHARS = 64 * 1024;
+        private static final int MAX_DATA_REF_TOKEN_CHARS = 8 * 1024;
+
         private static final Map<String, String> PACKAGE_FIELDS = Map.of(
                 "ID", "id",
                 "Name", "name",
@@ -819,7 +822,8 @@ public class PpkgParser implements Parser {
         private final List<String> dataRefs;
         private final Map<String, String> pkgMeta;
         private final List<ElementCapture> captures = new ArrayList<>();
-        private final StringBuilder elementText = new StringBuilder();
+        private final StringBuilder dataRefToken = new StringBuilder();
+        private boolean dataRefTokenTooLong;
 
         private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
                                Map<String, String> pkgMeta) {
@@ -832,7 +836,7 @@ public class PpkgParser implements Parser {
         public void startElement(String uri, String localName, String qName,
                                  Attributes attributes) {
             String element = localName(localName, qName);
-            elementText.append(' ');
+            flushDataRefToken();
             if ("parm".equals(element)
                     && "CommandLine".equals(attribute(attributes, "name"))) {
                 addCommand(attribute(attributes, "value"));
@@ -847,16 +851,16 @@ public class PpkgParser implements Parser {
 
         @Override
         public void characters(char[] ch, int start, int length) {
-            elementText.append(ch, start, length);
-            for (ElementCapture capture : captures) {
-                capture.text.append(ch, start, length);
+            appendDataRefCharacters(ch, start, length);
+            if (!captures.isEmpty()) {
+                captures.get(captures.size() - 1).append(ch, start, length);
             }
         }
 
         @Override
         public void endElement(String uri, String localName, String qName) {
             String element = localName(localName, qName);
-            elementText.append(' ');
+            flushDataRefToken();
             for (int i = captures.size() - 1; i >= 0; i--) {
                 ElementCapture capture = captures.get(i);
                 if (!capture.element.equals(element)) {
@@ -876,9 +880,30 @@ public class PpkgParser implements Parser {
 
         @Override
         public void endDocument() {
-            // Preserve the original whole-document coverage, but scan decoded
-            // character data so entity spelling cannot bypass canonical matching.
-            extractDataRefs(elementText.toString(), dataRefs);
+            flushDataRefToken();
+        }
+
+        private void appendDataRefCharacters(char[] ch, int start, int length) {
+            int end = start + length;
+            for (int i = start; i < end; i++) {
+                char c = ch[i];
+                if (Character.isWhitespace(c) || c == '"' || c == '\''
+                        || c == '<' || c == '>') {
+                    flushDataRefToken();
+                } else if (dataRefToken.length() < MAX_DATA_REF_TOKEN_CHARS) {
+                    dataRefToken.append(c);
+                } else {
+                    dataRefTokenTooLong = true;
+                }
+            }
+        }
+
+        private void flushDataRefToken() {
+            if (dataRefToken.length() > 0 && !dataRefTokenTooLong) {
+                extractDataRefs(dataRefToken.toString(), dataRefs);
+            }
+            dataRefToken.setLength(0);
+            dataRefTokenTooLong = false;
         }
 
         private void addCommand(String command) {
@@ -913,6 +938,13 @@ public class PpkgParser implements Parser {
 
         private ElementCapture(String element) {
             this.element = element;
+        }
+
+        private void append(char[] ch, int start, int length) {
+            int remaining = PpkgXmlHandler.MAX_CAPTURE_CHARS - text.length();
+            if (remaining > 0) {
+                text.append(ch, start, Math.min(length, remaining));
+            }
         }
     }
 

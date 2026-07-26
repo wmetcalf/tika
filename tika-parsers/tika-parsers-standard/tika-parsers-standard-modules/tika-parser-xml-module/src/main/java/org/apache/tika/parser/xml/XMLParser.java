@@ -282,14 +282,17 @@ public class XMLParser implements Parser {
             renderPath = normalizeSvgHrefs(svgPath);
 
             // Full-resolution raster for OCR and phash (1200px max).
-            // If Batik fails here (OOM on complex SVGs), fall through to the
-            // lower-res phash fallback below.
+            // Ordinary render failures fall through to the lower-res phash
+            // fallback. Resource failures are recorded but not retried.
             Throwable rasterFailure = null;
+            boolean unsafeToRetry = false;
             byte[] pngBytes = null;
             try {
                 pngBytes = rasterizeSvg(renderPath, 1200f);
-            } catch (Exception | LinkageError e) {
+            } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
                 rasterFailure = e;
+                unsafeToRetry =
+                        e instanceof StackOverflowError || e instanceof OutOfMemoryError;
             }
             if (pngBytes != null) {
                 // Phash/colorhash from the full-res render
@@ -324,11 +327,11 @@ public class XMLParser implements Parser {
             // Fallback: if phash still unset (1200px rasterization failed), try 512px.
             // This keeps phash in the Tika fork for complex/large SVGs where high-res
             // Batik rendering fails, rather than delegating to the application layer.
-            if (metadata.get(ImageHash.PHASH) == null) {
+            if (metadata.get(ImageHash.PHASH) == null && !unsafeToRetry) {
                 byte[] fallback = null;
                 try {
                     fallback = rasterizeSvg(renderPath, 512f);
-                } catch (Exception | LinkageError e) {
+                } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
                     rasterFailure = e;
                 }
                 if (fallback != null) {
@@ -344,7 +347,7 @@ public class XMLParser implements Parser {
             if (metadata.get(ImageHash.PHASH) == null) {
                 addSvgRasterWarning(metadata, rasterFailure);
             }
-        } catch (Exception | LinkageError e) {
+        } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
             addSvgRasterWarning(metadata, e);
         } finally {
             if (!renderPath.equals(svgPath)) {

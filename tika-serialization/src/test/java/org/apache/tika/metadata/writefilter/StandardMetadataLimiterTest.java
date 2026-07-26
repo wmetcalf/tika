@@ -245,6 +245,33 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testFirstAtomicValueIsDroppedInsteadOfTruncated() {
+        Metadata metadata = filter(100, 40, 1000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+
+        metadata.add(Office.OFFICE_LINK_RECORD,
+                "{\"url\":\"this-record-must-not-be-partially-written\"}");
+
+        assertEquals(0, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertTruncated(metadata);
+    }
+
+    @Test
+    public void testCompositeRecordHonorsExcludedMemberFields() {
+        Metadata office = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Set.of(Office.OFFICE_LINK_URL.getName()), false);
+        office.add(Office.OFFICE_LINK_RECORD,
+                "{\"type\":\"hyperlink\",\"url\":\"https://secret.invalid\"}");
+        assertNull(office.get(Office.OFFICE_LINK_RECORD));
+
+        Metadata barcode = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Set.of(Barcode.BARCODE_VALUE.getName()), false);
+        barcode.add(Barcode.BARCODE_RECORD,
+                "{\"value\":\"secret\",\"format\":\"qrcode\"}");
+        assertNull(barcode.get(Barcode.BARCODE_RECORD));
+    }
+
+    @Test
     public void testAlignedFieldPlaceholdersSurviveDefaultEmptyFiltering() {
         Metadata metadata = filter(100, 1000, 10000, 10,
                 Collections.EMPTY_SET, Collections.EMPTY_SET, false);

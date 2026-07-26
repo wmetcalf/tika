@@ -68,6 +68,8 @@ import org.apache.tika.utils.StringUtils;
  */
 public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializable {
 
+    private static final long serialVersionUID = 8628340516372080931L;
+
     public static final Set<String> ALWAYS_SET_FIELDS = new HashSet<>();
     public static final Set<String> ALWAYS_ADD_FIELDS = new HashSet<>();
 
@@ -100,6 +102,26 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             Barcode.BARCODE_POSITION.getName(),
             Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
             Barcode.BARCODE_IS_MIRRORED.getName());
+
+    private static final Map<String, Set<String>> COMPOSITE_FIELD_MEMBERS = Map.of(
+            Office.OFFICE_LINK_RECORD.getName(), Set.of(
+                    Office.OFFICE_LINK_URL.getName(),
+                    Office.OFFICE_LINK_TYPE.getName(),
+                    Office.OFFICE_LINK_TEXT.getName(),
+                    Office.OFFICE_LINK_OCR_TEXT.getName(),
+                    Office.OFFICE_LINK_SOURCE.getName(),
+                    Office.OFFICE_LINK_CONTEXT.getName(),
+                    Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
+                    Office.OFFICE_LINK_ID.getName(),
+                    Office.OFFICE_LINK_TRIGGER.getName(),
+                    Office.OFFICE_LINK_ACTION_TYPE.getName()),
+            Barcode.BARCODE_RECORD.getName(), Set.of(
+                    Barcode.BARCODE_VALUE.getName(),
+                    Barcode.BARCODE_FORMAT.getName(),
+                    Barcode.BARCODE_RAW_BYTES.getName(),
+                    Barcode.BARCODE_POSITION.getName(),
+                    Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
+                    Barcode.BARCODE_IS_MIRRORED.getName()));
 
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
@@ -190,6 +212,10 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
 
         StringSizePair filterKey = filterKey(field, value, data);
+        if (ATOMIC_ADD_FIELDS.contains(field)) {
+            setAtomic(filterKey, value, data);
+            return;
+        }
         setFilterKey(filterKey, value, data);
     }
 
@@ -356,6 +382,24 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
     }
 
+    private void setAtomic(StringSizePair filterKey, String value,
+                           Map<String, String[]> data) {
+        Integer existingSizeValue = fieldSizes.get(filterKey.string);
+        int existingSize = existingSizeValue == null ? 0 : existingSizeValue;
+        int keySize = existingSizeValue == null ? filterKey.size : 0;
+        int allowedByTotal =
+                maxTotalEstimatedSize - estimatedSize + existingSize - keySize;
+        int valueSize = estimateSize(value);
+        if (valueSize > Math.min(maxFieldSize, allowedByTotal)) {
+            setTruncated(data);
+            return;
+        }
+
+        estimatedSize += keySize + valueSize - existingSize;
+        fieldSizes.put(filterKey.string, valueSize);
+        data.put(filterKey.string, new String[]{value});
+    }
+
     private String[] appendValue(String[] values, final String value) {
         if (value == null) {
             return values;
@@ -489,6 +533,11 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             return true;
         }
         if (excludeFields.contains(name)) {
+            return false;
+        }
+        Set<String> compositeMembers = COMPOSITE_FIELD_MEMBERS.get(name);
+        if (compositeMembers != null
+                && compositeMembers.stream().anyMatch(excludeFields::contains)) {
             return false;
         }
         return includeFields.isEmpty() || includeFields.contains(name);

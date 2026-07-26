@@ -444,6 +444,8 @@ public class MscParser implements Parser {
 
     private static final class MscXmlHandler extends DefaultHandler {
 
+        private static final int MAX_CAPTURE_CHARS = 64 * 1024;
+
         private final Set<String> commands;
         private final Set<String> taskNames;
         private final Set<String> taskDescs;
@@ -490,8 +492,8 @@ public class MscParser implements Parser {
         @Override
         public void characters(char[] ch, int start, int length) {
             canonicalText.append(ch, start, length).append(' ');
-            for (ElementCapture capture : captures) {
-                capture.text.append(ch, start, length);
+            if (!captures.isEmpty()) {
+                captures.get(captures.size() - 1).append(ch, start, length);
             }
         }
 
@@ -577,6 +579,13 @@ public class MscParser implements Parser {
         private ElementCapture(String element, ShellCommand shell) {
             this.element = element;
             this.shell = shell;
+        }
+
+        private void append(char[] ch, int start, int length) {
+            int remaining = MscXmlHandler.MAX_CAPTURE_CHARS - text.length();
+            if (remaining > 0) {
+                text.append(ch, start, Math.min(length, remaining));
+            }
         }
     }
 

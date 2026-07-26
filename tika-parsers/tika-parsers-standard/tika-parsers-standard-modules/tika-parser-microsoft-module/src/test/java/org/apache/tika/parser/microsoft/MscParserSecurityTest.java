@@ -93,6 +93,21 @@ public class MscParserSecurityTest {
         assertNotNull(result.metadata.get("ExploitClass"));
     }
 
+    @Test
+    public void testNestedCommandCapturesAreBounded() throws Exception {
+        String xml = "<MMC_ConsoleFile>"
+                + "<CommandLine>".repeat(64)
+                + "A".repeat(80_000)
+                + "</CommandLine>".repeat(64)
+                + "</MMC_ConsoleFile>";
+
+        ParseResult result = parse(xml);
+        for (String command : result.metadata.getValues("msc:command")) {
+            assertFalse(command.length() > 65_536,
+                    "a nested capture retained an unbounded command");
+        }
+    }
+
     private static ParseResult parse(String xml) throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler body = new BodyContentHandler(-1);

@@ -87,4 +87,20 @@ public class OfficeLinkMetadataUtilTest {
         assertArrayEquals(new String[]{"", "rId2"},
                 metadata.getValues(Office.OFFICE_LINK_ID));
     }
+
+    @Test
+    public void testCompatibilityFieldsHavePriorityUnderTightBudget() {
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setMaxFieldSize(10_000);
+        factory.setMaxTotalBytes(500);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
+                "https://compatibility.invalid/payload", "visible text", "ocr text",
+                "slide1.xml", "shape-1", "hlinkClick", "rId2",
+                "click", "external_url");
+
+        assertEquals("https://compatibility.invalid/payload",
+                metadata.get(Office.OFFICE_LINK_URL));
+    }
 }

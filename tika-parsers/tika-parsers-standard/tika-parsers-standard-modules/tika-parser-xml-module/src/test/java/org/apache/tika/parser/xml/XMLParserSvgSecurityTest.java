@@ -146,6 +146,25 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
     }
 
+    @Test
+    void testDeepUseChainDoesNotEscapeRasterEnrichment() throws Exception {
+        StringBuilder svg = new StringBuilder(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">"
+                        + "<defs>");
+        for (int i = 0; i < 5_000; i++) {
+            svg.append("<g id=\"g").append(i).append("\"><use href=\"#g")
+                    .append(i + 1).append("\"/></g>");
+        }
+        svg.append("<g id=\"g5000\"><rect width=\"32\" height=\"32\"/></g>")
+                .append("</defs><use href=\"#g0\"/></svg>");
+
+        ParseResult result = parse(svg.toString());
+
+        assertNull(result.metadata.get(ImageHash.PHASH));
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+    }
+
     private static ParseResult parse(String svg) throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");
