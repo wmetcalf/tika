@@ -506,7 +506,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     }
 
     private boolean isAlignedPlaceholder(String field, String value) {
-        return value != null && value.isEmpty() && ALIGNED_ADD_FIELDS.contains(field);
+        return value != null && StringUtils.isBlank(value) && ALIGNED_ADD_FIELDS.contains(field);
     }
 
     /**

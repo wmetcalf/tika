@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.nio.ByteBuffer;
@@ -203,6 +204,31 @@ public class PpkgParserSecurityTest {
         assertEquals(1, metadata.getValues("ppkg:data_asset_ref").length);
         assertEquals("\\\\server\\share\\stage.ps1",
                 metadata.get("ppkg:data_asset_ref"));
+    }
+
+    @Test
+    public void dangerousSuffixAfterStreamingTokenLimitIsPreserved() throws Exception {
+        String xml = "<wap-provisioningdoc><CustomData>\\\\server\\share\\"
+                + "A".repeat(8_192)
+                + "\\stage.ps1</CustomData></wap-provisioningdoc>";
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        assertEquals(1, metadata.getValues("ppkg:data_asset_ref").length);
+        assertTrue(metadata.get("ppkg:data_asset_ref").endsWith("\\stage.ps1"));
+        assertNotNull(metadata.get("ppkg:warning"),
+                "oversized security-relevant tokens must be signaled");
+    }
+
+    @Test
+    public void nestedCaptureDepthIsBounded() throws Exception {
+        String xml = "<wap-provisioningdoc>"
+                + "<CommandLine>".repeat(512)
+                + "</CommandLine>".repeat(512)
+                + "</wap-provisioningdoc>";
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        assertNotNull(metadata.get("ppkg:warning"),
+                "excessive capture nesting must terminate bounded field extraction");
     }
 
     @Test

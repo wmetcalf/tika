@@ -194,6 +194,7 @@ public class MscParser implements Parser {
         } catch (Exception e) {
             warnings.add("XML field extraction error: " + e.getMessage());
         }
+        grimResource = xmlHandler.grimResourceDetected;
 
         // Extract CLSIDs from both the raw XML and canonical parsed content.
         Matcher cm = CLSID_PATTERN.matcher(xml);
@@ -445,6 +446,7 @@ public class MscParser implements Parser {
     private static final class MscXmlHandler extends DefaultHandler {
 
         private static final int MAX_CAPTURE_CHARS = 64 * 1024;
+        private static final int MAX_ACTIVE_CAPTURES = 256;
 
         private final Set<String> commands;
         private final Set<String> taskNames;
@@ -454,6 +456,7 @@ public class MscParser implements Parser {
         private final List<ElementCapture> captures = new ArrayList<>();
         private final List<ShellCommand> shellCommands = new ArrayList<>();
         private final StringBuilder canonicalText = new StringBuilder();
+        private boolean grimResourceDetected;
 
         private MscXmlHandler(Set<String> commands, Set<String> taskNames,
                               Set<String> taskDescs, Set<String> taskCommands,
@@ -467,12 +470,20 @@ public class MscParser implements Parser {
 
         @Override
         public void startElement(String uri, String localName, String qName,
-                                 Attributes attributes) {
+                                 Attributes attributes) throws SAXException {
             String element = localName(localName, qName);
             if ("ShellCommandDefinition".equalsIgnoreCase(element)) {
+                if (shellCommands.size() >= MAX_ACTIVE_CAPTURES) {
+                    throw new SAXException("MSC shell command nesting exceeds "
+                            + MAX_ACTIVE_CAPTURES);
+                }
                 shellCommands.add(new ShellCommand());
             }
             if (isCapturedElement(element)) {
+                if (captures.size() >= MAX_ACTIVE_CAPTURES) {
+                    throw new SAXException("MSC field capture nesting exceeds "
+                            + MAX_ACTIVE_CAPTURES);
+                }
                 ShellCommand shell = shellCommands.isEmpty()
                         ? null : shellCommands.get(shellCommands.size() - 1);
                 captures.add(new ElementCapture(element, shell));
@@ -520,6 +531,10 @@ public class MscParser implements Parser {
         }
 
         private void acceptCapture(ElementCapture capture) {
+            if ("String".equalsIgnoreCase(capture.element)
+                    && capture.grimResourceDetected) {
+                grimResourceDetected = true;
+            }
             String value = capture.text.toString().trim();
             if (value.isEmpty()) {
                 return;
@@ -572,9 +587,14 @@ public class MscParser implements Parser {
     }
 
     private static final class ElementCapture {
+        private static final String GRIMRESOURCE_PREFIX = "res://apds.dll/";
+
         private final String element;
         private final ShellCommand shell;
         private final StringBuilder text = new StringBuilder();
+        private int grimResourcePrefixChars;
+        private boolean waitingForGrimResourcePayload;
+        private boolean grimResourceDetected;
 
         private ElementCapture(String element, ShellCommand shell) {
             this.element = element;
@@ -582,9 +602,38 @@ public class MscParser implements Parser {
         }
 
         private void append(char[] ch, int start, int length) {
+            detectGrimResource(ch, start, length);
             int remaining = MscXmlHandler.MAX_CAPTURE_CHARS - text.length();
             if (remaining > 0) {
                 text.append(ch, start, Math.min(length, remaining));
+            }
+        }
+
+        private void detectGrimResource(char[] ch, int start, int length) {
+            if (grimResourceDetected || !"String".equalsIgnoreCase(element)) {
+                return;
+            }
+            int end = start + length;
+            for (int i = start; i < end; i++) {
+                char c = Character.toLowerCase(ch[i]);
+                if (waitingForGrimResourcePayload) {
+                    if (!Character.isWhitespace(c) && c != '"' && c != '\''
+                            && c != '<') {
+                        grimResourceDetected = true;
+                        return;
+                    }
+                    waitingForGrimResourcePayload = false;
+                    grimResourcePrefixChars = 0;
+                }
+                if (c == GRIMRESOURCE_PREFIX.charAt(grimResourcePrefixChars)) {
+                    grimResourcePrefixChars++;
+                    if (grimResourcePrefixChars == GRIMRESOURCE_PREFIX.length()) {
+                        waitingForGrimResourcePayload = true;
+                    }
+                } else {
+                    grimResourcePrefixChars =
+                            c == GRIMRESOURCE_PREFIX.charAt(0) ? 1 : 0;
+                }
             }
         }
     }

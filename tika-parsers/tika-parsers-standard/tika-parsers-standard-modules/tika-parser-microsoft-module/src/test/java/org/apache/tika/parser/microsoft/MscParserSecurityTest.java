@@ -108,6 +108,30 @@ public class MscParserSecurityTest {
         }
     }
 
+    @Test
+    public void testGrimResourceAfterCaptureLimitIsStillClassified() throws Exception {
+        String xml = "<MMC_ConsoleFile><String>"
+                + "A".repeat(65_536)
+                + "res://apds.d&#108;l/redirect.html?target=javascript:alert(1)"
+                + "</String></MMC_ConsoleFile>";
+
+        ParseResult result = parse(xml);
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "bounded String metadata must not bound GrimResource detection");
+    }
+
+    @Test
+    public void testNestedCaptureDepthIsBounded() throws Exception {
+        String xml = "<MMC_ConsoleFile>"
+                + "<String>".repeat(512)
+                + "</String>".repeat(512)
+                + "</MMC_ConsoleFile>";
+
+        ParseResult result = parse(xml);
+        assertNotNull(result.metadata.get("msc:warning"),
+                "excessive capture nesting must terminate bounded field extraction");
+    }
+
     private static ParseResult parse(String xml) throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler body = new BodyContentHandler(-1);

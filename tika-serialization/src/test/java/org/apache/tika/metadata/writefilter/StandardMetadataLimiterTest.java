@@ -277,13 +277,18 @@ public class StandardMetadataLimiterTest extends TikaTest {
                 Collections.EMPTY_SET, Collections.EMPTY_SET, false);
 
         metadata.add(Office.OFFICE_LINK_TEXT, "");
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_TEXT, "   ");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
         metadata.add(Office.OFFICE_LINK_TEXT, "second-link");
         metadata.add(Barcode.BARCODE_POSITION, "");
         metadata.add(Barcode.BARCODE_POSITION, "10x10 20x10 20x20 10x20");
         metadata.add("ordinary:empty", "");
 
-        assertArrayEquals(new String[]{"", "second-link"},
+        assertArrayEquals(new String[]{"", "   ", "second-link"},
                 metadata.getValues(Office.OFFICE_LINK_TEXT));
+        assertArrayEquals(new String[]{"https://first.invalid", "https://second.invalid"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
         assertArrayEquals(new String[]{"", "10x10 20x10 20x20 10x20"},
                 metadata.getValues(Barcode.BARCODE_POSITION));
         assertNull(metadata.get("ordinary:empty"));

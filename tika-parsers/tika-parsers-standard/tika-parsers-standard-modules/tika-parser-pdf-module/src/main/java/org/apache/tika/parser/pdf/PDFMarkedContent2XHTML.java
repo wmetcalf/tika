@@ -343,12 +343,16 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 currentPageRef = new ObjectRef(((COSObject) pageBase).getKey().getNumber(),
                         ((COSObject) pageBase).getKey().getGeneration());
             }
+            if (!isOutputAllowed(currentPageRef)) {
+                return;
+            }
 
             HtmlTag tag = getTag(name, roleMap);
             boolean startedLink = false;
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
                 state.inLink = true;
+                state.linkHasAllowedContent = false;
                 startedLink = true;
             }
             if (!state.inLink) {
@@ -381,6 +385,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             if (paragraphs.containsKey(mcid)) {
                 if (isOutputAllowed(mcid)) {
                     if (state.inLink) {
+                        state.linkHasAllowedContent = true;
                         state.hrefAnchorBuilder.append(paragraphs.get(mcid));
                     } else {
                         try {
@@ -396,6 +401,9 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 //TODO: log can't find mcid
             }
         } else if (kids instanceof COSDictionary) {
+            if (!isOutputAllowed(currentPageRef)) {
+                return;
+            }
             //TODO: check for other types of dictionary?
             COSDictionary dict = (COSDictionary) kids;
             COSDictionary anchor = dict.getCOSDictionary(COSName.A);
@@ -418,13 +426,21 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     }
 
     private boolean isOutputAllowed(MCID mcid) {
-        return outputPageLimit < 0 || outputPageRefs.contains(mcid.objectRef);
+        return isOutputAllowed(mcid.objectRef);
+    }
+
+    private boolean isOutputAllowed(ObjectRef pageRef) {
+        return outputPageLimit < 0 || pageRef == null || outputPageRefs.contains(pageRef);
     }
 
     private void writeLink() throws SAXException, IOException {
         //This is only for uris, obv.
         //If we want to catch within doc references (GOTO, we need to cache those in state.
         //See testPDF_childAttachments.pdf for examples
+        if (outputPageLimit >= 0 && !state.linkHasAllowedContent) {
+            resetLinkState();
+            return;
+        }
         if (state.uri != null && !state.uri.isBlank()) {
             xhtml.startElement("a", "href", state.uri);
             xhtml.characters(state.hrefAnchorBuilder.toString());
@@ -437,10 +453,14 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 handleCatchableIOE(e);
             }
         }
+        resetLinkState();
+    }
+
+    private void resetLinkState() {
         state.hrefAnchorBuilder.setLength(0);
         state.inLink = false;
+        state.linkHasAllowedContent = false;
         state.uri = null;
-
     }
 
     private HtmlTag getTag(String name, Map<String, HtmlTag> roleMap) {
@@ -459,6 +479,9 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         int pageCount = 1;
         Map<MCID, String> paragraphs = new HashMap<>();
         for (PDPage page : pageTree) {
+            if (outputPageLimit >= 0 && pageCount > outputPageLimit) {
+                break;
+            }
             ObjectRef pageRef = pageRefs.get(pageCount - 1);
             PDFMarkedContentExtractor ex = new PDFMarkedContentExtractor();
             try {
@@ -526,6 +549,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     private static class State {
         Set<MCID> processedMCIDs = new HashSet<>();
         boolean inLink = false;
+        boolean linkHasAllowedContent = false;
         int tableDepth = 0;
         private StringBuilder hrefAnchorBuilder = new StringBuilder();
         private String uri = null;

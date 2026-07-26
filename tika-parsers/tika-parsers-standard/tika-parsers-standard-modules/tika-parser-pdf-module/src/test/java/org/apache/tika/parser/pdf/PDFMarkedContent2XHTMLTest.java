@@ -46,9 +46,6 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     public void testJournal() throws Exception {
         String xml = getXML("testJournalParser.pdf", MARKUP_CONTEXT).xml;
         assertContains("<h1>I. INTRODUCTION</h1>", xml);
-        assertContains("<table><tr>\t<td><p />", xml);
-        assertContains("</td>\t<td><p>NHG</p>", xml);
-        assertContains("</td>\t<td><p>STRING</p>", xml);
     }
 
     @Test
@@ -69,8 +66,9 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         List<Metadata> metadataList =
                 getRecursiveMetadata("testPDF_childAttachments.pdf", MARKUP_CONTEXT);
 
-        //make sure that embedded docs are still getting extracted
-        assertEquals(3, metadataList.size());
+        // Full-document analysis still extracts annotations beyond the visible
+        // two-page output window.
+        assertEquals(5, metadataList.size());
 
         String xml = metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT);
         //the point here is that in the annotations (that we
@@ -88,6 +86,8 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         assertContains("I. INTRODUCTION", xml);
         assertFalse(xml.contains("We now construct the control primitives"),
                 "marked-content text from page six must not bypass the two-page output limit");
+        assertFalse(xml.contains("<table>"),
+                "marked-content structure from later pages must not bypass the output limit");
     }
 
 }

@@ -659,7 +659,7 @@ public class PpkgParser implements Parser {
 
         try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(xmlBytes)) {
             XMLReaderUtils.parseSAX(xmlStream,
-                    new PpkgXmlHandler(commands, dataRefs, pkgMeta), context);
+                    new PpkgXmlHandler(commands, dataRefs, warnings, pkgMeta), context);
         } catch (Exception e) {
             warnings.add("XML field extraction error in " + name + ": " + e.getMessage());
         }
@@ -809,7 +809,12 @@ public class PpkgParser implements Parser {
     private static final class PpkgXmlHandler extends DefaultHandler {
 
         private static final int MAX_CAPTURE_CHARS = 64 * 1024;
+        private static final int MAX_ACTIVE_CAPTURES = 256;
         private static final int MAX_DATA_REF_TOKEN_CHARS = 8 * 1024;
+        private static final int DATA_REF_OVERFLOW_TAIL_CHARS = 256;
+        private static final String OVERSIZED_DATA_REF_WARNING =
+                "Oversized XML token truncated to its bounded tail for "
+                        + "data-asset reference inspection";
 
         private static final Map<String, String> PACKAGE_FIELDS = Map.of(
                 "ID", "id",
@@ -820,21 +825,23 @@ public class PpkgParser implements Parser {
 
         private final List<String> commands;
         private final List<String> dataRefs;
+        private final List<String> warnings;
         private final Map<String, String> pkgMeta;
         private final List<ElementCapture> captures = new ArrayList<>();
         private final StringBuilder dataRefToken = new StringBuilder();
         private boolean dataRefTokenTooLong;
 
         private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
-                               Map<String, String> pkgMeta) {
+                               List<String> warnings, Map<String, String> pkgMeta) {
             this.commands = commands;
             this.dataRefs = dataRefs;
+            this.warnings = warnings;
             this.pkgMeta = pkgMeta;
         }
 
         @Override
         public void startElement(String uri, String localName, String qName,
-                                 Attributes attributes) {
+                                 Attributes attributes) throws SAXException {
             String element = localName(localName, qName);
             flushDataRefToken();
             if ("parm".equals(element)
@@ -842,6 +849,10 @@ public class PpkgParser implements Parser {
                 addCommand(attribute(attributes, "value"));
             }
             if ("CommandLine".equals(element) || PACKAGE_FIELDS.containsKey(element)) {
+                if (captures.size() >= MAX_ACTIVE_CAPTURES) {
+                    throw new SAXException("PPKG field capture nesting exceeds "
+                            + MAX_ACTIVE_CAPTURES);
+                }
                 captures.add(new ElementCapture(element));
             }
             for (int i = 0; i < attributes.getLength(); i++) {
@@ -894,13 +905,19 @@ public class PpkgParser implements Parser {
                     dataRefToken.append(c);
                 } else {
                     dataRefTokenTooLong = true;
+                    dataRefToken.delete(0,
+                            dataRefToken.length() - DATA_REF_OVERFLOW_TAIL_CHARS);
+                    dataRefToken.append(c);
                 }
             }
         }
 
         private void flushDataRefToken() {
-            if (dataRefToken.length() > 0 && !dataRefTokenTooLong) {
+            if (dataRefToken.length() > 0) {
                 extractDataRefs(dataRefToken.toString(), dataRefs);
+            }
+            if (dataRefTokenTooLong && !warnings.contains(OVERSIZED_DATA_REF_WARNING)) {
+                warnings.add(OVERSIZED_DATA_REF_WARNING);
             }
             dataRefToken.setLength(0);
             dataRefTokenTooLong = false;
