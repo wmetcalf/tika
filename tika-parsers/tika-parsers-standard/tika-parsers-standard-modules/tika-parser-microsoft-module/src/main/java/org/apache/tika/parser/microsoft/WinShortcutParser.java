@@ -1690,40 +1690,19 @@ public class WinShortcutParser implements Parser {
             return;
         }
         // The parser already bounds the complete input, so scan every retained
-        // appended byte rather than letting padding hide late indicators.
-        List<String> normalizedViews = new ArrayList<>();
-        normalizedViews.add(new String(payload, 0, payload.length,
-                StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT));
-        if (payload.length >= 2
-                && (payload[0] & 0xff) == 0xff
-                && (payload[1] & 0xff) == 0xfe) {
-            normalizedViews.add(new String(payload, 2, payload.length - 2,
-                    StandardCharsets.UTF_16LE).toLowerCase(Locale.ROOT));
-        } else if (payload.length >= 2
-                && (payload[0] & 0xff) == 0xfe
-                && (payload[1] & 0xff) == 0xff) {
-            normalizedViews.add(new String(payload, 2, payload.length - 2,
-                    StandardCharsets.UTF_16BE).toLowerCase(Locale.ROOT));
-        } else {
-            int utf16ByteOrder = detectUtf16ByteOrder(payload);
-            if (utf16ByteOrder < 0) {
-                normalizedViews.add(new String(payload, StandardCharsets.UTF_16LE)
-                        .toLowerCase(Locale.ROOT));
-            } else if (utf16ByteOrder > 0) {
-                normalizedViews.add(new String(payload, StandardCharsets.UTF_16BE)
-                        .toLowerCase(Locale.ROOT));
-            }
-        }
+        // appended byte rather than letting padding or a misleading encoding
+        // prefix hide late indicators. Match the ASCII signatures directly in
+        // each supported encoding to avoid allocating multiple full-size strings.
 
         List<String> matchedCves = new ArrayList<>();
         List<String> matchedDescs = new ArrayList<>();
 
         for (ExploitSignature sig : EXPLOIT_SIGNATURES) {
             boolean allMatch = false;
-            for (String normalizedView : normalizedViews) {
+            for (int encoding = 0; encoding < 3; encoding++) {
                 allMatch = true;
                 for (String term : sig.allOf) {
-                    if (!normalizedView.contains(term)) {
+                    if (!containsEncodedAsciiTerm(payload, term, encoding)) {
                         allMatch = false;
                         break;
                     }
@@ -1755,30 +1734,58 @@ public class WinShortcutParser implements Parser {
         }
     }
 
-    private static int detectUtf16ByteOrder(byte[] payload) {
-        int pairs = Math.min(payload.length / 2, 2048);
-        if (pairs < 8) {
-            return 0;
-        }
-        int evenZeros = 0;
-        int oddZeros = 0;
-        for (int i = 0; i < pairs * 2; i += 2) {
-            if (payload[i] == 0) {
-                evenZeros++;
+    private static boolean containsEncodedAsciiTerm(byte[] payload, String term,
+                                                    int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        int alignments = stride;
+        int[] failure = buildFailureTable(term);
+        for (int alignment = 0; alignment < alignments; alignment++) {
+            int matched = 0;
+            for (int offset = alignment; offset + stride <= payload.length;
+                    offset += stride) {
+                int value;
+                if (encoding == 0) {
+                    value = lowerAscii(payload[offset] & 0xff);
+                } else {
+                    int characterOffset = encoding == 1 ? offset : offset + 1;
+                    int zeroOffset = encoding == 1 ? offset + 1 : offset;
+                    value = payload[zeroOffset] == 0
+                            ? lowerAscii(payload[characterOffset] & 0xff) : -1;
+                }
+                while (matched > 0 && value != term.charAt(matched)) {
+                    matched = failure[matched - 1];
+                }
+                if (value == term.charAt(matched)) {
+                    matched++;
+                    if (matched == term.length()) {
+                        return true;
+                    }
+                }
             }
-            if (payload[i + 1] == 0) {
-                oddZeros++;
+        }
+        return false;
+    }
+
+    private static int[] buildFailureTable(String term) {
+        int[] failure = new int[term.length()];
+        int matched = 0;
+        for (int i = 1; i < term.length(); i++) {
+            while (matched > 0 && term.charAt(i) != term.charAt(matched)) {
+                matched = failure[matched - 1];
             }
+            if (term.charAt(i) == term.charAt(matched)) {
+                matched++;
+            }
+            failure[i] = matched;
         }
-        int commonZeroThreshold = pairs / 4;
-        int uncommonZeroThreshold = pairs / 16;
-        if (oddZeros > commonZeroThreshold && evenZeros < uncommonZeroThreshold) {
-            return -1;
+        return failure;
+    }
+
+    private static int lowerAscii(int value) {
+        if (value >= 'A' && value <= 'Z') {
+            return value + ('a' - 'A');
         }
-        if (evenZeros > commonZeroThreshold && oddZeros < uncommonZeroThreshold) {
-            return 1;
-        }
-        return 0;
+        return value;
     }
 
     // ── Appended data ─────────────────────────────────────────────────────────

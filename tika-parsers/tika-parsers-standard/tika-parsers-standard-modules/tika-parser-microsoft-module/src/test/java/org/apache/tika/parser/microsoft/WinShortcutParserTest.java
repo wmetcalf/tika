@@ -110,6 +110,26 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testBomlessUtf16LittleEndianIndicatorAfterNonAsciiPrefixIsClassified()
+            throws Exception {
+        ParseResult result = parse(buildUtf16IndicatorLnk(
+                StandardCharsets.UTF_16LE, new byte[0], "\u4e01".repeat(3_000)));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "a non-ASCII prefix must not hide a later UTF-16LE indicator");
+    }
+
+    @Test
+    public void testBomlessUtf16BigEndianIndicatorAfterNonAsciiPrefixIsClassified()
+            throws Exception {
+        ParseResult result = parse(buildUtf16IndicatorLnk(
+                StandardCharsets.UTF_16BE, new byte[0], "\u4e01".repeat(3_000)));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "a non-ASCII prefix must not hide a later UTF-16BE indicator");
+    }
+
+    @Test
     public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
         byte[] oversized = new byte[16 * 1024 * 1024 + 1];
         System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
@@ -206,8 +226,14 @@ public class WinShortcutParserTest {
 
     private static byte[] buildUtf16IndicatorLnk(Charset charset, byte[] bom)
             throws IOException {
+        return buildUtf16IndicatorLnk(charset, bom, "");
+    }
+
+    private static byte[] buildUtf16IndicatorLnk(Charset charset, byte[] bom,
+                                                  String prefix)
+            throws IOException {
         byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
-        byte[] payload = ("<!doctype html><script>"
+        byte[] payload = ("<!doctype html>" + prefix + "<script>"
                 + "new ActiveXObject('WScript.Shell')"
                 + "</script>").getBytes(charset);
 
