@@ -227,6 +227,19 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testOverDepthJScriptGroupingFailsClosed() throws Exception {
+        ParseResult result = parse(buildIndicatorLnk(
+                StandardCharsets.US_ASCII, new byte[0], "",
+                "new window['Active' + " + "(".repeat(9)
+                        + "'XObject'" + ")".repeat(9) + "]('WScript.Shell')"));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "over-depth constant grouping must be reported as incomplete");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "over-depth grouping must not silently reset indicator matching");
+    }
+
+    @Test
     public void testUtf16StructuralHtmlExploitIsClassified() throws Exception {
         for (Charset charset : List.of(
                 StandardCharsets.US_ASCII,
@@ -254,6 +267,22 @@ public class WinShortcutParserTest {
                 "bounded input must be reported as incomplete");
         assertNotNull(result.metadata.get("lnk:ExploitClass"),
                 "truncation must fail closed because late indicators may be hidden");
+    }
+
+    @Test
+    public void testMalformedSectionLengthsFailClosed() throws Exception {
+        for (byte[] lnk : List.of(
+                buildMalformedIdListLnk(),
+                buildMalformedLinkInfoLnk(),
+                buildMalformedStringDataLnk(),
+                buildOverflowingExtraDataLnk())) {
+            ParseResult result = parse(lnk);
+
+            assertNotNull(result.metadata.get("lnk:warning"),
+                    "an out-of-bounds declared section must be reported as incomplete");
+            assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                    "a malformed section must not hide appended execution indicators");
+        }
     }
 
     private static ParseResult parse(byte[] lnk) throws Exception {
@@ -335,6 +364,45 @@ public class WinShortcutParserTest {
         out.write(header);
         out.write(new byte[4]);
         out.write(payload);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildMalformedIdListLnk() throws IOException {
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 1);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) 4096).array());
+        out.write("<script>new ActiveXObject('WScript.Shell')</script>"
+                .getBytes(StandardCharsets.US_ASCII));
+        return out.toByteArray();
+    }
+
+    private static byte[] buildMalformedLinkInfoLnk() throws IOException {
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 2);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(4096).array());
+        out.write("<script>new ActiveXObject('WScript.Shell')</script>"
+                .getBytes(StandardCharsets.US_ASCII));
+        return out.toByteArray();
+    }
+
+    private static byte[] buildMalformedStringDataLnk() throws IOException {
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 32);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) 4096).array());
+        out.write("<script>new ActiveXObject('WScript.Shell')</script>"
+                .getBytes(StandardCharsets.US_ASCII));
         return out.toByteArray();
     }
 

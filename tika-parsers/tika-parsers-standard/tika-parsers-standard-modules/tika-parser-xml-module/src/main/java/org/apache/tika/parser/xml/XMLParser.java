@@ -20,7 +20,6 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -103,17 +102,19 @@ public class XMLParser implements Parser {
 
         TaggedContentHandler tagged = new TaggedContentHandler(handler);
         tis.setCloseShield();
+        boolean parsedSuccessfully = false;
         try {
             XMLReaderUtils.parseSAX(tis,
                             new EmbeddedContentHandler(
                                     getContentHandler(tagged, metadata, context)),
                     context);
+            parsedSuccessfully = true;
         } catch (SAXException e) {
             tagged.throwIfCauseOf(e);
             throw new TikaException("XML parse error", e);
         } finally {
             tis.removeCloseShield();
-            if (svgPath != null) {
+            if (svgPath != null && parsedSuccessfully) {
                 trySvgOcr(svgPath, xhtml, metadata, context);
             }
             xhtml.endElement("p");
@@ -125,49 +126,6 @@ public class XMLParser implements Parser {
     // Data URI images are stripped before rendering so the main crash vector is handled;
     // 10 MB covers legitimate AI-generated art, data visualisations, and complex diagrams.
     private static final long SVG_RASTER_MAX_BYTES = 10L * 1024 * 1024; // 10 MB
-
-    /**
-     * Sanitize an SVG for Batik 1.x rasterization:
-     * <ul>
-     *   <li>Rewrites SVG 2.0 bare {@code href} on {@code <image>} to {@code xlink:href}.</li>
-     *   <li>Strips inline data URI image content (replaces with empty string) to prevent
-     *       Batik from crashing when decoding large embedded images.</li>
-     *   <li>Strips external xlink:href values from {@code <use>} elements (SSRF protection).</li>
-     * </ul>
-     * Returns the original path unchanged if no edits were needed.
-     */
-    static Path normalizeSvgHrefs(Path svgPath) throws IOException {
-        byte[] raw = Files.readAllBytes(svgPath);
-        String content = new String(raw, StandardCharsets.UTF_8);
-
-        String fixed = content;
-
-        // 1. Ensure xlink namespace is declared (Batik 1.x requires it)
-        if (!fixed.contains("xmlns:xlink")) {
-            fixed = fixed.replaceFirst(
-                "(<svg\\b)([^>]*)(>)",
-                "$1$2 xmlns:xlink=\"http://www.w3.org/1999/xlink\"$3");
-        }
-
-        // 2. Convert bare href= to xlink:href= across whitespace and quote styles.
-        fixed = fixed.replaceAll(
-                "(?i)(\\s)href\\s*=",
-                "$1xlink:href=");
-
-        // 3. Strip non-fragment image/use resources across quote styles. Local
-        //    <use href="#id"> references remain available to Batik.
-        fixed = fixed.replaceAll(
-                "(?is)(<(?:image|use)\\b[^>]*?\\sxlink:href\\s*=\\s*)(['\"])(?!#)"
-                        + "[^'\"]*\\2",
-                "$1$2$2");
-
-        if (fixed.equals(content)) {
-            return svgPath;
-        }
-        Path tmp = Files.createTempFile("tika-svg-norm-", ".svg");
-        Files.write(tmp, fixed.getBytes(StandardCharsets.UTF_8));
-        return tmp;
-    }
 
     /**
      * Rasterize {@code svgPath} to PNG bytes at the given max dimension.
@@ -264,7 +222,6 @@ public class XMLParser implements Parser {
 
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
                                    Metadata metadata, ParseContext context) {
-        Path renderPath = svgPath;
         try {
             // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
             if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
@@ -278,9 +235,6 @@ public class XMLParser implements Parser {
                 return;
             }
 
-            // Rewrite SVG 2.0 href → xlink:href so Batik does not crash
-            renderPath = normalizeSvgHrefs(svgPath);
-
             // Full-resolution raster for OCR and phash (1200px max).
             // Ordinary render failures fall through to the lower-res phash
             // fallback. Resource failures are recorded but not retried.
@@ -288,7 +242,7 @@ public class XMLParser implements Parser {
             boolean unsafeToRetry = false;
             byte[] pngBytes = null;
             try {
-                pngBytes = rasterizeSvg(renderPath, 1200f);
+                pngBytes = rasterizeSvg(svgPath, 1200f);
             } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
                 rasterFailure = e;
                 unsafeToRetry =
@@ -330,7 +284,7 @@ public class XMLParser implements Parser {
             if (metadata.get(ImageHash.PHASH) == null && !unsafeToRetry) {
                 byte[] fallback = null;
                 try {
-                    fallback = rasterizeSvg(renderPath, 512f);
+                    fallback = rasterizeSvg(svgPath, 512f);
                 } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
                     rasterFailure = e;
                 }
@@ -349,10 +303,6 @@ public class XMLParser implements Parser {
             }
         } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
             addSvgRasterWarning(metadata, e);
-        } finally {
-            if (!renderPath.equals(svgPath)) {
-                try { Files.deleteIfExists(renderPath); } catch (IOException ignored) { }
-            }
         }
     }
 
@@ -464,7 +414,10 @@ public class XMLParser implements Parser {
                     addSecurityReference("svg:link", href);
                 }
             } else if ("script".equals(local)) {
-                String src = atts.getValue("src");
+                String src = getHref(atts);
+                if (src == null || src.isEmpty()) {
+                    src = atts.getValue("src");
+                }
                 if (src != null && !src.isEmpty()) {
                     addSecurityReference("svg:externalScript", src);
                 }

@@ -17,6 +17,7 @@
 package org.apache.tika.parser.html;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -110,6 +111,36 @@ public class HtmlColorQRExtractorTest {
 
         assertNull(HtmlColorQRExtractor.renderCluster(
                 List.of(hugeRow, hugeRow, hugeRow, hugeRow, hugeRow, hugeRow)));
+    }
+
+    @Test
+    public void stylesheetRuleRetentionIsBounded() {
+        StringBuilder css = new StringBuilder();
+        for (int i = 0; i < 5_000; i++) {
+            css.append(".rule-").append(i).append("{color:black}");
+        }
+        Document document = Jsoup.parse("<html><head><style>"
+                + css + "</style></head><body/></html>");
+
+        assertTrue(HtmlColorQRExtractor.parseStylesheets(document).size() <= 4_096,
+                "stylesheet preprocessing must have a hard retained-rule limit");
+    }
+
+    @Test
+    public void stylesheetTruncationIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        String html = "<html><head><style>"
+                + "x".repeat(1024 * 1024 + 1)
+                + "</style></head><body>visible</body></html>";
+
+        parse(html, body, metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "skipped color-QR style analysis must not look complete");
     }
 
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,

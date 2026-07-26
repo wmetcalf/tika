@@ -348,7 +348,8 @@ public class WinShortcutParser implements Parser {
             parseAppendedData(buf, pos, raw.length, fields, warnings, xhtml, context);
         } catch (Exception e) {
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
-            warnings.add("parse-error: " + e.getMessage());
+            markAnalysisIncomplete(fields, warnings,
+                    "parse-error: " + e.getMessage());
         }
 
         String targetPath = fields.get("IDListPath");
@@ -455,10 +456,18 @@ public class WinShortcutParser implements Parser {
             return pos;
         }
         if (pos + 2 > fileLen) {
-            return pos;
+            markAnalysisIncomplete(fields, warnings,
+                    "IDList size field extends beyond the available input");
+            return fileLen;
         }
         int idListSize = Short.toUnsignedInt(buf.getShort(pos));
-        int idListEnd  = pos + 2 + idListSize;
+        long idListEndLong = (long) pos + 2L + idListSize;
+        if (idListEndLong > fileLen) {
+            markAnalysisIncomplete(fields, warnings,
+                    "IDList extends beyond the available input");
+            return fileLen;
+        }
+        int idListEnd = (int) idListEndLong;
         pos += 2;
 
         List<String> path = walkIdList(buf, pos, idListEnd, fileLen, fields, warnings);
@@ -789,11 +798,16 @@ public class WinShortcutParser implements Parser {
             return pos;
         }
         if (pos + 4 > fileLen) {
-            return pos;
+            markAnalysisIncomplete(fields, warnings,
+                    "LinkInfo size field extends beyond the available input");
+            return fileLen;
         }
         int linkInfoSize = buf.getInt(pos);
-        if (linkInfoSize < 28 || pos + linkInfoSize > fileLen) {
-            return pos + Math.max(0, linkInfoSize);
+        if (linkInfoSize < 28
+                || (long) pos + linkInfoSize > fileLen) {
+            markAnalysisIncomplete(fields, warnings,
+                    "LinkInfo has an invalid or out-of-bounds size");
+            return fileLen;
         }
         try {
             int headerSize    = buf.getInt(pos + 4);
@@ -839,7 +853,8 @@ public class WinShortcutParser implements Parser {
                 parseNetworkLink(buf, pos + netLinkOff, fileLen, fields);
             }
         } catch (Exception e) {
-            warnings.add("LinkInfo error: " + e.getMessage());
+            markAnalysisIncomplete(fields, warnings,
+                    "LinkInfo error: " + e.getMessage());
         }
         return pos + linkInfoSize;
     }
@@ -926,7 +941,9 @@ public class WinShortcutParser implements Parser {
                 continue;
             }
             if (pos + 2 > fileLen) {
-                break;
+                markAnalysisIncomplete(fields, warnings,
+                        keyNames[fi] + " size field extends beyond the available input");
+                return fileLen;
             }
             int charCount = Short.toUnsignedInt(buf.getShort(pos));
             pos += 2;
@@ -941,7 +958,9 @@ public class WinShortcutParser implements Parser {
             boolean canDecodeUnicode = pos + wantUnicodeBytes <= fileLen;
             boolean canDecodeAnsi    = pos + wantAnsiBytes <= fileLen;
             if (!canDecodeUnicode && !canDecodeAnsi) {
-                break;
+                markAnalysisIncomplete(fields, warnings,
+                        keyNames[fi] + " extends beyond the available input");
+                return fileLen;
             }
             String unicodeStr = canDecodeUnicode
                     ? new String(data, pos, wantUnicodeBytes, StandardCharsets.UTF_16LE) : "";
@@ -1007,6 +1026,14 @@ public class WinShortcutParser implements Parser {
         return pos;
     }
 
+    private static void markAnalysisIncomplete(Map<String, String> fields,
+                                               List<String> warnings,
+                                               String warning) {
+        warnings.add(warning);
+        fields.putIfAbsent("ExploitClass",
+                "LNK parsing incomplete; exploit indicators may be hidden");
+    }
+
     /**
      * Score how "text-like" a decoded string is, biased heavily toward ASCII.
      * <p>LNK StringData is virtually always paths, commands, or arguments —
@@ -1064,7 +1091,14 @@ public class WinShortcutParser implements Parser {
             if (blockSize < 4) {
                 break;
             }
+            if (blockSize < 8) {
+                markAnalysisIncomplete(fields, warnings,
+                        "ExtraData block has an invalid size " + blockSize);
+                break;
+            }
             if (blockSize > fileLen - pos) {
+                markAnalysisIncomplete(fields, warnings,
+                        "ExtraData block extends beyond the available input");
                 break;
             }
             int sig = buf.getInt(pos + 4);
@@ -1114,8 +1148,9 @@ public class WinShortcutParser implements Parser {
                         break;
                 }
             } catch (Exception e) {
-                warnings.add("ExtraData sig " + String.format(Locale.ROOT, "0x%08X", sig)
-                        + " error: " + e.getMessage());
+                markAnalysisIncomplete(fields, warnings,
+                        "ExtraData sig " + String.format(Locale.ROOT, "0x%08X", sig)
+                                + " error: " + e.getMessage());
             }
             pos += blockSize;
         }
@@ -1616,7 +1651,7 @@ public class WinShortcutParser implements Parser {
     private static final long INCOMPLETE_JSCRIPT_JOIN = -2L;
     private static final int MAX_JSCRIPT_JOIN_GROUPING = 8;
     private static final String INCOMPLETE_JSCRIPT_JOIN_WARNING =
-            "JScript constant-join analysis stopped at an unterminated comment";
+            "JScript constant-join analysis could not complete within parser limits";
     static {
         EXPLOIT_SIGNATURES = new ArrayList<>();
 
@@ -2028,8 +2063,7 @@ public class WinShortcutParser implements Parser {
         long token = readHtmlNormalizedAscii(payload, cursor, encoding);
         while ((int) token == ')') {
             if (++grouping > MAX_JSCRIPT_JOIN_GROUPING) {
-                return packAscii(
-                        RESET_ASCII, Math.max(1, (cursor - offset) / stride));
+                return INCOMPLETE_JSCRIPT_JOIN;
             }
             cursor += (int) (token >>> 32) * stride;
             cursor = skipJScriptTrivia(payload, cursor, encoding);
@@ -2051,8 +2085,7 @@ public class WinShortcutParser implements Parser {
         token = readHtmlNormalizedAscii(payload, cursor, encoding);
         while ((int) token == '(') {
             if (++grouping > MAX_JSCRIPT_JOIN_GROUPING) {
-                return packAscii(
-                        RESET_ASCII, Math.max(1, (cursor - offset) / stride));
+                return INCOMPLETE_JSCRIPT_JOIN;
             }
             cursor += (int) (token >>> 32) * stride;
             cursor = skipJScriptTrivia(payload, cursor, encoding);

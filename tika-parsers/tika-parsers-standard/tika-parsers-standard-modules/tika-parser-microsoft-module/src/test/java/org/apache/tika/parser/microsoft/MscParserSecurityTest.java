@@ -19,12 +19,14 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -188,6 +190,20 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testRepeatedBinaryPrefixesAreScannedInLinearTime() {
+        String xml = "<MMC_ConsoleFile>"
+                + "<Binary ".repeat(24_000)
+                + "</MMC_ConsoleFile>";
+
+        assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
+            ParseResult result = parseWithoutEmbedded(xml);
+            assertNotNull(result.metadata.get("msc:warning"));
+            assertNotNull(result.metadata.get("ExploitClass"),
+                    "incomplete binary parsing must fail closed");
+        });
+    }
+
+    @Test
     public void testIncompleteXmlFailsClosedForSecurityClassification() throws Exception {
         ParseResult result = parse(
                 "<MMC_ConsoleFile><CommandLine>powershell.exe -NoProfile");
@@ -195,6 +211,30 @@ public class MscParserSecurityTest {
         assertNotNull(result.metadata.get("msc:warning"));
         assertNotNull(result.metadata.get("ExploitClass"),
                 "incomplete field extraction must remain security-visible");
+    }
+
+    @Test
+    public void testInputTruncationFailsClosedForSecurityClassification() throws Exception {
+        int analysisLimit = 32 * 1024 * 1024;
+        byte[] input = new byte[analysisLimit + 128];
+        java.util.Arrays.fill(input, (byte) ' ');
+        byte[] validPrefix = "<MMC_ConsoleFile/>".getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(validPrefix, 0, input, 0, validPrefix.length);
+        byte[] hiddenSuffix =
+                "<CommandLine>powershell.exe -NoProfile</CommandLine>"
+                        .getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(hiddenSuffix, 0, input, analysisLimit, hiddenSuffix.length);
+
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        try (TikaInputStream stream = TikaInputStream.get(input)) {
+            new MscParser().parse(stream, body, metadata, new ParseContext());
+        }
+
+        assertNotNull(metadata.get("msc:warning"),
+                "bounded input must be reported as incomplete");
+        assertNotNull(metadata.get("ExploitClass"),
+                "a dangerous suffix beyond the analysis limit must not fail open");
     }
 
     @Test

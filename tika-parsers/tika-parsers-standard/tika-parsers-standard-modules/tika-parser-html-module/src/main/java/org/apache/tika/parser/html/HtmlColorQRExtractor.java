@@ -31,13 +31,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 
+import org.jsoup.nodes.DataNode;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
-import org.jsoup.select.Elements;
 import org.jsoup.select.NodeVisitor;
 
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.parser.image.ZXingCPPScanner;
@@ -64,6 +66,13 @@ public final class HtmlColorQRExtractor {
     private static final int MAX_GRID_UNITS = 256 * 1024;
     private static final int MAX_DOCUMENT_GRID_UNITS = MAX_GRID_UNITS * MAX_CLUSTERS;
     private static final long MAX_RENDERED_PIXELS = 16L * 1024 * 1024;
+    private static final int MAX_STYLESHEET_CHARS = 256 * 1024;
+    private static final int MAX_STYLESHEET_SELECTORS = 4_096;
+    private static final int MAX_CELL_TEXT_SCAN_CHARS = 4_096;
+    private static final String STYLESHEET_LIMIT_WARNING =
+            "HTML color-QR stylesheet limit reached; color-QR extraction is incomplete";
+    private static final Pattern SIMPLE_CSS_SELECTOR = Pattern.compile(
+            "^(?:[a-z][a-z0-9-]*|\\.[a-z0-9_-]+|#[a-z0-9_-]+)$");
 
     /** Luminance threshold below which a colour counts as "dark". 0..255. */
     private static final int DARK_LUMA_THRESHOLD = 128;
@@ -78,12 +87,28 @@ public final class HtmlColorQRExtractor {
                                                 ZXingCPPScanner scanner,
                                                 ZXingCPPConfig config,
                                                 ParseContext context) {
+        return extractAndDecode(doc, scanner, config, context, null);
+    }
+
+    public static List<ZXingCPPScanner.Result> extractAndDecode(Document doc,
+                                                ZXingCPPScanner scanner,
+                                                ZXingCPPConfig config,
+                                                ParseContext context,
+                                                Metadata metadata) {
         List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (doc == null || scanner == null || !scanner.hasZXingCPP()) {
             return decoded;
         }
-        Map<String, String> classRules = parseStylesheets(doc);
-        List<List<List<Cell>>> clusters = findClusters(doc, classRules);
+        StylesheetParseResult stylesheetResult = parseStylesheetsBounded(doc);
+        if (stylesheetResult.truncated && metadata != null) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    STYLESHEET_LIMIT_WARNING);
+            if (metadata.get("ExploitClass") == null) {
+                metadata.set("ExploitClass",
+                        "HTML color-QR extraction incomplete; encoded link content may be hidden");
+            }
+        }
+        List<List<List<Cell>>> clusters = findClusters(doc, stylesheetResult.rules);
         if (clusters.isEmpty()) {
             return decoded;
         }
@@ -196,26 +221,94 @@ public final class HtmlColorQRExtractor {
                                                    GridBudget budget) {
         List<List<Cell>> grid = new ArrayList<>();
         int candidateUnits = 0;
-        for (Element tr : table.select("tr")) {
+        for (Element tr : directTableRows(table)) {
             if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
                 return null;
             }
             List<Cell> row = new ArrayList<>();
-            for (Element td : tr.select("td, th")) {
+            for (Element td : tr.children()) {
+                if (!"td".equalsIgnoreCase(td.tagName())
+                        && !"th".equalsIgnoreCase(td.tagName())) {
+                    continue;
+                }
                 if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
                     return null;
                 }
                 EffectiveStyle eff = resolveEffectiveStyle(td, classRules);
-                // Pick the most representative char inside the cell to make
-                // the same classifier do the work; whitespace-only cells
-                // produce a single space.
-                String txt = td.text();
-                char ref = txt.isEmpty() ? ' ' : txt.charAt(0);
+                char ref = firstRepresentativeCharacter(td);
                 row.add(classifyCell(ref, eff));
             }
             grid.add(row);
         }
         return grid;
+    }
+
+    private static List<Element> directTableRows(Element table) {
+        List<Element> rows = new ArrayList<>();
+        for (Element child : table.children()) {
+            if ("tr".equalsIgnoreCase(child.tagName())) {
+                rows.add(child);
+                continue;
+            }
+            if (!"thead".equalsIgnoreCase(child.tagName())
+                    && !"tbody".equalsIgnoreCase(child.tagName())
+                    && !"tfoot".equalsIgnoreCase(child.tagName())) {
+                continue;
+            }
+            for (Element sectionChild : child.children()) {
+                if ("tr".equalsIgnoreCase(sectionChild.tagName())) {
+                    rows.add(sectionChild);
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static char firstRepresentativeCharacter(Element cell) {
+        CellTextProbe probe = new CellTextProbe();
+        try {
+            cell.traverse(probe);
+        } catch (CellTextProbeComplete e) {
+            // The probe stops as soon as it finds a visible character or
+            // reaches its bounded scan budget.
+        }
+        return probe.character;
+    }
+
+    private static final class CellTextProbe implements NodeVisitor {
+        private int inspected;
+        private char character = ' ';
+
+        @Override
+        public void head(Node node, int depth) {
+            if (!(node instanceof TextNode)) {
+                return;
+            }
+            String text = ((TextNode) node).getWholeText();
+            for (int i = 0; i < text.length(); i++) {
+                if (++inspected > MAX_CELL_TEXT_SCAN_CHARS) {
+                    throw CellTextProbeComplete.INSTANCE;
+                }
+                if (!Character.isWhitespace(text.charAt(i))) {
+                    character = text.charAt(i);
+                    throw CellTextProbeComplete.INSTANCE;
+                }
+            }
+        }
+
+        @Override
+        public void tail(Node node, int depth) {
+            // no-op
+        }
+    }
+
+    private static final class CellTextProbeComplete extends RuntimeException {
+        private static final CellTextProbeComplete INSTANCE =
+                new CellTextProbeComplete();
+
+        private CellTextProbeComplete() {
+            super(null, null, false, false);
+        }
     }
 
     /**
@@ -441,29 +534,142 @@ public final class HtmlColorQRExtractor {
      * string. Only simple tag/class/id selectors are understood.
      */
     static Map<String, String> parseStylesheets(Document doc) {
-        Map<String, String> out = new HashMap<>();
-        Elements styles = doc.select("style");
-        for (Element styleEl : styles) {
-            String css = styleEl.data();
-            css = css.replaceAll("(?s)/\\*.*?\\*/", "");
-            Matcher m = Pattern.compile("([^{}]+)\\{([^{}]*)\\}").matcher(css);
-            while (m.find()) {
-                String selectors = m.group(1).trim();
-                String decl = m.group(2).trim();
-                for (String sel : selectors.split(",")) {
-                    sel = sel.trim().toLowerCase(Locale.ROOT);
-                    if (sel.isEmpty()) {
-                        continue;
-                    }
-                    if (sel.matches("^[a-z][a-z0-9-]*$")
-                            || sel.matches("^\\.[a-z0-9_-]+$")
-                            || sel.matches("^#[a-z0-9_-]+$")) {
-                        out.put(sel, decl);
-                    }
+        return parseStylesheetsBounded(doc).rules;
+    }
+
+    private static StylesheetParseResult parseStylesheetsBounded(Document doc) {
+        StylesheetAccumulator accumulator = new StylesheetAccumulator();
+        try {
+            doc.traverse(accumulator);
+        } catch (StylesheetLimitException e) {
+            accumulator.truncated = true;
+        }
+        return new StylesheetParseResult(accumulator.rules, accumulator.truncated);
+    }
+
+    private static final class StylesheetAccumulator implements NodeVisitor {
+        private final Map<String, String> rules = new HashMap<>();
+        private int consumedChars;
+        private int selectors;
+        private boolean truncated;
+
+        @Override
+        public void head(Node node, int depth) {
+            if (!(node instanceof Element)
+                    || !"style".equalsIgnoreCase(((Element) node).tagName())) {
+                return;
+            }
+            Element style = (Element) node;
+            StringBuilder boundedCss = new StringBuilder();
+            for (Node child : style.childNodes()) {
+                if (!(child instanceof DataNode)) {
+                    continue;
+                }
+                String data = ((DataNode) child).getWholeData();
+                int remaining = MAX_STYLESHEET_CHARS - consumedChars;
+                if (remaining <= 0) {
+                    throw StylesheetLimitException.INSTANCE;
+                }
+                int retained = Math.min(remaining, data.length());
+                boundedCss.append(data, 0, retained);
+                consumedChars += retained;
+                if (retained < data.length()) {
+                    truncated = true;
+                    break;
                 }
             }
+            parseCssRules(stripCssComments(boundedCss), this);
+            if (truncated) {
+                throw StylesheetLimitException.INSTANCE;
+            }
         }
-        return out;
+
+        @Override
+        public void tail(Node node, int depth) {
+            // no-op
+        }
+    }
+
+    private static void parseCssRules(CharSequence css,
+                                      StylesheetAccumulator accumulator) {
+        int cursor = 0;
+        while (cursor < css.length()) {
+            int open = indexOf(css, '{', cursor);
+            if (open < 0) {
+                return;
+            }
+            int close = indexOf(css, '}', open + 1);
+            if (close < 0) {
+                return;
+            }
+            String declaration = css.subSequence(open + 1, close).toString().trim();
+            int selectorStart = cursor;
+            for (int i = cursor; i <= open; i++) {
+                if (i != open && css.charAt(i) != ',') {
+                    continue;
+                }
+                if (++accumulator.selectors > MAX_STYLESHEET_SELECTORS) {
+                    throw StylesheetLimitException.INSTANCE;
+                }
+                String selector = css.subSequence(selectorStart, i)
+                        .toString().trim().toLowerCase(Locale.ROOT);
+                if (!selector.isEmpty()
+                        && SIMPLE_CSS_SELECTOR.matcher(selector).matches()) {
+                    accumulator.rules.put(selector, declaration);
+                }
+                selectorStart = i + 1;
+            }
+            cursor = close + 1;
+        }
+    }
+
+    private static StringBuilder stripCssComments(CharSequence css) {
+        StringBuilder stripped = new StringBuilder(css.length());
+        for (int i = 0; i < css.length();) {
+            if (i + 1 < css.length()
+                    && css.charAt(i) == '/' && css.charAt(i + 1) == '*') {
+                i += 2;
+                while (i + 1 < css.length()
+                        && !(css.charAt(i) == '*' && css.charAt(i + 1) == '/')) {
+                    i++;
+                }
+                if (i + 1 >= css.length()) {
+                    break;
+                }
+                i += 2;
+                continue;
+            }
+            stripped.append(css.charAt(i++));
+        }
+        return stripped;
+    }
+
+    private static int indexOf(CharSequence value, char wanted, int start) {
+        for (int i = start; i < value.length(); i++) {
+            if (value.charAt(i) == wanted) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static final class StylesheetParseResult {
+        private final Map<String, String> rules;
+        private final boolean truncated;
+
+        private StylesheetParseResult(Map<String, String> rules, boolean truncated) {
+            this.rules = rules;
+            this.truncated = truncated;
+        }
+    }
+
+    private static final class StylesheetLimitException extends RuntimeException {
+        private static final StylesheetLimitException INSTANCE =
+                new StylesheetLimitException();
+
+        private StylesheetLimitException() {
+            super(null, null, false, false);
+        }
     }
 
     static Integer readColor(String style, String property) {

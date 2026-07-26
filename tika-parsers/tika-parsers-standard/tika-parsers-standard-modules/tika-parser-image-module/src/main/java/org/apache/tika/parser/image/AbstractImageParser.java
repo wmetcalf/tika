@@ -22,8 +22,11 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,6 +51,10 @@ public abstract class AbstractImageParser implements Parser {
 
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
     private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
+    private static final long MAX_IMAGE_HASH_PIXELS = 16L * 1024 * 1024;
+    private static final String IMAGE_HASH_DIMENSION_WARNING =
+            "Image hashing skipped because decoded dimensions exceed the "
+                    + MAX_IMAGE_HASH_PIXELS + " pixel limit";
     private boolean imageHashingEnabled = false;
 
     /**
@@ -105,6 +112,9 @@ public abstract class AbstractImageParser implements Parser {
         if (!imageHashingEnabled || imagePath == null) {
             return;
         }
+        if (!dimensionsSafeForHashing(imagePath, metadata)) {
+            return;
+        }
         BufferedImage image = ImageIO.read(imagePath.toFile());
         if (image == null) {
             return;
@@ -113,6 +123,35 @@ public abstract class AbstractImageParser implements Parser {
         // hash library — byte-exact-compatible with Python imagehash 4.3.2. Sets
         // phash, dhash, ahash, and colorhash in one shot. Mirrors XMLParser.
         ImageHashUtils.setHashes(image, metadata);
+    }
+
+    private static boolean dimensionsSafeForHashing(Path imagePath, Metadata metadata)
+            throws IOException {
+        try (ImageInputStream imageInput =
+                     ImageIO.createImageInputStream(imagePath.toFile())) {
+            if (imageInput == null) {
+                return true;
+            }
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(imageInput);
+            if (!readers.hasNext()) {
+                return true;
+            }
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(imageInput, true, true);
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                if (width <= 0 || height <= 0
+                        || (long) width * height > MAX_IMAGE_HASH_PIXELS) {
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            IMAGE_HASH_DIMENSION_WARNING + ": " + width + "x" + height);
+                    return false;
+                }
+                return true;
+            } finally {
+                reader.dispose();
+            }
+        }
     }
 
     void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {

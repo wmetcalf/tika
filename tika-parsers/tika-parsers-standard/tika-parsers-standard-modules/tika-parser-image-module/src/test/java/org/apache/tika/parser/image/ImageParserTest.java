@@ -19,13 +19,18 @@ package org.apache.tika.parser.image;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.zip.CRC32;
+import java.util.zip.DeflaterOutputStream;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -288,6 +293,23 @@ public class ImageParserTest extends TikaTest {
     }
 
     @Test
+    public void testImageHashDimensionBombIsSkippedBeforeDecode() throws Exception {
+        ImageParser hashingParser = new ImageParser();
+        hashingParser.setImageHashingEnabled(true);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+
+        try (TikaInputStream tis = TikaInputStream.get(
+                buildPngWithDimensions(30_000, 30_000))) {
+            hashingParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+
+        assertEquals(null, metadata.get(ImageHash.PHASH));
+        assertEquals(1, metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
+    }
+
+    @Test
     public void testBarcodeMetadataEmittedFromImageParsing() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/png");
@@ -467,6 +489,46 @@ public class ImageParserTest extends TikaTest {
 
         assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
         assertEquals(0, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+    }
+
+    private static byte[] buildPngWithDimensions(int width, int height) throws Exception {
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        png.write(new byte[]{
+                (byte) 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a
+        });
+
+        ByteArrayOutputStream ihdrBytes = new ByteArrayOutputStream();
+        try (DataOutputStream ihdr = new DataOutputStream(ihdrBytes)) {
+            ihdr.writeInt(width);
+            ihdr.writeInt(height);
+            ihdr.writeByte(8);
+            ihdr.writeByte(0);
+            ihdr.writeByte(0);
+            ihdr.writeByte(0);
+            ihdr.writeByte(0);
+        }
+        writePngChunk(png, "IHDR", ihdrBytes.toByteArray());
+
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        try (DeflaterOutputStream deflater = new DeflaterOutputStream(compressed)) {
+            deflater.write(new byte[]{0, 0});
+        }
+        writePngChunk(png, "IDAT", compressed.toByteArray());
+        writePngChunk(png, "IEND", new byte[0]);
+        return png.toByteArray();
+    }
+
+    private static void writePngChunk(ByteArrayOutputStream target, String type,
+                                      byte[] data) throws Exception {
+        DataOutputStream output = new DataOutputStream(target);
+        byte[] typeBytes = type.getBytes(StandardCharsets.US_ASCII);
+        output.writeInt(data.length);
+        output.write(typeBytes);
+        output.write(data);
+        CRC32 crc = new CRC32();
+        crc.update(typeBytes);
+        crc.update(data);
+        output.writeInt((int) crc.getValue());
     }
 
     private static class StubBarcodeParser extends AbstractImageParser {

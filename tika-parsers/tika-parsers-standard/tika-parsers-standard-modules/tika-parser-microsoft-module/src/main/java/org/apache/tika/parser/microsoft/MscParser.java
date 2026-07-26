@@ -157,12 +157,6 @@ public class MscParser implements Parser {
             Pattern.compile("res://apds\\.dll/[^\"'<\\s]+",
                     Pattern.CASE_INSENSITIVE);
 
-    // Base64 blob in Binary/BinaryData elements (min 20 chars to skip tiny entries)
-    private static final Pattern BINARY_ELEMENT =
-            Pattern.compile("<(?:Binary|BinaryData)(?:\\s[^>]*)?>([A-Za-z0-9+/\\s]{20,}={0,2})"
-                    + "</(?:Binary|BinaryData)>",
-                    Pattern.CASE_INSENSITIVE);
-
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
@@ -174,7 +168,9 @@ public class MscParser implements Parser {
             throws IOException, SAXException, TikaException {
 
         byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
-        if (raw.length == MAX_INPUT_BYTES && stream.read() != -1) {
+        boolean inputTruncated =
+                raw.length == MAX_INPUT_BYTES && stream.read() != -1;
+        if (inputTruncated) {
             metadata.add("msc:warning",
                     "Input truncated at " + MAX_INPUT_BYTES + " bytes");
         }
@@ -327,7 +323,8 @@ public class MscParser implements Parser {
                 }
             }
         }
-        if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded
+        if ((inputTruncated || xmlFieldExtractionFailed
+                || xmlHandler.captureLimitExceeded
                 || xmlHandler.captureValueLimitExceeded
                 || xmlHandler.canonicalTextLimitExceeded
                 || retainedValueLimitExceeded)
@@ -403,24 +400,62 @@ public class MscParser implements Parser {
                                      EmbeddedDocumentExtractor extractor,
                                      List<String> warnings)
             throws IOException, SAXException, TikaException {
-        Matcher bm = BINARY_ELEMENT.matcher(xml);
         int idx = 0;
+        int cursor = 0;
         long decodedBytes = 0;
         boolean incomplete = false;
-        while (bm.find()) {
+        while (cursor < xml.length()) {
+            int tagStart = xml.indexOf('<', cursor);
+            if (tagStart < 0) {
+                break;
+            }
+            String elementName = binaryElementNameAt(xml, tagStart + 1);
+            if (elementName == null) {
+                cursor = tagStart + 1;
+                continue;
+            }
             if (idx >= MAX_BINARY_BLOBS) {
                 addBinaryResourceLimitWarning(warnings);
                 incomplete = true;
                 break;
             }
             idx++;
-            int encodedChars = bm.end(1) - bm.start(1);
+            int tagEnd = findXmlTagEnd(xml, tagStart + 1 + elementName.length());
+            if (tagEnd < 0) {
+                incomplete = true;
+                break;
+            }
+            if (isSelfClosingTag(xml, tagStart, tagEnd)) {
+                cursor = tagEnd + 1;
+                continue;
+            }
+            int closingTag = findClosingBinaryTag(xml, tagEnd + 1, elementName);
+            if (closingTag < 0) {
+                incomplete = true;
+                break;
+            }
+            int closingTagEnd = findXmlTagEnd(
+                    xml, closingTag + elementName.length() + 2);
+            if (closingTagEnd < 0) {
+                incomplete = true;
+                break;
+            }
+            int encodedChars = closingTag - tagEnd - 1;
+            cursor = closingTagEnd + 1;
             if (encodedChars > MAX_BINARY_ENCODED_CHARS) {
                 addBinaryResourceLimitWarning(warnings);
                 incomplete = true;
                 continue;
             }
-            String b64 = bm.group(1).replaceAll("[\\s]", "");
+            String b64 = compactBase64(xml, tagEnd + 1, closingTag);
+            if (b64 == null || b64.length() < 20) {
+                if (b64 == null) {
+                    warnings.add("Binary blob " + (idx - 1)
+                            + " contains invalid base64 characters");
+                    incomplete = true;
+                }
+                continue;
+            }
             long estimatedDecodedBytes = ((long) b64.length() + 3L) / 4L * 3L;
             if (estimatedDecodedBytes
                     > MAX_CUMULATIVE_BINARY_BYTES - decodedBytes) {
@@ -483,6 +518,96 @@ public class MscParser implements Parser {
             }
         }
         return incomplete;
+    }
+
+    private static String binaryElementNameAt(String xml, int nameStart) {
+        if (regionMatchesElementName(xml, nameStart, "BinaryData")) {
+            return "BinaryData";
+        }
+        if (regionMatchesElementName(xml, nameStart, "Binary")) {
+            return "Binary";
+        }
+        return null;
+    }
+
+    private static boolean regionMatchesElementName(String xml, int start, String name) {
+        if (start < 0 || start + name.length() > xml.length()
+                || !xml.regionMatches(true, start, name, 0, name.length())) {
+            return false;
+        }
+        int boundary = start + name.length();
+        return boundary < xml.length()
+                && (Character.isWhitespace(xml.charAt(boundary))
+                || xml.charAt(boundary) == '>'
+                || xml.charAt(boundary) == '/');
+    }
+
+    private static int findXmlTagEnd(String xml, int start) {
+        char quote = 0;
+        for (int i = start; i < xml.length(); i++) {
+            char current = xml.charAt(i);
+            if (quote != 0) {
+                if (current == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+            } else if (current == '>') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isSelfClosingTag(String xml, int tagStart, int tagEnd) {
+        for (int i = tagEnd - 1; i > tagStart; i--) {
+            if (Character.isWhitespace(xml.charAt(i))) {
+                continue;
+            }
+            return xml.charAt(i) == '/';
+        }
+        return false;
+    }
+
+    private static int findClosingBinaryTag(String xml, int start, String elementName) {
+        int cursor = start;
+        while (cursor < xml.length()) {
+            int candidate = xml.indexOf('<', cursor);
+            if (candidate < 0) {
+                return -1;
+            }
+            int nameStart = candidate + 2;
+            if (candidate + 1 < xml.length() && xml.charAt(candidate + 1) == '/'
+                    && regionMatchesElementName(xml, nameStart, elementName)) {
+                return candidate;
+            }
+            cursor = candidate + 1;
+        }
+        return -1;
+    }
+
+    private static String compactBase64(String xml, int start, int end) {
+        StringBuilder compacted = new StringBuilder(end - start);
+        for (int i = start; i < end; i++) {
+            char current = xml.charAt(i);
+            if (Character.isWhitespace(current)) {
+                continue;
+            }
+            if (!isBase64Character(current)) {
+                return null;
+            }
+            compacted.append(current);
+        }
+        return compacted.toString();
+    }
+
+    private static boolean isBase64Character(char value) {
+        return (value >= 'A' && value <= 'Z')
+                || (value >= 'a' && value <= 'z')
+                || (value >= '0' && value <= '9')
+                || value == '+' || value == '/' || value == '=';
     }
 
     private static void addBinaryResourceLimitWarning(List<String> warnings) {

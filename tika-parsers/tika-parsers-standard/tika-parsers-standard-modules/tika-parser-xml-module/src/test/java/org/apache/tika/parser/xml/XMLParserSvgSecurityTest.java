@@ -19,6 +19,8 @@ package org.apache.tika.parser.xml;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -28,6 +30,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -50,29 +53,6 @@ class XMLParserSvgSecurityTest {
 
     @TempDir
     Path temporaryDirectory;
-
-    @Test
-    void testSvgNormalizationRemovesExternalRefsAcrossQuoteStyles() throws Exception {
-        String svg = "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
-                "<defs><g id=\"local\"><rect width=\"10\" height=\"10\"/></g></defs>" +
-                "<use href='#local'/>" +
-                "<use href='http://example.com/external.svg#x'/>" +
-                "<image href='data:image/png;base64,AAAA'/>" +
-                "<image xlink:href=\"file:///etc/passwd\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"/>" +
-                "</svg>";
-        Path input = Files.createTempFile("tika-svg-test-", ".svg");
-        Files.write(input, svg.getBytes(StandardCharsets.UTF_8));
-        Path normalized = XMLParser.normalizeSvgHrefs(input);
-        String normalizedXml = Files.readString(normalized, StandardCharsets.UTF_8);
-
-        assertTrue(normalizedXml.contains("#local"));
-        assertFalse(normalizedXml.contains("http://example.com"));
-        assertFalse(normalizedXml.contains("data:image/png"));
-        assertFalse(normalizedXml.contains("file:///etc/passwd"));
-
-        Files.deleteIfExists(input);
-        Files.deleteIfExists(normalized);
-    }
 
     @Test
     void testOrdinarySvgProducesRasterHashes() throws Exception {
@@ -182,6 +162,36 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
         assertNotNull(result.metadata.get("ExploitClass"),
                 "truncated external-script/reference extraction must fail closed");
+    }
+
+    @Test
+    void testExternalScriptsUseStandardSvgReferenceAttributes() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     xmlns:xlink="http://www.w3.org/1999/xlink">
+                  <script href="https://example.invalid/standard.js"/>
+                  <script xlink:href="https://example.invalid/legacy.js"/>
+                  <script src="https://example.invalid/src.js"/>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg);
+
+        assertTrue(java.util.Arrays.asList(
+                        result.metadata.getValues("svg:externalScript"))
+                .containsAll(java.util.List.of(
+                        "https://example.invalid/standard.js",
+                        "https://example.invalid/legacy.js",
+                        "https://example.invalid/src.js")));
+    }
+
+    @Test
+    void testMalformedSvgDoesNotEnterQuadraticRasterNormalization() {
+        String svg = "<svg xmlns=\"http://www.w3.org/2000/svg\">"
+                + "<image ".repeat(20_000);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(2),
+                () -> assertThrows(Exception.class, () -> parse(svg)));
     }
 
     private static ParseResult parse(String svg) throws Exception {
