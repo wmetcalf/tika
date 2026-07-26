@@ -29,7 +29,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.imageio.ImageIO;
 
 import org.jsoup.nodes.Document;
@@ -447,10 +446,14 @@ public final class HtmlColorQRExtractor {
                     "rgba?\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)"
             ).matcher(v);
             if (m.find()) {
-                int r = clamp(Integer.parseInt(m.group(1)));
-                int g = clamp(Integer.parseInt(m.group(2)));
-                int b = clamp(Integer.parseInt(m.group(3)));
-                return luma(r, g, b);
+                try {
+                    int r = clamp(Integer.parseInt(m.group(1)));
+                    int g = clamp(Integer.parseInt(m.group(2)));
+                    int b = clamp(Integer.parseInt(m.group(3)));
+                    return luma(r, g, b);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
             }
             return null;
         }
