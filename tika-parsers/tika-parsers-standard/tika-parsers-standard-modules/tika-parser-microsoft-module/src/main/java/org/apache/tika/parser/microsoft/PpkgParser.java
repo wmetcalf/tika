@@ -16,6 +16,7 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -34,8 +35,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
@@ -49,6 +52,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.XMLReaderUtils;
 
 /**
  * Parser for Windows Provisioning Package (.ppkg) files.
@@ -653,21 +657,12 @@ public class PpkgParser implements Parser {
             return;
         }
 
-        // Extract CommandLine values — primary forensic field
-        extractTagValues(xml, "CommandLine", commands);
-
-        // WAP-provisioningdoc parm elements: value= attribute on <parm ... CommandLine>
-        extractParmValues(xml, "CommandLine", commands);
-
-        // PackageConfig metadata
-        extractTagValues(xml, "ID", pkgMeta, "id");
-        extractTagValues(xml, "Name", pkgMeta, "name");
-        extractTagValues(xml, "Version", pkgMeta, "version");
-        extractTagValues(xml, "OwnerType", pkgMeta, "owner_type");
-        extractTagValues(xml, "Rank", pkgMeta, "rank");
-
-        // Data asset references (dangerous file extensions)
-        extractDataRefs(xml, dataRefs);
+        try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(xmlBytes)) {
+            XMLReaderUtils.parseSAX(xmlStream,
+                    new PpkgXmlHandler(commands, dataRefs, pkgMeta), context);
+        } catch (Exception e) {
+            warnings.add("XML field extraction error in " + name + ": " + e.getMessage());
+        }
 
         // Surface XML text in Tika content stream
         xhtml.startElement("div");
@@ -780,7 +775,7 @@ public class PpkgParser implements Parser {
         return out.toString();
     }
 
-    // ── XML field extraction (regex-free, simple tag scan) ────────────────────
+    // ── XML field extraction ──────────────────────────────────────────────────
 
     private static String decodeXml(byte[] b) {
         if (b.length >= 2 && (b[0] & 0xff) == 0xff && (b[1] & 0xff) == 0xfe) {
@@ -793,86 +788,10 @@ public class PpkgParser implements Parser {
         return new String(b, StandardCharsets.UTF_8);
     }
 
-    private static void extractTagValues(String xml, String tag, List<String> out) {
-        String open  = "<" + tag + ">";
-        String close = "</" + tag + ">";
-        int pos = 0;
-        while (true) {
-            int start = xml.indexOf(open, pos);
-            if (start < 0) {
-                break;
-            }
-            start += open.length();
-            int end = xml.indexOf(close, start);
-            if (end < 0) {
-                break;
-            }
-            String val = xml.substring(start, end).trim();
-            if (!val.isEmpty()) {
-                out.add(val);
-            }
-            pos = end + close.length();
-        }
-    }
-
-    private static void extractTagValues(String xml, String tag,
-                                         Map<String, String> out, String key) {
-        List<String> vals = new ArrayList<>();
-        extractTagValues(xml, tag, vals);
-        if (!vals.isEmpty() && !out.containsKey(key)) {
-            out.put(key, vals.get(0));
-        }
-    }
-
-    private static void extractParmValues(String xml, String fieldName, List<String> out) {
-        // <parm ... name="CommandLine" ... value="..." />
-        String search = "name=\"" + fieldName + "\"";
-        int pos = 0;
-        while (true) {
-            int idx = xml.indexOf(search, pos);
-            if (idx < 0) {
-                break;
-            }
-            // Find enclosing <parm ...> tag start
-            int tagStart = xml.lastIndexOf('<', idx);
-            if (tagStart < 0) {
-                pos = idx + 1;
-                continue;
-            }
-            int tagEnd = xml.indexOf('>', idx);
-            if (tagEnd < 0) {
-                break;
-            }
-            String tag = xml.substring(tagStart, tagEnd + 1);
-            String val = attrValue(tag, "value");
-            if (val != null && !val.isEmpty()) {
-                // Unescape XML entities
-                val = val.replace("&quot;", "\"").replace("&amp;", "&")
-                        .replace("&lt;", "<").replace("&gt;", ">");
-                out.add(val);
-            }
-            pos = tagEnd + 1;
-        }
-    }
-
-    private static String attrValue(String tag, String attr) {
-        String search = attr + "=\"";
-        int idx = tag.indexOf(search);
-        if (idx < 0) {
-            return null;
-        }
-        int start = idx + search.length();
-        int end = tag.indexOf('"', start);
-        if (end < 0) {
-            return null;
-        }
-        return tag.substring(start, end);
-    }
-
-    private static void extractDataRefs(String xml, List<String> out) {
+    private static void extractDataRefs(String value, List<String> out) {
         // Find any token in the XML that ends with a dangerous extension
         // Simple whitespace/quote tokenizer
-        for (String token : xml.split("[\\s\"'<>]+")) {
+        for (String token : value.split("[\\s\"'<>]+")) {
             if (token.length() < 4) {
                 continue;
             }
@@ -884,6 +803,105 @@ public class PpkgParser implements Parser {
             if (DANGEROUS_EXTENSIONS.contains(ext)) {
                 out.add(token);
             }
+        }
+    }
+
+    private static final class PpkgXmlHandler extends DefaultHandler {
+
+        private static final Map<String, String> PACKAGE_FIELDS = Map.of(
+                "ID", "id",
+                "Name", "name",
+                "Version", "version",
+                "OwnerType", "owner_type",
+                "Rank", "rank");
+
+        private final List<String> commands;
+        private final List<String> dataRefs;
+        private final Map<String, String> pkgMeta;
+        private final List<ElementCapture> captures = new ArrayList<>();
+
+        private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
+                               Map<String, String> pkgMeta) {
+            this.commands = commands;
+            this.dataRefs = dataRefs;
+            this.pkgMeta = pkgMeta;
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) {
+            String element = localName(localName, qName);
+            if ("parm".equals(element)
+                    && "CommandLine".equals(attribute(attributes, "name"))) {
+                addCommand(attribute(attributes, "value"));
+            }
+            if ("CommandLine".equals(element) || PACKAGE_FIELDS.containsKey(element)) {
+                captures.add(new ElementCapture(element));
+            }
+            for (int i = 0; i < attributes.getLength(); i++) {
+                extractDataRefs(attributes.getValue(i), dataRefs);
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            for (ElementCapture capture : captures) {
+                capture.text.append(ch, start, length);
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            String element = localName(localName, qName);
+            for (int i = captures.size() - 1; i >= 0; i--) {
+                ElementCapture capture = captures.get(i);
+                if (!capture.element.equals(element)) {
+                    continue;
+                }
+                captures.remove(i);
+                String value = capture.text.toString().trim();
+                if ("CommandLine".equals(element)) {
+                    addCommand(value);
+                } else if (!value.isEmpty()) {
+                    pkgMeta.putIfAbsent(PACKAGE_FIELDS.get(element), value);
+                }
+                extractDataRefs(value, dataRefs);
+                break;
+            }
+        }
+
+        private void addCommand(String command) {
+            if (command != null && !command.isBlank()) {
+                commands.add(command.trim());
+                extractDataRefs(command, dataRefs);
+            }
+        }
+
+        private static String attribute(Attributes attributes, String wanted) {
+            for (int i = 0; i < attributes.getLength(); i++) {
+                if (wanted.equals(localName(
+                        attributes.getLocalName(i), attributes.getQName(i)))) {
+                    return attributes.getValue(i);
+                }
+            }
+            return null;
+        }
+
+        private static String localName(String localName, String qName) {
+            if (localName != null && !localName.isEmpty()) {
+                return localName;
+            }
+            int colon = qName == null ? -1 : qName.indexOf(':');
+            return colon < 0 ? qName : qName.substring(colon + 1);
+        }
+    }
+
+    private static final class ElementCapture {
+        private final String element;
+        private final StringBuilder text = new StringBuilder();
+
+        private ElementCapture(String element) {
+            this.element = element;
         }
     }
 

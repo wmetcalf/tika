@@ -16,14 +16,22 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
@@ -42,6 +50,11 @@ import org.apache.tika.sax.BodyContentHandler;
  */
 public class PpkgParserSecurityTest {
 
+    private static final String COMMAND = "powershell.exe -NoProfile";
+
+    @TempDir
+    Path temporaryDirectory;
+
     private static void put7(byte[] b, int off, long v) {
         for (int i = 0; i < 7; i++) {
             b[off + i] = (byte) ((v >>> (8 * i)) & 0xff);
@@ -53,6 +66,19 @@ public class PpkgParserSecurityTest {
             new PpkgParser().parse(tis, new BodyContentHandler(-1),
                     new Metadata(), new ParseContext());
         }
+    }
+
+    private static Metadata parseMetadata(byte[] wim) throws Exception {
+        return parseResult(wim).metadata;
+    }
+
+    private static ParseResult parseResult(byte[] wim) throws Exception {
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        try (TikaInputStream tis = TikaInputStream.get(wim)) {
+            new PpkgParser().parse(tis, body, metadata, new ParseContext());
+        }
+        return new ParseResult(body.toString(), metadata);
     }
 
     /** Run parse(); pass if it completes or throws TikaException; fail on a raw RuntimeException. */
@@ -146,5 +172,99 @@ public class PpkgParserSecurityTest {
                 () -> assertContractHeld(b, "self-referential-walk"),
                 "PpkgParser.walkDirectory did not terminate on a self-referential "
                         + "directory listing (exponential fan-out DoS)");
+    }
+
+    @Test
+    public void singleQuotedCommandAttributesAreCanonical() throws Exception {
+        String xml = """
+                <wap-provisioningdoc xmlns:p="urn:test">
+                  <p:characteristic>
+                    <p:parm name='CommandLine' value='powershell.exe -NoProfile'/>
+                  </p:characteristic>
+                </wap-provisioningdoc>
+                """;
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        assertEquals(COMMAND, metadata.get("ppkg:command"));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void externalXmlEntitiesAreNotResolved() throws Exception {
+        String secret = "PPKG_XXE_SECRET_SHOULD_NOT_LEAK";
+        Path secretFile = temporaryDirectory.resolve("secret.txt");
+        Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
+        String xml = """
+                <!DOCTYPE provisioning [
+                  <!ENTITY xxe SYSTEM "%s">
+                ]>
+                <provisioning><CommandLine>&xxe;</CommandLine></provisioning>
+                """.formatted(secretFile.toUri());
+
+        ParseResult result = parseResult(buildWim(xml));
+        assertFalse(result.body.contains(secret));
+        assertEquals(0, result.metadata.getValues("ppkg:command").length);
+    }
+
+    private static byte[] buildWim(String xml) {
+        byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
+        int lookupOffset = 208;
+        int lookupLength = 100;
+        int metadataOffset = lookupOffset + lookupLength;
+        int metadataLength = 256;
+        int xmlOffset = metadataOffset + metadataLength;
+        byte[] wim = new byte[xmlOffset + xmlBytes.length];
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+
+        System.arraycopy(PpkgParser.WIM_MAGIC, 0, wim, 0, PpkgParser.WIM_MAGIC.length);
+        buffer.putInt(16, 0x00020000);
+        buffer.putInt(20, 32768);
+        buffer.putInt(44, 1);
+        putResourceHeader(wim, buffer, 48, lookupLength, 0,
+                lookupOffset, lookupLength);
+
+        byte[] metadataHash = repeated((byte) 0x11);
+        byte[] xmlHash = repeated((byte) 0x42);
+        putLookupEntry(wim, buffer, lookupOffset, metadataLength, 0x04,
+                metadataOffset, metadataLength, metadataHash);
+        putLookupEntry(wim, buffer, lookupOffset + 50, xmlBytes.length, 0,
+                xmlOffset, xmlBytes.length, xmlHash);
+
+        buffer.putInt(metadataOffset, 8);
+        buffer.putLong(metadataOffset + 8 + 16, 32);
+
+        byte[] nameBytes = "payload.provxml".getBytes(StandardCharsets.UTF_16LE);
+        int dentry = metadataOffset + 32;
+        buffer.putLong(dentry, 102L + nameBytes.length);
+        System.arraycopy(xmlHash, 0, wim, dentry + 64, xmlHash.length);
+        buffer.putShort(dentry + 100, (short) nameBytes.length);
+        System.arraycopy(nameBytes, 0, wim, dentry + 102, nameBytes.length);
+        System.arraycopy(xmlBytes, 0, wim, xmlOffset, xmlBytes.length);
+        return wim;
+    }
+
+    private static void putResourceHeader(byte[] bytes, ByteBuffer buffer, int offset,
+                                          long size, int flags, long dataOffset,
+                                          long uncompressed) {
+        put7(bytes, offset, size);
+        bytes[offset + 7] = (byte) flags;
+        buffer.putLong(offset + 8, dataOffset);
+        buffer.putLong(offset + 16, uncompressed);
+    }
+
+    private static void putLookupEntry(byte[] bytes, ByteBuffer buffer, int offset,
+                                       long size, int flags, long dataOffset,
+                                       long uncompressed, byte[] sha1) {
+        putResourceHeader(bytes, buffer, offset, size, flags, dataOffset, uncompressed);
+        System.arraycopy(sha1, 0, bytes, offset + 30, sha1.length);
+    }
+
+    private static byte[] repeated(byte value) {
+        byte[] bytes = new byte[20];
+        Arrays.fill(bytes, value);
+        return bytes;
+    }
+
+    private record ParseResult(String body, Metadata metadata) {
     }
 }
