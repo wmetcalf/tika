@@ -246,6 +246,20 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void oversizedCommandFailsClosedForSecurityClassification() throws Exception {
+        Metadata metadata = parseMetadata(buildWim(
+                "<wap-provisioningdoc><CommandLine>"
+                        + "A".repeat(64 * 1024)
+                        + "powershell.exe -NoProfile"
+                        + "</CommandLine></wap-provisioningdoc>"));
+
+        assertNotNull(metadata.get("ppkg:warning"),
+                "truncating a security field must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "a command suffix beyond the capture bound must not fail open");
+    }
+
+    @Test
     public void nestedCommandCapturesAreBounded() throws Exception {
         String xml = "<wap-provisioningdoc>"
                 + "<CommandLine>".repeat(64)

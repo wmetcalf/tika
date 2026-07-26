@@ -667,7 +667,7 @@ public class PpkgParser implements Parser {
                     "PPKG XML field extraction incomplete; execution indicators "
                             + "may be hidden");
         }
-        if (xmlHandler.captureLimitExceeded) {
+        if (xmlHandler.captureLimitExceeded || xmlHandler.captureValueLimitExceeded) {
             rootMeta.set("ExploitClass",
                     "PPKG XML field extraction incomplete; execution indicators "
                             + "may be hidden");
@@ -827,6 +827,9 @@ public class PpkgParser implements Parser {
         private static final String CAPTURE_NESTING_WARNING =
                 "PPKG field capture nesting exceeded " + MAX_ACTIVE_CAPTURES
                         + "; over-depth values were skipped";
+        private static final String CAPTURE_VALUE_WARNING =
+                "PPKG field value exceeded " + MAX_CAPTURE_CHARS
+                        + " characters; the structured value was truncated";
 
         private static final Map<String, String> PACKAGE_FIELDS = Map.of(
                 "ID", "id",
@@ -843,6 +846,7 @@ public class PpkgParser implements Parser {
         private final StringBuilder dataRefToken = new StringBuilder();
         private boolean dataRefTokenTooLong;
         private boolean captureLimitExceeded;
+        private boolean captureValueLimitExceeded;
         private int skippedCaptureDepth;
 
         private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
@@ -902,6 +906,12 @@ public class PpkgParser implements Parser {
                     continue;
                 }
                 captures.remove(i);
+                if (capture.truncated) {
+                    captureValueLimitExceeded = true;
+                    if (!warnings.contains(CAPTURE_VALUE_WARNING)) {
+                        warnings.add(CAPTURE_VALUE_WARNING);
+                    }
+                }
                 String value = capture.text.toString().trim();
                 if ("CommandLine".equals(element)) {
                     addCommand(value);
@@ -976,6 +986,7 @@ public class PpkgParser implements Parser {
     private static final class ElementCapture {
         private final String element;
         private final StringBuilder text = new StringBuilder();
+        private boolean truncated;
 
         private ElementCapture(String element) {
             this.element = element;
@@ -983,6 +994,9 @@ public class PpkgParser implements Parser {
 
         private void append(char[] ch, int start, int length) {
             int remaining = PpkgXmlHandler.MAX_CAPTURE_CHARS - text.length();
+            if (length > remaining) {
+                truncated = true;
+            }
             if (remaining > 0) {
                 text.append(ch, start, Math.min(length, remaining));
             }

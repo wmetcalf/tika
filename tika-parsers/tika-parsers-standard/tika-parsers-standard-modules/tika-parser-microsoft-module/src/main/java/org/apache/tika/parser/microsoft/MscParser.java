@@ -201,6 +201,11 @@ public class MscParser implements Parser {
                     + MscXmlHandler.MAX_ACTIVE_CAPTURES
                     + "; over-depth values were skipped");
         }
+        if (xmlHandler.captureValueLimitExceeded) {
+            warnings.add("MSC field value exceeded "
+                    + MscXmlHandler.MAX_CAPTURE_CHARS
+                    + " characters; the structured value was truncated");
+        }
         grimResource = xmlHandler.grimResourceDetected;
 
         // Extract CLSIDs from both the raw XML and canonical parsed content.
@@ -296,7 +301,8 @@ public class MscParser implements Parser {
                 }
             }
         }
-        if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded)
+        if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded
+                || xmlHandler.captureValueLimitExceeded)
                 && metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "MSC XML field extraction incomplete; execution indicators "
@@ -471,6 +477,7 @@ public class MscParser implements Parser {
         private final StringBuilder canonicalText = new StringBuilder();
         private boolean grimResourceDetected;
         private boolean captureLimitExceeded;
+        private boolean captureValueLimitExceeded;
         private int skippedCaptureDepth;
         private int skippedShellCommandDepth;
 
@@ -559,6 +566,9 @@ public class MscParser implements Parser {
         }
 
         private void acceptCapture(ElementCapture capture) {
+            if (capture.truncated) {
+                captureValueLimitExceeded = true;
+            }
             if ("String".equalsIgnoreCase(capture.element)
                     && capture.grimResourceDetected) {
                 grimResourceDetected = true;
@@ -623,6 +633,7 @@ public class MscParser implements Parser {
         private int grimResourcePrefixChars;
         private boolean waitingForGrimResourcePayload;
         private boolean grimResourceDetected;
+        private boolean truncated;
 
         private ElementCapture(String element, ShellCommand shell) {
             this.element = element;
@@ -632,6 +643,9 @@ public class MscParser implements Parser {
         private void append(char[] ch, int start, int length) {
             detectGrimResource(ch, start, length);
             int remaining = MscXmlHandler.MAX_CAPTURE_CHARS - text.length();
+            if (length > remaining) {
+                truncated = true;
+            }
             if (remaining > 0) {
                 text.append(ch, start, Math.min(length, remaining));
             }

@@ -145,6 +145,19 @@ public class MscParserSecurityTest {
                 "incomplete field extraction must remain security-visible");
     }
 
+    @Test
+    public void testOversizedCommandFailsClosedForSecurityClassification() throws Exception {
+        ParseResult result = parse("<MMC_ConsoleFile><CommandLine>"
+                + "A".repeat(64 * 1024)
+                + "powershell.exe -NoProfile"
+                + "</CommandLine></MMC_ConsoleFile>");
+
+        assertNotNull(result.metadata.get("msc:warning"),
+                "truncating a security field must be signaled");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "a command suffix beyond the capture bound must not fail open");
+    }
+
     private static ParseResult parse(String xml) throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler body = new BodyContentHandler(-1);
