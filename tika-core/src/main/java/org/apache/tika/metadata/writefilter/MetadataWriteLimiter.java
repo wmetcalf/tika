@@ -46,4 +46,15 @@ public interface MetadataWriteLimiter extends Serializable {
      * @param data the metadata map to modify
      */
     void set(String field, String value, Map<String, String[]> data);
+
+    /**
+     * Removes a field while allowing stateful limiters to release any byte
+     * accounting associated with its key and values.
+     *
+     * @param field the metadata field name
+     * @param data the metadata map to modify
+     */
+    default void remove(String field, Map<String, String[]> data) {
+        set(field, null, data);
+    }
 }

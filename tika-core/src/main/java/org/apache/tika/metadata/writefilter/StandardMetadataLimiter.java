@@ -181,7 +181,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     public void set(String field, String value, Map<String, String[]> data) {
         //legacy behavior is that setting(null) removes the key
         if (value == null) {
-            data.remove(field);
+            remove(field, data);
             return;
         }
         if (! include(field, value)) {
@@ -198,6 +198,29 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             return;
         }
         setFilterKey(filterKey, value, data);
+    }
+
+    @Override
+    public void remove(String field, Map<String, String[]> data) {
+        String[] removed = data.remove(field);
+        Integer trackedValueSize = fieldSizes.remove(field);
+        if (trackedValueSize != null) {
+            estimatedSize = Math.max(0,
+                    estimatedSize - trackedValueSize - estimateSize(field));
+            return;
+        }
+        if (removed == null || TIKA_CONTENT_KEY.equals(field)
+                || (!ALWAYS_SET_FIELDS.contains(field)
+                && !ALWAYS_ADD_FIELDS.contains(field))) {
+            return;
+        }
+        int removedSize = estimateSize(field);
+        for (String value : removed) {
+            if (value != null) {
+                removedSize += estimateSize(value);
+            }
+        }
+        estimatedSize = Math.max(0, estimatedSize - removedSize);
     }
 
     private void setAlwaysInclude(String field, String value, Map<String, String[]> data) {

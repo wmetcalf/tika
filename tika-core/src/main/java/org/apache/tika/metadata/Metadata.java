@@ -460,13 +460,11 @@ public class Metadata
     protected void set(String name, String[] values) {
         //TODO: optimize this to not copy if all
         //values are to be included "as is"
+        writeLimiter.remove(name, metadata);
         if (values != null) {
-            metadata.remove(name);
             for (String v : values) {
                 addUnchecked(name, v);
             }
-        } else {
-            metadata.remove(name);
         }
     }
 
@@ -726,7 +724,7 @@ public class Metadata
      * @param name metadata name to remove
      */
     public void remove(String name) {
-        metadata.remove(name);
+        writeLimiter.remove(name, metadata);
     }
 
     /**

@@ -102,6 +102,7 @@ public class WinShortcutParser implements Parser {
     // ── ShellLinkHeader constants ──────────────────────────────────────────────
     private static final int LNK_MAGIC   = 0x0000004C;
     private static final int HEADER_SIZE = 76;
+    private static final int MAX_INPUT_BYTES = 16 * 1024 * 1024;
 
     private static final int FLAG_HAS_TARGET_IDLIST  = 0x00000001;
     private static final int FLAG_HAS_LINK_INFO      = 0x00000002;
@@ -311,7 +312,11 @@ public class WinShortcutParser implements Parser {
     @Override
     public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        byte[] raw = stream.readAllBytes();
+        Map<String, String> fields = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+
+        byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
+        boolean inputTruncated = raw.length == MAX_INPUT_BYTES && stream.read() != -1;
         if (raw.length < HEADER_SIZE) {
             return;
         }
@@ -321,8 +326,11 @@ public class WinShortcutParser implements Parser {
         }
         metadata.set(Metadata.CONTENT_TYPE, LNK_TYPE.toString());
 
-        Map<String, String> fields = new LinkedHashMap<>();
-        List<String> warnings = new ArrayList<>();
+        if (inputTruncated) {
+            warnings.add("LNK input exceeded the 16 MiB analysis limit; extraction is incomplete");
+            fields.put("ExploitClass",
+                    "LNK input extraction incomplete; exploit indicators may be hidden");
+        }
 
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
@@ -1681,10 +1689,9 @@ public class WinShortcutParser implements Parser {
         if (payload == null || payload.length == 0) {
             return;
         }
-        // Build a single lowercased string of the first 64KB for pattern matching.
-        // Limit avoids allocating huge strings for multi-MB padding blobs.
-        int scanLen = Math.min(payload.length, 65536);
-        String lower = new String(payload, 0, scanLen,
+        // The parser already bounds the complete input, so scan every retained
+        // appended byte rather than letting padding hide late indicators.
+        String lower = new String(payload, 0, payload.length,
                 StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
 
         List<String> matchedCves = new ArrayList<>();

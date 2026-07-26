@@ -257,6 +257,22 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testAtomicArrayReplacementReleasesPreviousFieldBudget() {
+        Metadata metadata = filter(100, 100, 1000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+        String original = "A".repeat(40);
+        String replacement = "B".repeat(35);
+
+        metadata.add(Office.OFFICE_LINK_RECORD, original);
+        metadata.set(Office.OFFICE_LINK_RECORD, new String[]{replacement});
+
+        assertArrayEquals(new String[]{replacement},
+                metadata.getValues(Office.OFFICE_LINK_RECORD));
+        assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA),
+                "replacing a record must release the removed value's limiter budget");
+    }
+
+    @Test
     public void testCompositeRecordHonorsExcludedMemberFields() {
         Metadata office = filter(100, 1000, 10000, 10,
                 Collections.EMPTY_SET, Set.of(Office.OFFICE_LINK_URL.getName()), false);

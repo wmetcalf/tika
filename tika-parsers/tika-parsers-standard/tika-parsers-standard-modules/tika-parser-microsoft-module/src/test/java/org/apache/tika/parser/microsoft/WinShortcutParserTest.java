@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -70,6 +71,27 @@ public class WinShortcutParserTest {
         assertArrayEquals(
                 java.util.Arrays.copyOfRange(lnk, HEADER_SIZE, lnk.length),
                 result.embedded.get(0));
+    }
+
+    @Test
+    public void testLateAppendedExploitIndicatorIsClassified() throws Exception {
+        ParseResult result = parse(buildLateIndicatorLnk());
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "exploit signatures after the first 64 KiB must not evade classification");
+    }
+
+    @Test
+    public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
+        byte[] oversized = new byte[16 * 1024 * 1024 + 1];
+        System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
+
+        ParseResult result = parse(oversized);
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "bounded input must be reported as incomplete");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "truncation must fail closed because late indicators may be hidden");
     }
 
     private static ParseResult parse(byte[] lnk) throws Exception {
@@ -134,6 +156,23 @@ public class WinShortcutParserTest {
                 .putInt(SIG_TOLERATED_UNKNOWN)
                 .array());
         out.write(HTML);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildLateIndicatorLnk() throws IOException {
+        byte[] base = buildLnk();
+        byte[] header = java.util.Arrays.copyOf(base, HEADER_SIZE);
+        byte[] payload = new byte[70_000];
+        java.util.Arrays.fill(payload, (byte) 'A');
+        byte[] indicator =
+                "<script>new ActiveXObject('WScript.Shell')</script>"
+                        .getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(indicator, 0, payload, 68_000, indicator.length);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(new byte[4]);
+        out.write(payload);
         return out.toByteArray();
     }
 

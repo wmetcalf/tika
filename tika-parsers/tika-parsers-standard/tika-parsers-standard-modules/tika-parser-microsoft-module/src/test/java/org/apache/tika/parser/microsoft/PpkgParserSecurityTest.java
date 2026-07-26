@@ -153,7 +153,9 @@ public class PpkgParserSecurityTest {
     public void decompressedResourceLimitRejectsHeapSizedDeclarations() {
         assertFalse(PpkgParser.isDecompressedResourceSizeAllowed(256 * 1024 * 1024L),
                 "a tiny WIM resource must not be allowed to allocate a 256 MiB output");
-        assertTrue(PpkgParser.isDecompressedResourceSizeAllowed(64 * 1024 * 1024L));
+        assertFalse(PpkgParser.isDecompressedResourceSizeAllowed(64 * 1024 * 1024L),
+                "one accepted resource must leave room for the container and parser state");
+        assertTrue(PpkgParser.isDecompressedResourceSizeAllowed(8 * 1024 * 1024L));
     }
 
     @Test
@@ -177,6 +179,31 @@ public class PpkgParserSecurityTest {
                 "the resource cap must apply before the uncompressed copy path");
         assertNotNull(metadata.get("ExploitClass"),
                 "skipping command-bearing metadata must fail closed");
+    }
+
+    @Test
+    public void malformedCompressedMetadataResourceFailsClosed() throws Exception {
+        Metadata metadata = parseMetadata(
+                buildOversizedMetadataResource(10, 0x06, 100));
+
+        assertNotNull(metadata.get("ppkg:warning"),
+                "structurally invalid compressed metadata must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "skipping structurally invalid command-bearing metadata must fail closed");
+    }
+
+    @Test
+    public void oversizedLookupTableFailsClosed() throws Exception {
+        byte[] wim = header(300, 32768);
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+        long lookupSize = 100_001L * 50L;
+        putResourceHeader(wim, buffer, 48, lookupSize, 0, 208, lookupSize);
+
+        Metadata metadata = parseMetadata(wim);
+        assertNotNull(metadata.get("ppkg:warning"),
+                "lookup-table object amplification must be bounded and signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "an incomplete lookup table can hide command-bearing resources");
     }
 
     // ── Finding: line 585 — walkDirectory exponential fan-out (no visited-set) ─
@@ -214,6 +241,18 @@ public class PpkgParserSecurityTest {
                 () -> assertContractHeld(b, "self-referential-walk"),
                 "PpkgParser.walkDirectory did not terminate on a self-referential "
                         + "directory listing (exponential fan-out DoS)");
+    }
+
+    @Test
+    public void directoryEntryLengthOverflowTerminates() {
+        byte[] wim = buildWim(
+                "<provisioning><CommandLine>benign</CommandLine></provisioning>");
+        ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(308 + 32, Long.MAX_VALUE);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> parse(wim),
+                "an overflowing directory-entry length must not prevent cursor progress");
     }
 
     @Test

@@ -271,7 +271,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         try {
             StringBuilder unwrittenLinkText = new StringBuilder();
             state.linkStates.descendingIterator().forEachRemaining(
-                    linkState -> unwrittenLinkText.append(linkState.anchorBuilder));
+                    linkState -> linkState.appendPlainText(unwrittenLinkText));
             if (unwrittenLinkText.length() > 0) {
                 xhtml.startElement("p");
                 writeString(unwrittenLinkText.toString());
@@ -444,25 +444,52 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
         if (!state.linkStates.isEmpty()) {
             LinkState parent = state.linkStates.peek();
-            parent.hasAllowedContent |= linkState.hasAllowedContent;
-            parent.anchorBuilder.append(linkState.anchorBuilder);
-            if (parent.uri == null) {
-                parent.uri = linkState.uri;
-            }
+            parent.addNestedLink(linkState);
             return;
         }
 
-        if (linkState.uri != null && !linkState.uri.isBlank()) {
-            xhtml.startElement("a", "href", linkState.uri);
-            xhtml.characters(linkState.anchorBuilder.toString());
-            xhtml.endElement("a");
-        } else {
-            try {
-                //if it isn't a uri, output this anyhow
-                writeString(linkState.anchorBuilder.toString());
-            } catch (IOException e) {
-                handleCatchableIOE(e);
+        writeLinkState(linkState);
+    }
+
+    private void writeLinkState(LinkState linkState) throws SAXException, IOException {
+        if (linkState.parts.isEmpty()) {
+            writeLinkText(linkState.uri, linkState.anchorBuilder.toString(), true);
+            return;
+        }
+
+        boolean wroteOwnText = false;
+        for (LinkPart part : linkState.parts) {
+            if (part.nestedLink != null) {
+                writeLinkState(part.nestedLink);
+            } else {
+                writeLinkText(linkState.uri, part.text, false);
+                wroteOwnText |= !part.text.isEmpty();
             }
+        }
+        String remainingText = linkState.anchorBuilder.toString();
+        writeLinkText(linkState.uri, remainingText, false);
+        wroteOwnText |= !remainingText.isEmpty();
+        if (!wroteOwnText && linkState.uri != null && !linkState.uri.isBlank()) {
+            writeLinkText(linkState.uri, "", true);
+        }
+    }
+
+    private void writeLinkText(String uri, String text, boolean emitEmpty)
+            throws SAXException, IOException {
+        if (text.isEmpty() && !emitEmpty) {
+            return;
+        }
+        if (uri != null && !uri.isBlank()) {
+            xhtml.startElement("a", "href", uri);
+            xhtml.characters(text);
+            xhtml.endElement("a");
+            return;
+        }
+        try {
+            //if it isn't a uri, output this anyhow
+            writeString(text);
+        } catch (IOException e) {
+            handleCatchableIOE(e);
         }
     }
 
@@ -558,8 +585,47 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
     private static class LinkState {
         private final StringBuilder anchorBuilder = new StringBuilder();
+        private final List<LinkPart> parts = new ArrayList<>();
         private boolean hasAllowedContent = false;
         private String uri = null;
+
+        private void addNestedLink(LinkState nestedLink) {
+            if (anchorBuilder.length() > 0) {
+                parts.add(LinkPart.text(anchorBuilder.toString()));
+                anchorBuilder.setLength(0);
+            }
+            parts.add(LinkPart.link(nestedLink));
+            hasAllowedContent |= nestedLink.hasAllowedContent;
+        }
+
+        private void appendPlainText(StringBuilder target) {
+            for (LinkPart part : parts) {
+                if (part.nestedLink != null) {
+                    part.nestedLink.appendPlainText(target);
+                } else {
+                    target.append(part.text);
+                }
+            }
+            target.append(anchorBuilder);
+        }
+    }
+
+    private static class LinkPart {
+        private final String text;
+        private final LinkState nestedLink;
+
+        private LinkPart(String text, LinkState nestedLink) {
+            this.text = text;
+            this.nestedLink = nestedLink;
+        }
+
+        private static LinkPart text(String text) {
+            return new LinkPart(text, null);
+        }
+
+        private static LinkPart link(LinkState link) {
+            return new LinkPart(null, link);
+        }
     }
 
     private static class HtmlTag {

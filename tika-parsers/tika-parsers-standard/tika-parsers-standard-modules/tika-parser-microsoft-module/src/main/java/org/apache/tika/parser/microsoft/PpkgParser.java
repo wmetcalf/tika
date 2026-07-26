@@ -90,9 +90,15 @@ public class PpkgParser implements Parser {
     private static final int WIM_HDR_FLAG_COMPRESS_XPRESS = 0x00020000;
     // WIM resource flag: compressed
     private static final int RESHDR_FLAG_COMPRESSED = 0x02;
-    private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 64L * 1024 * 1024;
+    private static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
+    private static final int MAX_LOOKUP_ENTRIES = 100_000;
+    private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 8L * 1024 * 1024;
     private static final String RESOURCE_LIMIT_WARNING =
-            "PPKG WIM resource exceeded the 64 MB extraction limit and was skipped";
+            "PPKG WIM resource exceeded the 8 MB extraction limit and was skipped";
+    private static final String INCOMPLETE_RESOURCE_WARNING =
+            "PPKG WIM resource extraction incomplete; one or more resources were skipped";
+    private static final String LOOKUP_LIMIT_WARNING =
+            "PPKG WIM lookup table exceeded the entry limit and was skipped";
 
     // Extensions considered high-risk when referenced by provisioning commands
     private static final Set<String> DANGEROUS_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -117,15 +123,17 @@ public class PpkgParser implements Parser {
                       Metadata metadata, ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        // Cap input — PPKG/WIM files are usually <50 MB; 256 MB is a hard ceiling
-        // that prevents heap exhaustion from a crafted oversize package.
-        byte[] raw = stream.readNBytes(256 * 1024 * 1024);
+        // Keep the complete in-memory container plus bounded resource copies below
+        // the heap budget used by common parser workers.
+        byte[] raw = stream.readNBytes(MAX_INPUT_BYTES);
         if (raw.length < 208) {
             throw new TikaException("File too small to be a WIM/PPKG");
         }
-        if (raw.length == 256 * 1024 * 1024 && stream.read() != -1) {
+        if (raw.length == MAX_INPUT_BYTES && stream.read() != -1) {
             metadata.add("ppkg:warning",
-                    "Input truncated at 256 MB — any content beyond was not parsed");
+                    "Input truncated at 32 MB — any content beyond was not parsed");
+            metadata.set("ExploitClass",
+                    "PPKG input extraction incomplete; execution indicators may be hidden");
         }
         for (int i = 0; i < WIM_MAGIC.length; i++) {
             if (raw[i] != WIM_MAGIC[i]) {
@@ -171,16 +179,16 @@ public class PpkgParser implements Parser {
         }
         metadata.set("wim:image_count", Integer.toString(imageCount));
 
-        // Parse lookup table (always uncompressed)
-        Map<String, ResHdr> lookupTable = parseLookupTable(raw, lookupHdr);
-
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
-        xhtml.startDocument();
-
         List<String> commands   = new ArrayList<>();
         List<String> warnings   = new ArrayList<>();
         List<String> allDataRefs = new ArrayList<>();
         Map<String, String> pkgMeta = new LinkedHashMap<>();
+
+        // Parse lookup table (always uncompressed)
+        Map<String, ResHdr> lookupTable = parseLookupTable(raw, lookupHdr, warnings);
+
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        xhtml.startDocument();
 
         // Identify metadata resources: the METADATA flag (0x04) marks directory trees.
         // Either compressed (0x06) or uncompressed (0x04) metadata resources are valid.
@@ -190,7 +198,11 @@ public class PpkgParser implements Parser {
             }
             try {
                 byte[] metaRes = decompressResource(raw, rh, chunkSize, warnings);
-                if (metaRes == null || metaRes.length < 8) {
+                if (metaRes == null) {
+                    continue;
+                }
+                if (metaRes.length < 8) {
+                    markResourceIncomplete(warnings);
                     continue;
                 }
                 // Security descriptor set precedes the root dentry.
@@ -201,6 +213,7 @@ public class PpkgParser implements Parser {
                 // Root dentry has subdir_offset pointing at its children
                 ByteBuffer mbuf = ByteBuffer.wrap(metaRes).order(ByteOrder.LITTLE_ENDIAN);
                 if (rootOff + 24 > metaRes.length) {
+                    markResourceIncomplete(warnings);
                     continue;
                 }
                 long childOff = mbuf.getLong((int) rootOff + 16);
@@ -211,11 +224,14 @@ public class PpkgParser implements Parser {
                     walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
                             commands, warnings, allDataRefs, pkgMeta, xhtml, context,
                             metadata, new HashSet<>());
+                } else if (childOff < 0 || childOff >= metaRes.length) {
+                    markResourceIncomplete(warnings);
                 }
             } catch (RuntimeException e) {
                 // A malformed metadata resource must not abort the whole package
                 // parse with an uncaught runtime exception (Tika parser contract).
                 warnings.add("Skipped malformed WIM metadata resource: " + e);
+                markResourceIncomplete(warnings);
             }
         }
 
@@ -245,7 +261,7 @@ public class PpkgParser implements Parser {
                         "PPKG provisioning command executes shell payload: " + cmd);
             }
         }
-        if (warnings.contains(RESOURCE_LIMIT_WARNING)
+        if (warnings.contains(INCOMPLETE_RESOURCE_WARNING)
                 && metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "PPKG resource extraction incomplete; execution indicators "
@@ -278,12 +294,26 @@ public class PpkgParser implements Parser {
     }
 
     private static Map<String, ResHdr> parseLookupTable(byte[] raw, ResHdr hdr) {
+        return parseLookupTable(raw, hdr, null);
+    }
+
+    private static Map<String, ResHdr> parseLookupTable(byte[] raw, ResHdr hdr,
+                                                        List<String> warnings) {
         Map<String, ResHdr> map = new HashMap<>();
+        long entryCount = hdr.size / 50L;
+        if (entryCount > MAX_LOOKUP_ENTRIES) {
+            if (warnings != null && !warnings.contains(LOOKUP_LIMIT_WARNING)) {
+                warnings.add(LOOKUP_LIMIT_WARNING);
+            }
+            markResourceIncomplete(warnings);
+            return map;
+        }
         if (!isRangeWithin(raw, hdr.offset, hdr.size)) {
+            markResourceIncomplete(warnings);
             return map;
         }
         // Lookup table is always stored uncompressed (size == uncompressed)
-        int n = (int) (hdr.size / 50);
+        int n = (int) entryCount;
         ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < n; i++) {
             int base = (int) hdr.offset + i * 50;
@@ -316,10 +346,10 @@ public class PpkgParser implements Parser {
             if (warnings != null && !warnings.contains(RESOURCE_LIMIT_WARNING)) {
                 warnings.add(RESOURCE_LIMIT_WARNING);
             }
-            return null;
+            return rejectResource(warnings);
         }
         if (!isRangeWithin(raw, hdr.offset, hdr.size)) {
-            return null;
+            return rejectResource(warnings);
         }
         boolean compressed = (hdr.flags & RESHDR_FLAG_COMPRESSED) != 0
                 || hdr.size != hdr.uncompressed;
@@ -334,18 +364,20 @@ public class PpkgParser implements Parser {
         // a multi-hundred-MB int[] chunk table + O(nChunks) work. A legitimate WIM
         // resource needs very few chunks; reject an absurd count.
         if (nChunksLong < 1 || nChunksLong > 262_144) {
-            return null;
+            return rejectResource(warnings);
         }
         int nChunks = (int) nChunksLong;
         int dataOff = (int) hdr.offset;
 
         if (nChunks == 1) {
             // Single chunk — no chunk offset table, compressed data starts immediately
-            if (hdr.size < 256) {
-                return null;
-            }
             byte[] chunk = Arrays.copyOfRange(raw, dataOff, (int) (hdr.offset + hdr.size));
-            return xpressDecompress(chunk, uncompLen);
+            try {
+                byte[] decompressed = xpressDecompress(chunk, uncompLen);
+                return decompressed == null ? rejectResource(warnings) : decompressed;
+            } catch (RuntimeException e) {
+                return rejectResource(warnings);
+            }
         }
 
         // Multi-chunk: chunk offset table precedes the data
@@ -354,7 +386,7 @@ public class PpkgParser implements Parser {
         long tableBytesLong = (nChunks - 1L) * 4L;
         if (tableBytesLong > hdr.size
                 || tableBytesLong > raw.length - hdr.offset) {
-            return null;
+            return rejectResource(warnings);
         }
         int tableBytes = (int) tableBytesLong;
         ByteBuffer tbuf = ByteBuffer.wrap(raw, dataOff, tableBytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -379,7 +411,7 @@ public class PpkgParser implements Parser {
             // into a positive "length" that slips past the guard.
             if (chunkCompEnd < prevEnd || prevEnd < 0
                     || (long) chunkDataStart + chunkCompEnd > raw.length) {
-                return null;
+                return rejectResource(warnings);
             }
             int chunkCompLen = chunkCompEnd - prevEnd;
             byte[] cdata = Arrays.copyOfRange(raw,
@@ -389,9 +421,13 @@ public class PpkgParser implements Parser {
                 // Stored uncompressed
                 dec = cdata;
             } else {
-                dec = xpressDecompress(cdata, chunkUncomp);
+                try {
+                    dec = xpressDecompress(cdata, chunkUncomp);
+                } catch (RuntimeException e) {
+                    return rejectResource(warnings);
+                }
                 if (dec == null) {
-                    return null;
+                    return rejectResource(warnings);
                 }
             }
             int copy = Math.min(dec.length, chunkUncomp);
@@ -400,6 +436,17 @@ public class PpkgParser implements Parser {
             prevEnd = chunkCompEnd;
         }
         return out;
+    }
+
+    private static byte[] rejectResource(List<String> warnings) {
+        markResourceIncomplete(warnings);
+        return null;
+    }
+
+    private static void markResourceIncomplete(List<String> warnings) {
+        if (warnings != null && !warnings.contains(INCOMPLETE_RESOURCE_WARNING)) {
+            warnings.add(INCOMPLETE_RESOURCE_WARNING);
+        }
     }
 
     static boolean isDecompressedResourceSizeAllowed(long size) {
@@ -651,18 +698,22 @@ public class PpkgParser implements Parser {
             throws IOException, SAXException, TikaException {
         // visited-set dedups directory listing offsets: a self-referential or cyclic
         // dentry graph would otherwise recurse fanout^depth times (exponential DoS).
-        if (dirOff < 0 || dirOff >= meta.length || depth > WALK_MAX_DEPTH
-                || !visited.add(dirOff)) {
+        if (dirOff < 0 || dirOff >= meta.length || depth > WALK_MAX_DEPTH) {
+            markResourceIncomplete(warnings);
+            return;
+        }
+        if (!visited.add(dirOff)) {
             return;
         }
         ByteBuffer mbuf = ByteBuffer.wrap(meta).order(ByteOrder.LITTLE_ENDIAN);
         int pos = dirOff;
-        while (pos + 8 <= meta.length) {
+        while (pos >= 0 && pos <= meta.length - 8) {
             long entryLen = mbuf.getLong(pos);
             if (entryLen == 0) {
                 break;
             }
-            if (entryLen < 104 || pos + entryLen > meta.length) {
+            if (entryLen < 104 || entryLen > meta.length - pos) {
+                markResourceIncomplete(warnings);
                 break;
             }
             int attrs    = mbuf.getInt(pos + 8);
@@ -671,7 +722,8 @@ public class PpkgParser implements Parser {
             byte[] sha1 = Arrays.copyOfRange(meta, pos + 64, pos + 84);
             int nameNb = mbuf.getShort(pos + 100) & 0xffff;
             String name = "";
-            if (nameNb > 0 && pos + 102 + nameNb <= meta.length) {
+            if (nameNb > 0 && nameNb <= entryLen - 102
+                    && nameNb <= meta.length - (pos + 102)) {
                 name = new String(meta, pos + 102, nameNb, StandardCharsets.UTF_16LE);
             }
 
@@ -697,7 +749,12 @@ public class PpkgParser implements Parser {
                 }
             }
 
-            pos += (int) ((entryLen + 7L) & ~7L);
+            long alignedEntryLen = (entryLen + 7L) & ~7L;
+            if (alignedEntryLen <= 0 || alignedEntryLen > meta.length - pos) {
+                markResourceIncomplete(warnings);
+                break;
+            }
+            pos += (int) alignedEntryLen;
         }
     }
 
@@ -1084,11 +1141,14 @@ public class PpkgParser implements Parser {
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     private static String bytesToHex(byte[] b) {
-        StringBuilder sb = new StringBuilder(b.length * 2);
-        for (byte x : b) {
-            sb.append(String.format(Locale.ROOT, "%02x", x & 0xff));
+        char[] hex = new char[b.length * 2];
+        char[] digits = "0123456789abcdef".toCharArray();
+        for (int i = 0; i < b.length; i++) {
+            int value = b[i] & 0xff;
+            hex[i * 2] = digits[value >>> 4];
+            hex[i * 2 + 1] = digits[value & 0x0f];
         }
-        return sb.toString();
+        return new String(hex);
     }
 
     private static String sha256Hex(byte[] data) {
