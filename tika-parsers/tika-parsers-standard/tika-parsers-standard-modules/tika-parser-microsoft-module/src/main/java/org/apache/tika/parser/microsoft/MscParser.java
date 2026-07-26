@@ -290,14 +290,10 @@ public class MscParser implements Parser {
                 if (exploitFound) {
                     break;
                 }
-                String lower = cmd.toLowerCase(Locale.ROOT);
-                for (String kw : EXEC_KEYWORDS) {
-                    if (lower.contains(kw)) {
-                        metadata.set("ExploitClass",
-                                "MSC task command executes shell payload: " + cmd);
-                        exploitFound = true;
-                        break;
-                    }
+                if (containsExecutionIndicator(cmd)) {
+                    metadata.set("ExploitClass",
+                            "MSC task command executes shell payload: " + cmd);
+                    exploitFound = true;
                 }
             }
         }
@@ -460,6 +456,34 @@ public class MscParser implements Parser {
             url = url.substring(0, j);
         }
         return url;
+    }
+
+    private static boolean containsExecutionIndicator(String command) {
+        String lower = command.toLowerCase(Locale.ROOT);
+        for (String keyword : EXEC_KEYWORDS) {
+            if (lower.contains(keyword)) {
+                return true;
+            }
+        }
+        String trimmed = lower.stripLeading();
+        int tokenEnd;
+        if (trimmed.startsWith("\"")) {
+            tokenEnd = trimmed.indexOf('"', 1);
+            if (tokenEnd < 0) {
+                return false;
+            }
+            trimmed = trimmed.substring(1, tokenEnd);
+        } else {
+            tokenEnd = 0;
+            while (tokenEnd < trimmed.length()
+                    && !Character.isWhitespace(trimmed.charAt(tokenEnd))) {
+                tokenEnd++;
+            }
+            trimmed = trimmed.substring(0, tokenEnd);
+        }
+        int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+        String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
+        return "cmd".equals(executable) || "cmd.exe".equals(executable);
     }
 
     private static final class MscXmlHandler extends DefaultHandler {

@@ -90,6 +90,7 @@ public class PpkgParser implements Parser {
     private static final int WIM_HDR_FLAG_COMPRESS_XPRESS = 0x00020000;
     // WIM resource flag: compressed
     private static final int RESHDR_FLAG_COMPRESSED = 0x02;
+    private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 64L * 1024 * 1024;
 
     // Extensions considered high-risk when referenced by provisioning commands
     private static final Set<String> DANGEROUS_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -237,13 +238,9 @@ public class PpkgParser implements Parser {
 
         // ExploitClass for dangerous command patterns
         for (String cmd : seen) {
-            String lower = cmd.toLowerCase(Locale.ROOT);
-            for (String kw : EXEC_KEYWORDS) {
-                if (lower.contains(kw)) {
-                    metadata.set("ExploitClass",
-                            "PPKG provisioning command executes shell payload: " + cmd);
-                    break;
-                }
+            if (containsExecutionIndicator(cmd)) {
+                metadata.set("ExploitClass",
+                        "PPKG provisioning command executes shell payload: " + cmd);
             }
         }
 
@@ -274,7 +271,7 @@ public class PpkgParser implements Parser {
 
     private static Map<String, ResHdr> parseLookupTable(byte[] raw, ResHdr hdr) {
         Map<String, ResHdr> map = new HashMap<>();
-        if (hdr.size <= 0 || hdr.offset < 0 || hdr.offset + hdr.size > raw.length) {
+        if (!isRangeWithin(raw, hdr.offset, hdr.size)) {
             return map;
         }
         // Lookup table is always stored uncompressed (size == uncompressed)
@@ -298,7 +295,7 @@ public class PpkgParser implements Parser {
     }
 
     private static byte[] decompressResource(byte[] raw, ResHdr hdr, int chunkSize) {
-        if (hdr.size <= 0 || hdr.offset < 0 || hdr.offset + hdr.size > raw.length) {
+        if (!isRangeWithin(raw, hdr.offset, hdr.size)) {
             return null;
         }
         boolean compressed = (hdr.flags & RESHDR_FLAG_COMPRESSED) != 0
@@ -307,38 +304,41 @@ public class PpkgParser implements Parser {
             return Arrays.copyOfRange(raw, (int) hdr.offset,
                     (int) (hdr.offset + hdr.size));
         }
-        // Guard: reject unreasonably large or negative uncompressed sizes.
-        if (hdr.uncompressed <= 0 || hdr.uncompressed > 256 * 1024 * 1024L) {
+        // A resource can declare a huge expansion while occupying only a few
+        // hundred bytes. Bound the allocation independently of the container.
+        if (!isDecompressedResourceSizeAllowed(hdr.uncompressed)) {
             return null;
         }
         // XPRESS chunk decompress
         int uncompLen = (int) hdr.uncompressed;
-        byte[] out = new byte[uncompLen];
-        int outPos = 0;
-        int nChunks = (uncompLen + chunkSize - 1) / chunkSize;
+        long nChunksLong = (hdr.uncompressed + chunkSize - 1L) / chunkSize;
         // A tiny chunkSize (e.g. 1) yields nChunks ~= uncompLen (up to 256M) and thus
         // a multi-hundred-MB int[] chunk table + O(nChunks) work. A legitimate WIM
         // resource needs very few chunks; reject an absurd count.
-        if (nChunks < 1 || nChunks > 262_144) {
+        if (nChunksLong < 1 || nChunksLong > 262_144) {
             return null;
         }
+        int nChunks = (int) nChunksLong;
         int dataOff = (int) hdr.offset;
 
         if (nChunks == 1) {
             // Single chunk — no chunk offset table, compressed data starts immediately
-            byte[] chunk = Arrays.copyOfRange(raw, dataOff, (int) (hdr.offset + hdr.size));
-            byte[] dec = xpressDecompress(chunk, uncompLen);
-            if (dec == null) {
+            if (hdr.size < 256) {
                 return null;
             }
-            System.arraycopy(dec, 0, out, 0, Math.min(dec.length, uncompLen));
-            return out;
+            byte[] chunk = Arrays.copyOfRange(raw, dataOff, (int) (hdr.offset + hdr.size));
+            return xpressDecompress(chunk, uncompLen);
         }
 
         // Multi-chunk: chunk offset table precedes the data
         // Table has (nChunks - 1) 4-byte LE entries giving end-offset of each chunk
         // (last chunk end is implicit from total compressed size)
-        int tableBytes = (nChunks - 1) * 4;
+        long tableBytesLong = (nChunks - 1L) * 4L;
+        if (tableBytesLong > hdr.size
+                || tableBytesLong > raw.length - hdr.offset) {
+            return null;
+        }
+        int tableBytes = (int) tableBytesLong;
         ByteBuffer tbuf = ByteBuffer.wrap(raw, dataOff, tableBytes).order(ByteOrder.LITTLE_ENDIAN);
         int[] chunkEnds = new int[nChunks];
         for (int i = 0; i < nChunks - 1; i++) {
@@ -347,6 +347,8 @@ public class PpkgParser implements Parser {
         chunkEnds[nChunks - 1] = (int) hdr.size - tableBytes;
 
         int chunkDataStart = dataOff + tableBytes;
+        byte[] out = new byte[uncompLen];
+        int outPos = 0;
         int prevEnd = 0;
         for (int ci = 0; ci < nChunks; ci++) {
             int chunkCompEnd = chunkEnds[ci];
@@ -380,6 +382,43 @@ public class PpkgParser implements Parser {
             prevEnd = chunkCompEnd;
         }
         return out;
+    }
+
+    static boolean isDecompressedResourceSizeAllowed(long size) {
+        return size > 0 && size <= MAX_DECOMPRESSED_RESOURCE_BYTES;
+    }
+
+    private static boolean isRangeWithin(byte[] raw, long offset, long size) {
+        return size > 0 && offset >= 0 && offset <= raw.length
+                && size <= raw.length - offset;
+    }
+
+    private static boolean containsExecutionIndicator(String command) {
+        String lower = command.toLowerCase(Locale.ROOT);
+        for (String keyword : EXEC_KEYWORDS) {
+            if (lower.contains(keyword)) {
+                return true;
+            }
+        }
+        String trimmed = lower.stripLeading();
+        int tokenEnd;
+        if (trimmed.startsWith("\"")) {
+            tokenEnd = trimmed.indexOf('"', 1);
+            if (tokenEnd < 0) {
+                return false;
+            }
+            trimmed = trimmed.substring(1, tokenEnd);
+        } else {
+            tokenEnd = 0;
+            while (tokenEnd < trimmed.length()
+                    && !Character.isWhitespace(trimmed.charAt(tokenEnd))) {
+                tokenEnd++;
+            }
+            trimmed = trimmed.substring(0, tokenEnd);
+        }
+        int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+        String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
+        return "cmd".equals(executable) || "cmd.exe".equals(executable);
     }
 
     // ── XPRESS Huffman decompressor (MS-XCA §2.3 "LZ77+Huffman") ─────────────

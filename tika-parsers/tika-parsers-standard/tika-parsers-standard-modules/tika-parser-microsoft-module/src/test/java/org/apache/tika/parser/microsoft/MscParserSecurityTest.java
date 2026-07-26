@@ -158,6 +158,21 @@ public class MscParserSecurityTest {
                 "a command suffix beyond the capture bound must not fail open");
     }
 
+    @Test
+    public void testExtensionlessCmdWithLeadingSwitchIsClassified() throws Exception {
+        ParseResult result = parse("""
+                <MMC_ConsoleFile>
+                  <ShellCommandDefinition>
+                    <Command>cmd</Command>
+                    <Params>/q /c calc.exe</Params>
+                  </ShellCommandDefinition>
+                </MMC_ConsoleFile>
+                """);
+
+        assertEquals("cmd /q /c calc.exe", result.metadata.get("msc:task_command"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
     private static ParseResult parse(String xml) throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler body = new BodyContentHandler(-1);

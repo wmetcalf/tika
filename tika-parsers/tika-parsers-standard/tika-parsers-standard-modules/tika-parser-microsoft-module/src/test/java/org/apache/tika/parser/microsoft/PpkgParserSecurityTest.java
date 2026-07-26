@@ -138,6 +138,24 @@ public class PpkgParserSecurityTest {
         assertContractHeld(b, "nchunks-overflow");
     }
 
+    @Test
+    public void lookupTableRangeAdditionCannotOverflow() {
+        byte[] b = header(208, 32768);
+        ByteBuffer buf = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN);
+        put7(b, 48, 0x00ff_ffff_ffff_ffffL);
+        buf.putLong(56, Long.MAX_VALUE);
+        buf.putLong(64, 50);
+
+        assertContractHeld(b, "lookup-range-overflow");
+    }
+
+    @Test
+    public void decompressedResourceLimitRejectsHeapSizedDeclarations() {
+        assertFalse(PpkgParser.isDecompressedResourceSizeAllowed(256 * 1024 * 1024L),
+                "a tiny WIM resource must not be allowed to allocate a 256 MiB output");
+        assertTrue(PpkgParser.isDecompressedResourceSizeAllowed(64 * 1024 * 1024L));
+    }
+
     // ── Finding: line 585 — walkDirectory exponential fan-out (no visited-set) ─
     @Test
     public void selfReferentialDirectoryWalkTerminates() {
@@ -257,6 +275,18 @@ public class PpkgParserSecurityTest {
                 "truncating a security field must be signaled");
         assertNotNull(metadata.get("ExploitClass"),
                 "a command suffix beyond the capture bound must not fail open");
+    }
+
+    @Test
+    public void extensionlessCmdWithLeadingSwitchIsClassified() throws Exception {
+        Metadata metadata = parseMetadata(buildWim("""
+                <wap-provisioningdoc>
+                  <parm name="CommandLine" value="cmd /q /c calc.exe"/>
+                </wap-provisioningdoc>
+                """));
+
+        assertEquals("cmd /q /c calc.exe", metadata.get("ppkg:command"));
+        assertNotNull(metadata.get("ExploitClass"));
     }
 
     @Test

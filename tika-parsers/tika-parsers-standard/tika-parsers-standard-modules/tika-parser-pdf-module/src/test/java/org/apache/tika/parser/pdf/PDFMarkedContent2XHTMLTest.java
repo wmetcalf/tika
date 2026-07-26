@@ -123,6 +123,23 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         }
     }
 
+    @Test
+    public void testExcludedLinkAncestorRetainsAllowedDescendantUri() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addExcludedLinkAncestorStructure(document);
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertContains(
+                    "<a href=\"https://allowed-descendant.invalid/\">ALLOWED_CHILD</a>",
+                    handler.toString());
+        }
+    }
+
     private static PDDocument buildPageOverrideDocument() throws IOException {
         PDDocument document = new PDDocument();
         List<PDPage> pages = new ArrayList<>();
@@ -180,6 +197,36 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(excludedParent));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addExcludedLinkAncestorStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary allowedChild = new COSDictionary();
+        allowedChild.setItem(COSName.S, COSName.P);
+        allowedChild.setItem(COSName.PG, pageRefs.get(0));
+        allowedChild.setItem(COSName.K, COSInteger.ZERO);
+
+        COSDictionary action = new COSDictionary();
+        action.setItem(COSName.S, COSName.URI);
+        action.setString(COSName.URI, "https://allowed-descendant.invalid/");
+        COSDictionary linkTarget = new COSDictionary();
+        linkTarget.setItem(COSName.A, action);
+
+        COSArray linkKids = new COSArray();
+        linkKids.add(new COSObject(allowedChild));
+        linkKids.add(linkTarget);
+        COSDictionary excludedLink = new COSDictionary();
+        excludedLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        excludedLink.setItem(COSName.PG, pageRefs.get(5));
+        excludedLink.setItem(COSName.K, linkKids);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(excludedLink));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

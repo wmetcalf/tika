@@ -348,7 +348,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             HtmlTag tag = getTag(name, roleMap);
             boolean startedLink = false;
             boolean ignoreTag = false;
-            if (outputAllowed && "link".equals(tag.clazz)) {
+            if ("link".equals(tag.clazz)) {
                 state.inLink = true;
                 state.linkHasAllowedContent = false;
                 startedLink = true;
@@ -404,7 +404,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             COSDictionary anchor = dict.getCOSDictionary(COSName.A);
             //check for subtype /Link ?
             //COSName subtype = obj.getCOSName(COSName.SUBTYPE);
-            if (anchor != null && isOutputAllowed(currentPageRef)) {
+            if (anchor != null) {
                 state.uri = anchor.getString(COSName.URI);
             } else {
                 if (dict.containsKey(COSName.K)) {
