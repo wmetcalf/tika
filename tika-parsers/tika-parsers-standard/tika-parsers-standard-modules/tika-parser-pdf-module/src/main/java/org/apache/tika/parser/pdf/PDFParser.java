@@ -42,7 +42,6 @@ import org.apache.pdfbox.io.RandomAccessRead;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
 import org.apache.pdfbox.io.RandomAccessStreamCache;
-import org.apache.pdfbox.multipdf.PageExtractor;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -55,6 +54,7 @@ import org.apache.pdfbox.pdmodel.fixup.processor.AcroFormDefaultsProcessor;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -88,6 +88,7 @@ import org.apache.tika.renderer.RenderResults;
 import org.apache.tika.renderer.Renderer;
 import org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer;
 import org.apache.tika.renderer.pdf.pdfbox.PDFRenderingState;
+import org.apache.tika.sax.ContentHandlerDecorator;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -129,6 +130,8 @@ public class PDFParser implements Parser, RenderingParser {
      */
     private static final long serialVersionUID = -752276948656079347L;
     private static final Set<MediaType> SUPPORTED_TYPES = Collections.singleton(MEDIA_TYPE);
+    private static final int LEGACY_SLICE_THRESHOLD = 5;
+    private static final int LEGACY_OUTPUT_PAGE_LIMIT = 2;
 
     static COSName AF_RELATIONSHIP = COSName.getPDFName("AFRelationship");
 
@@ -173,7 +176,6 @@ public class PDFParser implements Parser, RenderingParser {
         context.set(IncrementalUpdateRecord.class, null);
         initRenderer(localConfig, context);
         PDDocument pdfDocument = null;
-        PDDocument slicedPdf = null;
         int originalPageCount = -1;
 
         String password = "";
@@ -201,23 +203,11 @@ public class PDFParser implements Parser, RenderingParser {
             pdfDocument = getPDDocument(tis, password,
                     memoryUsageSetting.streamCache, metadata, context);
 
-            //WAM 06/17/20 limit pdf text extraction to the first 2 pages...
             originalPageCount = pdfDocument.getNumberOfPages();
-            try {
-                if (originalPageCount > 5) {
-                    PageExtractor slicer = new PageExtractor(pdfDocument, 1, 2);
-                    slicedPdf = slicer.extract();
-                    if (slicedPdf != null) {
-                        // Use sliced PDF for all subsequent operations
-                        pdfDocument.close();
-                        pdfDocument = slicedPdf;
-                        slicedPdf = null; // Transfer ownership
-                    }
-                }
-            } catch (Exception e) {
-                metadata.add("PDF-SLICE-FAILED", "true");
-                metadata.add("PDF-SLICED-ERROR", e.toString());
-                slicedPdf = null;
+            ContentHandler outputHandler = handler;
+            if (handler != null && originalPageCount > LEGACY_SLICE_THRESHOLD) {
+                outputHandler = new PageLimitingContentHandler(
+                        handler, LEGACY_OUTPUT_PAGE_LIMIT);
             }
 
             boolean hasCollection = hasCollection(pdfDocument, metadata);
@@ -230,26 +220,25 @@ public class PDFParser implements Parser, RenderingParser {
             extractSignatures(pdfDocument, metadata);
             checkIllustrator(pdfDocument, metadata);
             checkAccessPermissions(localConfig.getAccessCheckMode(), metadata);
-            renderPagesBeforeParse(tis, handler, metadata, context, localConfig);
-            if (handler != null) {
+            renderPagesBeforeParse(tis, outputHandler, metadata, context, localConfig);
+            if (outputHandler != null) {
                 if (shouldHandleXFAOnly(hasXFA, localConfig)) {
-                    handleXFAOnly(pdfDocument, handler, metadata, context);
+                    handleXFAOnly(pdfDocument, outputHandler, metadata, context);
                 } else if (localConfig.getOcr().getStrategy()
                         .equals(OcrConfig.Strategy.OCR_ONLY)) {
-                    OCR2XHTML.process(pdfDocument, handler, context, metadata,
+                    OCR2XHTML.process(pdfDocument, outputHandler, context, metadata,
                             localConfig, renderer);
                 } else if (hasMarkedContent && localConfig.isExtractMarkedContent()) {
                     PDFMarkedContent2XHTML
-                            .process(pdfDocument, handler, context, metadata,
+                            .process(pdfDocument, outputHandler, context, metadata,
                                     localConfig, renderer);
                 } else {
-                    PDF2XHTML.process(pdfDocument, handler, context, metadata,
+                    PDF2XHTML.process(pdfDocument, outputHandler, context, metadata,
                             localConfig, renderer);
                 }
             }
 
-            // WAM: Restore original page count if we sliced the PDF
-            if (originalPageCount > 5) {
+            if (originalPageCount > LEGACY_SLICE_THRESHOLD) {
                 metadata.set(PagedText.N_PAGES, originalPageCount);
             }
         } catch (InvalidPasswordException e) {
@@ -268,14 +257,127 @@ public class PDFParser implements Parser, RenderingParser {
                 if (pdfDocument != null) {
                     pdfDocument.close();
                 }
-                if (slicedPdf != null) {
-                    slicedPdf.close();
-                }
             } finally {
                 //replace the one that was here
                 context.set(PDFRenderingState.class, incomingRenderingState);
             }
 
+        }
+    }
+
+    /**
+     * Suppresses SAX output for page containers beyond a visible-page limit while
+     * allowing PDFBox and Tika to process every page for metadata and embedded content.
+     */
+    private static final class PageLimitingContentHandler extends ContentHandlerDecorator {
+
+        private final int pageLimit;
+        private int pageNumber;
+        private int activePageDepth;
+        private int suppressedDepth;
+
+        private PageLimitingContentHandler(ContentHandler handler, int pageLimit) {
+            super(handler);
+            this.pageLimit = pageLimit;
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String name,
+                                 Attributes attributes) throws SAXException {
+            if (suppressedDepth > 0) {
+                suppressedDepth++;
+                return;
+            }
+            if (activePageDepth == 0 && isPageElement(localName, name, attributes)) {
+                pageNumber++;
+                activePageDepth = 1;
+                if (pageNumber > pageLimit) {
+                    suppressedDepth = 1;
+                    return;
+                }
+            } else if (activePageDepth > 0) {
+                activePageDepth++;
+            }
+            super.startElement(uri, localName, name, attributes);
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String name)
+                throws SAXException {
+            if (suppressedDepth > 0) {
+                suppressedDepth--;
+                if (suppressedDepth == 0) {
+                    activePageDepth = 0;
+                }
+                return;
+            }
+            super.endElement(uri, localName, name);
+            if (activePageDepth > 0) {
+                activePageDepth--;
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            if (suppressedDepth == 0) {
+                super.characters(ch, start, length);
+            }
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] ch, int start, int length)
+                throws SAXException {
+            if (suppressedDepth == 0) {
+                super.ignorableWhitespace(ch, start, length);
+            }
+        }
+
+        @Override
+        public void skippedEntity(String name) throws SAXException {
+            if (suppressedDepth == 0) {
+                super.skippedEntity(name);
+            }
+        }
+
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            if (suppressedDepth == 0) {
+                super.processingInstruction(target, data);
+            }
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) throws SAXException {
+            if (suppressedDepth == 0) {
+                super.startPrefixMapping(prefix, uri);
+            }
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            if (suppressedDepth == 0) {
+                super.endPrefixMapping(prefix);
+            }
+        }
+
+        private static boolean isPageElement(String localName, String name,
+                                             Attributes attributes) {
+            String element = localName == null || localName.isEmpty()
+                    ? name : localName;
+            if (!"div".equals(element)) {
+                return false;
+            }
+            String classes = attributes.getValue("class");
+            if (classes == null) {
+                return false;
+            }
+            for (String value : classes.split("\\s+")) {
+                if ("page".equals(value)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
