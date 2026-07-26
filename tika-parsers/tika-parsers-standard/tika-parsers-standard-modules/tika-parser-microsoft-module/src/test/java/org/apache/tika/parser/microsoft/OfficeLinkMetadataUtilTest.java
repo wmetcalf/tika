@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 
 public class OfficeLinkMetadataUtilTest {
 
@@ -55,5 +56,31 @@ public class OfficeLinkMetadataUtilTest {
         assertEquals("click", OfficeLinkMetadataUtil.normalizeTrigger("field_hyperlink"));
         assertEquals("internal_anchor",
                 OfficeLinkMetadataUtil.normalizeActionType("hyperlink", "#slide1"));
+    }
+
+    @Test
+    public void testDefaultLimiterPreservesCanonicalLinkRecords() {
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
+                "https://first.invalid", null, null, "slide1.xml",
+                "shape-1", "hlinkClick", null, "click", "external_url");
+        OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
+                "https://second.invalid", "second-visible-text", "second-ocr",
+                "slide2.xml", "shape-2", "hlinkClick", "rId2",
+                "click", "external_url");
+
+        assertArrayEquals(new String[]{
+                "{\"type\":\"hyperlink\",\"url\":\"https://first.invalid\","
+                        + "\"text\":\"\",\"ocrText\":\"\",\"source\":\"slide1.xml\","
+                        + "\"context\":\"shape-1\",\"relationshipType\":\"hlinkClick\","
+                        + "\"id\":\"\",\"trigger\":\"click\",\"actionType\":\"external_url\"}",
+                "{\"type\":\"hyperlink\",\"url\":\"https://second.invalid\","
+                        + "\"text\":\"second-visible-text\",\"ocrText\":\"second-ocr\","
+                        + "\"source\":\"slide2.xml\",\"context\":\"shape-2\","
+                        + "\"relationshipType\":\"hlinkClick\",\"id\":\"rId2\","
+                        + "\"trigger\":\"click\",\"actionType\":\"external_url\"}"
+        }, metadata.getValues(Office.OFFICE_LINK_RECORD));
     }
 }

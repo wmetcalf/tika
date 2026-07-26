@@ -322,6 +322,7 @@ public class TestMetadata extends TikaTest {
         assertEquals("msoffice:link:id", Office.OFFICE_LINK_ID.getName());
         assertEquals("msoffice:link:trigger", Office.OFFICE_LINK_TRIGGER.getName());
         assertEquals("msoffice:link:action-type", Office.OFFICE_LINK_ACTION_TYPE.getName());
+        assertEquals("msoffice:link:record", Office.OFFICE_LINK_RECORD.getName());
         assertTrue(Office.OFFICE_LINK_URL.isMultiValuePermitted());
     }
 

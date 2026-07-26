@@ -69,6 +69,14 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     public static final Set<String> ALWAYS_SET_FIELDS = new HashSet<>();
     public static final Set<String> ALWAYS_ADD_FIELDS = new HashSet<>();
 
+    /**
+     * Multi-valued structured fields whose individual values must never be truncated.
+     * A value that does not fit is dropped as a whole and metadata is marked truncated.
+     */
+    public static final Set<String> ATOMIC_ADD_FIELDS = Set.of(
+            "msoffice:link:record",
+            "barcode:record");
+
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_TYPE);
@@ -248,6 +256,10 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             return;
         }
         StringSizePair filterKey = filterKey(field, value, data);
+        if (ATOMIC_ADD_FIELDS.contains(field)) {
+            addAtomic(filterKey, value, data);
+            return;
+        }
         if (! data.containsKey(filterKey.string)) {
             setFilterKey(filterKey, value, data);
             return;
@@ -290,6 +302,34 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         fieldSizes.put(filterKey.string, valueLength + fieldSize);
 
         data.put(filterKey.string, appendValue(data.get(filterKey.string), toAdd ));
+    }
+
+    private void addAtomic(StringSizePair filterKey, String value,
+                           Map<String, String[]> data) {
+        String[] values = data.get(filterKey.string);
+        if (values != null && values.length >= maxValuesPerField) {
+            setTruncated(data);
+            return;
+        }
+
+        Integer fieldSizeValue = fieldSizes.get(filterKey.string);
+        int fieldSize = fieldSizeValue == null ? 0 : fieldSizeValue;
+        int keySize = fieldSizeValue == null ? filterKey.size : 0;
+        int allowedByField = maxFieldSize - fieldSize;
+        int allowedByTotal = maxTotalEstimatedSize - estimatedSize - keySize;
+        int valueSize = estimateSize(value);
+        if (valueSize > Math.min(allowedByField, allowedByTotal)) {
+            setTruncated(data);
+            return;
+        }
+
+        estimatedSize += keySize + valueSize;
+        fieldSizes.put(filterKey.string, fieldSize + valueSize);
+        if (values == null) {
+            data.put(filterKey.string, new String[]{value});
+        } else {
+            data.put(filterKey.string, appendValue(values, value));
+        }
     }
 
     private String[] appendValue(String[] values, final String value) {

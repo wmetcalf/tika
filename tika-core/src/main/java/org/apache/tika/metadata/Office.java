@@ -232,6 +232,12 @@ public interface Office {
 
     Property OFFICE_LINK_ACTION_TYPE = Property.internalTextBag("msoffice:link:action-type");
 
+    /**
+     * One JSON object per Office link. Unlike the legacy parallel link fields, each value
+     * preserves all fields of a logical link as one limiter-atomic record.
+     */
+    Property OFFICE_LINK_RECORD = Property.internalTextBag("msoffice:link:record");
+
     Property HAS_HIDDEN_SLIDES = Property.internalBoolean("msoffice:ppt:has-hidden-slides");
 
     Property NUM_HIDDEN_SLIDES = Property.internalInteger("msoffice:ppt:num-hidden-slides");

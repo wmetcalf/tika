@@ -34,6 +34,7 @@ import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.OfficeOpenXMLExtended;
 import org.apache.tika.metadata.Property;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -225,6 +226,21 @@ public class StandardMetadataLimiterTest extends TikaTest {
         m.add("test", "baz");
 
         assertArrayEquals(new String[]{"foo", "bar", "baz"}, m.getValues("test"));
+    }
+
+    @Test
+    public void testAtomicValuesAreDroppedInsteadOfTruncated() {
+        Metadata metadata = filter(100, 80, 1000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+        String first = "{\"url\":\"one\"}";
+        String tooLarge = "{\"url\":\"this-record-does-not-fit-in-the-remaining-field-budget\"}";
+
+        metadata.add(Office.OFFICE_LINK_RECORD, first);
+        metadata.add(Office.OFFICE_LINK_RECORD, tooLarge);
+
+        assertArrayEquals(new String[]{first},
+                metadata.getValues(Office.OFFICE_LINK_RECORD));
+        assertTruncated(metadata);
     }
 
     @Test

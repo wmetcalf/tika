@@ -17,6 +17,7 @@
 package org.apache.tika.parser.microsoft;
 
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.MetadataRecord;
 import org.apache.tika.metadata.Office;
 
 /**
@@ -41,6 +42,17 @@ public final class OfficeLinkMetadataUtil {
         if (metadata == null || isBlank(type) || isBlank(url)) {
             return;
         }
+        metadata.add(Office.OFFICE_LINK_RECORD, MetadataRecord.encode(
+                "type", type,
+                "url", url,
+                "text", text,
+                "ocrText", ocrText,
+                "source", source,
+                "context", context,
+                "relationshipType", relationshipType,
+                "id", id,
+                "trigger", trigger,
+                "actionType", actionType));
         metadata.add(Office.OFFICE_LINK_TYPE, type);
         metadata.add(Office.OFFICE_LINK_URL, url);
         metadata.add(Office.OFFICE_LINK_TEXT, safe(text));
