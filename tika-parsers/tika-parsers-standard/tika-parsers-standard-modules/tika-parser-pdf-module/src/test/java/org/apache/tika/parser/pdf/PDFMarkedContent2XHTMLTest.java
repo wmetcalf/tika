@@ -18,11 +18,14 @@ package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSArray;
@@ -42,6 +45,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
@@ -220,6 +224,51 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             assertContains("href=\"https://allowed-annotation.invalid/\"",
                     handler.toString());
         }
+    }
+
+    @Test
+    public void testCyclicPageTreeFailsClosed() throws Exception {
+        try (PDDocument document = Loader.loadPDF(buildCyclicPageTreePdf())) {
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            assertThrows(TikaException.class,
+                    () -> PDFMarkedContent2XHTML.process(
+                            document, new ToXMLContentHandler(), new ParseContext(),
+                            new Metadata(), config, null));
+        }
+    }
+
+    private static byte[] buildCyclicPageTreePdf() {
+        StringBuilder pdf = new StringBuilder();
+        pdf.append("%PDF-1.4\n");
+        int[] offsets = new int[5];
+        offsets[1] = pdf.length();
+        pdf.append("1 0 obj\n")
+                .append("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>\n")
+                .append("endobj\n");
+        offsets[2] = pdf.length();
+        pdf.append("2 0 obj\n")
+                .append("<< /Type /Pages /Kids [2 0 R] /Count 1 >>\n")
+                .append("endobj\n");
+        offsets[3] = pdf.length();
+        pdf.append("3 0 obj\n")
+                .append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ")
+                .append("/Resources << >> >>\n")
+                .append("endobj\n");
+        offsets[4] = pdf.length();
+        pdf.append("4 0 obj\n<< /Type /StructTreeRoot /K [0] >>\nendobj\n");
+
+        int xref = pdf.length();
+        pdf.append("xref\n0 5\n")
+                .append("0000000000 65535 f \n");
+        for (int i = 1; i <= 4; i++) {
+            pdf.append(String.format(
+                    Locale.ROOT, "%010d 00000 n \n", offsets[i]));
+        }
+        pdf.append("trailer\n<< /Size 5 /Root 1 0 R >>\n")
+                .append("startxref\n").append(xref).append("\n%%EOF\n");
+        return pdf.toString().getBytes(StandardCharsets.US_ASCII);
     }
 
     private static PDDocument buildPageOverrideDocument() throws IOException {

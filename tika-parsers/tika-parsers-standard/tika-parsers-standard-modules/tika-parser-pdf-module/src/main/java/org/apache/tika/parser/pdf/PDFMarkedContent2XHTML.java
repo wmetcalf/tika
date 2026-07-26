@@ -63,6 +63,8 @@ import org.apache.tika.renderer.Renderer;
 
 public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
+    private static final int MAX_PAGE_TREE_DEPTH = 128;
+    private static final int MAX_PAGE_TREE_OBJECTS = 100_000;
     private static final int MAX_RECURSION_DEPTH = 1000;
     private static final String DIV = "div";
     private static final Map<String, HtmlTag> COMMON_TAG_MAP = new HashMap<>();
@@ -190,23 +192,45 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         return tags;
     }
 
-    private static void findPages(COSBase kidsObj, List<ObjectRef> pageRefs) {
+    private static void findPages(COSBase kidsObj, List<ObjectRef> pageRefs)
+            throws IOException {
+        findPages(kidsObj, pageRefs, new HashSet<>(), 0);
+    }
+
+    private static void findPages(COSBase kidsObj, List<ObjectRef> pageRefs,
+                                  Set<ObjectRef> visitedObjects, int depth)
+            throws IOException {
         if (kidsObj == null) {
             return;
+        }
+        if (depth > MAX_PAGE_TREE_DEPTH) {
+            throw new IOException(
+                    "PDF page tree exceeded depth limit " + MAX_PAGE_TREE_DEPTH);
         }
         if (kidsObj instanceof COSArray) {
             for (COSBase kid : ((COSArray) kidsObj)) {
                 if (kid instanceof COSObject) {
+                    ObjectRef kidRef = toObjectRef(kid);
+                    if (!visitedObjects.add(kidRef)) {
+                        throw new IOException(
+                                "PDF page tree contains a repeated or cyclic object "
+                                        + kidRef);
+                    }
+                    if (visitedObjects.size() > MAX_PAGE_TREE_OBJECTS) {
+                        throw new IOException(
+                                "PDF page tree exceeded object limit "
+                                        + MAX_PAGE_TREE_OBJECTS);
+                    }
                     COSBase kidbase = ((COSObject) kid).getObject();
                     if (kidbase instanceof COSDictionary) {
                         COSDictionary dict = (COSDictionary) kidbase;
                         if (COSName.PAGE.equals(dict.getCOSName(COSName.TYPE))) {
-                            pageRefs.add(new ObjectRef(((COSObject) kid).getKey().getNumber(),
-                                    ((COSObject) kid).getKey().getGeneration()));
+                            pageRefs.add(kidRef);
                             continue;
                         }
                         if (dict.containsKey(COSName.KIDS)) {
-                            findPages(dict.getDictionaryObject(COSName.KIDS), pageRefs);
+                            findPages(dict.getDictionaryObject(COSName.KIDS), pageRefs,
+                                    visitedObjects, depth + 1);
                         }
                     }
                 }
