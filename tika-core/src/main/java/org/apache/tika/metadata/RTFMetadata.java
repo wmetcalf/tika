@@ -80,6 +80,13 @@ public interface RTFMetadata {
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_source_path");
 
     /**
+     * Execution command stored in an OLE Package object. This may differ from the original
+     * source path when the embedded payload is renamed or launched through another path.
+     */
+    Property EMB_COMMAND = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_command");
+
+    /**
      * Number of decoy {@code \objdata} blocks that were discarded before the surviving
      * (last-occurrence) block for this embedded object.  A non-zero value indicates that the
      * document deliberately hid the real OLE payload behind dummy data to defeat parsers

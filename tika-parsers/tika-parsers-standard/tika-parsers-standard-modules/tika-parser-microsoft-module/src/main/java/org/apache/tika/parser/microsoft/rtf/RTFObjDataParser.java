@@ -221,7 +221,7 @@ class RTFObjDataParser {
                         String command = ole.getCommand();
                         if (command != null && !command.isEmpty()
                                 && !command.equals(fileName)) {
-                            metadata.add(RTFMetadata.EMB_SOURCE_PATH, command);
+                            metadata.set(RTFMetadata.EMB_COMMAND, command);
                         }
                     } catch (Ole10NativeException ex) {
                         // POI's lookup is case-sensitive; malware uses mixed-case stream
