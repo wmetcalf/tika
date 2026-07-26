@@ -95,6 +95,8 @@ public class PpkgParser implements Parser {
     private static final int MAX_PROCESSED_RESOURCES = 1_024;
     private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 8L * 1024 * 1024;
     private static final long MAX_CUMULATIVE_EXPANDED_BYTES = 16L * 1024 * 1024;
+    private static final int MAX_RETAINED_XML_VALUES = 4_096;
+    private static final int MAX_RETAINED_XML_VALUE_CHARS = 1024 * 1024;
     private static final String RESOURCE_LIMIT_WARNING =
             "PPKG WIM resource exceeded the 8 MB extraction limit and was skipped";
     private static final String INCOMPLETE_RESOURCE_WARNING =
@@ -103,6 +105,9 @@ public class PpkgParser implements Parser {
             "PPKG WIM lookup table exceeded the entry limit and was skipped";
     private static final String CUMULATIVE_RESOURCE_LIMIT_WARNING =
             "PPKG WIM cumulative resource extraction limit was reached";
+    private static final String RETAINED_VALUE_LIMIT_WARNING =
+            "PPKG XML retained-value limit reached; additional commands or "
+                    + "data references were skipped";
 
     // Extensions considered high-risk when referenced by provisioning commands
     private static final Set<String> DANGEROUS_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -183,9 +188,11 @@ public class PpkgParser implements Parser {
         }
         metadata.set("wim:image_count", Integer.toString(imageCount));
 
-        List<String> commands   = new ArrayList<>();
+        BoundedStringList commands = new BoundedStringList(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
         List<String> warnings   = new ArrayList<>();
-        List<String> allDataRefs = new ArrayList<>();
+        BoundedStringList allDataRefs = new BoundedStringList(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
         Map<String, String> pkgMeta = new LinkedHashMap<>();
         ResourceProcessingState resourceState = new ResourceProcessingState();
 
@@ -269,10 +276,17 @@ public class PpkgParser implements Parser {
                         "PPKG provisioning command executes shell payload: " + cmd);
             }
         }
-        if (warnings.contains(INCOMPLETE_RESOURCE_WARNING)
+        boolean retainedValueLimitExceeded =
+                commands.isTruncated() || allDataRefs.isTruncated();
+        if (retainedValueLimitExceeded
+                && !warnings.contains(RETAINED_VALUE_LIMIT_WARNING)) {
+            warnings.add(RETAINED_VALUE_LIMIT_WARNING);
+        }
+        if ((warnings.contains(INCOMPLETE_RESOURCE_WARNING)
+                || retainedValueLimitExceeded)
                 && metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
-                    "PPKG resource extraction incomplete; execution indicators "
+                    "PPKG extraction incomplete; execution indicators "
                             + "may be hidden");
         }
 
@@ -927,20 +941,33 @@ public class PpkgParser implements Parser {
     }
 
     private static void extractDataRefs(String value, List<String> out) {
-        // Find any token in the XML that ends with a dangerous extension
-        // Simple whitespace/quote tokenizer
-        for (String token : value.split("[\\s\"'<>]+")) {
-            if (token.length() < 4) {
+        if (value == null
+                || (out instanceof BoundedStringList
+                && ((BoundedStringList) out).isTruncated())) {
+            return;
+        }
+        int tokenStart = -1;
+        for (int i = 0; i <= value.length(); i++) {
+            char c = i < value.length() ? value.charAt(i) : ' ';
+            boolean delimiter = i == value.length() || Character.isWhitespace(c)
+                    || c == '"' || c == '\'' || c == '<' || c == '>';
+            if (!delimiter) {
+                if (tokenStart < 0) {
+                    tokenStart = i;
+                }
                 continue;
             }
-            int dot = token.lastIndexOf('.');
-            if (dot < 0) {
-                continue;
+            if (tokenStart >= 0 && i - tokenStart >= 4) {
+                int dot = value.lastIndexOf('.', i - 1);
+                if (dot >= tokenStart) {
+                    String ext = value.substring(dot, i).toLowerCase(Locale.ROOT);
+                    if (DANGEROUS_EXTENSIONS.contains(ext)
+                            && !out.add(value.substring(tokenStart, i))) {
+                        return;
+                    }
+                }
             }
-            String ext = token.substring(dot).toLowerCase(Locale.ROOT);
-            if (DANGEROUS_EXTENSIONS.contains(ext)) {
-                out.add(token);
-            }
+            tokenStart = -1;
         }
     }
 
@@ -949,6 +976,35 @@ public class PpkgParser implements Parser {
         int dot = nameLower.lastIndexOf('.');
         if (dot >= 0 && DANGEROUS_EXTENSIONS.contains(nameLower.substring(dot))) {
             dataRefs.add(name);
+        }
+    }
+
+    private static final class BoundedStringList extends ArrayList<String> {
+        private final int maxValues;
+        private final int maxChars;
+        private int retainedChars;
+        private boolean truncated;
+
+        private BoundedStringList(int maxValues, int maxChars) {
+            this.maxValues = maxValues;
+            this.maxChars = maxChars;
+        }
+
+        @Override
+        public boolean add(String value) {
+            if (value == null) {
+                return false;
+            }
+            if (size() >= maxValues || value.length() > maxChars - retainedChars) {
+                truncated = true;
+                return false;
+            }
+            retainedChars += value.length();
+            return super.add(value);
+        }
+
+        private boolean isTruncated() {
+            return truncated;
         }
     }
 

@@ -96,6 +96,11 @@ public class MscParser implements Parser {
     // Cap input like the sibling parsers (ICalParser=32MB, UrlShortcutParser=256KB):
     // an uncapped readAllBytes() OOMs on a multi-GB file (Error, not TikaException).
     private static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
+    private static final int MAX_RETAINED_XML_VALUES = 4_096;
+    private static final int MAX_RETAINED_XML_VALUE_CHARS = 1024 * 1024;
+    private static final String RETAINED_VALUE_LIMIT_WARNING =
+            "MSC XML retained-value limit reached; additional structured values "
+                    + "were skipped";
 
     // Shell execution keywords that indicate a dangerous command
     private static final String[] EXEC_KEYWORDS = {
@@ -177,13 +182,20 @@ public class MscParser implements Parser {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
 
-        Set<String> clsids       = new LinkedHashSet<>();
-        Set<String> commands     = new LinkedHashSet<>();
-        Set<String> taskNames    = new LinkedHashSet<>();
-        Set<String> taskDescs    = new LinkedHashSet<>();
-        Set<String> taskCommands = new LinkedHashSet<>();
-        Set<String> urls         = new LinkedHashSet<>();
-        Set<String> strings      = new LinkedHashSet<>();
+        BoundedStringSet clsids = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet commands = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet taskNames = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet taskDescs = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet taskCommands = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet urls = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
+        BoundedStringSet strings = new BoundedStringSet(
+                MAX_RETAINED_XML_VALUES, MAX_RETAINED_XML_VALUE_CHARS);
         List<String> warnings    = new ArrayList<>();
         boolean grimResource     = false;
         boolean xmlFieldExtractionFailed = false;
@@ -242,6 +254,13 @@ public class MscParser implements Parser {
         um = URL_PATTERN.matcher(xmlHandler.canonicalText);
         while (um.find()) {
             urls.add(cleanUrl(um.group()));
+        }
+        boolean retainedValueLimitExceeded = clsids.isTruncated()
+                || commands.isTruncated() || taskNames.isTruncated()
+                || taskDescs.isTruncated() || taskCommands.isTruncated()
+                || urls.isTruncated() || strings.isTruncated();
+        if (retainedValueLimitExceeded) {
+            warnings.add(RETAINED_VALUE_LIMIT_WARNING);
         }
 
         // Emit CLSID metadata with name lookup
@@ -304,7 +323,8 @@ public class MscParser implements Parser {
         }
         if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded
                 || xmlHandler.captureValueLimitExceeded
-                || xmlHandler.canonicalTextLimitExceeded)
+                || xmlHandler.canonicalTextLimitExceeded
+                || retainedValueLimitExceeded)
                 && metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "MSC XML field extraction incomplete; execution indicators "
@@ -490,6 +510,35 @@ public class MscParser implements Parser {
         int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
         String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
         return "cmd".equals(executable) || "cmd.exe".equals(executable);
+    }
+
+    private static final class BoundedStringSet extends LinkedHashSet<String> {
+        private final int maxValues;
+        private final int maxChars;
+        private int retainedChars;
+        private boolean truncated;
+
+        private BoundedStringSet(int maxValues, int maxChars) {
+            this.maxValues = maxValues;
+            this.maxChars = maxChars;
+        }
+
+        @Override
+        public boolean add(String value) {
+            if (value == null || contains(value)) {
+                return false;
+            }
+            if (size() >= maxValues || value.length() > maxChars - retainedChars) {
+                truncated = true;
+                return false;
+            }
+            retainedChars += value.length();
+            return super.add(value);
+        }
+
+        private boolean isTruncated() {
+            return truncated;
+        }
     }
 
     private static final class MscXmlHandler extends DefaultHandler {

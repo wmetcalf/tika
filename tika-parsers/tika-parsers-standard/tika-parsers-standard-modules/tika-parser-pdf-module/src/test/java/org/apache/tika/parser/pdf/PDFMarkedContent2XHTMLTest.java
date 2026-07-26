@@ -161,6 +161,25 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     }
 
     @Test
+    public void testExcludedNonLinkActionDoesNotReplaceAllowedLinkUri() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addExcludedNonLinkActionStructure(document);
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            String xml = handler.toString();
+            assertContains(
+                    "<a href=\"https://allowed-parent.invalid/\">ALLOWED_CHILD</a>",
+                    xml);
+            assertFalse(xml.contains("https://excluded-child.invalid/"));
+        }
+    }
+
+    @Test
     public void testNestedAllowedLinksRetainDistinctUris() throws Exception {
         try (PDDocument document = buildNestedAllowedLinkDocument()) {
             ToXMLContentHandler handler = new ToXMLContentHandler();
@@ -239,6 +258,19 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         }
     }
 
+    @Test
+    public void testRepeatedStructureObjectFailsClosed() throws Exception {
+        try (PDDocument document = Loader.loadPDF(buildRepeatedStructureObjectPdf())) {
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            assertThrows(TikaException.class,
+                    () -> PDFMarkedContent2XHTML.process(
+                            document, new ToXMLContentHandler(), new ParseContext(),
+                            new Metadata(), config, null));
+        }
+    }
+
     private static byte[] buildCyclicPageTreePdf() {
         StringBuilder pdf = new StringBuilder();
         pdf.append("%PDF-1.4\n");
@@ -267,6 +299,47 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
                     Locale.ROOT, "%010d 00000 n \n", offsets[i]));
         }
         pdf.append("trailer\n<< /Size 5 /Root 1 0 R >>\n")
+                .append("startxref\n").append(xref).append("\n%%EOF\n");
+        return pdf.toString().getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] buildRepeatedStructureObjectPdf() {
+        StringBuilder pdf = new StringBuilder();
+        pdf.append("%PDF-1.7\n");
+        int[] offsets = new int[7];
+        offsets[1] = pdf.length();
+        pdf.append("1 0 obj\n")
+                .append("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>\n")
+                .append("endobj\n");
+        offsets[2] = pdf.length();
+        pdf.append("2 0 obj\n")
+                .append("<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n")
+                .append("endobj\n");
+        offsets[3] = pdf.length();
+        pdf.append("3 0 obj\n")
+                .append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ")
+                .append("/Resources << >> /StructParents 0 >>\n")
+                .append("endobj\n");
+        offsets[4] = pdf.length();
+        pdf.append("4 0 obj\n<< /Type /StructTreeRoot /K 5 0 R >>\nendobj\n");
+        offsets[5] = pdf.length();
+        pdf.append("5 0 obj\n")
+                .append("<< /Type /StructElem /S /Div /Pg 3 0 R ")
+                .append("/K [6 0 R 6 0 R] >>\n")
+                .append("endobj\n");
+        offsets[6] = pdf.length();
+        pdf.append("6 0 obj\n")
+                .append("<< /Type /StructElem /S /Div /Pg 3 0 R /K 0 >>\n")
+                .append("endobj\n");
+
+        int xref = pdf.length();
+        pdf.append("xref\n0 7\n")
+                .append("0000000000 65535 f \n");
+        for (int i = 1; i <= 6; i++) {
+            pdf.append(String.format(
+                    Locale.ROOT, "%010d 00000 n \n", offsets[i]));
+        }
+        pdf.append("trailer\n<< /Size 7 /Root 1 0 R >>\n")
                 .append("startxref\n").append(xref).append("\n%%EOF\n");
         return pdf.toString().getBytes(StandardCharsets.US_ASCII);
     }
@@ -501,6 +574,42 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(allowedOuterLink));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addExcludedNonLinkActionStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary allowedAction = new COSDictionary();
+        allowedAction.setItem(COSName.S, COSName.URI);
+        allowedAction.setString(COSName.URI, "https://allowed-parent.invalid/");
+        COSDictionary allowedTarget = new COSDictionary();
+        allowedTarget.setItem(COSName.A, allowedAction);
+
+        COSDictionary excludedAction = new COSDictionary();
+        excludedAction.setItem(COSName.S, COSName.URI);
+        excludedAction.setString(COSName.URI, "https://excluded-child.invalid/");
+        COSDictionary excludedTarget = new COSDictionary();
+        excludedTarget.setItem(COSName.A, excludedAction);
+        COSDictionary excludedChild = new COSDictionary();
+        excludedChild.setItem(COSName.S, COSName.getPDFName("Div"));
+        excludedChild.setItem(COSName.PG, pageRefs.get(5));
+        excludedChild.setItem(COSName.K, excludedTarget);
+
+        COSArray linkKids = new COSArray();
+        linkKids.add(COSInteger.ZERO);
+        linkKids.add(allowedTarget);
+        linkKids.add(new COSObject(excludedChild));
+        COSDictionary allowedLink = new COSDictionary();
+        allowedLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        allowedLink.setItem(COSName.PG, pageRefs.get(0));
+        allowedLink.setItem(COSName.K, linkKids);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(allowedLink));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

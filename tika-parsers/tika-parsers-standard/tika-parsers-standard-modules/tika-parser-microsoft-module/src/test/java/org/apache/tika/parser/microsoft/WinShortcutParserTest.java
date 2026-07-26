@@ -44,6 +44,13 @@ public class WinShortcutParserTest {
     private static final int SIG_CONSOLE_FE = 0xA0000004;
     private static final int SIG_TOLERATED_UNKNOWN = 0xA0001337;
     private static final int UNKNOWN_BLOCK_SIZE = 70000;
+    private static final byte[] CONTROL_PANEL_GUID = new byte[]{
+            0x20, 0x20, (byte) 0xec, 0x21,
+            (byte) 0xea, 0x3a,
+            0x69, 0x10,
+            (byte) 0xa2, (byte) 0xdd, 0x08, 0x00,
+            0x2b, 0x30, 0x30, (byte) 0x9d
+    };
     private static final byte[] HTML = """
             <!doctype html><html><body>appended-html-payload</body></html>
             """.getBytes(StandardCharsets.US_ASCII);
@@ -186,6 +193,42 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testJScriptConstantConcatenationIndicatorsAreClassified() throws Exception {
+        for (String script : List.of(
+                "new window['Active'+'XObject']('WScript.Shell')",
+                "new window['Act' /* split */ + 'ive' +\n 'XObject']"
+                        + "('WScript.Shell')")) {
+            for (Charset charset : List.of(
+                    StandardCharsets.US_ASCII,
+                    StandardCharsets.UTF_16LE,
+                    StandardCharsets.UTF_16BE)) {
+                ParseResult result = parse(buildIndicatorLnk(
+                        charset, new byte[0], "", script));
+
+                assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                        "constant string joins must not hide indicators in " + charset);
+            }
+        }
+    }
+
+    @Test
+    public void testUtf16StructuralHtmlExploitIsClassified() throws Exception {
+        for (Charset charset : List.of(
+                StandardCharsets.US_ASCII,
+                StandardCharsets.UTF_16LE,
+                StandardCharsets.UTF_16BE)) {
+            byte[] bom = charset == StandardCharsets.UTF_16LE
+                    ? new byte[]{(byte) 0xff, (byte) 0xfe}
+                    : charset == StandardCharsets.UTF_16BE
+                            ? new byte[]{(byte) 0xfe, (byte) 0xff} : new byte[0];
+            ParseResult result = parse(buildVirtualFolderHtmlLnk(charset, bom));
+
+            assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                    "encoded HTML must not hide the structural LNK exploit in " + charset);
+        }
+    }
+
+    @Test
     public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
         byte[] oversized = new byte[16 * 1024 * 1024 + 1];
         System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
@@ -305,6 +348,33 @@ public class WinShortcutParserTest {
         out.write(new byte[4]);
         out.write(bom);
         out.write(payload);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildVirtualFolderHtmlLnk(Charset charset, byte[] bom)
+            throws IOException {
+        byte[] header = new byte[HEADER_SIZE];
+        ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        fields.putInt(0, HEADER_SIZE);
+        fields.position(4);
+        fields.put(new byte[]{
+                0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+                (byte) 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+        });
+        fields.putInt(20, 1);
+        fields.putInt(60, 1);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) 22).array());
+        out.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) 20).put((byte) 0x1f).put((byte) 0).array());
+        out.write(CONTROL_PANEL_GUID);
+        out.write(new byte[2]);
+        out.write(new byte[4]);
+        out.write(bom);
+        out.write("<!doctype html><script>alert(1)</script>".getBytes(charset));
         return out.toByteArray();
     }
 

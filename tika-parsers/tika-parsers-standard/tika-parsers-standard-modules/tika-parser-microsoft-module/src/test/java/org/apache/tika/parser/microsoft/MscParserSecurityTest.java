@@ -137,6 +137,23 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testSequentialCaptureCardinalityIsBoundedAndSignaled() throws Exception {
+        StringBuilder xml = new StringBuilder("<MMC_ConsoleFile>");
+        for (int i = 0; i < 5_000; i++) {
+            xml.append("<String>value-").append(i).append("</String>");
+        }
+        xml.append("</MMC_ConsoleFile>");
+
+        ParseResult result = parse(xml.toString());
+        assertTrue(result.metadata.getValues("msc:string").length <= 4_096,
+                "shallow sequential captures must not grow retained metadata without bound");
+        assertNotNull(result.metadata.get("msc:warning"),
+                "dropping excess captures must be signaled");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "cardinality truncation can hide later execution indicators");
+    }
+
+    @Test
     public void testIncompleteXmlFailsClosedForSecurityClassification() throws Exception {
         ParseResult result = parse(
                 "<MMC_ConsoleFile><CommandLine>powershell.exe -NoProfile");

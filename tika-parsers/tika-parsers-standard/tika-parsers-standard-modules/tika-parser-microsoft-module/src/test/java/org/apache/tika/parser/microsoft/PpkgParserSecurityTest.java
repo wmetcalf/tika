@@ -309,6 +309,23 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void dataReferenceCardinalityIsBoundedAndSignaled() throws Exception {
+        StringBuilder xml = new StringBuilder("<wap-provisioningdoc><CustomData>");
+        for (int i = 0; i < 5_000; i++) {
+            xml.append("payload-").append(i).append(".exe ");
+        }
+        xml.append("</CustomData></wap-provisioningdoc>");
+
+        Metadata metadata = parseMetadata(buildWim(xml.toString()));
+        assertTrue(metadata.getValues("ppkg:data_asset_ref").length <= 4_096,
+                "hostile XML must not retain an unbounded number of data references");
+        assertNotNull(metadata.get("ppkg:warning"),
+                "dropping excess data references must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "cardinality truncation can hide later execution indicators");
+    }
+
+    @Test
     public void dangerousSuffixAfterStreamingTokenLimitIsPreserved() throws Exception {
         String xml = "<wap-provisioningdoc><CustomData>\\\\server\\share\\"
                 + "A".repeat(8_192)

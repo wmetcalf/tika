@@ -1675,10 +1675,10 @@ public class WinShortcutParser implements Parser {
     //
     // Ref: MS-SHLLINK §2.1 HasTargetIDList, §2.3 IDList, §2.4 LinkInfo
     //      Patch: Feb 2026 Patch Tuesday; exploited in the wild by APT28 as zero-day
-    private static void detectStructuralExploits(String appendedMime,
+    private static void detectStructuralExploits(boolean htmlPayload,
                                                   Map<String, String> fields,
                                                   List<String> warnings) {
-        if (!"text/html".equals(appendedMime)) {
+        if (!htmlPayload) {
             return;
         }
         String idListPath = fields.get("IDListPath");
@@ -1694,6 +1694,25 @@ public class WinShortcutParser implements Parser {
                     + "without MotW restrictions — MSHTML Framework Security Feature "
                     + "Bypass (APT28 zero-day, Feb 2026 Patch Tuesday, CVSS 8.8)");
         }
+    }
+
+    private static boolean isStructurallyRenderableHtml(
+            String appendedMime, byte[] payload) {
+        if ("text/html".equals(appendedMime)) {
+            return true;
+        }
+        if (payload.length < 4) {
+            return false;
+        }
+        boolean utf16LeBom = (payload[0] & 0xff) == 0xff
+                && (payload[1] & 0xff) == 0xfe;
+        boolean utf16BeBom = (payload[0] & 0xff) == 0xfe
+                && (payload[1] & 0xff) == 0xff;
+        if (!utf16LeBom && !utf16BeBom) {
+            return false;
+        }
+        int encoding = utf16LeBom ? 1 : 2;
+        return containsEncodedAsciiTerm(payload, "<", encoding);
     }
 
     private void detectExploitIndicators(byte[] payload, Map<String, String> fields,
@@ -1763,6 +1782,13 @@ public class WinShortcutParser implements Parser {
                     if (escaped >= 0) {
                         value = (int) escaped;
                         consumedCodeUnits = (int) (escaped >>> 32);
+                    }
+                }
+                if (matched > 0 && (value == '\'' || value == '"')) {
+                    long stringJoin = decodeJScriptStringJoin(payload, offset, encoding);
+                    if (stringJoin >= 0) {
+                        value = SKIP_ASCII;
+                        consumedCodeUnits = (int) (stringJoin >>> 32);
                     }
                 }
                 offset += (consumedCodeUnits - 1) * stride;
@@ -1929,6 +1955,99 @@ public class WinShortcutParser implements Parser {
         return packAscii(lowerAscii(decoded), consumedCodeUnits);
     }
 
+    private static long decodeJScriptStringJoin(
+            byte[] payload, int offset, int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        long closingQuote = readHtmlNormalizedAscii(payload, offset, encoding);
+        int quote = (int) closingQuote;
+        if (quote != '\'' && quote != '"') {
+            return -1L;
+        }
+        int cursor = offset + (int) (closingQuote >>> 32) * stride;
+        cursor = skipJScriptTrivia(payload, cursor, encoding);
+        if (cursor < 0) {
+            return -1L;
+        }
+        long plus = readHtmlNormalizedAscii(payload, cursor, encoding);
+        if ((int) plus != '+') {
+            return -1L;
+        }
+        cursor += (int) (plus >>> 32) * stride;
+        cursor = skipJScriptTrivia(payload, cursor, encoding);
+        if (cursor < 0) {
+            return -1L;
+        }
+        long openingQuote = readHtmlNormalizedAscii(payload, cursor, encoding);
+        int opening = (int) openingQuote;
+        if (opening != '\'' && opening != '"') {
+            return -1L;
+        }
+        cursor += (int) (openingQuote >>> 32) * stride;
+        return packAscii(SKIP_ASCII, (cursor - offset) / stride);
+    }
+
+    private static int skipJScriptTrivia(byte[] payload, int offset, int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        int cursor = offset;
+        while (cursor + stride <= payload.length) {
+            long current = readHtmlNormalizedAscii(payload, cursor, encoding);
+            int value = (int) current;
+            if (isJScriptWhitespace(value)) {
+                cursor += (int) (current >>> 32) * stride;
+                continue;
+            }
+            if (value != '/') {
+                return cursor;
+            }
+            int afterSlash = cursor + (int) (current >>> 32) * stride;
+            long next = readHtmlNormalizedAscii(payload, afterSlash, encoding);
+            int marker = (int) next;
+            if (marker == '/') {
+                cursor = afterSlash + (int) (next >>> 32) * stride;
+                while (cursor + stride <= payload.length) {
+                    long commentChar =
+                            readHtmlNormalizedAscii(payload, cursor, encoding);
+                    int commentValue = (int) commentChar;
+                    cursor += (int) (commentChar >>> 32) * stride;
+                    if (commentValue == '\r' || commentValue == '\n') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if (marker != '*') {
+                return cursor;
+            }
+            cursor = afterSlash + (int) (next >>> 32) * stride;
+            boolean closed = false;
+            while (cursor + stride <= payload.length) {
+                long commentChar =
+                        readHtmlNormalizedAscii(payload, cursor, encoding);
+                int commentValue = (int) commentChar;
+                int commentUnits = (int) (commentChar >>> 32);
+                if (commentValue == '*') {
+                    int afterStar = cursor + commentUnits * stride;
+                    long end = readHtmlNormalizedAscii(payload, afterStar, encoding);
+                    if ((int) end == '/') {
+                        cursor = afterStar + (int) (end >>> 32) * stride;
+                        closed = true;
+                        break;
+                    }
+                }
+                cursor += commentUnits * stride;
+            }
+            if (!closed) {
+                return -1;
+            }
+        }
+        return cursor;
+    }
+
+    private static boolean isJScriptWhitespace(int value) {
+        return value == ' ' || value == '\t' || value == '\r'
+                || value == '\n' || value == '\f' || value == 0x0b;
+    }
+
     private static long packAscii(int value, int consumedCodeUnits) {
         return ((long) consumedCodeUnits << 32) | (value & 0xffffffffL);
     }
@@ -2032,7 +2151,9 @@ public class WinShortcutParser implements Parser {
 
         // Structural check runs last so it overwrites content-based results when
         // it matches — structural detection is always more specific.
-        detectStructuralExploits(appendedMime, fields, warnings);
+        detectStructuralExploits(
+                isStructurallyRenderableHtml(appendedMime, appendedBytes),
+                fields, warnings);
 
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);

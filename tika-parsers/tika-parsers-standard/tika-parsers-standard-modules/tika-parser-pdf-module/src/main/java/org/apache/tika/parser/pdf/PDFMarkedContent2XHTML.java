@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -66,6 +67,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     private static final int MAX_PAGE_TREE_DEPTH = 128;
     private static final int MAX_PAGE_TREE_OBJECTS = 100_000;
     private static final int MAX_RECURSION_DEPTH = 1000;
+    private static final int MAX_STRUCTURE_TREE_NODES = 100_000;
     private static final String DIV = "div";
     private static final Map<String, HtmlTag> COMMON_TAG_MAP = new HashMap<>();
 
@@ -337,10 +339,19 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             throw new IOException(
                     new TikaException("Exceeded max recursion depth " + MAX_RECURSION_DEPTH));
         }
+        if (++state.structureNodeVisits > MAX_STRUCTURE_TREE_NODES) {
+            throw new IOException(new TikaException(
+                    "Exceeded max structure tree nodes " + MAX_STRUCTURE_TREE_NODES));
+        }
+        if (kids instanceof COSObject
+                && !state.visitedStructureObjects.add((COSObject) kids)) {
+            throw new IOException(new TikaException(
+                    "PDF structure tree contains a repeated or cyclic object"));
+        }
 
         if (kids instanceof COSArray) {
             for (COSBase k : ((COSArray) kids)) {
-                recurse(k, currentPageRef, depth, paragraphs, roleMap);
+                recurse(k, currentPageRef, depth + 1, paragraphs, roleMap);
             }
         } else if (kids instanceof COSObject && 
                 ((COSObject) kids).getObject() instanceof COSDictionary) {
@@ -383,7 +394,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             boolean startedLink = false;
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
-                LinkState linkState = new LinkState();
+                LinkState linkState = new LinkState(currentPageRef);
                 linkState.hasAllowedContent = outputPageLimit < 0
                         || (currentPageRef != null && outputAllowed);
                 state.linkStates.push(linkState);
@@ -454,7 +465,10 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 boolean anchorOutputAllowed = outputPageLimit < 0
                         || (currentPageRef != null && isOutputAllowed(currentPageRef));
                 LinkState linkState = state.linkStates.peek();
-                linkState.uri = anchor.getString(COSName.URI);
+                if (anchorOutputAllowed
+                        || Objects.equals(currentPageRef, linkState.pageRef)) {
+                    linkState.uri = anchor.getString(COSName.URI);
+                }
                 if (anchorOutputAllowed) {
                     linkState.hasAllowedContent = true;
                 }
@@ -653,14 +667,22 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         Set<MCID> processedMCIDs = new HashSet<>();
         int tableDepth = 0;
         private final Deque<LinkState> linkStates = new ArrayDeque<>();
+        private final Set<COSObject> visitedStructureObjects =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        private int structureNodeVisits = 0;
         private int tdDepth = 0;
     }
 
     private static class LinkState {
         private final StringBuilder anchorBuilder = new StringBuilder();
         private final List<LinkPart> parts = new ArrayList<>();
+        private final ObjectRef pageRef;
         private boolean hasAllowedContent = false;
         private String uri = null;
+
+        private LinkState(ObjectRef pageRef) {
+            this.pageRef = pageRef;
+        }
 
         private void addNestedLink(LinkState nestedLink) {
             if (anchorBuilder.length() > 0) {
