@@ -273,29 +273,33 @@ public class ChmCommons {
 
     /*
      * This method is added because of supporting of Java 5.
-     * Tolerates out-of-bounds 'to' by clamping to array length — malformed CHM
-     * files sometimes have directory entries that reference data slightly past the
-     * end of the file; clamping recovers partial content rather than throwing.
      */
     public static byte[] copyOfRange(byte[] original, int from, int to) throws TikaException {
-        if (original == null) {
-            throw new TikaException("copyOfRange: array is null");
+        checkCopyOfRangeParams(original, from, to);
+        int newLength = to - from;
+        if (newLength < 0) {
+            throw new ChmParsingException(from + " > " + to);
         }
-        if (from < 0 || to < 0) {
-            throw new TikaException("copyOfRange: negative index from=" + from + " to=" + to);
-        }
-        if (from > original.length) {
-            return new byte[0];
-        }
-        // Clamp to array length — don't throw on slightly-off-bounds references
-        int clampedTo = Math.min(to, original.length);
-        int newLength = clampedTo - from;
-        if (newLength <= 0) {
-            return new byte[0];
-        }
+
         byte[] copy = new byte[newLength];
         System.arraycopy(original, from, copy, 0, newLength);
         return copy;
+    }
+
+    private static void checkCopyOfRangeParams(byte[] original, int from, int to)
+            throws ChmParsingException {
+        if (original == null) {
+            throw new ChmParsingException("array is null");
+        }
+        if (from < 0) {
+            throw new ChmParsingException(from + " should be > 0");
+        }
+        if (to < 0) {
+            throw new ChmParsingException(to + " should be > 0");
+        }
+        if (to > original.length) {
+            throw new ChmParsingException("can't copy beyond array length");
+        }
     }
 
     /*
