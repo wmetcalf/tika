@@ -329,8 +329,13 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             COSDictionary dict = (COSDictionary) ((COSObject) kids).getObject();
             COSName type = dict.getCOSName(COSName.TYPE);
             if (COSName.OBJR.equals(type)) {
-                recurse(dict.getDictionaryObject(COSName.OBJ), currentPageRef, depth + 1, paragraphs,
-                        roleMap);
+                COSBase referencedObject = dict.getDictionaryObject(COSName.OBJ);
+                ObjectRef objectPageRef =
+                        resolveObjectReferencePage(dict, referencedObject, currentPageRef);
+                if (isKnownOutputAllowed(objectPageRef)) {
+                    recurse(referencedObject, objectPageRef, depth + 1, paragraphs, roleMap);
+                }
+                return;
             }
 
             COSName n = dict.getCOSName(COSName.S);
@@ -344,9 +349,9 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             }
             COSBase pageBase = dict.getItem(COSName.PG);
 
-            if (pageBase instanceof COSObject) {
-                currentPageRef = new ObjectRef(((COSObject) pageBase).getKey().getNumber(),
-                        ((COSObject) pageBase).getKey().getGeneration());
+            ObjectRef explicitPageRef = toObjectRef(pageBase);
+            if (explicitPageRef != null) {
+                currentPageRef = explicitPageRef;
             }
             boolean outputAllowed = isOutputAllowed(currentPageRef);
 
@@ -355,7 +360,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
                 LinkState linkState = new LinkState();
-                linkState.hasAllowedContent = outputAllowed;
+                linkState.hasAllowedContent = outputPageLimit < 0
+                        || (currentPageRef != null && outputAllowed);
                 state.linkStates.push(linkState);
                 startedLink = true;
             }
@@ -408,11 +414,26 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         } else if (kids instanceof COSDictionary) {
             //TODO: check for other types of dictionary?
             COSDictionary dict = (COSDictionary) kids;
+            if (COSName.OBJR.equals(dict.getCOSName(COSName.TYPE))) {
+                COSBase referencedObject = dict.getDictionaryObject(COSName.OBJ);
+                ObjectRef objectPageRef =
+                        resolveObjectReferencePage(dict, referencedObject, currentPageRef);
+                if (isKnownOutputAllowed(objectPageRef)) {
+                    recurse(referencedObject, objectPageRef, depth + 1, paragraphs, roleMap);
+                }
+                return;
+            }
             COSDictionary anchor = dict.getCOSDictionary(COSName.A);
             //check for subtype /Link ?
             //COSName subtype = obj.getCOSName(COSName.SUBTYPE);
             if (anchor != null && !state.linkStates.isEmpty()) {
-                state.linkStates.peek().uri = anchor.getString(COSName.URI);
+                boolean anchorOutputAllowed = outputPageLimit < 0
+                        || (currentPageRef != null && isOutputAllowed(currentPageRef));
+                LinkState linkState = state.linkStates.peek();
+                linkState.uri = anchor.getString(COSName.URI);
+                if (anchorOutputAllowed) {
+                    linkState.hasAllowedContent = true;
+                }
             } else {
                 if (dict.containsKey(COSName.K)) {
                     recurse(dict.getDictionaryObject(COSName.K), currentPageRef, depth + 1,
@@ -427,12 +448,38 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         }
     }
 
+    private static ObjectRef resolveObjectReferencePage(
+            COSDictionary objectReference, COSBase referencedObject,
+            ObjectRef inheritedPageRef) {
+        ObjectRef pageRef = toObjectRef(objectReference.getItem(COSName.PG));
+        if (pageRef == null && referencedObject instanceof COSDictionary) {
+            pageRef = toObjectRef(
+                    ((COSDictionary) referencedObject).getItem(COSName.P));
+        }
+        return pageRef == null ? inheritedPageRef : pageRef;
+    }
+
+    private static ObjectRef toObjectRef(COSBase pageBase) {
+        if (pageBase instanceof COSObject) {
+            COSObject pageObject = (COSObject) pageBase;
+            return new ObjectRef(
+                    pageObject.getKey().getNumber(),
+                    pageObject.getKey().getGeneration());
+        }
+        return null;
+    }
+
     private boolean isOutputAllowed(MCID mcid) {
         return isOutputAllowed(mcid.objectRef);
     }
 
     private boolean isOutputAllowed(ObjectRef pageRef) {
         return outputPageLimit < 0 || pageRef == null || outputPageRefs.contains(pageRef);
+    }
+
+    private boolean isKnownOutputAllowed(ObjectRef pageRef) {
+        return outputPageLimit < 0
+                || (pageRef != null && outputPageRefs.contains(pageRef));
     }
 
     private void writeLink() throws SAXException, IOException {

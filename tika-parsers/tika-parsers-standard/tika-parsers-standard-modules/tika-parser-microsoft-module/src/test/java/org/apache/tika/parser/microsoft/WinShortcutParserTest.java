@@ -133,7 +133,8 @@ public class WinShortcutParserTest {
     public void testJavaScriptEscapedExploitIndicatorIsClassified() throws Exception {
         for (String script : List.of(
                 "new \\u0041ctiveXObject('WScript.Shell')",
-                "new window['\\x41ctiveXObject']('WScript.Shell')")) {
+                "new window['\\x41ctiveXObject']('WScript.Shell')",
+                "new window['\\101ctiveXObject']('WScript.Shell')")) {
             for (Charset charset : List.of(
                     StandardCharsets.US_ASCII,
                     StandardCharsets.UTF_16LE,
@@ -143,6 +144,24 @@ public class WinShortcutParserTest {
 
                 assertNotNull(result.metadata.get("lnk:ExploitClass"),
                         "JavaScript escapes must not hide indicators in " + charset);
+            }
+        }
+    }
+
+    @Test
+    public void testHtmlEntityEncodedExploitIndicatorIsClassified() throws Exception {
+        for (String script : List.of(
+                "new &#x41;ctiveXObject('WScript.Shell')",
+                "new &#65;ctiveXObject('WScript.Shell')")) {
+            for (Charset charset : List.of(
+                    StandardCharsets.US_ASCII,
+                    StandardCharsets.UTF_16LE,
+                    StandardCharsets.UTF_16BE)) {
+                ParseResult result = parse(buildIndicatorLnk(
+                        charset, new byte[0], "", script));
+
+                assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                        "HTML entities must not hide indicators in " + charset);
             }
         }
     }

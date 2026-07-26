@@ -188,6 +188,40 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         }
     }
 
+    @Test
+    public void testExcludedAnnotationPageSuppressesUriOnlyLink() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addObjectReferenceLinkStructure(
+                    document, 5, "https://excluded-annotation.invalid/");
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertFalse(handler.toString().contains(
+                    "https://excluded-annotation.invalid/"));
+        }
+    }
+
+    @Test
+    public void testAllowedAnnotationPageRetainsUriOnlyLink() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addObjectReferenceLinkStructure(
+                    document, 0, "https://allowed-annotation.invalid/");
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertContains("href=\"https://allowed-annotation.invalid/\"",
+                    handler.toString());
+        }
+    }
+
     private static PDDocument buildPageOverrideDocument() throws IOException {
         PDDocument document = new PDDocument();
         List<PDPage> pages = new ArrayList<>();
@@ -355,6 +389,33 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();
         rootKids.add(new COSObject(allowedLink));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addObjectReferenceLinkStructure(PDDocument document,
+                                                        int pageIndex, String uri) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary action = new COSDictionary();
+        action.setItem(COSName.S, COSName.URI);
+        action.setString(COSName.URI, uri);
+        COSDictionary annotation = new COSDictionary();
+        annotation.setItem(COSName.P, pageRefs.get(pageIndex));
+        annotation.setItem(COSName.A, action);
+
+        COSDictionary objectReference = new COSDictionary();
+        objectReference.setItem(COSName.TYPE, COSName.OBJR);
+        objectReference.setItem(COSName.OBJ, annotation);
+
+        COSDictionary link = new COSDictionary();
+        link.setItem(COSName.S, COSName.getPDFName("Link"));
+        link.setItem(COSName.K, objectReference);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(link));
         root.setK(rootKids);
         document.getDocumentCatalog().setStructureTreeRoot(root);
     }

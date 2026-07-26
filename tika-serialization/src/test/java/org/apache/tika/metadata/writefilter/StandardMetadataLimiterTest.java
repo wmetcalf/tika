@@ -257,6 +257,20 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testOversizedAtomicReplacementRemovesStaleValue() {
+        Metadata metadata = filter(100, 80, 1000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+        metadata.set(Office.OFFICE_LINK_RECORD, "{\"url\":\"old\"}");
+
+        metadata.set(Office.OFFICE_LINK_RECORD,
+                "{\"url\":\"this-replacement-does-not-fit-in-the-field-budget\"}");
+
+        assertEquals(0, metadata.getValues(Office.OFFICE_LINK_RECORD).length,
+                "a rejected replacement must not leave the old record visible");
+        assertTruncated(metadata);
+    }
+
+    @Test
     public void testAtomicArrayReplacementReleasesPreviousFieldBudget() {
         Metadata metadata = filter(100, 100, 1000, 10,
                 Collections.EMPTY_SET, Collections.EMPTY_SET, false);

@@ -395,6 +395,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
                 maxTotalEstimatedSize - estimatedSize + existingSize - keySize;
         int valueSize = estimateSize(value);
         if (valueSize > Math.min(maxFieldSize, allowedByTotal)) {
+            remove(filterKey.string, data);
             setTruncated(data);
             return;
         }

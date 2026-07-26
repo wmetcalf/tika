@@ -1600,6 +1600,15 @@ public class WinShortcutParser implements Parser {
     // match, because structural is always more specific.
 
     private static final List<ExploitSignature> EXPLOIT_SIGNATURES;
+    private static final Map<String, Integer> ASCII_HTML_ENTITIES = Map.of(
+            "amp;", (int) '&',
+            "apos;", (int) '\'',
+            "colon;", (int) ':',
+            "gt;", (int) '>',
+            "lpar;", (int) '(',
+            "lt;", (int) '<',
+            "period;", (int) '.',
+            "quot;", (int) '"');
     static {
         EXPLOIT_SIGNATURES = new ArrayList<>();
 
@@ -1743,15 +1752,17 @@ public class WinShortcutParser implements Parser {
             int matched = 0;
             for (int offset = alignment; offset + stride <= payload.length;
                     offset += stride) {
-                int value = readEncodedAscii(payload, offset, encoding);
+                long normalized = readHtmlNormalizedAscii(payload, offset, encoding);
+                int value = (int) normalized;
+                int consumedCodeUnits = (int) (normalized >>> 32);
                 if (value == '\\') {
-                    int escaped = decodeAsciiEscape(payload, offset, encoding);
+                    long escaped = decodeAsciiEscape(payload, offset, encoding);
                     if (escaped >= 0) {
-                        value = escaped & 0xff;
-                        int consumedCodeUnits = escaped >>> 8;
-                        offset += (consumedCodeUnits - 1) * stride;
+                        value = (int) escaped;
+                        consumedCodeUnits = (int) (escaped >>> 32);
                     }
                 }
+                offset += (consumedCodeUnits - 1) * stride;
                 while (matched > 0 && value != term.charAt(matched)) {
                     matched = failure[matched - 1];
                 }
@@ -1764,6 +1775,68 @@ public class WinShortcutParser implements Parser {
             }
         }
         return false;
+    }
+
+    private static long readHtmlNormalizedAscii(byte[] payload, int offset,
+                                                int encoding) {
+        int value = readEncodedAscii(payload, offset, encoding);
+        if (value != '&') {
+            return packAscii(value, 1);
+        }
+
+        int stride = encoding == 0 ? 1 : 2;
+        int cursor = offset + stride;
+        if (readEncodedAscii(payload, cursor, encoding) != '#') {
+            for (Map.Entry<String, Integer> entity : ASCII_HTML_ENTITIES.entrySet()) {
+                if (matchesEncodedAscii(payload, cursor, encoding, entity.getKey())) {
+                    return packAscii(entity.getValue(), entity.getKey().length() + 1);
+                }
+            }
+            return packAscii(value, 1);
+        }
+        cursor += stride;
+
+        int radix = 10;
+        if (readEncodedAscii(payload, cursor, encoding) == 'x') {
+            radix = 16;
+            cursor += stride;
+        }
+        int digitCount = 0;
+        int decoded = 0;
+        while (cursor + stride <= payload.length) {
+            int encoded = readEncodedAscii(payload, cursor, encoding);
+            int digit = radix == 16 ? hexValue(encoded) : decimalValue(encoded);
+            if (digit < 0) {
+                break;
+            }
+            digitCount++;
+            if (decoded <= 0x7f) {
+                decoded = decoded > (0x7f - digit) / radix
+                        ? 0x80 : decoded * radix + digit;
+            }
+            cursor += stride;
+        }
+        if (digitCount == 0) {
+            return packAscii(value, 1);
+        }
+        if (readEncodedAscii(payload, cursor, encoding) == ';') {
+            cursor += stride;
+        }
+        int consumedCodeUnits = (cursor - offset) / stride;
+        return packAscii(decoded <= 0x7f ? lowerAscii(decoded) : -1,
+                consumedCodeUnits);
+    }
+
+    private static boolean matchesEncodedAscii(byte[] payload, int offset,
+                                               int encoding, String expected) {
+        int stride = encoding == 0 ? 1 : 2;
+        for (int i = 0; i < expected.length(); i++) {
+            if (readEncodedAscii(payload, offset + i * stride, encoding)
+                    != expected.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int readEncodedAscii(byte[] payload, int offset, int encoding) {
@@ -1780,32 +1853,62 @@ public class WinShortcutParser implements Parser {
                 ? lowerAscii(payload[characterOffset] & 0xff) : -1;
     }
 
-    private static int decodeAsciiEscape(byte[] payload, int offset, int encoding) {
+    private static long decodeAsciiEscape(byte[] payload, int offset, int encoding) {
         int stride = encoding == 0 ? 1 : 2;
-        int marker = readEncodedAscii(payload, offset + stride, encoding);
+        long slash = readHtmlNormalizedAscii(payload, offset, encoding);
+        int consumedCodeUnits = (int) (slash >>> 32);
+        int cursor = offset + consumedCodeUnits * stride;
+        long markerValue = readHtmlNormalizedAscii(payload, cursor, encoding);
+        int marker = (int) markerValue;
+        int markerUnits = (int) (markerValue >>> 32);
         int digits;
+        int radix;
         if (marker == 'u') {
             digits = 4;
+            radix = 16;
         } else if (marker == 'x') {
             digits = 2;
+            radix = 16;
+        } else if (marker >= '0' && marker <= '7') {
+            digits = 3;
+            radix = 8;
         } else {
-            return -1;
+            return -1L;
         }
 
+        cursor += markerUnits * stride;
+        consumedCodeUnits += markerUnits;
         int decoded = 0;
         for (int i = 0; i < digits; i++) {
-            int digit = hexValue(readEncodedAscii(
-                    payload, offset + (i + 2) * stride, encoding));
-            if (digit < 0) {
-                return -1;
+            long digitValue;
+            if (radix == 8 && i == 0) {
+                digitValue = markerValue;
+            } else {
+                digitValue = readHtmlNormalizedAscii(payload, cursor, encoding);
             }
-            decoded = (decoded << 4) | digit;
+            int digit = radix == 16
+                    ? hexValue((int) digitValue) : octalValue((int) digitValue);
+            if (digit < 0) {
+                if (radix == 8 && i > 0) {
+                    break;
+                }
+                return -1L;
+            }
+            decoded = decoded * radix + digit;
+            if (!(radix == 8 && i == 0)) {
+                int digitUnits = (int) (digitValue >>> 32);
+                cursor += digitUnits * stride;
+                consumedCodeUnits += digitUnits;
+            }
         }
         if (decoded > 0x7f) {
-            return -1;
+            return -1L;
         }
-        int consumedCodeUnits = digits + 2;
-        return (consumedCodeUnits << 8) | lowerAscii(decoded);
+        return packAscii(lowerAscii(decoded), consumedCodeUnits);
+    }
+
+    private static long packAscii(int value, int consumedCodeUnits) {
+        return ((long) consumedCodeUnits << 32) | (value & 0xffffffffL);
     }
 
     private static int hexValue(int value) {
@@ -1816,6 +1919,14 @@ public class WinShortcutParser implements Parser {
             return value - 'a' + 10;
         }
         return -1;
+    }
+
+    private static int decimalValue(int value) {
+        return value >= '0' && value <= '9' ? value - '0' : -1;
+    }
+
+    private static int octalValue(int value) {
+        return value >= '0' && value <= '7' ? value - '0' : -1;
     }
 
     private static int[] buildFailureTable(String term) {
