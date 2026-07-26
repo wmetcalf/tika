@@ -16,6 +16,7 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -32,8 +33,10 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
@@ -47,6 +50,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.tika.utils.XMLReaderUtils;
 
 /**
  * Parser for Microsoft Management Console snap-in files (.msc).
@@ -127,16 +131,6 @@ public class MscParser implements Parser {
         CLSID_NAMES.put("{8172431C-597B-43F3-9EC8-50FED33B00E5}", "Custom Extension");
     }
 
-    // Pattern to extract attribute values from XML tags
-    private static final Pattern ATTR_VAL =
-            Pattern.compile("\\b(Command|CommandLine)\\s*=\\s*\"([^\"]+)\"",
-                    Pattern.CASE_INSENSITIVE);
-
-    // ShellCommandDefinition block for building full command+params strings
-    private static final Pattern SHELL_CMD_BLOCK = Pattern.compile(
-            "<ShellCommandDefinition[^>]*>(.*?)</ShellCommandDefinition>",
-            Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-
     // URL pattern
     private static final Pattern URL_PATTERN =
             Pattern.compile("https?://[^\\s\"'<>\\\\]+",
@@ -193,79 +187,41 @@ public class MscParser implements Parser {
         List<String> warnings    = new ArrayList<>();
         boolean grimResource     = false;
 
-        // Extract CLSIDs
+        MscXmlHandler xmlHandler = new MscXmlHandler(
+                commands, taskNames, taskDescs, taskCommands, strings);
+        try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(raw)) {
+            XMLReaderUtils.parseSAX(xmlStream, xmlHandler, context);
+        } catch (Exception e) {
+            warnings.add("XML field extraction error: " + e.getMessage());
+        }
+
+        // Extract CLSIDs from both the raw XML and canonical parsed content.
         Matcher cm = CLSID_PATTERN.matcher(xml);
         while (cm.find()) {
             clsids.add(cm.group().toUpperCase(Locale.ROOT));
         }
+        cm = CLSID_PATTERN.matcher(xmlHandler.canonicalText);
+        while (cm.find()) {
+            clsids.add(cm.group().toUpperCase(Locale.ROOT));
+        }
 
-        // Extract Command / CommandLine attribute values
-        Matcher am = ATTR_VAL.matcher(xml);
-        while (am.find()) {
-            String cmd = am.group(2).trim();
-            if (!cmd.isEmpty()) {
-                commands.add(cmd);
+        // Check canonical String content for GrimResource and URLs.
+        for (String s : strings) {
+            if (GRIMRESOURCE_PATTERN.matcher(s).find()) {
+                grimResource = true;
+            }
+            Matcher um = URL_PATTERN.matcher(s);
+            while (um.find()) {
+                urls.add(cleanUrl(um.group()));
             }
         }
 
-        // Extract <CommandLine> element content (ConsoleTaskpad tasks)
-        for (String cmd : extractTagContent(xml, "CommandLine")) {
-            if (!cmd.isEmpty()) {
-                commands.add(cmd);
-            }
-        }
-
-        // Extract <Command> element content (executable without params)
-        for (String cmd : extractTagContent(xml, "Command")) {
-            if (!cmd.isEmpty()) {
-                commands.add(cmd);
-            }
-        }
-
-        // Build full "command params" strings from ShellCommandDefinition blocks
-        Matcher scm = SHELL_CMD_BLOCK.matcher(xml);
-        while (scm.find()) {
-            String block = scm.group(1);
-            List<String> cmdParts = extractTagContent(block, "Command");
-            List<String> paramParts = extractTagContent(block, "Params");
-            String cmdStr = cmdParts.isEmpty() ? "" : cmdParts.get(0).trim();
-            String paramStr = paramParts.isEmpty() ? "" : paramParts.get(0).trim();
-            if (!cmdStr.isEmpty()) {
-                String full = paramStr.isEmpty() ? cmdStr : cmdStr + " " + paramStr;
-                taskCommands.add(full);
-            }
-        }
-
-        // Extract task names and descriptions from ConsoleTaskpad DisplayString blocks
-        for (String name : extractTagContent(xml, "Name")) {
-            if (!name.isEmpty() && name.length() < 512) {
-                taskNames.add(name);
-            }
-        }
-        for (String desc : extractTagContent(xml, "Description")) {
-            if (!desc.isEmpty() && desc.length() < 2048) {
-                taskDescs.add(desc);
-            }
-        }
-
-        // Extract String element content (may contain JS, apds redirect, encoded payloads)
-        for (String s : extractTagContent(xml, "String")) {
-            if (!s.isEmpty()) {
-                strings.add(s);
-                // Check for GrimResource apds.dll trigger
-                if (GRIMRESOURCE_PATTERN.matcher(s).find()) {
-                    grimResource = true;
-                }
-                // URLs within string content
-                Matcher um = URL_PATTERN.matcher(s);
-                while (um.find()) {
-                    urls.add(cleanUrl(um.group()));
-                }
-            }
-        }
-
-        // Extract URLs from full document
+        // Extract URLs from both raw and canonical document content.
         Matcher um = URL_PATTERN.matcher(xml);
+        while (um.find()) {
+            urls.add(cleanUrl(um.group()));
+        }
+        um = URL_PATTERN.matcher(xmlHandler.canonicalText);
         while (um.find()) {
             urls.add(cleanUrl(um.group()));
         }
@@ -472,50 +428,6 @@ public class MscParser implements Parser {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static List<String> extractTagContent(String xml, String tag) {
-        List<String> results = new ArrayList<>();
-        String open  = "<" + tag + ">";
-        String openA = "<" + tag + " ";
-        String close = "</" + tag + ">";
-        int pos = 0;
-        while (pos < xml.length()) {
-            int start = xml.indexOf(open, pos);
-            int startA = xml.indexOf(openA, pos);
-            if (start < 0 && startA < 0) {
-                break;
-            }
-            int contentStart;
-            int nextSearch;
-            if (start < 0 || (startA >= 0 && startA < start)) {
-                // Tag with attributes — find end of opening tag
-                int tagEnd = xml.indexOf('>', startA);
-                if (tagEnd < 0) {
-                    break;
-                }
-                // Skip self-closing tags (<Tag ... />)
-                if (tagEnd > 0 && xml.charAt(tagEnd - 1) == '/') {
-                    pos = tagEnd + 1;
-                    continue;
-                }
-                contentStart = tagEnd + 1;
-                nextSearch = contentStart;
-            } else {
-                contentStart = start + open.length();
-                nextSearch = contentStart;
-            }
-            int end = xml.indexOf(close, nextSearch);
-            if (end < 0) {
-                break;
-            }
-            String content = xml.substring(contentStart, end).trim();
-            if (!content.isEmpty()) {
-                results.add(content);
-            }
-            pos = end + close.length();
-        }
-        return results;
-    }
-
     private static String cleanUrl(String url) {
         // Strip trailing XML entities like &quot; &amp; etc.
         int i = url.indexOf('&');
@@ -528,6 +440,149 @@ public class MscParser implements Parser {
             url = url.substring(0, j);
         }
         return url;
+    }
+
+    private static final class MscXmlHandler extends DefaultHandler {
+
+        private final Set<String> commands;
+        private final Set<String> taskNames;
+        private final Set<String> taskDescs;
+        private final Set<String> taskCommands;
+        private final Set<String> strings;
+        private final List<ElementCapture> captures = new ArrayList<>();
+        private final List<ShellCommand> shellCommands = new ArrayList<>();
+        private final StringBuilder canonicalText = new StringBuilder();
+
+        private MscXmlHandler(Set<String> commands, Set<String> taskNames,
+                              Set<String> taskDescs, Set<String> taskCommands,
+                              Set<String> strings) {
+            this.commands = commands;
+            this.taskNames = taskNames;
+            this.taskDescs = taskDescs;
+            this.taskCommands = taskCommands;
+            this.strings = strings;
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) {
+            String element = localName(localName, qName);
+            if ("ShellCommandDefinition".equalsIgnoreCase(element)) {
+                shellCommands.add(new ShellCommand());
+            }
+            if (isCapturedElement(element)) {
+                ShellCommand shell = shellCommands.isEmpty()
+                        ? null : shellCommands.get(shellCommands.size() - 1);
+                captures.add(new ElementCapture(element, shell));
+            }
+            for (int i = 0; i < attributes.getLength(); i++) {
+                String attribute = localName(
+                        attributes.getLocalName(i), attributes.getQName(i));
+                String value = attributes.getValue(i);
+                canonicalText.append(value).append(' ');
+                if ("Command".equalsIgnoreCase(attribute)
+                        || "CommandLine".equalsIgnoreCase(attribute)) {
+                    addNonBlank(commands, value);
+                }
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            canonicalText.append(ch, start, length).append(' ');
+            for (ElementCapture capture : captures) {
+                capture.text.append(ch, start, length);
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            String element = localName(localName, qName);
+            for (int i = captures.size() - 1; i >= 0; i--) {
+                ElementCapture capture = captures.get(i);
+                if (!capture.element.equalsIgnoreCase(element)) {
+                    continue;
+                }
+                captures.remove(i);
+                acceptCapture(capture);
+                break;
+            }
+            if ("ShellCommandDefinition".equalsIgnoreCase(element)
+                    && !shellCommands.isEmpty()) {
+                ShellCommand shell = shellCommands.remove(shellCommands.size() - 1);
+                if (shell.command != null) {
+                    taskCommands.add(shell.params == null
+                            ? shell.command : shell.command + " " + shell.params);
+                }
+            }
+        }
+
+        private void acceptCapture(ElementCapture capture) {
+            String value = capture.text.toString().trim();
+            if (value.isEmpty()) {
+                return;
+            }
+            if ("CommandLine".equalsIgnoreCase(capture.element)
+                    || "Command".equalsIgnoreCase(capture.element)) {
+                commands.add(value);
+            }
+            if (capture.shell != null) {
+                if ("Command".equalsIgnoreCase(capture.element)
+                        && capture.shell.command == null) {
+                    capture.shell.command = value;
+                } else if ("Params".equalsIgnoreCase(capture.element)
+                        && capture.shell.params == null) {
+                    capture.shell.params = value;
+                }
+            }
+            if ("Name".equalsIgnoreCase(capture.element) && value.length() < 512) {
+                taskNames.add(value);
+            } else if ("Description".equalsIgnoreCase(capture.element)
+                    && value.length() < 2048) {
+                taskDescs.add(value);
+            } else if ("String".equalsIgnoreCase(capture.element)) {
+                strings.add(value);
+            }
+        }
+
+        private static boolean isCapturedElement(String element) {
+            return "CommandLine".equalsIgnoreCase(element)
+                    || "Command".equalsIgnoreCase(element)
+                    || "Params".equalsIgnoreCase(element)
+                    || "Name".equalsIgnoreCase(element)
+                    || "Description".equalsIgnoreCase(element)
+                    || "String".equalsIgnoreCase(element);
+        }
+
+        private static void addNonBlank(Set<String> values, String value) {
+            if (value != null && !value.isBlank()) {
+                values.add(value.trim());
+            }
+        }
+
+        private static String localName(String localName, String qName) {
+            if (localName != null && !localName.isEmpty()) {
+                return localName;
+            }
+            int colon = qName == null ? -1 : qName.indexOf(':');
+            return colon < 0 ? qName : qName.substring(colon + 1);
+        }
+    }
+
+    private static final class ElementCapture {
+        private final String element;
+        private final ShellCommand shell;
+        private final StringBuilder text = new StringBuilder();
+
+        private ElementCapture(String element, ShellCommand shell) {
+            this.element = element;
+            this.shell = shell;
+        }
+    }
+
+    private static final class ShellCommand {
+        private String command;
+        private String params;
     }
 
     private static String detectCharset(byte[] raw) {

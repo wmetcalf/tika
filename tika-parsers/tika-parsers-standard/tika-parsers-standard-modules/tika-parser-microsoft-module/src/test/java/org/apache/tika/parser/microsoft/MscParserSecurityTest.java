@@ -1,0 +1,108 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.tika.parser.microsoft;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.BodyContentHandler;
+
+public class MscParserSecurityTest {
+
+    @TempDir
+    Path temporaryDirectory;
+
+    @Test
+    public void testCanonicalXmlValuesDriveClassification() throws Exception {
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <m:MMC_ConsoleFile xmlns:m="urn:mmc">
+                  <m:CommandLine>po&#119;ershell.exe -NoProfile</m:CommandLine>
+                  <m:String>res://apds.d&#108;l/redirect.html?target=javascript:alert(1)</m:String>
+                </m:MMC_ConsoleFile>
+                """;
+
+        ParseResult result = parse(xml);
+        assertEquals("powershell.exe -NoProfile",
+                result.metadata.get("msc:command"));
+        assertEquals(
+                "res://apds.dll/redirect.html?target=javascript:alert(1)",
+                result.metadata.get("msc:string"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testExternalXmlEntitiesAreNotResolved() throws Exception {
+        String secret = "MSC_XXE_SECRET_SHOULD_NOT_LEAK";
+        Path secretFile = temporaryDirectory.resolve("secret.txt");
+        Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
+        String xml = """
+                <!DOCTYPE MMC_ConsoleFile [
+                  <!ENTITY xxe SYSTEM "%s">
+                ]>
+                <MMC_ConsoleFile><String>&xxe;</String></MMC_ConsoleFile>
+                """.formatted(secretFile.toUri());
+
+        ParseResult result = parse(xml);
+        assertFalse(result.body.contains(secret));
+        for (String value : result.metadata.getValues("msc:string")) {
+            assertFalse(value.contains(secret));
+        }
+    }
+
+    @Test
+    public void testShellCommandDefinitionKeepsCommandAndParametersTogether() throws Exception {
+        String xml = """
+                <MMC_ConsoleFile>
+                  <ShellCommandDefinition>
+                    <Command>cmd.exe</Command>
+                    <Params>/c whoami</Params>
+                  </ShellCommandDefinition>
+                </MMC_ConsoleFile>
+                """;
+
+        ParseResult result = parse(xml);
+        assertEquals("cmd.exe", result.metadata.get("msc:command"));
+        assertEquals("cmd.exe /c whoami",
+                result.metadata.get("msc:task_command"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    private static ParseResult parse(String xml) throws Exception {
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        try (TikaInputStream stream = TikaInputStream.get(
+                xml.getBytes(StandardCharsets.UTF_8))) {
+            new MscParser().parse(stream, body, metadata, new ParseContext());
+        }
+        return new ParseResult(body.toString(), metadata);
+    }
+
+    private record ParseResult(String body, Metadata metadata) {
+    }
+}
