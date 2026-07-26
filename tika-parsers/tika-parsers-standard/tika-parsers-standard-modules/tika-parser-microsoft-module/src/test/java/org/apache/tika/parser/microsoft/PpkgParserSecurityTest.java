@@ -224,11 +224,25 @@ public class PpkgParserSecurityTest {
         String xml = "<wap-provisioningdoc>"
                 + "<CommandLine>".repeat(512)
                 + "</CommandLine>".repeat(512)
+                + "<CustomData>\\\\server\\share\\stage.ps1</CustomData>"
+                + "<CommandLine>powershell.exe -NoProfile</CommandLine>"
                 + "</wap-provisioningdoc>";
 
         Metadata metadata = parseMetadata(buildWim(xml));
         assertNotNull(metadata.get("ppkg:warning"),
-                "excessive capture nesting must terminate bounded field extraction");
+                "excessive capture nesting must be signaled");
+        assertNotNull(metadata.get("ExploitClass"),
+                "an XML depth abort must fail closed even when its suffix cannot be parsed");
+    }
+
+    @Test
+    public void incompleteXmlFailsClosedForSecurityClassification() throws Exception {
+        Metadata metadata = parseMetadata(buildWim(
+                "<wap-provisioningdoc><CommandLine>powershell.exe -NoProfile"));
+
+        assertNotNull(metadata.get("ppkg:warning"));
+        assertNotNull(metadata.get("ExploitClass"),
+                "incomplete field extraction must remain security-visible");
     }
 
     @Test

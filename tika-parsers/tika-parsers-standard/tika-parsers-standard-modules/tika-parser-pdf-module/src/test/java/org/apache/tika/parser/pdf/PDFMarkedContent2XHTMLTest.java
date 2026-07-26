@@ -19,8 +19,25 @@ package org.apache.tika.parser.pdf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSArray;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSInteger;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSObject;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.documentinterchange.logicalstructure.PDStructureTreeRoot;
+import org.apache.pdfbox.pdmodel.documentinterchange.markedcontent.PDPropertyList;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +45,7 @@ import org.apache.tika.TikaTest;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.ToXMLContentHandler;
 
 
 public class PDFMarkedContent2XHTMLTest extends TikaTest {
@@ -88,6 +106,82 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
                 "marked-content text from page six must not bypass the two-page output limit");
         assertFalse(xml.contains("<table>"),
                 "marked-content structure from later pages must not bypass the output limit");
+    }
+
+    @Test
+    public void testAllowedPageLinkBelowExcludedPageParentIsVisited() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, 2);
+
+            assertContains("<a href=\"https://allowed.invalid/\">ALLOWED_CHILD</a>",
+                    handler.toString());
+        }
+    }
+
+    private static PDDocument buildPageOverrideDocument() throws IOException {
+        PDDocument document = new PDDocument();
+        List<PDPage> pages = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            PDPage page = new PDPage();
+            page.setResources(new PDResources());
+            document.addPage(page);
+            pages.add(page);
+        }
+
+        COSDictionary markedProperties = new COSDictionary();
+        markedProperties.setInt(COSName.MCID, 0);
+        try (PDPageContentStream contents =
+                     new PDPageContentStream(document, pages.get(0))) {
+            contents.beginMarkedContent(COSName.P, PDPropertyList.create(markedProperties));
+            contents.beginText();
+            contents.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+            contents.newLineAtOffset(72, 720);
+            contents.showText("ALLOWED_CHILD");
+            contents.endText();
+            contents.endMarkedContent();
+        }
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        document.save(output);
+        document.close();
+        PDDocument loaded = Loader.loadPDF(output.toByteArray());
+        addPageOverrideStructure(loaded);
+        return loaded;
+    }
+
+    private static void addPageOverrideStructure(PDDocument document) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary action = new COSDictionary();
+        action.setItem(COSName.S, COSName.URI);
+        action.setString(COSName.URI, "https://allowed.invalid/");
+        COSDictionary linkTarget = new COSDictionary();
+        linkTarget.setItem(COSName.A, action);
+
+        COSArray linkKids = new COSArray();
+        linkKids.add(COSInteger.ZERO);
+        linkKids.add(linkTarget);
+        COSDictionary allowedLink = new COSDictionary();
+        allowedLink.setItem(COSName.S, COSName.getPDFName("Link"));
+        allowedLink.setItem(COSName.PG, pageRefs.get(0));
+        allowedLink.setItem(COSName.K, linkKids);
+
+        COSDictionary excludedParent = new COSDictionary();
+        excludedParent.setItem(COSName.S, COSName.getPDFName("Div"));
+        excludedParent.setItem(COSName.PG, pageRefs.get(5));
+        excludedParent.setItem(COSName.K, new COSObject(allowedLink));
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(excludedParent));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
     }
 
 }

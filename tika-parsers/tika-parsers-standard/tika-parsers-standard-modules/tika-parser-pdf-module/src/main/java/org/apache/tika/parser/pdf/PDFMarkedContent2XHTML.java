@@ -343,19 +343,17 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 currentPageRef = new ObjectRef(((COSObject) pageBase).getKey().getNumber(),
                         ((COSObject) pageBase).getKey().getGeneration());
             }
-            if (!isOutputAllowed(currentPageRef)) {
-                return;
-            }
+            boolean outputAllowed = isOutputAllowed(currentPageRef);
 
             HtmlTag tag = getTag(name, roleMap);
             boolean startedLink = false;
             boolean ignoreTag = false;
-            if ("link".equals(tag.clazz)) {
+            if (outputAllowed && "link".equals(tag.clazz)) {
                 state.inLink = true;
                 state.linkHasAllowedContent = false;
                 startedLink = true;
             }
-            if (!state.inLink) {
+            if (outputAllowed && !state.inLink) {
                 //TODO: currently suppressing span and lbody...
                 // is this what we want to do?  What else should we suppress?
                 if ("span".equals(tag.tag)) {
@@ -376,7 +374,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             if (startedLink) {
                 writeLink();
             }
-            if (!state.inLink && !startedLink && !ignoreTag) {
+            if (outputAllowed && !state.inLink && !startedLink && !ignoreTag) {
                 xhtml.endElement(tag.tag);
             }
         } else if (kids instanceof COSInteger) {
@@ -401,15 +399,12 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 //TODO: log can't find mcid
             }
         } else if (kids instanceof COSDictionary) {
-            if (!isOutputAllowed(currentPageRef)) {
-                return;
-            }
             //TODO: check for other types of dictionary?
             COSDictionary dict = (COSDictionary) kids;
             COSDictionary anchor = dict.getCOSDictionary(COSName.A);
             //check for subtype /Link ?
             //COSName subtype = obj.getCOSName(COSName.SUBTYPE);
-            if (anchor != null) {
+            if (anchor != null && isOutputAllowed(currentPageRef)) {
                 state.uri = anchor.getString(COSName.URI);
             } else {
                 if (dict.containsKey(COSName.K)) {

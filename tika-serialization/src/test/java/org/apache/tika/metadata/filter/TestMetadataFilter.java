@@ -31,7 +31,9 @@ import org.junit.jupiter.api.Test;
 import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 
@@ -79,6 +81,26 @@ public class TestMetadataFilter extends TikaTest {
         assertEquals(1, metadata.names().length);
         assertEquals("author", metadata.get("author"));
         assertNull(metadata.get("title"));
+    }
+
+    @Test
+    public void testExcludeFilterRemovesCompositeRecordsContainingExcludedFields()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.add(Office.OFFICE_LINK_URL, "https://secret.invalid");
+        metadata.add(Office.OFFICE_LINK_RECORD,
+                "{\"url\":\"https://secret.invalid\"}");
+        metadata.add(Barcode.BARCODE_VALUE, "secret");
+        metadata.add(Barcode.BARCODE_RECORD, "{\"value\":\"secret\"}");
+
+        MetadataFilter filter = new ExcludeFieldMetadataFilter(
+                set(Office.OFFICE_LINK_URL.getName(), Barcode.BARCODE_VALUE.getName()));
+        metadata = filterOne(filter, metadata);
+
+        assertNull(metadata.get(Office.OFFICE_LINK_URL));
+        assertNull(metadata.get(Office.OFFICE_LINK_RECORD));
+        assertNull(metadata.get(Barcode.BARCODE_VALUE));
+        assertNull(metadata.get(Barcode.BARCODE_RECORD));
     }
 
     @Test

@@ -59,6 +59,19 @@ public class WinShortcutParserTest {
         assertArrayEquals(HTML, result.embedded.get(0));
     }
 
+    @Test
+    public void testOversizedExtraDataLengthDoesNotOverflowCursor() throws Exception {
+        byte[] lnk = buildOverflowingExtraDataLnk();
+        ParseResult result = parse(lnk);
+
+        assertEquals(Integer.toString(8 + HTML.length),
+                result.metadata.get("lnk:AppendedDataSize"));
+        assertEquals(1, result.embedded.size());
+        assertArrayEquals(
+                java.util.Arrays.copyOfRange(lnk, HEADER_SIZE, lnk.length),
+                result.embedded.get(0));
+    }
+
     private static ParseResult parse(byte[] lnk) throws Exception {
         List<byte[]> embedded = new ArrayList<>();
         ParseContext context = new ParseContext();
@@ -108,6 +121,18 @@ public class WinShortcutParserTest {
                 .putInt(SIG_TOLERATED_UNKNOWN);
         out.write(unknownBlock);
         out.write(new byte[4]);
+        out.write(HTML);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildOverflowingExtraDataLnk() throws IOException {
+        byte[] base = buildLnk();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(base, 0, HEADER_SIZE);
+        out.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(Integer.MAX_VALUE)
+                .putInt(SIG_TOLERATED_UNKNOWN)
+                .array());
         out.write(HTML);
         return out.toByteArray();
     }

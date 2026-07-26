@@ -30,6 +30,7 @@ import java.util.Set;
 import org.apache.tika.metadata.AccessPermissions;
 import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.MetadataRecord;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.utils.StringUtils;
@@ -102,26 +103,6 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             Barcode.BARCODE_POSITION.getName(),
             Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
             Barcode.BARCODE_IS_MIRRORED.getName());
-
-    private static final Map<String, Set<String>> COMPOSITE_FIELD_MEMBERS = Map.of(
-            Office.OFFICE_LINK_RECORD.getName(), Set.of(
-                    Office.OFFICE_LINK_URL.getName(),
-                    Office.OFFICE_LINK_TYPE.getName(),
-                    Office.OFFICE_LINK_TEXT.getName(),
-                    Office.OFFICE_LINK_OCR_TEXT.getName(),
-                    Office.OFFICE_LINK_SOURCE.getName(),
-                    Office.OFFICE_LINK_CONTEXT.getName(),
-                    Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
-                    Office.OFFICE_LINK_ID.getName(),
-                    Office.OFFICE_LINK_TRIGGER.getName(),
-                    Office.OFFICE_LINK_ACTION_TYPE.getName()),
-            Barcode.BARCODE_RECORD.getName(), Set.of(
-                    Barcode.BARCODE_VALUE.getName(),
-                    Barcode.BARCODE_FORMAT.getName(),
-                    Barcode.BARCODE_RAW_BYTES.getName(),
-                    Barcode.BARCODE_POSITION.getName(),
-                    Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
-                    Barcode.BARCODE_IS_MIRRORED.getName()));
 
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
@@ -535,9 +516,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         if (excludeFields.contains(name)) {
             return false;
         }
-        Set<String> compositeMembers = COMPOSITE_FIELD_MEMBERS.get(name);
-        if (compositeMembers != null
-                && compositeMembers.stream().anyMatch(excludeFields::contains)) {
+        if (MetadataRecord.containsAnyField(name, excludeFields)) {
             return false;
         }
         return includeFields.isEmpty() || includeFields.contains(name);

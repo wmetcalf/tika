@@ -657,11 +657,20 @@ public class PpkgParser implements Parser {
             return;
         }
 
+        PpkgXmlHandler xmlHandler =
+                new PpkgXmlHandler(commands, dataRefs, warnings, pkgMeta);
         try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(xmlBytes)) {
-            XMLReaderUtils.parseSAX(xmlStream,
-                    new PpkgXmlHandler(commands, dataRefs, warnings, pkgMeta), context);
+            XMLReaderUtils.parseSAX(xmlStream, xmlHandler, context);
         } catch (Exception e) {
             warnings.add("XML field extraction error in " + name + ": " + e.getMessage());
+            rootMeta.set("ExploitClass",
+                    "PPKG XML field extraction incomplete; execution indicators "
+                            + "may be hidden");
+        }
+        if (xmlHandler.captureLimitExceeded) {
+            rootMeta.set("ExploitClass",
+                    "PPKG XML field extraction incomplete; execution indicators "
+                            + "may be hidden");
         }
 
         // Surface XML text in Tika content stream
@@ -815,6 +824,9 @@ public class PpkgParser implements Parser {
         private static final String OVERSIZED_DATA_REF_WARNING =
                 "Oversized XML token truncated to its bounded tail for "
                         + "data-asset reference inspection";
+        private static final String CAPTURE_NESTING_WARNING =
+                "PPKG field capture nesting exceeded " + MAX_ACTIVE_CAPTURES
+                        + "; over-depth values were skipped";
 
         private static final Map<String, String> PACKAGE_FIELDS = Map.of(
                 "ID", "id",
@@ -830,6 +842,8 @@ public class PpkgParser implements Parser {
         private final List<ElementCapture> captures = new ArrayList<>();
         private final StringBuilder dataRefToken = new StringBuilder();
         private boolean dataRefTokenTooLong;
+        private boolean captureLimitExceeded;
+        private int skippedCaptureDepth;
 
         private PpkgXmlHandler(List<String> commands, List<String> dataRefs,
                                List<String> warnings, Map<String, String> pkgMeta) {
@@ -841,7 +855,7 @@ public class PpkgParser implements Parser {
 
         @Override
         public void startElement(String uri, String localName, String qName,
-                                 Attributes attributes) throws SAXException {
+                                 Attributes attributes) {
             String element = localName(localName, qName);
             flushDataRefToken();
             if ("parm".equals(element)
@@ -849,11 +863,16 @@ public class PpkgParser implements Parser {
                 addCommand(attribute(attributes, "value"));
             }
             if ("CommandLine".equals(element) || PACKAGE_FIELDS.containsKey(element)) {
-                if (captures.size() >= MAX_ACTIVE_CAPTURES) {
-                    throw new SAXException("PPKG field capture nesting exceeds "
-                            + MAX_ACTIVE_CAPTURES);
+                if (skippedCaptureDepth > 0
+                        || captures.size() >= MAX_ACTIVE_CAPTURES) {
+                    skippedCaptureDepth++;
+                    captureLimitExceeded = true;
+                    if (!warnings.contains(CAPTURE_NESTING_WARNING)) {
+                        warnings.add(CAPTURE_NESTING_WARNING);
+                    }
+                } else {
+                    captures.add(new ElementCapture(element));
                 }
-                captures.add(new ElementCapture(element));
             }
             for (int i = 0; i < attributes.getLength(); i++) {
                 extractDataRefs(attributes.getValue(i), dataRefs);
@@ -863,7 +882,7 @@ public class PpkgParser implements Parser {
         @Override
         public void characters(char[] ch, int start, int length) {
             appendDataRefCharacters(ch, start, length);
-            if (!captures.isEmpty()) {
+            if (skippedCaptureDepth == 0 && !captures.isEmpty()) {
                 captures.get(captures.size() - 1).append(ch, start, length);
             }
         }
@@ -872,6 +891,11 @@ public class PpkgParser implements Parser {
         public void endElement(String uri, String localName, String qName) {
             String element = localName(localName, qName);
             flushDataRefToken();
+            if (("CommandLine".equals(element) || PACKAGE_FIELDS.containsKey(element))
+                    && skippedCaptureDepth > 0) {
+                skippedCaptureDepth--;
+                return;
+            }
             for (int i = captures.size() - 1; i >= 0; i--) {
                 ElementCapture capture = captures.get(i);
                 if (!capture.element.equals(element)) {

@@ -16,6 +16,9 @@
  */
 package org.apache.tika.metadata;
 
+import java.util.Map;
+import java.util.Set;
+
 /**
  * Encodes related metadata fields as one JSON object so their association survives
  * write-time filtering.
@@ -23,8 +26,42 @@ package org.apache.tika.metadata;
 public final class MetadataRecord {
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
+    private static final Map<String, Set<String>> COMPOSITE_FIELD_MEMBERS = Map.of(
+            Office.OFFICE_LINK_RECORD.getName(), Set.of(
+                    Office.OFFICE_LINK_URL.getName(),
+                    Office.OFFICE_LINK_TYPE.getName(),
+                    Office.OFFICE_LINK_TEXT.getName(),
+                    Office.OFFICE_LINK_OCR_TEXT.getName(),
+                    Office.OFFICE_LINK_SOURCE.getName(),
+                    Office.OFFICE_LINK_CONTEXT.getName(),
+                    Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
+                    Office.OFFICE_LINK_ID.getName(),
+                    Office.OFFICE_LINK_TRIGGER.getName(),
+                    Office.OFFICE_LINK_ACTION_TYPE.getName()),
+            Barcode.BARCODE_RECORD.getName(), Set.of(
+                    Barcode.BARCODE_VALUE.getName(),
+                    Barcode.BARCODE_FORMAT.getName(),
+                    Barcode.BARCODE_RAW_BYTES.getName(),
+                    Barcode.BARCODE_POSITION.getName(),
+                    Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
+                    Barcode.BARCODE_IS_MIRRORED.getName()));
 
     private MetadataRecord() {
+    }
+
+    /**
+     * Returns whether a composite record contains any of the supplied metadata fields.
+     * Filtering code uses this to prevent excluded legacy fields from surviving inside
+     * their canonical record representation.
+     *
+     * @param recordField composite record property name
+     * @param fields candidate member property names
+     * @return {@code true} when the record contains at least one candidate field
+     */
+    public static boolean containsAnyField(String recordField, Set<String> fields) {
+        Set<String> members = COMPOSITE_FIELD_MEMBERS.get(recordField);
+        return members != null && fields != null
+                && members.stream().anyMatch(fields::contains);
     }
 
     /**

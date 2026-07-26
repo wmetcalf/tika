@@ -186,6 +186,7 @@ public class MscParser implements Parser {
         Set<String> strings      = new LinkedHashSet<>();
         List<String> warnings    = new ArrayList<>();
         boolean grimResource     = false;
+        boolean xmlFieldExtractionFailed = false;
 
         MscXmlHandler xmlHandler = new MscXmlHandler(
                 commands, taskNames, taskDescs, taskCommands, strings);
@@ -193,6 +194,12 @@ public class MscParser implements Parser {
             XMLReaderUtils.parseSAX(xmlStream, xmlHandler, context);
         } catch (Exception e) {
             warnings.add("XML field extraction error: " + e.getMessage());
+            xmlFieldExtractionFailed = true;
+        }
+        if (xmlHandler.captureLimitExceeded) {
+            warnings.add("MSC field capture nesting exceeded "
+                    + MscXmlHandler.MAX_ACTIVE_CAPTURES
+                    + "; over-depth values were skipped");
         }
         grimResource = xmlHandler.grimResourceDetected;
 
@@ -288,6 +295,12 @@ public class MscParser implements Parser {
                     }
                 }
             }
+        }
+        if ((xmlFieldExtractionFailed || xmlHandler.captureLimitExceeded)
+                && metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "MSC XML field extraction incomplete; execution indicators "
+                            + "may be hidden");
         }
 
         // XHTML body holds only the analyst-readable "content" — the
@@ -457,6 +470,9 @@ public class MscParser implements Parser {
         private final List<ShellCommand> shellCommands = new ArrayList<>();
         private final StringBuilder canonicalText = new StringBuilder();
         private boolean grimResourceDetected;
+        private boolean captureLimitExceeded;
+        private int skippedCaptureDepth;
+        private int skippedShellCommandDepth;
 
         private MscXmlHandler(Set<String> commands, Set<String> taskNames,
                               Set<String> taskDescs, Set<String> taskCommands,
@@ -470,23 +486,28 @@ public class MscParser implements Parser {
 
         @Override
         public void startElement(String uri, String localName, String qName,
-                                 Attributes attributes) throws SAXException {
+                                 Attributes attributes) {
             String element = localName(localName, qName);
             if ("ShellCommandDefinition".equalsIgnoreCase(element)) {
-                if (shellCommands.size() >= MAX_ACTIVE_CAPTURES) {
-                    throw new SAXException("MSC shell command nesting exceeds "
-                            + MAX_ACTIVE_CAPTURES);
+                if (skippedShellCommandDepth > 0
+                        || shellCommands.size() >= MAX_ACTIVE_CAPTURES) {
+                    skippedShellCommandDepth++;
+                    captureLimitExceeded = true;
+                } else {
+                    shellCommands.add(new ShellCommand());
                 }
-                shellCommands.add(new ShellCommand());
             }
             if (isCapturedElement(element)) {
-                if (captures.size() >= MAX_ACTIVE_CAPTURES) {
-                    throw new SAXException("MSC field capture nesting exceeds "
-                            + MAX_ACTIVE_CAPTURES);
+                if (skippedCaptureDepth > 0
+                        || captures.size() >= MAX_ACTIVE_CAPTURES) {
+                    skippedCaptureDepth++;
+                    captureLimitExceeded = true;
+                } else {
+                    ShellCommand shell = shellCommands.isEmpty()
+                            || skippedShellCommandDepth > 0
+                            ? null : shellCommands.get(shellCommands.size() - 1);
+                    captures.add(new ElementCapture(element, shell));
                 }
-                ShellCommand shell = shellCommands.isEmpty()
-                        ? null : shellCommands.get(shellCommands.size() - 1);
-                captures.add(new ElementCapture(element, shell));
             }
             for (int i = 0; i < attributes.getLength(); i++) {
                 String attribute = localName(
@@ -503,7 +524,7 @@ public class MscParser implements Parser {
         @Override
         public void characters(char[] ch, int start, int length) {
             canonicalText.append(ch, start, length).append(' ');
-            if (!captures.isEmpty()) {
+            if (skippedCaptureDepth == 0 && !captures.isEmpty()) {
                 captures.get(captures.size() - 1).append(ch, start, length);
             }
         }
@@ -511,21 +532,28 @@ public class MscParser implements Parser {
         @Override
         public void endElement(String uri, String localName, String qName) {
             String element = localName(localName, qName);
-            for (int i = captures.size() - 1; i >= 0; i--) {
-                ElementCapture capture = captures.get(i);
-                if (!capture.element.equalsIgnoreCase(element)) {
-                    continue;
+            if (isCapturedElement(element) && skippedCaptureDepth > 0) {
+                skippedCaptureDepth--;
+            } else {
+                for (int i = captures.size() - 1; i >= 0; i--) {
+                    ElementCapture capture = captures.get(i);
+                    if (!capture.element.equalsIgnoreCase(element)) {
+                        continue;
+                    }
+                    captures.remove(i);
+                    acceptCapture(capture);
+                    break;
                 }
-                captures.remove(i);
-                acceptCapture(capture);
-                break;
             }
-            if ("ShellCommandDefinition".equalsIgnoreCase(element)
-                    && !shellCommands.isEmpty()) {
-                ShellCommand shell = shellCommands.remove(shellCommands.size() - 1);
-                if (shell.command != null) {
-                    taskCommands.add(shell.params == null
-                            ? shell.command : shell.command + " " + shell.params);
+            if ("ShellCommandDefinition".equalsIgnoreCase(element)) {
+                if (skippedShellCommandDepth > 0) {
+                    skippedShellCommandDepth--;
+                } else if (!shellCommands.isEmpty()) {
+                    ShellCommand shell = shellCommands.remove(shellCommands.size() - 1);
+                    if (shell.command != null) {
+                        taskCommands.add(shell.params == null
+                                ? shell.command : shell.command + " " + shell.params);
+                    }
                 }
             }
         }

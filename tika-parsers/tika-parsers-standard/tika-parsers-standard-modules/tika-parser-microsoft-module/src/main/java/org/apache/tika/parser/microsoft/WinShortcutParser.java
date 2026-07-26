@@ -1051,12 +1051,12 @@ public class WinShortcutParser implements Parser {
                                Map<String, String> fields, List<String> warnings,
                                XHTMLContentHandler xhtml, ParseContext context) {
         int consoleFePage = -1;
-        while (pos + 8 <= fileLen) {
+        while (pos >= 0 && pos <= fileLen - 8) {
             int blockSize = buf.getInt(pos);
             if (blockSize < 4) {
                 break;
             }
-            if (pos + blockSize > fileLen) {
+            if (blockSize > fileLen - pos) {
                 break;
             }
             int sig = buf.getInt(pos + 4);

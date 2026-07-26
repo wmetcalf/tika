@@ -125,11 +125,24 @@ public class MscParserSecurityTest {
         String xml = "<MMC_ConsoleFile>"
                 + "<String>".repeat(512)
                 + "</String>".repeat(512)
+                + "<CommandLine>powershell.exe -NoProfile</CommandLine>"
                 + "</MMC_ConsoleFile>";
 
         ParseResult result = parse(xml);
         assertNotNull(result.metadata.get("msc:warning"),
-                "excessive capture nesting must terminate bounded field extraction");
+                "excessive capture nesting must be signaled");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "an XML depth abort must fail closed even when its suffix cannot be parsed");
+    }
+
+    @Test
+    public void testIncompleteXmlFailsClosedForSecurityClassification() throws Exception {
+        ParseResult result = parse(
+                "<MMC_ConsoleFile><CommandLine>powershell.exe -NoProfile");
+
+        assertNotNull(result.metadata.get("msc:warning"));
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "incomplete field extraction must remain security-visible");
     }
 
     private static ParseResult parse(String xml) throws Exception {
