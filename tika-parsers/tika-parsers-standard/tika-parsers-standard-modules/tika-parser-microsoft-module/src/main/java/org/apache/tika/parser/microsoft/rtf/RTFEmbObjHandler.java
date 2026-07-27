@@ -38,6 +38,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLBalancingHandler;
 
 /**
@@ -231,8 +232,14 @@ class RTFEmbObjHandler {
         if (len < 0) {
             throw new TikaException("Requesting I read < 0 bytes ?!");
         }
-        if (len > (long) memoryLimitInKb * 1024) {
-            throw new TikaMemoryLimitException(len, ((long) memoryLimitInKb * 1024));
+        long maximum = (long) memoryLimitInKb * 1024;
+        long requested = os.size() + (long) len;
+        if (requested > maximum) {
+            // The RTF lexer has already committed to this \binN payload. Consume it even
+            // when we refuse to buffer it so its opaque bytes cannot be reinterpreted as
+            // RTF control syntax by the caller after the limit exception is handled.
+            IOUtils.skipFully(is, len);
+            throw new TikaMemoryLimitException(requested, maximum);
         }
 
         byte[] bytes = new byte[len];
@@ -413,6 +420,10 @@ class RTFEmbObjHandler {
                     balancer.drainOpenElements();
                     EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
                 } catch (SAXException e) {
+                    if (handler instanceof TaggedContentHandler taggedHandler
+                            && taggedHandler.isCauseOf(e)) {
+                        throw e;
+                    }
                     balancer.drainOpenElements();
                     WriteLimitReachedException.throwIfWriteLimitReached(e);
                     EmbeddedDocumentUtil.recordException(e, metadata);

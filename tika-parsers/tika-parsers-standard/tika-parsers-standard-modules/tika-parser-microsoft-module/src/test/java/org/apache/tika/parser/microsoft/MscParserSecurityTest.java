@@ -45,6 +45,7 @@ import org.xml.sax.InputSource;
 import org.xml.sax.Parser;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.DefaultHandler;
 import org.xml.sax.helpers.XMLFilterImpl;
 
 import org.apache.tika.detect.Detector;
@@ -324,6 +325,28 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testBinaryDownstreamSaxDenialPropagates() throws Exception {
+        String rejectedText = "blocked MSC embedded output";
+        SAXException denial =
+                new SAXException("simulated MSC output policy denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(
+                ("<MMC_ConsoleFile><BinaryData>"
+                        + "QUJDREVGR0hJSktMTU5PUA=="
+                        + "</BinaryData></MMC_ConsoleFile>")
+                        .getBytes(StandardCharsets.UTF_8))) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new MscParser().parse(
+                            stream, new TextRejectingHandler(rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
     public void testBinaryMimeDetectionSecurityExceptionPropagates() {
         SecurityException denial =
                 new SecurityException("simulated binary MIME policy denial");
@@ -553,6 +576,44 @@ public class MscParserSecurityTest {
     }
 
     private record ParseResult(String body, Metadata metadata) {
+    }
+
+    private static ParseContext embeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        return context;
+    }
+
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+
+        private TextRejectingHandler(String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
     }
 
     @SuppressWarnings("deprecation")

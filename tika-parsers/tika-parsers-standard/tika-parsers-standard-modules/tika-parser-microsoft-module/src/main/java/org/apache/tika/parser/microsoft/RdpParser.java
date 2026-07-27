@@ -47,6 +47,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -436,11 +437,15 @@ public class RdpParser implements Parser {
         Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "rdp-pcb-cert");
         embMeta.set(Metadata.CONTENT_TYPE, "application/pkix-cert");
+        TaggedContentHandler taggedEmbeddedOutput =
+                new TaggedContentHandler(xhtml);
         try (TikaInputStream tis = TikaInputStream.get(der)) {
             if (extractor.shouldParseEmbedded(embMeta)) {
-                extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                extractor.parseEmbedded(
+                        tis, taggedEmbeddedOutput, embMeta, context, true);
             }
         } catch (Exception e) {
+            taggedEmbeddedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             if (e instanceof SecurityException securityException) {
                 throw securityException;

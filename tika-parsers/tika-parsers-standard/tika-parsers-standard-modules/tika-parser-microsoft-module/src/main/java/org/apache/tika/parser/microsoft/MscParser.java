@@ -51,6 +51,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -527,13 +528,17 @@ public class MscParser implements Parser {
             embMeta.set(Metadata.CONTENT_TYPE, mime);
             rootMeta.add("msc:binary_mime", mime);
 
+            TaggedContentHandler taggedEmbeddedOutput =
+                    new TaggedContentHandler(xhtml);
             try (TikaInputStream tis = TikaInputStream.get(imageData)) {
                 if (extractor.shouldParseEmbedded(embMeta)) {
-                    extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                    extractor.parseEmbedded(
+                            tis, taggedEmbeddedOutput, embMeta, context, true);
                 }
             } catch (SecurityException e) {
                 throw e;
             } catch (SAXException e) {
+                taggedEmbeddedOutput.throwIfCauseOf(e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 warnings.add("Binary " + (idx - 1)
                         + " parse error: " + e.getMessage());

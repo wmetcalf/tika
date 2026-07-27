@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -64,6 +65,40 @@ public class ChmParserSecurityTest extends TikaTest {
                 () -> parseWithEmbeddedException(failure));
 
         assertSame(failure, thrown);
+    }
+
+    @Test
+    public void testEmbeddedDownstreamSaxDenialPropagates() throws Exception {
+        String rejectedText = "blocked CHM embedded output";
+        SAXException denial =
+                new SAXException("simulated CHM output policy denial");
+        ParseContext context = new ParseContext();
+        AtomicBoolean pendingOutput = new AtomicBoolean(true);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return pendingOutput.get();
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                if (!pendingOutput.compareAndSet(true, false)) {
+                    return;
+                }
+                char[] chars = rejectedText.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+
+        SAXException thrown =
+                assertThrows(SAXException.class,
+                        () -> parse(
+                                context,
+                                new TextRejectingHandler(rejectedText, denial)));
+
+        assertSame(denial, thrown);
     }
 
     @Test
@@ -139,11 +174,35 @@ public class ChmParserSecurityTest extends TikaTest {
     }
 
     private Metadata parse(ParseContext context) throws Exception {
+        return parse(context, new BodyContentHandler(-1));
+    }
+
+    private Metadata parse(ParseContext context, ContentHandler handler)
+            throws Exception {
         Metadata metadata = new Metadata();
         try (TikaInputStream stream = getResourceAsStream(CHM_FIXTURE)) {
             new ChmParser().parse(
-                    stream, new BodyContentHandler(-1), metadata, context);
+                    stream, handler, metadata, context);
         }
         return metadata;
+    }
+
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+
+        private TextRejectingHandler(String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
     }
 }

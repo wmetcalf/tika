@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
@@ -33,6 +34,7 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -61,6 +63,7 @@ import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
@@ -263,6 +266,100 @@ public class AbstractOOXMLExtractorSecurityTest {
     }
 
     @Test
+    public void testAuxiliaryPartDownstreamSaxFailurePropagates()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart parent =
+                    createXmlPart(opcPackage, "/word/document.xml");
+            PackagePart auxiliary =
+                    createXmlPart(opcPackage, "/word/comments.xml");
+            try (OutputStream output = auxiliary.getOutputStream()) {
+                output.write(
+                        "<root>blocked auxiliary output</root>"
+                                .getBytes(StandardCharsets.UTF_8));
+            }
+            String relationshipType = "urn:test:auxiliary";
+            parent.addRelationship(
+                    auxiliary.getPartName(), TargetMode.INTERNAL,
+                    relationshipType);
+            SAXException denial =
+                    new SAXException("simulated auxiliary output policy denial");
+
+            SAXException thrown = assertThrows(SAXException.class,
+                    () -> new EmptyExtractor(context, opcPackage)
+                            .handleGeneralTextContainingPart(
+                                    relationshipType, "auxiliary", parent,
+                                    new Metadata(),
+                                    new TextRejectingHandler(
+                                            "blocked auxiliary output", denial)));
+
+            assertEquals(denial, thrown);
+        }
+    }
+
+    @Test
+    public void testMalformedAuxiliaryPartRemainsBestEffort()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        Metadata metadata = new Metadata();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart parent =
+                    createXmlPart(opcPackage, "/word/document.xml");
+            PackagePart auxiliary =
+                    createXmlPart(opcPackage, "/word/comments.xml");
+            try (OutputStream output = auxiliary.getOutputStream()) {
+                output.write("<root>".getBytes(StandardCharsets.UTF_8));
+            }
+            String relationshipType = "urn:test:auxiliary";
+            parent.addRelationship(
+                    auxiliary.getPartName(), TargetMode.INTERNAL,
+                    relationshipType);
+
+            new EmptyExtractor(context, opcPackage)
+                    .handleGeneralTextContainingPart(
+                            relationshipType, "auxiliary", parent,
+                            metadata, new DefaultHandler());
+        }
+
+        assertNotNull(
+                metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    @Test
+    public void testMalformedAuxiliaryCleanupPreservesDownstreamSaxFailure()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart parent =
+                    createXmlPart(opcPackage, "/word/document.xml");
+            PackagePart auxiliary =
+                    createXmlPart(opcPackage, "/word/comments.xml");
+            try (OutputStream output = auxiliary.getOutputStream()) {
+                output.write("<root>".getBytes(StandardCharsets.UTF_8));
+            }
+            String relationshipType = "urn:test:auxiliary";
+            parent.addRelationship(
+                    auxiliary.getPartName(), TargetMode.INTERNAL,
+                    relationshipType);
+            SAXException denial =
+                    new SAXException("simulated cleanup output policy denial");
+
+            SAXException thrown = assertThrows(SAXException.class,
+                    () -> new EmptyExtractor(context, opcPackage)
+                            .handleGeneralTextContainingPart(
+                                    relationshipType, "auxiliary", parent,
+                                    new Metadata(),
+                                    new EndElementRejectingHandler("root", denial)));
+
+            assertSame(denial, thrown);
+        }
+    }
+
+    @Test
     public void testRejectedExternalRelationshipsDoNotGrowAdmissionState()
             throws Exception {
         Class<?> budgetClass = Class.forName(
@@ -404,6 +501,158 @@ public class AbstractOOXMLExtractorSecurityTest {
                 metadata.getValues(Office.OFFICE_LINK_RECORD).length);
         assertEquals("true",
                 metadata.get(Office.HAS_ATTACHED_TEMPLATE));
+    }
+
+    @Test
+    public void testFilteredPreRecordedRelationshipIsNotDuplicated()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of(
+                Office.OFFICE_LINK_URL.getName(),
+                Office.OFFICE_LINK_TYPE.getName()));
+        factory.setIncludeEmpty(true);
+        factory.setMaxValuesPerField(100);
+        Metadata metadata = new Metadata(factory.newInstance());
+        LinkCountingHandler handler = new LinkCountingHandler();
+        String target = "https://attacker.invalid/filtered-template.dotm";
+        String relationshipType =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            document.addExternalRelationship(target, relationshipType);
+
+            new EmptyExtractor(context, opcPackage, List.of(document))
+                    .getXHTML(handler, metadata, context);
+        }
+
+        assertArrayEquals(new String[]{target},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"attached_template"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+        assertEquals(0,
+                metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals(1, handler.anchorCount,
+                "filtering metadata must not suppress the body hyperlink");
+        assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+    }
+
+    @Test
+    public void testTightBudgetPreRecordedRelationshipIsNotDuplicated()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setMaxTotalBytes(700);
+        factory.setMaxFieldSize(100_000);
+        factory.setMaxValuesPerField(100);
+        factory.setIncludeEmpty(true);
+        Metadata metadata = new Metadata(factory.newInstance());
+        LinkCountingHandler handler = new LinkCountingHandler();
+        String target = "https://attacker.invalid/budgeted-template.dotm";
+        String relationshipType =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            document.addExternalRelationship(target, relationshipType);
+
+            new EmptyExtractor(context, opcPackage, List.of(document))
+                    .getXHTML(handler, metadata, context);
+        }
+
+        assertArrayEquals(new String[]{target},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertEquals(0,
+                metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals(1, handler.anchorCount,
+                "a tight metadata budget must not suppress the body hyperlink");
+        assertEquals("true",
+                metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+    }
+
+    @Test
+    public void testFullyDroppedPreRecordIsRetriedAfterBudgetReleased()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setMaxTotalBytes(700);
+        factory.setMaxFieldSize(100_000);
+        factory.setMaxValuesPerField(100);
+        factory.setIncludeEmpty(true);
+        Metadata metadata = new Metadata(factory.newInstance());
+        metadata.set("filler", "x".repeat(160));
+        LinkCountingHandler handler = new LinkCountingHandler();
+        String target = "https://attacker.invalid/retried-template.dotm";
+        String relationshipType =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            document.addExternalRelationship(target, relationshipType);
+
+            new MetadataClearingExtractor(
+                    context, opcPackage, List.of(document), metadata, "filler")
+                    .getXHTML(handler, metadata, context);
+        }
+
+        assertArrayEquals(new String[]{target},
+                metadata.getValues(Office.OFFICE_LINK_URL),
+                "a fully dropped pre-record must be retried when budget becomes available");
+        assertEquals(1, handler.anchorCount,
+                "retrying metadata must not duplicate the body hyperlink");
+    }
+
+    @Test
+    public void testPlaceholderOnlyPreRecordIsRetriedAfterBudgetReleased()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setMaxTotalBytes(700);
+        factory.setMaxFieldSize(100_000);
+        factory.setMaxValuesPerField(100);
+        factory.setIncludeEmpty(true);
+        Metadata metadata = new Metadata(factory.newInstance());
+        metadata.set("filler", "x".repeat(100));
+        LinkCountingHandler handler = new LinkCountingHandler();
+        String target =
+                "https://attacker.invalid/placeholder-template.dotm";
+        String relationshipType =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            document.addExternalRelationship(target, relationshipType);
+
+            new MetadataClearingExtractor(
+                    context, opcPackage, List.of(document), metadata, "filler")
+                    .getXHTML(handler, metadata, context);
+        }
+
+        assertEquals(1L,
+                List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                        .stream()
+                        .filter(target::equals)
+                        .count(),
+                "empty alignment placeholders must not suppress a later retry");
+        assertEquals(1, handler.anchorCount,
+                "retrying metadata must not duplicate the body hyperlink");
     }
 
     @Test
@@ -799,6 +1048,47 @@ public class AbstractOOXMLExtractorSecurityTest {
         }
     }
 
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException failure;
+
+        private TextRejectingHandler(String rejectedText, SAXException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw failure;
+            }
+        }
+    }
+
+    private static final class EndElementRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedElement;
+        private final SAXException failure;
+
+        private EndElementRejectingHandler(
+                String rejectedElement, SAXException failure) {
+            this.rejectedElement = rejectedElement;
+            this.failure = failure;
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            if (rejectedElement.equals(localName)
+                    || rejectedElement.equals(qName)) {
+                throw failure;
+            }
+        }
+    }
+
     private static final class LinkSecurityExceptionHandler
             extends DefaultHandler {
 
@@ -937,6 +1227,34 @@ public class AbstractOOXMLExtractorSecurityTest {
         @Override
         protected void buildXHTML(XHTMLContentHandler xhtml)
                 throws SAXException, IOException {
+        }
+
+        @Override
+        protected List<PackagePart> getMainDocumentParts() {
+            return mainParts;
+        }
+    }
+
+    private static final class MetadataClearingExtractor
+            extends AbstractOOXMLExtractor {
+
+        private final List<PackagePart> mainParts;
+        private final Metadata metadata;
+        private final String fieldToClear;
+
+        private MetadataClearingExtractor(
+                ParseContext context, OPCPackage opcPackage,
+                List<PackagePart> mainParts, Metadata metadata,
+                String fieldToClear) {
+            super(context, opcPackage);
+            this.mainParts = mainParts;
+            this.metadata = metadata;
+            this.fieldToClear = fieldToClear;
+        }
+
+        @Override
+        protected void buildXHTML(XHTMLContentHandler xhtml) {
+            metadata.remove(fieldToClear);
         }
 
         @Override

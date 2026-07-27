@@ -52,6 +52,7 @@ import org.apache.tika.metadata.OfficeOpenXMLExtended;
 import org.apache.tika.metadata.Property;
 import org.apache.tika.metadata.RTFMetadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.utils.CharsetUtils;
 
 /* Tokenizes and performs a "shallow" parse of the RTF
@@ -614,6 +615,7 @@ final class TextExtractor {
         try {
             embObjHandler.flushLastObjData();
         } catch (Exception e) {
+            throwIfOutputHandlerCause(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             if (e instanceof SecurityException securityException) {
                 throw securityException;
@@ -1545,6 +1547,7 @@ final class TextExtractor {
             try {
                 embObjHandler.flushLastObjData();
             } catch (Exception e) {
+                throwIfOutputHandlerCause(e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 if (e instanceof SecurityException securityException) {
                     throw securityException;
@@ -1681,6 +1684,12 @@ final class TextExtractor {
             // the fldrslt (e.g., a PAGEREF \field) don't trip the close early.
             hyperlinkAnchorDepth = groupState.depth;
             groupState.ignore = false;
+        }
+    }
+
+    private void throwIfOutputHandlerCause(Exception e) throws SAXException {
+        if (out instanceof TaggedContentHandler taggedHandler) {
+            taggedHandler.throwIfCauseOf(e);
         }
     }
 

@@ -54,6 +54,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -835,13 +836,17 @@ public class PpkgParser implements Parser {
         Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         embMeta.set(Metadata.CONTENT_TYPE, "text/xml");
+        TaggedContentHandler taggedEmbeddedOutput =
+                new TaggedContentHandler(xhtml);
         try (TikaInputStream tis = TikaInputStream.get(xmlBytes)) {
             if (extractor.shouldParseEmbedded(embMeta)) {
-                extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                extractor.parseEmbedded(
+                        tis, taggedEmbeddedOutput, embMeta, context, true);
             }
         } catch (SecurityException e) {
             throw e;
         } catch (SAXException e) {
+            taggedEmbeddedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             warnings.add("XML parse error in " + name + ": " + e.getMessage());
         } catch (Exception e) {
@@ -886,13 +891,17 @@ public class PpkgParser implements Parser {
         emitDataAssetMetadata(
                 rootMeta, name, mime, data.length, sha256, sha1Hex, md5);
 
+        TaggedContentHandler taggedEmbeddedOutput =
+                new TaggedContentHandler(xhtml);
         try (TikaInputStream tis = TikaInputStream.get(data)) {
             if (extractor.shouldParseEmbedded(embMeta)) {
-                extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                extractor.parseEmbedded(
+                        tis, taggedEmbeddedOutput, embMeta, context, true);
             }
         } catch (SecurityException e) {
             throw e;
         } catch (SAXException e) {
+            taggedEmbeddedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         } catch (Exception e) {

@@ -44,6 +44,7 @@ import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 @TikaComponent
@@ -127,14 +128,18 @@ public class ChmParser implements Parser {
                 // Non-HTML embedded file (e.g. PDF, LNK, ZIP dropped inside CHM)
                 Metadata embeddedMeta = Metadata.newInstance(context);
                 embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, displayName);
+                TaggedContentHandler taggedEmbeddedOutput =
+                        new TaggedContentHandler(xhtml);
                 try (TikaInputStream embeddedTis = TikaInputStream.get(data)) {
                     if (embeddedExtractor.shouldParseEmbedded(embeddedMeta)) {
-                        embeddedExtractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta,
+                        embeddedExtractor.parseEmbedded(
+                                embeddedTis, taggedEmbeddedOutput, embeddedMeta,
                                 context, true);
                     }
                 } catch (SecurityException e) {
                     throw e;
                 } catch (Exception e) {
+                    taggedEmbeddedOutput.throwIfCauseOf(e);
                     WriteLimitReachedException.throwIfWriteLimitReached(e);
                     LOG.warn("Failed to parse embedded CHM entry '{}': {}", displayName,
                             e.getMessage());
