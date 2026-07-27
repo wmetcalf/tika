@@ -196,6 +196,26 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testResolvedCommandBodyDenialIsUnwrapped() throws Exception {
+        String rejectedText = "blocked-relative-command.exe";
+        SAXException denial =
+                new SAXException("simulated LNK resolved-command denial");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(rejectedText, denial);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(
+                buildRelativePathLnk(rejectedText))) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testOrdinaryAppendedParseFailureRemainsWarning() throws Exception {
         Metadata metadata = parseWithEmbeddedException(
                 new IOException("simulated ordinary embedded failure"));
@@ -608,6 +628,22 @@ public class WinShortcutParserTest {
         return out.toByteArray();
     }
 
+    private static byte[] buildRelativePathLnk(String relativePath)
+            throws IOException {
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(20, 0x00000008);
+        byte[] pathBytes = relativePath.getBytes(StandardCharsets.US_ASCII);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) pathBytes.length).array());
+        out.write(pathBytes);
+        out.write(new byte[4]);
+        return out.toByteArray();
+    }
+
     private static byte[] buildOverflowingExtraDataLnk() throws IOException {
         byte[] base = buildLnk();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -916,6 +952,8 @@ public class WinShortcutParserTest {
 
         private final String rejectedText;
         private final SAXException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
 
         private TextRejectingHandler(String rejectedText, SAXException denial) {
             this.rejectedText = rejectedText;
@@ -925,8 +963,36 @@ public class WinShortcutParserTest {
         @Override
         public void characters(char[] ch, int start, int length)
                 throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
+            }
             if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
                 throw denial;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
             }
         }
     }

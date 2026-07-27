@@ -402,6 +402,9 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                                         taggedBodyHandler,
                                         entry.getValue().linkedRelationships())),
                         context);
+            } catch (SecurityException e) {
+                outputDenied = true;
+                throw e;
             } catch (SAXException e) {
                 try {
                     taggedBodyHandler.throwIfCauseOf(e);

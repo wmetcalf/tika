@@ -273,6 +273,67 @@ public class RTFObjDataParserTest {
     }
 
     @Test
+    public void testCleanupSecurityDenialSupersedesRtfParserFailure()
+            throws Exception {
+        SecurityException denial =
+                new SecurityException(
+                        "simulated RTF cleanup security denial");
+        AtomicBoolean parserFailed = new AtomicBoolean();
+        DrainRejectingHandler handler =
+                new DrainRejectingHandler(parserFailed, denial);
+        byte[] rtf =
+                "{\\rtf1\\b parser failure"
+                        .getBytes(StandardCharsets.US_ASCII);
+
+        SecurityException thrown =
+                assertThrows(SecurityException.class, () -> {
+                    try (InputStream failing =
+                                 new FailingInputStream(rtf, parserFailed);
+                         TikaInputStream stream =
+                                 TikaInputStream.get(failing)) {
+                        new RTFParser().parse(
+                                stream, handler, new Metadata(),
+                                new ParseContext());
+                    }
+                });
+
+        assertSame(denial, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertTrue(thrown.getSuppressed()[0] instanceof TikaException);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testCleanupErrorSupersedesRtfParserFailure()
+            throws Exception {
+        AssertionError denial =
+                new AssertionError("simulated RTF cleanup error denial");
+        AtomicBoolean parserFailed = new AtomicBoolean();
+        DrainRejectingHandler handler =
+                new DrainRejectingHandler(parserFailed, denial);
+        byte[] rtf =
+                "{\\rtf1\\b parser failure"
+                        .getBytes(StandardCharsets.US_ASCII);
+
+        AssertionError thrown =
+                assertThrows(AssertionError.class, () -> {
+                    try (InputStream failing =
+                                 new FailingInputStream(rtf, parserFailed);
+                         TikaInputStream stream =
+                                 TikaInputStream.get(failing)) {
+                        new RTFParser().parse(
+                                stream, handler, new Metadata(),
+                                new ParseContext());
+                    }
+                });
+
+        assertSame(denial, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertTrue(thrown.getSuppressed()[0] instanceof TikaException);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testPictBinaryChunksShareOneMemoryLimit() throws Exception {
         RTFEmbObjHandler handler =
                 new RTFEmbObjHandler(
@@ -657,12 +718,12 @@ public class RTFObjDataParserTest {
     private static final class DrainRejectingHandler extends DefaultHandler {
 
         private final AtomicBoolean parserFailed;
-        private final SAXException denial;
+        private final Throwable denial;
         private boolean denied;
         private int callbacksAfterDenial;
 
         private DrainRejectingHandler(
-                AtomicBoolean parserFailed, SAXException denial) {
+                AtomicBoolean parserFailed, Throwable denial) {
             this.parserFailed = parserFailed;
             this.denial = denial;
         }
@@ -692,7 +753,7 @@ public class RTFObjDataParserTest {
             rejectAfterDenial();
             if (parserFailed.get()) {
                 denied = true;
-                throw denial;
+                throwDenial();
             }
         }
 
@@ -709,8 +770,31 @@ public class RTFObjDataParserTest {
         private void rejectAfterDenial() throws SAXException {
             if (denied) {
                 callbacksAfterDenial++;
-                throw new SAXException("callback delivered after denial");
+                if (denial instanceof SAXException) {
+                    throw new SAXException(
+                            "callback delivered after denial");
+                }
+                if (denial instanceof SecurityException) {
+                    throw new SecurityException(
+                            "callback delivered after security denial");
+                }
+                throw new AssertionError(
+                        "callback delivered after error denial");
             }
+        }
+
+        private void throwDenial() throws SAXException {
+            if (denial instanceof SAXException saxException) {
+                throw saxException;
+            }
+            if (denial instanceof SecurityException securityException) {
+                throw securityException;
+            }
+            if (denial instanceof Error error) {
+                throw error;
+            }
+            throw new AssertionError(
+                    "unsupported cleanup denial", denial);
         }
     }
 }

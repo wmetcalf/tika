@@ -867,6 +867,29 @@ public class OOXMLDocxSAXTest extends TikaTest {
     }
 
     @Test
+    public void testUnreferencedCommentSecurityDenialPropagates()
+            throws Exception {
+        SecurityException denial =
+                new SecurityException(
+                        "simulated unreferenced-comment security denial");
+        FailStopSecurityTextHandler handler =
+                new FailStopSecurityTextHandler(
+                        "Here is a comment", denial);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        SecurityException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(SecurityException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testHoverAndVmlHyperlinks() throws Exception {
         List<Metadata> metadataList =
                 getRecursiveMetadata("testHoverAndVml.docx");
@@ -1040,6 +1063,71 @@ public class OOXMLDocxSAXTest extends TikaTest {
             if (denied) {
                 callbacksAfterDenial++;
                 throw new SAXException("callback delivered after denial");
+            }
+        }
+    }
+
+    private static final class FailStopSecurityTextHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SecurityException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopSecurityTextHandler(
+                String rejectedText, SecurityException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void startDocument() {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            rejectAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SecurityException(
+                        "callback delivered after security denial");
             }
         }
     }

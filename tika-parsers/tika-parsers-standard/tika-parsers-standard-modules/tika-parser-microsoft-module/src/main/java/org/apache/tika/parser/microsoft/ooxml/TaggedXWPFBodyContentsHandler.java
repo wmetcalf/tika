@@ -240,7 +240,8 @@ final class TaggedXWPFBodyContentsHandler implements XWPFBodyContentsHandler {
 
         private final XHTMLContentHandler delegate;
         private final Object outputTag;
-        private SAXException denial;
+        private SAXException saxDenial;
+        private SecurityException securityDenial;
 
         private FailStopTaggedXHTMLContentHandler(
                 XHTMLContentHandler delegate, Metadata metadata,
@@ -315,13 +316,19 @@ final class TaggedXWPFBodyContentsHandler implements XWPFBodyContentsHandler {
         }
 
         private void call(SaxAction action) throws SAXException {
-            if (denial != null) {
-                throw new TaggedSAXException(denial, outputTag);
+            if (securityDenial != null) {
+                throw securityDenial;
+            }
+            if (saxDenial != null) {
+                throw new TaggedSAXException(saxDenial, outputTag);
             }
             try {
                 action.run();
+            } catch (SecurityException e) {
+                securityDenial = e;
+                throw e;
             } catch (SAXException e) {
-                denial = e;
+                saxDenial = e;
                 throw new TaggedSAXException(e, outputTag);
             }
         }

@@ -423,12 +423,17 @@ public class WinShortcutParser implements Parser {
         // for OCR-equivalent text scans and similarity-by-body. Everything
         // else is metadata.
         String resolved = fields.get("ResolvedCommand");
-        if (resolved != null && !resolved.isEmpty()) {
-            xhtml.element("p", resolved);
-        }
-        String alt = fields.get("AltCommand");
-        if (alt != null && !alt.isEmpty() && !alt.equals(resolved)) {
-            xhtml.element("p", alt);
+        try {
+            if (resolved != null && !resolved.isEmpty()) {
+                xhtml.element("p", resolved);
+            }
+            String alt = fields.get("AltCommand");
+            if (alt != null && !alt.isEmpty() && !alt.equals(resolved)) {
+                xhtml.element("p", alt);
+            }
+        } catch (SAXException e) {
+            taggedOutput.throwIfCauseOf(e);
+            throw e;
         }
         try {
             xhtml.endDocument();

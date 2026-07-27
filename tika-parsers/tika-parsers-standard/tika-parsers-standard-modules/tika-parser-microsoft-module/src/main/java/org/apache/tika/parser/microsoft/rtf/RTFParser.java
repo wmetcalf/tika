@@ -207,6 +207,8 @@ public class RTFParser implements Parser {
                 addSuppressed(outputFailure, primaryFailure);
                 throw outputFailure;
             }
+            throwIfUncheckedCleanupFailure(
+                    cleanupFailure, primaryFailure);
             addSuppressed(primaryFailure, cleanupFailure);
         }
         try {
@@ -218,7 +220,21 @@ public class RTFParser implements Parser {
                 addSuppressed(outputFailure, primaryFailure);
                 throw outputFailure;
             }
+            throwIfUncheckedCleanupFailure(
+                    cleanupFailure, primaryFailure);
             addSuppressed(primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static void throwIfUncheckedCleanupFailure(
+            Throwable cleanupFailure, Throwable primaryFailure) {
+        if (cleanupFailure instanceof RuntimeException runtimeFailure) {
+            addSuppressed(runtimeFailure, primaryFailure);
+            throw runtimeFailure;
+        }
+        if (cleanupFailure instanceof Error errorFailure) {
+            addSuppressed(errorFailure, primaryFailure);
+            throw errorFailure;
         }
     }
 
