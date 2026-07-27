@@ -16,9 +16,6 @@
  */
 package org.apache.tika.pipes.core.extractor;
 
-import static org.apache.tika.sax.XHTMLContentHandler.XHTML;
-
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -29,11 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
-import org.xml.sax.helpers.AttributesImpl;
 
-import org.apache.tika.exception.CorruptedFileException;
-import org.apache.tika.exception.EncryptedDocumentException;
-import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.DefaultEmbeddedStreamTranslator;
 import org.apache.tika.extractor.EmbeddedStreamTranslator;
 import org.apache.tika.extractor.ParsingEmbeddedDocumentExtractor;
@@ -45,8 +38,6 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.ParseRecord;
-import org.apache.tika.sax.BodyContentHandler;
-import org.apache.tika.sax.EmbeddedContentHandler;
 
 /**
  * Embedded document extractor that parses and unpacks embedded documents,
@@ -58,8 +49,6 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
 
     private static final Logger LOGGER =
             LoggerFactory.getLogger(ParsingEmbeddedDocumentExtractor.class);
-
-    private static final File ABSTRACT_PATH = new File("");
 
     private final EmbeddedStreamTranslator embeddedStreamTranslator = new DefaultEmbeddedStreamTranslator();
     private long bytesExtracted = 0;
@@ -91,52 +80,20 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
             return;
         }
 
-        // Increment embedded count for tracking (needed for EmbeddedLimits)
-        if (parseRecord != null) {
-            parseRecord.incrementEmbeddedCount();
-        }
-
-        if (outputHtml) {
-            AttributesImpl attributes = new AttributesImpl();
-            attributes.addAttribute("", "class", "class", "CDATA", "package-entry");
-            handler.startElement(XHTML, "div", "div", attributes);
-        }
-
-        String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-        if (isWriteFileNameToContent() && name != null && name.length() > 0 && outputHtml) {
-            handler.startElement(XHTML, "h1", "h1", new AttributesImpl());
-            char[] chars = name.toCharArray();
-            handler.characters(chars, 0, chars.length);
-            handler.endElement(XHTML, "h1", "h1");
-        }
-
-        // Use the delegate parser to parse this entry
-        try {
-            UnpackHandler bytesHandler = context.get(UnpackHandler.class);
-            tis.setCloseShield();
-            if (bytesHandler != null) {
-                parseWithBytes(tis, handler, metadata);
-            } else {
-                parse(tis, handler, metadata);
-            }
-        } catch (EncryptedDocumentException ede) {
-            recordException(ede, context);
-        } catch (CorruptedFileException e) {
-            //necessary to stop the parse to avoid infinite loops
-            //on corrupt sqlite3 files
-            throw new IOException(e);
-        } catch (TikaException e) {
-            recordException(e, context);
-        } finally {
-            tis.removeCloseShield();
-        }
-
-        if (outputHtml) {
-            handler.endElement(XHTML, "div", "div");
+        UnpackHandler bytesHandler = context.get(UnpackHandler.class);
+        if (bytesHandler != null) {
+            parseWithBytes(
+                    tis, handler, metadata, parseContext, outputHtml);
+        } else {
+            super.parseEmbedded(
+                    tis, handler, metadata, parseContext, outputHtml);
         }
     }
 
-    private void parseWithBytes(TikaInputStream tis, ContentHandler handler, Metadata metadata) throws TikaException, IOException, SAXException {
+    private void parseWithBytes(
+            TikaInputStream tis, ContentHandler handler, Metadata metadata,
+            ParseContext parseContext, boolean outputHtml)
+            throws IOException, SAXException {
 
         //trigger spool to disk
         Path rawBytes = tis.getPath();
@@ -151,7 +108,8 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
                     embeddedStreamTranslator.translate(tis, metadata, os);
                 }
             }
-            parse(tis, handler, metadata);
+            super.parseEmbedded(
+                    tis, handler, metadata, parseContext, outputHtml);
         } finally {
             try {
                 if (translated != null) {
@@ -165,13 +123,6 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
                 }
             }
         }
-    }
-
-    private void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata)
-            throws TikaException, IOException, SAXException {
-        getDelegatingParser().parse(tis,
-                new EmbeddedContentHandler(new BodyContentHandler(handler)),
-                metadata, context);
     }
 
     private void storeEmbeddedBytes(Path p, Metadata metadata) {
