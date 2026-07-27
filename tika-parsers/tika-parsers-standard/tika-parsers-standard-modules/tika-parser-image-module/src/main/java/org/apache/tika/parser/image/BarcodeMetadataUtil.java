@@ -31,6 +31,9 @@ public final class BarcodeMetadataUtil {
     private static final int MAX_RESULTS = 256;
     private static final int MAX_RESULT_CHARS = 64 * 1024;
     private static final int MAX_TOTAL_RECORD_CHARS = 1024 * 1024;
+    private static final String BARCODE_LIMIT_WARNING =
+            "Barcode metadata retention limit reached; additional "
+                    + "barcode results were skipped";
 
     private BarcodeMetadataUtil() {
     }
@@ -41,6 +44,11 @@ public final class BarcodeMetadataUtil {
             return;
         }
         if (Boolean.parseBoolean(metadata.get(Barcode.BARCODE_LIMIT_REACHED))) {
+            return;
+        }
+        if (getResultCount(metadata) >= MAX_RESULTS
+                || getRetainedResultChars(metadata) >= MAX_TOTAL_RECORD_CHARS) {
+            markLimitReached(metadata);
             return;
         }
         String value = safe(result.getText());
@@ -57,24 +65,11 @@ public final class BarcodeMetadataUtil {
                 "errorCorrectionLevel", errorCorrectionLevel,
                 "mirrored", mirrored);
 
-        String[] existingRecords = metadata.getValues(Barcode.BARCODE_RECORD);
-        int retainedChars = 0;
-        for (String existing : existingRecords) {
-            retainedChars += existing.length();
-        }
-        if (existingRecords.length >= MAX_RESULTS
+        if (getResultCount(metadata) >= MAX_RESULTS
                 || record.length() > MAX_RESULT_CHARS
-                || retainedChars > MAX_TOTAL_RECORD_CHARS - record.length()) {
-            metadata.set(Barcode.BARCODE_LIMIT_REACHED, true);
-            metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                    "Barcode metadata retention limit reached; additional "
-                            + "barcode results were skipped");
-            if (metadata.get("ExploitClass") == null) {
-                metadata.set("ExploitClass",
-                        "Barcode metadata retention limit incomplete; encoded "
-                                + "content may not have been analyzed");
-            }
+                || getRetainedResultChars(metadata)
+                > MAX_TOTAL_RECORD_CHARS - record.length()) {
+            markLimitReached(metadata);
             return;
         }
 
@@ -85,6 +80,69 @@ public final class BarcodeMetadataUtil {
         metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL, errorCorrectionLevel);
         metadata.add(Barcode.BARCODE_IS_MIRRORED, mirrored);
         metadata.add(Barcode.BARCODE_RECORD, record);
+    }
+
+    private static int getResultCount(Metadata metadata) {
+        int count = metadata.getValues(Barcode.BARCODE_RECORD).length;
+        count = Math.max(count, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        count = Math.max(count, metadata.getValues(Barcode.BARCODE_FORMAT).length);
+        count = Math.max(count, metadata.getValues(Barcode.BARCODE_RAW_BYTES).length);
+        count = Math.max(count, metadata.getValues(Barcode.BARCODE_POSITION).length);
+        count = Math.max(count,
+                metadata.getValues(Barcode.BARCODE_ERROR_CORRECTION_LEVEL).length);
+        return Math.max(count,
+                metadata.getValues(Barcode.BARCODE_IS_MIRRORED).length);
+    }
+
+    private static long getRetainedResultChars(Metadata metadata) {
+        long recordChars = sumCharacters(
+                metadata.getValues(Barcode.BARCODE_RECORD));
+        long compatibilityChars = 0;
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_VALUE));
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_FORMAT));
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_RAW_BYTES));
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_POSITION));
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_ERROR_CORRECTION_LEVEL));
+        compatibilityChars += sumCharacters(
+                metadata.getValues(Barcode.BARCODE_IS_MIRRORED));
+        return Math.max(recordChars, compatibilityChars);
+    }
+
+    private static long sumCharacters(String[] values) {
+        long characters = 0;
+        for (String value : values) {
+            if (value != null) {
+                characters += value.length();
+            }
+        }
+        return characters;
+    }
+
+    private static void markLimitReached(Metadata metadata) {
+        metadata.set(Barcode.BARCODE_LIMIT_REACHED, true);
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        boolean warningPresent = false;
+        for (String warning : metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (BARCODE_LIMIT_WARNING.equals(warning)) {
+                warningPresent = true;
+                break;
+            }
+        }
+        if (!warningPresent) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    BARCODE_LIMIT_WARNING);
+        }
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "Barcode metadata retention limit incomplete; encoded "
+                            + "content may not have been analyzed");
+        }
     }
 
     public static void markAnalysisIncomplete(Metadata metadata, String analysis,

@@ -149,11 +149,18 @@ public final class UnicodeQRExtractor {
     }
 
     /**
-     * True if {@code c} contributes at least one dark QR module. Light
+     * True if {@code codePoint} contributes at least one dark QR module. Light
      * characters remain valid renderable cells, but must not make ordinary
      * whitespace look like QR signal during the cheap probe or clustering.
      */
-    private static boolean isQrSignal(char c) {
+    static boolean isQrSignal(int codePoint) {
+        if (isSextantQrCodepoint(codePoint)) {
+            return true;
+        }
+        if (codePoint > Character.MAX_VALUE) {
+            return false;
+        }
+        char c = (char) codePoint;
         int[] blockModules = BLOCK_MAP.get(c);
         if (blockModules != null) {
             for (int module : blockModules) {
@@ -220,9 +227,7 @@ public final class UnicodeQRExtractor {
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
             i += Character.charCount(cp);
-            if (cp < 0x10000 && isQrSignal((char) cp)) {
-                count++;
-            } else if (isSextantQrCodepoint(cp)) {
+            if (isQrSignal(cp)) {
                 count++;
             }
         }

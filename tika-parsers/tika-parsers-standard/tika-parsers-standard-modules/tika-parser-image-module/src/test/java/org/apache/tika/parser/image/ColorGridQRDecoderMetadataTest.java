@@ -20,11 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -113,6 +116,91 @@ public class ColorGridQRDecoderMetadataTest {
                         + "barcode results were skipped",
                 metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
         assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testBarcodeMetadataResultCountIsBoundedWhenControlFieldsAreFiltered() {
+        List<ZXingCPPScanner.Result> results = new ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            results.add(new ZXingCPPScanner.Result(
+                    "/tmp/code.png", "value-" + i, "QR Code",
+                    "", "", "", false));
+        }
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of(Barcode.BARCODE_VALUE.getName()));
+        factory.setMaxValuesPerField(1_000);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        ColorGridQRDecoder.emitBarcodes(results, metadata);
+
+        assertEquals(256, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertNull(metadata.get(Barcode.BARCODE_RECORD));
+        assertNull(metadata.get(Barcode.BARCODE_LIMIT_REACHED));
+        assertDoesNotThrow(() -> BarcodeMetadataUtil.addResult(
+                metadata, new GetterTrapResult(), "qrcode"));
+    }
+
+    @Test
+    public void testBarcodeLimitWarningIsIdempotentWhenControlFieldIsFiltered() {
+        List<ZXingCPPScanner.Result> results = new ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            results.add(new ZXingCPPScanner.Result(
+                    "/tmp/code.png", "value-" + i, "QR Code",
+                    "", "", "", false));
+        }
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of(
+                Barcode.BARCODE_VALUE.getName(),
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING.getName()));
+        factory.setMaxValuesPerField(1_000);
+        Metadata metadata = new Metadata(factory.newInstance());
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "pre-existing warning");
+
+        ColorGridQRDecoder.emitBarcodes(results, metadata);
+
+        String[] expectedWarnings = new String[]{
+                "pre-existing warning",
+                "Barcode metadata retention limit reached; additional "
+                        + "barcode results were skipped"};
+        assertEquals(256,
+                metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertNull(metadata.get(Barcode.BARCODE_LIMIT_REACHED));
+        assertArrayEquals(expectedWarnings,
+                metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+
+        assertDoesNotThrow(() -> BarcodeMetadataUtil.addResult(
+                metadata, new GetterTrapResult(), "qrcode"));
+        assertArrayEquals(expectedWarnings,
+                metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    @Test
+    public void testBarcodeMetadataCharactersAreBoundedWhenCanonicalRecordsAreFiltered() {
+        List<ZXingCPPScanner.Result> results = new ArrayList<>();
+        for (int i = 0; i < 32; i++) {
+            results.add(new ZXingCPPScanner.Result(
+                    "/tmp/code.png", "x".repeat(60_000), "QR Code",
+                    "", "", "", false));
+        }
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of(Barcode.BARCODE_VALUE.getName()));
+        factory.setMaxFieldSize(4 * 1024 * 1024);
+        factory.setMaxValuesPerField(1_000);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        ColorGridQRDecoder.emitBarcodes(results, metadata);
+
+        String[] retainedValues = metadata.getValues(Barcode.BARCODE_VALUE);
+        long retainedCharacters = 0;
+        for (String retainedValue : retainedValues) {
+            retainedCharacters += retainedValue.length();
+        }
+        assertTrue(retainedValues.length < results.size());
+        assertTrue(retainedCharacters <= 1024 * 1024);
+        assertNull(metadata.get(Barcode.BARCODE_RECORD));
     }
 
     @Test

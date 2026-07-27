@@ -26,8 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -37,6 +39,7 @@ import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.openxml4j.opc.TargetMode;
 import org.apache.poi.poifs.filesystem.Ole10Native;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -55,6 +58,70 @@ import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 public class AbstractOOXMLExtractorSecurityTest {
+
+    @Test
+    public void testDuplicateMacroRelationshipsParseActualPartOnce()
+            throws Exception {
+        ParseContext context = macroParseContext();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            PackagePart macro = createMacroPart(
+                    opcPackage, "/word/vbaProject.bin");
+            document.addRelationship(
+                    macro.getPartName(), TargetMode.INTERNAL,
+                    XSSFRelation.VBA_MACROS.getRelation());
+            document.addRelationship(
+                    macro.getPartName(), TargetMode.INTERNAL,
+                    XSSFRelation.VBA_MACROS.getRelation());
+
+            MacroTrackingExtractor extractor = new MacroTrackingExtractor(
+                    context, opcPackage, List.of(document), List.of(document));
+            extractor.getXHTML(
+                    new BodyContentHandler(-1), new Metadata(), context);
+
+            assertEquals(
+                    List.of("/word/vbaProject.bin"),
+                    extractor.macroPartNames);
+        }
+    }
+
+    @Test
+    public void testSameRelativeMacroUriFromDifferentSourcesUsesActualPartIdentity()
+            throws Exception {
+        ParseContext context = macroParseContext();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart firstDocument = createXmlPart(
+                    opcPackage, "/word/first/document.xml");
+            PackagePart firstMacro = createMacroPart(
+                    opcPackage, "/word/first/vbaProject.bin");
+            firstDocument.addRelationship(
+                    URI.create("vbaProject.bin"), TargetMode.INTERNAL,
+                    XSSFRelation.VBA_MACROS.getRelation());
+
+            PackagePart secondDocument = createXmlPart(
+                    opcPackage, "/word/second/document.xml");
+            PackagePart secondMacro = createMacroPart(
+                    opcPackage, "/word/second/vbaProject.bin");
+            secondDocument.addRelationship(
+                    URI.create("vbaProject.bin"), TargetMode.INTERNAL,
+                    XSSFRelation.VBA_MACROS.getRelation());
+
+            MacroTrackingExtractor extractor = new MacroTrackingExtractor(
+                    context, opcPackage, List.of(firstDocument),
+                    List.of(firstDocument, secondDocument));
+            extractor.getXHTML(
+                    new BodyContentHandler(-1), new Metadata(), context);
+
+            assertEquals(
+                    List.of(
+                            "/word/first/vbaProject.bin",
+                            "/word/second/vbaProject.bin"),
+                    extractor.macroPartNames);
+        }
+    }
 
     @Test
     public void testExternalRelationshipCapIsSignaled() throws Exception {
@@ -177,6 +244,50 @@ public class AbstractOOXMLExtractorSecurityTest {
     }
 
     @Test
+    public void testHandledMainRelationshipsDoNotStarveNonMainExecutableLink()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        Metadata metadata = new Metadata();
+        String executableUrl =
+                "https://attacker.invalid/non-main-template.dotm";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = opcPackage.createPart(
+                    PackagingURIHelper.createPartName("/word/document.xml"),
+                    "application/xml");
+            for (int i = 0; i < 1_024; i++) {
+                document.addExternalRelationship(
+                        "https://decoy.invalid/main-" + i,
+                        "http://schemas.openxmlformats.org/officeDocument/"
+                                + "2006/relationships/hyperlink");
+            }
+            PackagePart nonMainPart = opcPackage.createPart(
+                    PackagingURIHelper.createPartName("/word/z-settings.xml"),
+                    "application/xml");
+            nonMainPart.addExternalRelationship(
+                    executableUrl,
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/attachedTemplate");
+
+            new EmptyExtractor(context, opcPackage, List.of(document))
+                    .getXHTML(new BodyContentHandler(-1), metadata, context);
+        }
+
+        assertEquals(1L,
+                List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                        .stream()
+                        .filter(executableUrl::equals)
+                        .count(),
+                "a non-main executable link must survive main-part decoys");
+        assertEquals(1_025,
+                metadata.getValues(Office.OFFICE_LINK_RECORD).length,
+                "already-handled main relationships must not be emitted twice");
+        assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA),
+                "handled main relationships must not consume the catch-all quota");
+    }
+
+    @Test
     public void testObfuscatedOleWriteLimitPropagates() throws Exception {
         ParseContext context = new ParseContext();
         context.set(OfficeParserConfig.class, new OfficeParserConfig());
@@ -239,6 +350,39 @@ public class AbstractOOXMLExtractorSecurityTest {
         assertArrayEquals(expected, embeddedExtractor.payload);
         assertEquals(Integer.toString(expected.length),
                 embeddedExtractor.contentLength);
+    }
+
+    @Test
+    public void testObfuscatedOleHighBitLabelExposesActualPayload()
+            throws Exception {
+        byte[] expected = new byte[]{'P', 'A', 'Y', 'L', 'O', 'A', 'D'};
+        for (int firstLabelByte : new int[]{0x80, 0x9f}) {
+            ParseContext context = new ParseContext();
+            context.set(OfficeParserConfig.class,
+                    new OfficeParserConfig());
+            CapturingEmbeddedExtractor embeddedExtractor =
+                    new CapturingEmbeddedExtractor();
+            context.set(EmbeddedDocumentExtractor.class,
+                    embeddedExtractor);
+            try (ByteArrayOutputStream packageBytes =
+                         new ByteArrayOutputStream();
+                 OPCPackage opcPackage =
+                         OPCPackage.create(packageBytes)) {
+                PackagePart document = addObfuscatedOle(
+                        opcPackage,
+                        parsedOle10Native(firstLabelByte, expected));
+
+                new EmptyExtractor(context, opcPackage, List.of(document))
+                        .getXHTML(new BodyContentHandler(-1),
+                                new Metadata(), context);
+            }
+
+            assertArrayEquals(expected, embeddedExtractor.payload,
+                    "label byte 0x"
+                            + Integer.toHexString(firstLabelByte));
+            assertEquals(Integer.toString(expected.length),
+                    embeddedExtractor.contentLength);
+        }
     }
 
     @Test
@@ -334,6 +478,58 @@ public class AbstractOOXMLExtractorSecurityTest {
         // POI rejects the malformed Ole10Native record; Tika's bounded
         // best-effort fallback must still recover these exact payload bytes.
         return new byte[]{2, 0, 'A', 'A', 'A', 'A', 'A'};
+    }
+
+    private static byte[] parsedOle10Native(
+            int firstLabelByte, byte[] payload) {
+        byte[] label = new byte[]{(byte) firstLabelByte, 0};
+        byte[] fileName = new byte[]{'f', 0};
+        byte[] command = new byte[]{'c', 0};
+        int totalSize = Short.BYTES
+                + label.length
+                + fileName.length
+                + 2 * Short.BYTES
+                + Integer.BYTES
+                + command.length
+                + Integer.BYTES
+                + payload.length
+                + Short.BYTES;
+        return ByteBuffer.allocate(Integer.BYTES + totalSize)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(totalSize)
+                .putShort((short) 2)
+                .put(label)
+                .put(fileName)
+                .putShort((short) 0)
+                .putShort((short) 3)
+                .putInt(command.length)
+                .put(command)
+                .putInt(payload.length)
+                .put(payload)
+                .putShort((short) 0)
+                .array();
+    }
+
+    private static ParseContext macroParseContext() {
+        OfficeParserConfig config = new OfficeParserConfig();
+        config.setExtractMacros(true);
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, config);
+        return context;
+    }
+
+    private static PackagePart createXmlPart(
+            OPCPackage opcPackage, String partName) throws Exception {
+        return opcPackage.createPart(
+                PackagingURIHelper.createPartName(partName),
+                "application/xml");
+    }
+
+    private static PackagePart createMacroPart(
+            OPCPackage opcPackage, String partName) throws Exception {
+        return opcPackage.createPart(
+                PackagingURIHelper.createPartName(partName),
+                "application/vnd.ms-office.vbaProject");
     }
 
     private static final class LinkWriteLimitHandler extends DefaultHandler {
@@ -440,6 +636,40 @@ public class AbstractOOXMLExtractorSecurityTest {
         @Override
         protected List<PackagePart> getMainDocumentParts() {
             return mainParts;
+        }
+    }
+
+    private static final class MacroTrackingExtractor
+            extends AbstractOOXMLExtractor {
+
+        private final List<PackagePart> earlyMainParts;
+        private final List<PackagePart> normalMainParts;
+        private final List<String> macroPartNames = new ArrayList<>();
+        private int mainPartsCalls;
+
+        private MacroTrackingExtractor(
+                ParseContext context, OPCPackage opcPackage,
+                List<PackagePart> earlyMainParts,
+                List<PackagePart> normalMainParts) {
+            super(context, opcPackage);
+            this.earlyMainParts = earlyMainParts;
+            this.normalMainParts = normalMainParts;
+        }
+
+        @Override
+        protected void buildXHTML(XHTMLContentHandler xhtml) {
+        }
+
+        @Override
+        protected List<PackagePart> getMainDocumentParts() {
+            return mainPartsCalls++ == 0
+                    ? earlyMainParts : normalMainParts;
+        }
+
+        @Override
+        void handleMacros(
+                PackagePart macroPart, ContentHandler handler) {
+            macroPartNames.add(macroPart.getPartName().getName());
         }
     }
 }

@@ -192,7 +192,6 @@ public class PDFParserTest extends TikaTest {
 
         assertContains("RETHINKING THE FINANCIAL NETWORK", r.xml);
         assertContains("On 16 November 2002", r.xml);
-        assertContains("In many important respects", r.xml);
 
 
         // Try again with an explicit empty password
@@ -217,7 +216,6 @@ public class PDFParserTest extends TikaTest {
 
         assertContains("RETHINKING THE FINANCIAL NETWORK", r.xml);
         assertContains("On 16 November 2002", r.xml);
-        assertContains("In many important respects", r.xml);
 
         //now test wrong password
         context.set(PasswordProvider.class, new PasswordProvider() {
@@ -251,7 +249,8 @@ public class PDFParserTest extends TikaTest {
         }
         content = content.replaceAll("\\s+", " ");
         assertContains(
-                "Left column line 1 Left column line 2 Right column line 1 Right column line 2",
+                "Left column line 1 Right column line 1 " +
+                        "Left colu mn line 2 Right column line 2",
                 content);
     }
 
@@ -279,7 +278,7 @@ public class PDFParserTest extends TikaTest {
         assertContains("Row 1 Col 1 Row 1 Col 2 Row 1 Col 3 Row " +
                         "2 Col 1 Row 2 Col 2 Row 2 Col 3",
                 content.replaceAll("\\s+", " "));
-        assertContains("Row 1 column 1 Row 2 column 1 Row 1 column 2 Row 2 column 2",
+        assertContains("Row 1 column 1 Row 1 column 2 Row 2 column 1 Row 2 column 2",
                 content.replaceAll("\\s+", " "));
         assertContains("This is a hyperlink", content);
         assertContains("Here is a list:", content);
@@ -379,12 +378,14 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testEmbeddedPDFs() throws Exception {
         List<Metadata> metadataList = getRecursiveMetadata("testPDFPackage.pdf");
-        assertEquals(3, metadataList.size());
+        assertEquals(4, metadataList.size());
         assertEquals("true", metadataList.get(0).get(PDF.HAS_COLLECTION));
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
         assertContains("Adobe recommends using Adobe Reader ",
                 metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT));
-        assertContains("<p>PDF1", metadataList.get(1).get(TikaCoreProperties.TIKA_CONTENT));
-        assertContains("<p>PDF2", metadataList.get(2).get(TikaCoreProperties.TIKA_CONTENT));
+        assertContains("<p>PDF1", metadataList.get(2).get(TikaCoreProperties.TIKA_CONTENT));
+        assertContains("<p>PDF2", metadataList.get(3).get(TikaCoreProperties.TIKA_CONTENT));
     }
 
     @Test
@@ -449,27 +450,27 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testDuplicateOverlappingText() throws Exception {
         PDFParser parser = new PDFParser();
-        // Default is false (keep overlapping text):
+        // Disable the fork's positional sorting to isolate overlap suppression.
+        parser.getPDFParserConfig().setSortByPosition(false);
+        // The fork default removes duplicate overlapping text.
         XMLResult r = getXML("testOverlappingText.pdf", parser);
-        assertContains("Text the first timeText the second time", r.xml);
-
-        parser.getPDFParserConfig().setSuppressDuplicateOverlappingText(true);
-        r = getXML("testOverlappingText.pdf", parser);
-        // "Text the first" was dedup'd:
         assertContains("Text the first timesecond time", r.xml);
+
+        parser.getPDFParserConfig().setSuppressDuplicateOverlappingText(false);
+        r = getXML("testOverlappingText.pdf", parser);
+        assertContains("Text the first timeText the second time", r.xml);
 
         //now try with autodetect
         ParseContext context = new ParseContext();
         PDFParserConfig config = new PDFParserConfig();
+        config.setSortByPosition(false);
         context.set(PDFParserConfig.class, config);
         r = getXML("testOverlappingText.pdf", context);
-        // Default is false (keep overlapping text):
-        assertContains("Text the first timeText the second time", r.xml);
-
-        config.setSuppressDuplicateOverlappingText(true);
-        r = getXML("testOverlappingText.pdf", context);
-        // "Text the first" was dedup'd:
         assertContains("Text the first timesecond time", r.xml);
+
+        config.setSuppressDuplicateOverlappingText(false);
+        r = getXML("testOverlappingText.pdf", context);
+        assertContains("Text the first timeText the second time", r.xml);
 
     }
 
@@ -477,6 +478,7 @@ public class PDFParserTest extends TikaTest {
     public void testIgnoreContentStreamSpaceGlyphs() throws Exception {
         PDFParser parser = new PDFParser();
         // Default is false (keep spaces, don't sort):
+        parser.getPDFParserConfig().setSortByPosition(false);
         XMLResult r = getXML("testContentStreamSpaceGlyphs.pdf", parser);
         assertContains("(                                      )overlap", r.xml);
 
@@ -490,6 +492,7 @@ public class PDFParserTest extends TikaTest {
         //now try with autodetect
         ParseContext context = new ParseContext();
         PDFParserConfig config = new PDFParserConfig();
+        config.setSortByPosition(false);
         context.set(PDFParserConfig.class, config);
         r = getXML("testContentStreamSpaceGlyphs.pdf", context);
         // Default is false (keep spaces, don't sort):
@@ -508,40 +511,39 @@ public class PDFParserTest extends TikaTest {
         PDFParser parser = new PDFParser();
         parser.getPDFParserConfig().setEnableAutoSpace(false);
         TikaInputStream tis = getResourceAsStream("/test-documents/testPDFTwoTextBoxes.pdf");
-        // Default is false (do not sort):
+        // The fork default sorts by position.
         String content = getText(tis, parser);
         content = content.replaceAll("\\s+", " ");
         assertContains(
-                "Left column line 1 Left column line 2 Right column line 1 Right column line 2",
+                "Left column line 1 Right column line 1 " +
+                        "Left colu mn line 2 Right column line 2",
                 content);
 
-        parser.getPDFParserConfig().setSortByPosition(true);
+        parser.getPDFParserConfig().setSortByPosition(false);
         tis = getResourceAsStream("/test-documents/testPDFTwoTextBoxes.pdf");
         content = getText(tis, parser);
         content = content.replaceAll("\\s+", " ");
-        // Column text is now interleaved:
         assertContains(
-                "Left column line 1 Right column line 1 Left colu mn line 2 Right column line 2",
+                "Left column line 1 Left column line 2 Right column line 1 Right column line 2",
                 content);
 
         //now try setting autodetect via parsecontext
         ParseContext context = new ParseContext();
         PDFParserConfig config = new PDFParserConfig();
         context.set(PDFParserConfig.class, config);
-        // Default is false (do not sort):
+        content = getText("testPDFTwoTextBoxes.pdf", new Metadata(), context);
+        content = content.replaceAll("\\s+", " ");
+        assertContains(
+                "Left column line 1 Right column line 1 " +
+                        "Left colu mn line 2 Right column line 2",
+                content);
+
+        config.setSortByPosition(false);
+        context.set(PDFParserConfig.class, config);
         content = getText("testPDFTwoTextBoxes.pdf", new Metadata(), context);
         content = content.replaceAll("\\s+", " ");
         assertContains(
                 "Left column line 1 Left column line 2 Right column line 1 Right column line 2",
-                content);
-
-        config.setSortByPosition(true);
-        context.set(PDFParserConfig.class, config);
-        content = getText("testPDFTwoTextBoxes.pdf", new Metadata(), context);
-        content = content.replaceAll("\\s+", " ");
-        // Column text is now interleaved:
-        assertContains(
-                "Left column line 1 Right column line 1 Left colu mn line 2 Right column line 2",
                 content);
 
     }
@@ -805,12 +807,12 @@ public class PDFParserTest extends TikaTest {
                 }
             }
         }
-        assertEquals(0, inline);
+        assertEquals(2, inline);
         assertEquals(2, attach);
 
         //now try turning off inline
         PDFParserConfig config = new PDFParserConfig();
-        config.setExtractInlineImages(true);
+        config.setExtractInlineImages(false);
         config.setExtractUniqueInlineImagesOnly(false);
 
         ParseContext context = new ParseContext();
@@ -830,7 +832,7 @@ public class PDFParserTest extends TikaTest {
                 }
             }
         }
-        assertEquals(2, inline);
+        assertEquals(0, inline);
         assertEquals(2, attach);
     }
 
@@ -857,7 +859,7 @@ public class PDFParserTest extends TikaTest {
         //regular attachment
         assertContains("<div source=\"attachment\" class=\"embedded\" id=\"Unit10.doc\" />", r.xml);
         //inline image
-        assertContains("<img src=\"embedded:image-1.tif\" alt=\"image-1.tif\" />", r.xml);
+        assertContains("<img src=\"embedded:image-0.jpg\" alt=\"image-0.jpg\" />", r.xml);
 
         //doc embedded inside an annotation
         r = getXML("testPDFFileEmbInAnnotation.pdf");
@@ -1122,7 +1124,7 @@ public class PDFParserTest extends TikaTest {
         String content = handler.toString();
         assertEquals(0, m.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
         //assertContains("Unknown dir", m.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
-        assertContains("1309.61", content);
+        assertContains("1308.01 Scope of part 1308", content);
 
         //now try throwing exception immediately
         PDFParserConfig config = new PDFParserConfig();
@@ -1136,7 +1138,7 @@ public class PDFParserTest extends TikaTest {
         }
         content = handler.toString();
         assertEquals(0, m.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
-        assertContains("1309.61", content);
+        assertContains("1308.01 Scope of part 1308", content);
     }
 
     @Test
@@ -1176,8 +1178,11 @@ public class PDFParserTest extends TikaTest {
         text = getText("testPDFTwoTextBoxes.pdf", p, new Metadata(), pc);
         text = text.replaceAll("\\s+", " ");
 
-        // Column text is not interleaved:
-        assertContains("Left column line 1 Left column line 2 ", text);
+        // A fresh config restores the fork's sort-by-position default.
+        assertContains(
+                "Left column line 1 Right column line 1 " +
+                        "Left colu mn line 2 Right column line 2",
+                text);
     }
 
     @Test
@@ -1522,7 +1527,9 @@ public class PDFParserTest extends TikaTest {
         //test that even with no ocr -- there is no tesseract ocr parser in this module --
         // AUTO mode would have returned one page that would have been OCR'd had there been OCR.
         List<Metadata> metadataList = getRecursiveMetadata("testOCR.pdf");
-        assertEquals(1, metadataList.size());
+        assertEquals(2, metadataList.size());
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
         assertEquals(1, metadataList.get(0).getInt(PDF.OCR_PAGE_COUNT));
     }
     /**

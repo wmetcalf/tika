@@ -49,6 +49,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.config.EmbeddedLimits;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
@@ -181,6 +182,36 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
         assertNotNull(result.metadata.get("ExploitClass"),
                 "a configured OCR backend failure must not look like a clean negative");
+    }
+
+    @Test
+    void testSvgOcrWriteLimitPropagates() {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                </svg>
+                """;
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        context.set(Parser.class, new WriteLimitOcrParser());
+
+        assertThrows(WriteLimitReachedException.class,
+                () -> parse(svg, context));
+    }
+
+    @Test
+    void testSvgOcrSecurityExceptionPropagates() {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                </svg>
+                """;
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        context.set(Parser.class, new SecurityRejectingOcrParser());
+
+        assertThrows(SecurityException.class,
+                () -> parse(svg, context));
     }
 
     @Test
@@ -512,6 +543,37 @@ class XMLParserSvgSecurityTest {
                 throws IOException, SAXException, TikaException {
             invoked = true;
             throw new TikaException("simulated OCR backend failure");
+        }
+    }
+
+    private static final class WriteLimitOcrParser implements Parser {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.image("ocr-png"));
+        }
+
+        @Override
+        public void parse(TikaInputStream stream, ContentHandler handler,
+                          Metadata metadata, ParseContext context)
+                throws SAXException {
+            throw new WriteLimitReachedException(1);
+        }
+    }
+
+    private static final class SecurityRejectingOcrParser implements Parser {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.image("ocr-png"));
+        }
+
+        @Override
+        public void parse(TikaInputStream stream, ContentHandler handler,
+                          Metadata metadata, ParseContext context) {
+            throw new SecurityException("simulated OCR policy rejection");
         }
     }
 

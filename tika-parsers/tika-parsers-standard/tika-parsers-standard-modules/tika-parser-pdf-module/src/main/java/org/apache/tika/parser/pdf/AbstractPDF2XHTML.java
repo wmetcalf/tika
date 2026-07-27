@@ -292,6 +292,9 @@ class AbstractPDF2XHTML extends PDFTextStripper {
             //now iterate through the pages
             int pageNumber = 1;
             for (PDPage page : pdfDocument.getPages()) {
+                if (config.getMaxPages() > 0 && pageNumber > config.getMaxPages()) {
+                    break;
+                }
                 if (page.getMetadata() != null) {
                     try (TikaInputStream tis = TikaInputStream.get(page.getMetadata().exportXMPMetadata())) {
                         extractXMPAsEmbeddedFile(tis, XMP_PAGE_LOCATION_PREFIX + pageNumber);

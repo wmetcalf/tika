@@ -57,6 +57,7 @@ import org.xml.sax.XMLReader;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.ImageHash;
@@ -324,7 +325,8 @@ public class XMLParser implements Parser {
     }
 
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
-                                   Metadata metadata, ParseContext context) {
+                                   Metadata metadata, ParseContext context)
+            throws SAXException {
         try {
             // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
             if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
@@ -373,7 +375,10 @@ public class XMLParser implements Parser {
                             new org.apache.tika.sax.EmbeddedContentHandler(
                                 new BodyContentHandler(xhtml)),
                             ocrMeta, context);
+                    } catch (SecurityException e) {
+                        throw e;
                     } catch (Exception e) {
+                        WriteLimitReachedException.throwIfWriteLimitReached(e);
                         markSvgEnrichmentIncomplete(metadata,
                                 "SVG OCR enrichment failed: "
                                         + e.getClass().getSimpleName());
@@ -404,7 +409,12 @@ public class XMLParser implements Parser {
             if (metadata.get(ImageHash.PHASH) == null) {
                 addSvgRasterWarning(metadata, rasterFailure);
             }
-        } catch (Exception | LinkageError | StackOverflowError | OutOfMemoryError e) {
+        } catch (SecurityException e) {
+            throw e;
+        } catch (Exception e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            addSvgRasterWarning(metadata, e);
+        } catch (LinkageError | StackOverflowError | OutOfMemoryError e) {
             addSvgRasterWarning(metadata, e);
         }
     }

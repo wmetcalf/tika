@@ -44,6 +44,7 @@ import org.xml.sax.SAXException;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -355,6 +356,13 @@ public class WinShortcutParser implements Parser {
             pos = parseStringData(buf, pos, linkFlags, unicode, raw.length, fields, warnings);
             pos = parseExtraData(buf, pos, raw.length, fields, warnings, xhtml, context);
             parseAppendedData(buf, pos, raw.length, fields, warnings, xhtml, context);
+        } catch (SecurityException e) {
+            throw e;
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            LOG.warn("Error parsing LNK file: {}", e.getMessage());
+            markAnalysisIncomplete(fields, warnings,
+                    "parse-error: " + e.getMessage());
         } catch (Exception e) {
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
             markAnalysisIncomplete(fields, warnings,
@@ -2442,7 +2450,8 @@ public class WinShortcutParser implements Parser {
 
     private void parseAppendedData(ByteBuffer buf, int pos, int fileLen,
                                    Map<String, String> fields, List<String> warnings,
-                                   XHTMLContentHandler xhtml, ParseContext context) {
+                                   XHTMLContentHandler xhtml, ParseContext context)
+            throws SAXException {
         if (pos >= fileLen) {
             return;
         }
@@ -2492,6 +2501,11 @@ public class WinShortcutParser implements Parser {
             if (extractor.shouldParseEmbedded(embeddedMeta)) {
                 extractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta, context, true);
             }
+        } catch (SecurityException e) {
+            throw e;
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            addWarning(warnings, "Appended data parse error: " + e.getMessage());
         } catch (Exception e) {
             addWarning(warnings, "Appended data parse error: " + e.getMessage());
         }

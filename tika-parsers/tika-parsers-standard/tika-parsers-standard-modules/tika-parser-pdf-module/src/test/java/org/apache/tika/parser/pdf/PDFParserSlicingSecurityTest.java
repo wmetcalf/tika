@@ -33,6 +33,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentNameDictionary;
@@ -40,6 +42,7 @@ import org.apache.pdfbox.pdmodel.PDEmbeddedFilesNameTreeNode;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.filespecification.PDComplexFileSpecification;
 import org.apache.pdfbox.pdmodel.common.filespecification.PDEmbeddedFile;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
@@ -58,7 +61,9 @@ import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.PagedText;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 
 public class PDFParserSlicingSecurityTest {
@@ -113,6 +118,40 @@ public class PDFParserSlicingSecurityTest {
                 "skipped later pages must not look fully analyzed");
         assertFalse(result.embeddedTypes.contains("application/javascript"),
                 "the page-101 action should be beyond the bounded analysis window");
+    }
+
+    @Test
+    public void testPageXmpExtractionHonorsAnalysisLimit() throws Exception {
+        AtomicInteger parsedXmpStreams = new AtomicInteger();
+        ParseContext context = new ParseContext();
+        PDFParserConfig config = new PDFParserConfig();
+        config.setMaxPages(1);
+        config.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
+        context.set(PDFParserConfig.class, config);
+        context.set(Parser.class, new XmpSupportingParser());
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                if ("application/rdf+xml".equals(metadata.get(Metadata.CONTENT_TYPE))) {
+                    parsedXmpStreams.incrementAndGet();
+                }
+            }
+        });
+
+        try (TikaInputStream stream = TikaInputStream.get(buildPdfWithPageXmp(3))) {
+            new PDFParser().parse(stream, new BodyContentHandler(-1),
+                    new Metadata(), context);
+        }
+
+        assertEquals(1, parsedXmpStreams.get(),
+                "page-level XMP parsing must stop at the PDF analysis page limit");
     }
 
     @Test
@@ -215,6 +254,22 @@ public class PDFParserSlicingSecurityTest {
         }
     }
 
+    private static byte[] buildPdfWithPageXmp(int pageCount) throws IOException {
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            for (int pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+                PDPage page = new PDPage();
+                String xmp = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">page-"
+                        + pageNumber + "</x:xmpmeta>";
+                page.setMetadata(new PDMetadata(document, new ByteArrayInputStream(
+                        xmp.getBytes(StandardCharsets.UTF_8))));
+                document.addPage(page);
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
     private static void addAttachment(PDDocument document) throws IOException {
         byte[] bytes = "security-review-attachment".getBytes(StandardCharsets.UTF_8);
         PDEmbeddedFile embeddedFile = new PDEmbeddedFile(
@@ -254,6 +309,20 @@ public class PDFParserSlicingSecurityTest {
                                   boolean outputHtml) throws SAXException, IOException {
             names.add(metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
             contentTypes.add(metadata.get(Metadata.CONTENT_TYPE));
+        }
+    }
+
+    private static class XmpSupportingParser implements Parser {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.application("rdf+xml"));
+        }
+
+        @Override
+        public void parse(TikaInputStream stream, ContentHandler handler,
+                          Metadata metadata, ParseContext context) {
         }
     }
 }

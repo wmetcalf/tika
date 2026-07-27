@@ -65,6 +65,7 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
     private final StringBuilder buffer = new StringBuilder();
     private boolean truncated;
     private int qrGlyphCount;
+    private int qrProbeOffset;
 
     /** Wrap an existing handler; the QR scan runs on endDocument. */
     public UnicodeQRContentHandler(ContentHandler delegate, Metadata metadata,
@@ -88,13 +89,24 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
             int room = MAX_BUFFER_CHARS - buffer.length();
             int take = Math.min(length, room);
             buffer.append(ch, start, take);
-            for (int i = 0; i < take; i++) {
-                if (UnicodeQRExtractor.isQrGlyph(ch[start + i])) {
-                    qrGlyphCount++;
-                }
-            }
+            updateQrGlyphCount();
             if (take < length) {
                 truncated = true;
+            }
+        }
+    }
+
+    private void updateQrGlyphCount() {
+        while (qrProbeOffset < buffer.length()) {
+            char first = buffer.charAt(qrProbeOffset);
+            if (Character.isHighSurrogate(first)
+                    && qrProbeOffset + 1 == buffer.length()) {
+                return;
+            }
+            int codePoint = Character.codePointAt(buffer, qrProbeOffset);
+            qrProbeOffset += Character.charCount(codePoint);
+            if (UnicodeQRExtractor.isQrSignal(codePoint)) {
+                qrGlyphCount++;
             }
         }
     }

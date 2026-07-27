@@ -146,7 +146,9 @@ public class PDFIncrementalUpdatesTest extends TikaTest {
         List<Metadata> metadataList = getRecursiveMetadata(
                 "testPDF_incrementalUpdates.pdf",
                 parseContext);
-        assertEquals(3, metadataList.size());
+        assertEquals(4, metadataList.size());
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
         assertEquals(2, metadataList.get(0).getInt(PDF.PDF_INCREMENTAL_UPDATE_COUNT));
         assertEquals(2, metadataList.get(0).getInt(TikaCoreProperties.VERSION_COUNT));
         long[] expected = new long[]{16242, 41226, 64872};
@@ -156,25 +158,25 @@ public class PDFIncrementalUpdatesTest extends TikaTest {
 
         assertContains("Testing Incremental", metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT));
         assertNotContained("Testing Incremental",
-                metadataList.get(1).get(TikaCoreProperties.TIKA_CONTENT));
-        assertContains("Testing Incremental", metadataList.get(2).get(TikaCoreProperties.TIKA_CONTENT));
+                metadataList.get(2).get(TikaCoreProperties.TIKA_CONTENT));
+        assertContains("Testing Incremental", metadataList.get(3).get(TikaCoreProperties.TIKA_CONTENT));
 
         assertNull(metadataList.get(0).get(PDF.INCREMENTAL_UPDATE_NUMBER));
         assertNull(metadataList.get(0).get(PDF.INCREMENTAL_UPDATE_NUMBER));
-        assertEquals(0, metadataList.get(1).getInt(PDF.INCREMENTAL_UPDATE_NUMBER));
-        assertEquals(1, metadataList.get(2).getInt(PDF.INCREMENTAL_UPDATE_NUMBER));
+        assertEquals(0, metadataList.get(2).getInt(PDF.INCREMENTAL_UPDATE_NUMBER));
+        assertEquals(1, metadataList.get(3).getInt(PDF.INCREMENTAL_UPDATE_NUMBER));
         assertEquals("/version-number-0",
-                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
-        assertEquals("/version-number-1",
                 metadataList.get(2).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
+        assertEquals("/version-number-1",
+                metadataList.get(3).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
 
-        assertNull(metadataList.get(1).get(TikaCoreProperties.RESOURCE_NAME_KEY));
         assertNull(metadataList.get(2).get(TikaCoreProperties.RESOURCE_NAME_KEY));
+        assertNull(metadataList.get(3).get(TikaCoreProperties.RESOURCE_NAME_KEY));
 
-        assertEquals(TikaCoreProperties.EmbeddedResourceType.VERSION.toString(),
-                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
         assertEquals(TikaCoreProperties.EmbeddedResourceType.VERSION.toString(),
                 metadataList.get(2).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.VERSION.toString(),
+                metadataList.get(3).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
     }
 
     //TODO: embed the incremental updates PDF inside another doc and confirm it works

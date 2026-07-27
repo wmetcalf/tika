@@ -158,16 +158,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         buildXHTML(xhtml);
 
         // Now do any embedded parts
-        handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap());
+        Set<String> handledRelationshipParts =
+                handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap());
 
-        // Catch-all: walk EVERY part's relationships for external Targets, not
-        // just main-document parts. Settings/footnotes/comments/header/footer/
+        // Catch-all: walk package-root and every remaining part's relationships
+        // for external Targets. Settings/footnotes/comments/header/footer/
         // webSettings/sheet/slide .rels can all carry attachedTemplate /
         // oleObject / frame / subDocument / hyperlink relations with
         // TargetMode=External, and handleEmbeddedParts() above only walks
         // getMainDocumentParts(). Frame URLs in webSettings.xml.rels were the
         // historical example — generalize to anything analogous.
-        surfaceExternalRefsFromAllParts(xhtml, metadata);
+        surfaceExternalRefsFromAllParts(xhtml, metadata, handledRelationshipParts);
 
         // thumbnail
         handleThumbnail(xhtml, metadata);
@@ -298,15 +299,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         return out;
     }
 
-    // VBA macro targets already emitted by handleMacrosEarly(), so the normal
-    // embedded-part walk in handleEmbeddedPart() does not emit them a second time.
+    // Canonical names of VBA macro parts attempted by handleMacrosEarly(), so the
+    // normal embedded-part walk in handleEmbeddedPart() does not parse them again.
     private final Set<String> macroTargetsHandledEarly = new HashSet<>();
 
     /**
      * Emit VBA macros ahead of the body content so they are not starved by the cumulative
      * write-limit when the document is padded with junk body text. Walks the same parts as
      * {@link #handleEmbeddedParts} but only for the {@code VBA_MACROS} relationship, and
-     * records the handled targets in {@link #macroTargetsHandledEarly}. Non-fatal: a broken
+     * records each actual target before parsing it in {@link #macroTargetsHandledEarly}.
+     * Non-fatal: a broken
      * macro part is recorded on the metadata and never fails the overall parse (mirroring
      * the swallow in handleEmbeddedParts). A SAXException (e.g. a write-limit signal) is
      * allowed to propagate, exactly as the body path would.
@@ -337,11 +339,12 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                         if (target == null) {
                             continue;
                         }
-                        handleMacros(target, xhtml);
-                        URI targetURI = rel.getTargetURI();
-                        if (targetURI != null) {
-                            macroTargetsHandledEarly.add(targetURI.toString());
+                        String targetPartName =
+                                target.getPartName().getName();
+                        if (!macroTargetsHandledEarly.add(targetPartName)) {
+                            continue;
                         }
+                        handleMacros(target, xhtml);
                     } catch (SAXException | SecurityException e) {
                         throw e;
                     } catch (Exception e) {
@@ -354,14 +357,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         }
     }
 
-    private void handleEmbeddedParts(XHTMLContentHandler xhtml, Metadata metadata,
-                                     Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap)
+    private Set<String> handleEmbeddedParts(
+            XHTMLContentHandler xhtml, Metadata metadata,
+            Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap)
             throws TikaException, IOException, SAXException {
         //keep track of media items that have been handled
         //there can be multiple relationships pointing to the
         //same underlying media item.  We only want to process
         //the underlying media item once.
         Set<String> handledTarget = new HashSet<>();
+        Set<String> handledRelationshipParts = new HashSet<>();
         try {
             for (PackagePart source : getMainDocumentParts()) {
                 if (source == null) {
@@ -378,10 +383,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                         EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
                     }
                 }
+                if (source.getPartName() != null) {
+                    handledRelationshipParts.add(source.getPartName().getName());
+                }
             }
         } catch (InvalidFormatException e) {
             throw new TikaException("Broken OOXML file", e);
         }
+        return handledRelationshipParts;
     }
 
     private void handleEmbeddedPart(PackagePart source, PackageRelationship rel,
@@ -390,12 +399,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                                     Set<String> handledTarget)
             throws IOException, SAXException, TikaException, InvalidFormatException {
         URI targetURI = rel.getTargetURI();
-        if (targetURI != null) {
-            if (handledTarget.contains(targetURI.toString())) {
-                return;
-            }
-        }
-
         URI sourceURI = rel.getSourceURI();
         String sourceDesc;
         if (sourceURI != null) {
@@ -409,6 +412,10 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             sourceDesc = "";
         }
         if (rel.getTargetMode() != TargetMode.INTERNAL) {
+            if (targetURI != null
+                    && handledTarget.contains(targetURI.toString())) {
+                return;
+            }
             // External target - emit as external reference for security analysis
             String type = rel.getRelationshipType();
             String sourcePath = sourceURI != null ? sourceURI.getPath() : "";
@@ -432,6 +439,10 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         } catch (IllegalArgumentException ex) {
             return;
         }
+        String targetPartName = target.getPartName().getName();
+        if (handledTarget.contains(targetPartName)) {
+            return;
+        }
         EmbeddedPartMetadata embeddedPartMetadata = embeddedPartMetadataMap.get(rel.getId());
         String type = rel.getRelationshipType();
         updateParentMetadata(parentMetadata, embeddedPartMetadata);
@@ -439,15 +450,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 TYPE_OLE_OBJECT.equals(target.getContentType())) {
             handleEmbeddedOLE(target, xhtml, sourceDesc + rel.getId(), parentMetadata,
                     embeddedPartMetadata);
-            if (targetURI != null) {
-                handledTarget.add(targetURI.toString());
-            }
+            handledTarget.add(targetPartName);
         } else if (PackageRelationshipTypes.IMAGE_PART.equals(type)) {
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata, TikaCoreProperties.EmbeddedResourceType.INLINE);
-            if (targetURI != null) {
-                handledTarget.add(targetURI.toString());
-            }
+            handledTarget.add(targetPartName);
         } else if (RELATION_MEDIA.equals(type) || RELATION_VIDEO.equals(type) ||
                 RELATION_AUDIO.equals(type) ||
                 PACK_OBJECT_REL_TYPE.equals(type) ||
@@ -455,26 +462,20 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata,
                     TikaCoreProperties.EmbeddedResourceType.ATTACHMENT);
-            if (targetURI != null) {
-                handledTarget.add(targetURI.toString());
-            }
+            handledTarget.add(targetPartName);
         } else if (XSSFRelation.VBA_MACROS.getRelation().equals(type)) {
             // Skip if handleMacrosEarly() already emitted this macro part (it runs before
             // buildXHTML so the VBA source survives the cumulative write-limit).
-            if (targetURI == null || !macroTargetsHandledEarly.contains(targetURI.toString())) {
+            if (!macroTargetsHandledEarly.contains(targetPartName)) {
                 handleMacros(target, xhtml);
             }
-            if (targetURI != null) {
-                handledTarget.add(targetURI.toString());
-            }
+            handledTarget.add(targetPartName);
         } else if (RELATION_ALTERNATE_FORMAT_CHUNK.equals(type)) {
             //TODO check for targetMode=INTERNAL?
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata,
                     TikaCoreProperties.EmbeddedResourceType.ALTERNATE_FORMAT_CHUNK);
-            if (targetURI != null) {
-                handledTarget.add(targetURI.toString());
-            }
+            handledTarget.add(targetPartName);
         }
     }
 
@@ -722,7 +723,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
 
             requireRemaining(totalSize - Short.BYTES, 1);
             int firstLabelByte = readByte(stream);
-            if (Character.isISOControl(firstLabelByte)) {
+            if (Character.isISOControl((byte) firstLabelByte)) {
                 long payloadLength = totalSize - Short.BYTES;
                 InputStream payload = new SequenceInputStream(
                         new ByteArrayInputStream(new byte[]{(byte) firstLabelByte}),
@@ -1042,8 +1043,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     }
 
     /**
-     * Walk every PackagePart in the package and surface external-mode
-     * relationships that the main-doc walk would otherwise miss. Each
+     * Walk every PackagePart not already processed by the main-document pass
+     * and surface external-mode relationships that the pass would otherwise miss. Each
      * relationship type maps to a short refType string used by the
      * {@link OfficeLinkMetadataUtil} link index and the body {@code <a>} ref.
      *
@@ -1060,7 +1061,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      *  this cap a single doc could produce unbounded link-metadata entries. */
     private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
 
-    private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata)
+    private void surfaceExternalRefsFromAllParts(
+            XHTMLContentHandler xhtml, Metadata metadata,
+            Set<String> handledRelationshipParts)
             throws SAXException {
         if (opcPackage == null) return;
         // Preserve relationship semantics while suppressing only exact duplicate
@@ -1091,6 +1094,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             for (PackagePart part : opcPackage.getParts()) {
                 if (part == null || part.getPartName() == null) continue;
                 String partName = part.getPartName().getName();
+                if (handledRelationshipParts.contains(partName)) continue;
                 PackageRelationshipCollection rels;
                 try {
                     rels = part.getRelationships();

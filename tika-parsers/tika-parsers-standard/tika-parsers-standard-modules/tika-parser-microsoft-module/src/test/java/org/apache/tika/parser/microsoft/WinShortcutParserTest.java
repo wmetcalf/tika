@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,7 +37,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -107,6 +110,28 @@ public class WinShortcutParserTest {
 
         assertTrue(limiterApplied.get(),
                 "fork-created appended metadata must inherit the context limiter");
+    }
+
+    @Test
+    public void testAppendedWriteLimitPropagates() {
+        assertThrows(WriteLimitReachedException.class,
+                () -> parseWithEmbeddedException(new WriteLimitReachedException(7)));
+    }
+
+    @Test
+    public void testAppendedSecurityExceptionPropagates() {
+        assertThrows(SecurityException.class,
+                () -> parseWithEmbeddedException(
+                        new SecurityException("simulated security boundary")));
+    }
+
+    @Test
+    public void testOrdinaryAppendedParseFailureRemainsWarning() throws Exception {
+        Metadata metadata = parseWithEmbeddedException(
+                new IOException("simulated ordinary embedded failure"));
+
+        assertTrue(java.util.Arrays.stream(metadata.getValues("lnk:warning"))
+                .anyMatch(value -> value.contains("simulated ordinary embedded failure")));
     }
 
     @Test
@@ -450,6 +475,39 @@ public class WinShortcutParserTest {
                     metadata, context);
         }
         return new ParseResult(metadata, embedded);
+    }
+
+    private static Metadata parseWithEmbeddedException(Exception failure) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException, SAXException {
+                if (failure instanceof IOException ioException) {
+                    throw ioException;
+                }
+                if (failure instanceof SAXException saxException) {
+                    throw saxException;
+                }
+                if (failure instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new AssertionError("unsupported test exception", failure);
+            }
+        });
+
+        Metadata metadata = new Metadata();
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            new WinShortcutParser().parse(
+                    stream, new BodyContentHandler(-1), metadata, context);
+        }
+        return metadata;
     }
 
     private static byte[] buildLnk() throws IOException {

@@ -16,9 +16,12 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -27,6 +30,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,7 +39,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -214,6 +221,58 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testValidShortBinaryBlobsAreHashedAndDispatched() throws Exception {
+        List<byte[]> embedded = new ArrayList<>();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException {
+                embedded.add(stream.readAllBytes());
+            }
+        });
+
+        ParseResult result = parse("""
+                <MMC_ConsoleFile>
+                  <Binary>QUJD</Binary>
+                  <BinaryData>REVG</BinaryData>
+                </MMC_ConsoleFile>
+                """, context);
+
+        assertEquals(List.of(
+                        "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78",
+                        "967c5a5b7e2fbbe3080a0c5cefea7c279570b16ae8465525538bc3b115267a45"),
+                List.of(result.metadata.getValues("msc:binary_sha256")));
+        assertEquals(2, result.metadata.getValues("msc:binary_mime").length);
+        assertEquals(2, embedded.size());
+        assertArrayEquals(new byte[]{'A', 'B', 'C'}, embedded.get(0));
+        assertArrayEquals(new byte[]{'D', 'E', 'F'}, embedded.get(1));
+    }
+
+    @Test
+    public void testEmptyBinaryElementsRemainIgnored() throws Exception {
+        ParseResult result = parseWithoutEmbedded("""
+                <MMC_ConsoleFile>
+                  <Binary></Binary>
+                  <BinaryData> \s
+                  </BinaryData>
+                  <Binary/>
+                </MMC_ConsoleFile>
+                """);
+
+        assertEquals(0, result.metadata.getValues("msc:binary_sha256").length);
+        assertEquals(0, result.metadata.getValues("msc:binary_mime").length);
+        assertNull(result.metadata.get("msc:warning"));
+        assertNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void testEmbeddedMetadataUsesContextLimiter() throws Exception {
         ParseContext context = new ParseContext();
         StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
@@ -242,6 +301,30 @@ public class MscParserSecurityTest {
 
         assertTrue(limiterApplied.get(),
                 "fork-created embedded metadata must inherit the context limiter");
+    }
+
+    @Test
+    public void testBinaryWriteLimitPropagates() {
+        assertThrows(WriteLimitReachedException.class,
+                () -> parseWithEmbeddedException(new WriteLimitReachedException(7)));
+    }
+
+    @Test
+    public void testBinarySecurityExceptionPropagates() {
+        assertThrows(SecurityException.class,
+                () -> parseWithEmbeddedException(
+                        new SecurityException("simulated binary security boundary")));
+    }
+
+    @Test
+    public void testOrdinaryBinaryParseFailureRemainsIncompleteWarning() throws Exception {
+        ParseResult result = parseWithEmbeddedException(
+                new IOException("simulated ordinary binary failure"));
+
+        assertTrue(java.util.Arrays.stream(result.metadata.getValues("msc:warning"))
+                .anyMatch(value -> value.contains("simulated ordinary binary failure")));
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "ordinary embedded parse failures must retain the incomplete marker");
     }
 
     @Test
@@ -378,6 +461,35 @@ public class MscParserSecurityTest {
             }
         });
         return parse(xml, context);
+    }
+
+    private static ParseResult parseWithEmbeddedException(Exception failure) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException, SAXException {
+                if (failure instanceof IOException ioException) {
+                    throw ioException;
+                }
+                if (failure instanceof SAXException saxException) {
+                    throw saxException;
+                }
+                if (failure instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new AssertionError("unsupported test exception", failure);
+            }
+        });
+        return parse("<MMC_ConsoleFile><BinaryData>"
+                + "QUJDREVGR0hJSktMTU5PUA=="
+                + "</BinaryData></MMC_ConsoleFile>", context);
     }
 
     private static ParseResult parse(String xml, ParseContext context) throws Exception {

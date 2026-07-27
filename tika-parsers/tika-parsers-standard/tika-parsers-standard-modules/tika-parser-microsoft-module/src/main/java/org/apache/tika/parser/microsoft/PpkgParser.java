@@ -43,6 +43,7 @@ import org.xml.sax.helpers.DefaultHandler;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -237,6 +238,8 @@ public class PpkgParser implements Parser {
                 } else if (childOff < 0 || childOff >= metaRes.length) {
                     markResourceIncomplete(warnings);
                 }
+            } catch (SecurityException e) {
+                throw e;
             } catch (RuntimeException e) {
                 // A malformed metadata resource must not abort the whole package
                 // parse with an uncaught runtime exception (Tika parser contract).
@@ -810,6 +813,11 @@ public class PpkgParser implements Parser {
             if (extractor.shouldParseEmbedded(embMeta)) {
                 extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
             }
+        } catch (SecurityException e) {
+            throw e;
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            warnings.add("XML parse error in " + name + ": " + e.getMessage());
         } catch (Exception e) {
             warnings.add("XML parse error in " + name + ": " + e.getMessage());
         }
@@ -850,6 +858,11 @@ public class PpkgParser implements Parser {
             if (extractor.shouldParseEmbedded(embMeta)) {
                 extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
             }
+        } catch (SecurityException e) {
+            throw e;
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         } catch (Exception e) {
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         }

@@ -41,6 +41,7 @@ import org.xml.sax.helpers.DefaultHandler;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -459,7 +460,7 @@ public class MscParser implements Parser {
                 continue;
             }
             String b64 = compactBase64(xml, tagEnd + 1, closingTag);
-            if (b64 == null || b64.length() < 20) {
+            if (b64 == null || b64.isEmpty()) {
                 if (b64 == null) {
                     warnings.add("Binary blob " + (idx - 1)
                             + " contains invalid base64 characters");
@@ -522,6 +523,13 @@ public class MscParser implements Parser {
                 if (extractor.shouldParseEmbedded(embMeta)) {
                     extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
                 }
+            } catch (SecurityException e) {
+                throw e;
+            } catch (SAXException e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                warnings.add("Binary " + (idx - 1)
+                        + " parse error: " + e.getMessage());
+                incomplete = true;
             } catch (Exception e) {
                 warnings.add("Binary " + (idx - 1)
                         + " parse error: " + e.getMessage());

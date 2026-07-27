@@ -16,7 +16,9 @@
  */
 package org.apache.tika.parser.image;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
@@ -28,6 +30,34 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 
 public class UnicodeQRContentHandlerTest {
+
+    @Test
+    public void ordinarySpacesDoNotTriggerQrProbe() throws Exception {
+        Metadata metadata = new Metadata();
+        UnicodeQRContentHandler handler = new UnicodeQRContentHandler(
+                null, metadata, null, null, new ParseContext());
+        char[] text = " ".repeat(100).toCharArray();
+
+        handler.characters(text, 0, text.length);
+        handler.endDocument();
+
+        assertNull(metadata.get("unicode_qr:glyph_count"));
+    }
+
+    @Test
+    public void sextantSignalsAreCountedAcrossCharacterCallbacks() throws Exception {
+        Metadata metadata = new Metadata();
+        UnicodeQRContentHandler handler = new UnicodeQRContentHandler(
+                null, metadata, null, null, new ParseContext());
+        char[] text = new String(Character.toChars(0x1FB01))
+                .repeat(100).toCharArray();
+
+        handler.characters(text, 0, 1);
+        handler.characters(text, 1, text.length - 1);
+        handler.endDocument();
+
+        assertEquals("100", metadata.get("unicode_qr:glyph_count"));
+    }
 
     @Test
     public void truncatedPrefixWithoutQrGlyphsIsSecurityVisible() throws Exception {

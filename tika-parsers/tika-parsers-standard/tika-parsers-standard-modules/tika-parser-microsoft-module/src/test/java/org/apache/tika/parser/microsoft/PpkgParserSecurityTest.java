@@ -19,10 +19,12 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -35,8 +37,12 @@ import java.util.Locale;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
@@ -564,14 +570,106 @@ public class PpkgParserSecurityTest {
         assertEquals(0, result.metadata.getValues("ppkg:command").length);
     }
 
+    @Test
+    public void xmlEmbeddedWriteLimitPropagates() {
+        assertThrows(WriteLimitReachedException.class,
+                () -> parseWithEmbeddedException(buildWim(
+                        "<wap-provisioningdoc/>"), new WriteLimitReachedException(7)));
+    }
+
+    @Test
+    public void xmlEmbeddedSecurityExceptionPropagates() {
+        assertThrows(SecurityException.class,
+                () -> parseWithEmbeddedException(buildWim(
+                        "<wap-provisioningdoc/>"),
+                        new SecurityException("simulated XML security boundary")));
+    }
+
+    @Test
+    public void dataAssetWriteLimitPropagates() {
+        assertThrows(WriteLimitReachedException.class,
+                () -> parseWithEmbeddedException(
+                        buildWimResource("payload.bin",
+                                "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
+                        new WriteLimitReachedException(7)));
+    }
+
+    @Test
+    public void dataAssetSecurityExceptionPropagates() {
+        assertThrows(SecurityException.class,
+                () -> parseWithEmbeddedException(
+                        buildWimResource("payload.bin",
+                                "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
+                        new SecurityException("simulated data security boundary")));
+    }
+
+    @Test
+    public void ordinaryXmlEmbeddedFailureRemainsWarning() throws Exception {
+        Metadata metadata = parseWithEmbeddedException(
+                buildWim("<wap-provisioningdoc/>"),
+                new IOException("simulated ordinary XML failure"));
+
+        assertTrue(Arrays.stream(metadata.getValues("ppkg:warning"))
+                .anyMatch(value -> value.contains("simulated ordinary XML failure")));
+    }
+
+    @Test
+    public void ordinaryDataAssetFailureRemainsWarning() throws Exception {
+        Metadata metadata = parseWithEmbeddedException(
+                buildWimResource("payload.bin",
+                        "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
+                new IOException("simulated ordinary data failure"));
+
+        assertTrue(Arrays.stream(metadata.getValues("ppkg:warning"))
+                .anyMatch(value -> value.contains("simulated ordinary data failure")));
+    }
+
+    private static Metadata parseWithEmbeddedException(byte[] wim, Exception failure)
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException, SAXException {
+                if (failure instanceof IOException ioException) {
+                    throw ioException;
+                }
+                if (failure instanceof SAXException saxException) {
+                    throw saxException;
+                }
+                if (failure instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new AssertionError("unsupported test exception", failure);
+            }
+        });
+
+        Metadata metadata = new Metadata();
+        try (TikaInputStream stream = TikaInputStream.get(wim)) {
+            new PpkgParser().parse(
+                    stream, new BodyContentHandler(-1), metadata, context);
+        }
+        return metadata;
+    }
+
     private static byte[] buildWim(String xml) {
-        byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
+        return buildWimResource(
+                "payload.provxml", xml.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static byte[] buildWimResource(String name, byte[] resourceBytes) {
         int lookupOffset = 208;
         int lookupLength = 100;
         int metadataOffset = lookupOffset + lookupLength;
         int metadataLength = 256;
-        int xmlOffset = metadataOffset + metadataLength;
-        byte[] wim = new byte[xmlOffset + xmlBytes.length];
+        int resourceOffset = metadataOffset + metadataLength;
+        byte[] wim = new byte[resourceOffset + resourceBytes.length];
         ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
 
         System.arraycopy(PpkgParser.WIM_MAGIC, 0, wim, 0, PpkgParser.WIM_MAGIC.length);
@@ -582,22 +680,22 @@ public class PpkgParserSecurityTest {
                 lookupOffset, lookupLength);
 
         byte[] metadataHash = repeated((byte) 0x11);
-        byte[] xmlHash = repeated((byte) 0x42);
+        byte[] resourceHash = repeated((byte) 0x42);
         putLookupEntry(wim, buffer, lookupOffset, metadataLength, 0x04,
                 metadataOffset, metadataLength, metadataHash);
-        putLookupEntry(wim, buffer, lookupOffset + 50, xmlBytes.length, 0,
-                xmlOffset, xmlBytes.length, xmlHash);
+        putLookupEntry(wim, buffer, lookupOffset + 50, resourceBytes.length, 0,
+                resourceOffset, resourceBytes.length, resourceHash);
 
         buffer.putInt(metadataOffset, 8);
         buffer.putLong(metadataOffset + 8 + 16, 32);
 
-        byte[] nameBytes = "payload.provxml".getBytes(StandardCharsets.UTF_16LE);
+        byte[] nameBytes = name.getBytes(StandardCharsets.UTF_16LE);
         int dentry = metadataOffset + 32;
         buffer.putLong(dentry, 102L + nameBytes.length);
-        System.arraycopy(xmlHash, 0, wim, dentry + 64, xmlHash.length);
+        System.arraycopy(resourceHash, 0, wim, dentry + 64, resourceHash.length);
         buffer.putShort(dentry + 100, (short) nameBytes.length);
         System.arraycopy(nameBytes, 0, wim, dentry + 102, nameBytes.length);
-        System.arraycopy(xmlBytes, 0, wim, xmlOffset, xmlBytes.length);
+        System.arraycopy(resourceBytes, 0, wim, resourceOffset, resourceBytes.length);
         return wim;
     }
 
