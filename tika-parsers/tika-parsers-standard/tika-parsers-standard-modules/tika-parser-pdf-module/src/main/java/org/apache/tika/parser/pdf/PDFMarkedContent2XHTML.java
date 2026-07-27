@@ -603,7 +603,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         int pageCount = 1;
         Map<MCID, String> paragraphs = new HashMap<>();
         for (PDPage page : pageTree) {
-            if (outputPageLimit >= 0 && pageCount > outputPageLimit) {
+            if (config.getMaxPages() > 0 && pageCount > config.getMaxPages()) {
                 break;
             }
             ObjectRef pageRef = pageRefs.get(pageCount - 1);

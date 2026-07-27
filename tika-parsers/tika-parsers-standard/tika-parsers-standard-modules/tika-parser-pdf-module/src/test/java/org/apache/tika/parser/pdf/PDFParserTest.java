@@ -1608,6 +1608,8 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testMaxPagesInvalidValue() {
         PDFParserConfig config = new PDFParserConfig();
+        assertEquals(100, config.getMaxPages(),
+                "the fork default must bound analysis work");
         assertThrows(IllegalArgumentException.class, () -> config.setMaxPages(0));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxPages(-2));
         config.setMaxPages(-1);

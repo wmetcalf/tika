@@ -204,6 +204,18 @@ public class PDFParser implements Parser, RenderingParser {
                     memoryUsageSetting.streamCache, metadata, context);
 
             originalPageCount = pdfDocument.getNumberOfPages();
+            if (localConfig.getMaxPages() > 0
+                    && originalPageCount > localConfig.getMaxPages()) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        "PDF analysis page limit reached: analyzed "
+                                + localConfig.getMaxPages() + " of "
+                                + originalPageCount + " pages");
+                if (metadata.get("ExploitClass") == null) {
+                    metadata.set("ExploitClass",
+                            "PDF analysis incomplete; content beyond the page limit "
+                                    + "may not have been analyzed");
+                }
+            }
             ContentHandler outputHandler = handler;
             if (handler != null && originalPageCount > LEGACY_SLICE_THRESHOLD) {
                 outputHandler = new PageLimitingContentHandler(
@@ -220,7 +232,8 @@ public class PDFParser implements Parser, RenderingParser {
             extractSignatures(pdfDocument, metadata);
             checkIllustrator(pdfDocument, metadata);
             checkAccessPermissions(localConfig.getAccessCheckMode(), metadata);
-            renderPagesBeforeParse(tis, outputHandler, metadata, context, localConfig);
+            renderPagesBeforeParse(
+                    tis, outputHandler, metadata, context, localConfig, originalPageCount);
             if (outputHandler != null) {
                 if (shouldHandleXFAOnly(hasXFA, localConfig)) {
                     handleXFAOnly(pdfDocument, outputHandler, metadata, context);
@@ -580,13 +593,15 @@ public class PDFParser implements Parser, RenderingParser {
     private void renderPagesBeforeParse(TikaInputStream tstream,
                                         ContentHandler xhtml, Metadata parentMetadata,
                                         ParseContext context,
-                                        PDFParserConfig config) {
+                                        PDFParserConfig config,
+                                        int originalPageCount) {
         if (config.getImageStrategy() != PDFParserConfig.IMAGE_STRATEGY.RENDER_PAGES_BEFORE_PARSE) {
             return;
         }
         RenderResults renderResults = null;
         try {
-            renderResults = renderPDF(tstream, context, config);
+            renderResults = renderPDF(
+                    tstream, context, config, originalPageCount);
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
@@ -613,12 +628,17 @@ public class PDFParser implements Parser, RenderingParser {
     }
 
     private RenderResults renderPDF(TikaInputStream tstream,
-                                    ParseContext parseContext, PDFParserConfig localConfig)
+                                    ParseContext parseContext, PDFParserConfig localConfig,
+                                    int originalPageCount)
             throws IOException, TikaException {
         Metadata metadata = Metadata.newInstance(parseContext);
         metadata.set(TikaCoreProperties.TYPE, MEDIA_TYPE.toString());
+        PageRangeRequest pageRange = localConfig.getMaxPages() > 0
+                ? new PageRangeRequest(
+                        1, Math.min(localConfig.getMaxPages(), originalPageCount))
+                : PageRangeRequest.RENDER_ALL;
         return renderer.render(
-                tstream, metadata, parseContext, PageRangeRequest.RENDER_ALL);
+                tstream, metadata, parseContext, pageRange);
     }
 
     protected PDDocument getPDDocument(TikaInputStream tis, String password,

@@ -23,6 +23,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.BarcodeMetadataUtil;
+import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.image.ColorGridQRDecoder;
 import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.parser.image.ZXingCPPScanner;
@@ -41,6 +42,19 @@ import org.apache.tika.parser.image.ZXingCPPScanner;
 public final class OOXMLColorQRScanHelper {
 
     private OOXMLColorQRScanHelper() {
+    }
+
+    public static void scan(BoundedColorGridCollector collector, ParseContext context,
+                     Metadata metadata, String keyPrefix,
+                     String exploitFormatLabel) {
+        if (collector == null) {
+            return;
+        }
+        if (collector.isTruncated()) {
+            BarcodeMetadataUtil.markAnalysisIncomplete(metadata,
+                    exploitFormatLabel + " color-QR analysis limit", null);
+        }
+        scan(collector.getRows(), context, metadata, keyPrefix, exploitFormatLabel);
     }
 
     public static void scan(List<List<Integer>> rows, ParseContext context,

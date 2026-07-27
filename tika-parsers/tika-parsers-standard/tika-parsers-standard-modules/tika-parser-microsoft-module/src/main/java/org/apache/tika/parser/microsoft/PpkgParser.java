@@ -835,7 +835,7 @@ public class PpkgParser implements Parser {
         // Also feed through embedded pipeline for recursive parsing
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        Metadata embMeta = new Metadata();
+        Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         embMeta.set(Metadata.CONTENT_TYPE, "text/xml");
         try (TikaInputStream tis = TikaInputStream.get(xmlBytes)) {
@@ -864,7 +864,7 @@ public class PpkgParser implements Parser {
         // (sha256[N], md5[N], sha1[N], name[N], size[N], mime[N] stay aligned).
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        Metadata embMeta = new Metadata();
+        Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         String mime = "application/octet-stream";
         try (TikaInputStream tis = TikaInputStream.get(data)) {

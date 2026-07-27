@@ -18,6 +18,7 @@ package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -98,8 +99,36 @@ public class PDFParserSlicingSecurityTest {
         assertEquals("5", result.metadata.get(PagedText.N_PAGES));
     }
 
+    @Test
+    public void testDefaultAnalysisPageLimitIsSecurityVisible() throws Exception {
+        ParseResult result = parse(buildPdf(101, false), null);
+
+        assertTrue(java.util.Arrays.stream(result.metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .anyMatch(value -> value.contains("PDF analysis page limit")));
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "skipped later pages must not look fully analyzed");
+        assertFalse(result.embeddedTypes.contains("application/javascript"),
+                "the page-101 action should be beyond the bounded analysis window");
+    }
+
+    @Test
+    public void testUnlimitedAnalysisRemainsAnExplicitOptIn() throws Exception {
+        ParseResult result = parse(buildPdf(101, false), null, -1);
+
+        assertTrue(result.embeddedTypes.contains("application/javascript"),
+                "maxPages=-1 must preserve explicit unlimited whole-document analysis");
+    }
+
     private static ParseResult parse(byte[] pdf,
                                      PDFParserConfig.AccessCheckMode accessCheckMode)
+            throws Exception {
+        return parse(pdf, accessCheckMode, null);
+    }
+
+    private static ParseResult parse(byte[] pdf,
+                                     PDFParserConfig.AccessCheckMode accessCheckMode,
+                                     Integer maxPages)
             throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler handler = new BodyContentHandler(-1);
@@ -108,6 +137,9 @@ public class PDFParserSlicingSecurityTest {
         PDFParserConfig config = new PDFParserConfig();
         config.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
         config.setExtractActions(true);
+        if (maxPages != null) {
+            config.setMaxPages(maxPages);
+        }
         if (accessCheckMode != null) {
             config.setAccessCheckMode(accessCheckMode);
         }

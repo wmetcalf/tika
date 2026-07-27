@@ -32,6 +32,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.WordExtractor;
@@ -93,8 +94,8 @@ public class OOXMLTikaBodyPartHandler
     // every character emitted in run(), binned by paragraph row. Populated
     // only when ColorAwareConfig is enabled in the ParseContext. Each row
     // is a list of luma integers; the final grid is fed to ColorGridQRDecoder.
-    private final java.util.List<java.util.List<Integer>> colorRows = new java.util.ArrayList<>();
-    private java.util.List<Integer> currentColorRow = null;
+    private final BoundedColorGridCollector colorCollector =
+            new BoundedColorGridCollector();
     private boolean colorAwareEnabled = false;
 
     public OOXMLTikaBodyPartHandler(XHTMLContentHandler xhtml) {
@@ -151,7 +152,11 @@ public class OOXMLTikaBodyPartHandler
      * mode is disabled or no per-run colors were seen.
      */
     public java.util.List<java.util.List<Integer>> getColorRows() {
-        return colorRows;
+        return colorCollector.getRows();
+    }
+
+    public BoundedColorGridCollector getColorCollector() {
+        return colorCollector;
     }
 
     @Override
@@ -162,7 +167,7 @@ public class OOXMLTikaBodyPartHandler
         if (isCollectingLinkMetadata() && contents != null) {
             activeHyperlinkText.append(contents);
         }
-        if (colorAwareEnabled && currentColorRow != null && contents != null) {
+        if (colorAwareEnabled && contents != null) {
             int luma = lumaForHex(runProperties.getColor());
             for (int i = 0; i < contents.length(); i++) {
                 char c = contents.charAt(i);
@@ -172,7 +177,7 @@ public class OOXMLTikaBodyPartHandler
                 if (c == ' ' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                     continue;
                 }
-                currentColorRow.add(luma);
+                colorCollector.addCell(luma);
             }
         }
     }
@@ -240,7 +245,7 @@ public class OOXMLTikaBodyPartHandler
                 listManager, xhtml);
         pDepth++;
         if (colorAwareEnabled) {
-            currentColorRow = new java.util.ArrayList<>();
+            colorCollector.startRow();
         }
     }
 
@@ -266,11 +271,8 @@ public class OOXMLTikaBodyPartHandler
             pWithinCell++;
         }
         pDepth--;
-        if (colorAwareEnabled && currentColorRow != null) {
-            if (!currentColorRow.isEmpty()) {
-                colorRows.add(currentColorRow);
-            }
-            currentColorRow = null;
+        if (colorAwareEnabled) {
+            colorCollector.finishRow();
         }
     }
 

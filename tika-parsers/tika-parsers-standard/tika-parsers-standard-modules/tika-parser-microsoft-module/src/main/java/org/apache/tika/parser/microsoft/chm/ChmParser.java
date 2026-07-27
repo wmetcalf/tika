@@ -112,9 +112,11 @@ public class ChmParser implements Parser {
                 data = chmExtractor.extractChmEntry(entry);
             } catch (TikaException e) {
                 LOG.warn("Failed to extract CHM entry '{}': {}", entryName, e.getMessage());
+                markEntryAnalysisIncomplete(metadata, entryName, e);
                 continue;
             }
             if (data.length == 0) {
+                markEntryAnalysisIncomplete(metadata, entryName, null);
                 continue;
             }
 
@@ -122,7 +124,7 @@ public class ChmParser implements Parser {
                 parsePage(data, htmlParser, xhtml, context);
             } else {
                 // Non-HTML embedded file (e.g. PDF, LNK, ZIP dropped inside CHM)
-                Metadata embeddedMeta = new Metadata();
+                Metadata embeddedMeta = Metadata.newInstance(context);
                 embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, displayName);
                 try (TikaInputStream embeddedTis = TikaInputStream.get(data)) {
                     if (embeddedExtractor.shouldParseEmbedded(embeddedMeta)) {
@@ -132,11 +134,33 @@ public class ChmParser implements Parser {
                 } catch (Exception e) {
                     LOG.warn("Failed to parse embedded CHM entry '{}': {}", displayName,
                             e.getMessage());
+                    markEntryAnalysisIncomplete(metadata, displayName, e);
                 }
             }
         }
 
         xhtml.endDocument();
+    }
+
+    static void markEntryAnalysisIncomplete(
+            Metadata metadata, String entryName, Throwable failure) {
+        for (String warning : metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (warning.startsWith("CHM entry analysis incomplete")) {
+                return;
+            }
+        }
+        String boundedName = entryName == null ? "unknown"
+                : entryName.substring(0, Math.min(entryName.length(), 256));
+        String failureType = failure == null
+                ? "empty extracted data" : failure.getClass().getSimpleName();
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "CHM entry analysis incomplete for '" + boundedName + "': " + failureType);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "CHM entry analysis incomplete; embedded content may not "
+                            + "have been analyzed");
+        }
     }
 
 

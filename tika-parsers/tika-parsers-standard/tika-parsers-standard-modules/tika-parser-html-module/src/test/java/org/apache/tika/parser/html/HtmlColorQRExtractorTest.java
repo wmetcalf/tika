@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,6 +37,7 @@ import java.util.Map;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.select.Elements;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -288,6 +290,42 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void unresolvedWhitespaceValueIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>:root{--ws:pre}.qr{white-space:var(--ws)}</style>"
+                        + "<div class=\"qr\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "unresolved browser whitespace semantics must not look clean");
+    }
+
+    @Test
+    public void stylesheetTraversalDoesNotMaterializeAllElements() throws Exception {
+        Document document = new GetAllElementsTrapDocument();
+        document.appendElement("style")
+                .appendChild(new org.jsoup.nodes.DataNode(".x{white-space:normal}"));
+        document.appendElement("div").addClass("x").text("ordinary text");
+        Metadata metadata = new Metadata();
+
+        Method scan = JSoupParser.class.getDeclaredMethod(
+                "scanForUnicodeArtQR", Document.class, Metadata.class, ParseContext.class);
+        scan.setAccessible(true);
+        scan.invoke(null, document, metadata, contextForUncheckedScanner());
+
+        assertEquals(0, metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length,
+                "bounded traversal must not call Document.getAllElements()");
+    }
+
+    @Test
     public void matchingLargeStylesheetDeclarationIsInspectedOnce() {
         String declaration = "a".repeat(64 * 1024);
         String elements = "<div>x</div>".repeat(20_000);
@@ -404,6 +442,17 @@ public class HtmlColorQRExtractorTest {
         public String get(Object key) {
             lookups++;
             return super.get(key);
+        }
+    }
+
+    private static final class GetAllElementsTrapDocument extends Document {
+        private GetAllElementsTrapDocument() {
+            super("");
+        }
+
+        @Override
+        public Elements getAllElements() {
+            throw new AssertionError("getAllElements materializes the attacker DOM");
         }
     }
 

@@ -351,9 +351,8 @@ final class TextExtractor {
     // Per-paragraph row of luma values (one per emitted, non-whitespace char).
     // Active only when ColorAwareConfig is enabled; otherwise null/no-op.
     private boolean colorAwareEnabled;
-    private final java.util.List<java.util.List<Integer>> colorRows =
-            new java.util.ArrayList<>();
-    private java.util.List<Integer> currentColorRow;
+    private final org.apache.tika.parser.image.BoundedColorGridCollector colorCollector =
+            new org.apache.tika.parser.image.BoundedColorGridCollector();
     // ParseContext, kept around so we can pull ZXingCPPConfig at end-of-doc
     // when handing the captured rows off to OOXMLColorQRScanHelper.
     private org.apache.tika.parser.ParseContext parseContext;
@@ -608,11 +607,13 @@ final class TextExtractor {
         // RTF text extraction (which strips color).
         metadata.add("rtf_color_qr:enabled", String.valueOf(colorAwareEnabled));
         metadata.add("rtf_color_qr:colortbl_size", String.valueOf(colorTable.size()));
-        metadata.add("rtf_color_qr:rows_captured", String.valueOf(colorRows.size()));
-        if (colorAwareEnabled && !colorRows.isEmpty() && parseContext != null) {
+        metadata.add("rtf_color_qr:rows_captured",
+                String.valueOf(colorCollector.getRows().size()));
+        if (colorAwareEnabled && !colorCollector.getRows().isEmpty()
+                && parseContext != null) {
             try {
                 org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper
-                        .scan(colorRows, parseContext, metadata,
+                        .scan(colorCollector, parseContext, metadata,
                               "rtf_color_qr", "RTF");
             } catch (Throwable t) {
                 // Best-effort; never fail the parse for QR scanning.
@@ -747,7 +748,7 @@ final class TextExtractor {
             startStyles(groupState);
             inParagraph = true;
             if (colorAwareEnabled) {
-                currentColorRow = new java.util.ArrayList<>();
+                colorCollector.startRow();
             }
         }
     }
@@ -835,11 +836,8 @@ final class TextExtractor {
 
         // Color-aware QR: commit the row of luma values we collected for
         // this paragraph; a fresh row will be started by lazyStartParagraph.
-        if (colorAwareEnabled && currentColorRow != null) {
-            if (!currentColorRow.isEmpty()) {
-                colorRows.add(currentColorRow);
-            }
-            currentColorRow = null;
+        if (colorAwareEnabled) {
+            colorCollector.finishRow();
         }
     }
 
@@ -859,7 +857,7 @@ final class TextExtractor {
      *  representing the color of every char in this batch (the \cf handler
      *  pushText()s first, so a batch never crosses a color boundary). */
     private void captureColorRow(char[] chars, int count) {
-        if (!colorAwareEnabled || currentColorRow == null
+        if (!colorAwareEnabled
                 || inHeader || fieldState == 1
                 || groupState.ignore || nextMetaData != null) {
             return;
@@ -870,7 +868,7 @@ final class TextExtractor {
             if (c == ' ' || c == ' ' || c == '\t' || c == '\r' || c == '\n') {
                 continue;
             }
-            currentColorRow.add(luma);
+            colorCollector.addCell(luma);
         }
     }
 

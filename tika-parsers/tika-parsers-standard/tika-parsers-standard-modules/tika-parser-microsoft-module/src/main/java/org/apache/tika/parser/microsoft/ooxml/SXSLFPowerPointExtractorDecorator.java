@@ -44,6 +44,7 @@ import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.PageAnchoring;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
@@ -103,8 +104,8 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
     /**
      * @see org.apache.poi.xslf.extractor.XSLFPowerPointExtractor#getText()
      */
-    private final java.util.List<java.util.List<Integer>> pptxColorRows =
-            new java.util.ArrayList<>();
+    private final BoundedColorGridCollector pptxColorRows =
+            new BoundedColorGridCollector();
 
     protected void buildXHTML(XHTMLContentHandler xhtml) throws SAXException, IOException {
 
@@ -236,7 +237,7 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
             if (wordAndPPTHandler.hasAnimations()) {
                 metadata.set(Office.HAS_ANIMATIONS, true);
             }
-            pptxColorRows.addAll(bodyHandler.getColorRows());
+            pptxColorRows.addCollector(bodyHandler.getColorCollector());
         } catch (SAXException e) {
             // Truncated/malformed slide XML can leave the body handler with
             // unclosed <p>, <td>, etc. on the wire. Close them before the

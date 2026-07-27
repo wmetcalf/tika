@@ -397,6 +397,39 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testNegativeMaxKeySizeMeansUnlimited() {
+        Metadata metadata = filter(-1, 1000, 10_000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+
+        metadata.add("ordinary:key", "ordinary-value");
+        metadata.add(Office.OFFICE_LINK_URL, "https://example.invalid/");
+        metadata.add(Office.OFFICE_LINK_TYPE, "hyperlink");
+
+        assertEquals("ordinary-value", metadata.get("ordinary:key"));
+        assertArrayEquals(new String[]{"https://example.invalid/"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"hyperlink"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+    }
+
+    @Test
+    public void testAlignedGroupRetriesAfterBudgetIsReleased() {
+        Metadata metadata = filter(100, 10_000, 500, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+
+        metadata.add("filler", "x".repeat(100));
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid/");
+        metadata.remove("filler");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid/");
+        metadata.add(Office.OFFICE_LINK_TYPE, "hyperlink");
+
+        assertArrayEquals(new String[]{"https://second.invalid/"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"hyperlink"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+    }
+
+    @Test
     public void testNullValues() throws Exception {
         StandardMetadataLimiter standardWriteFilter = new StandardMetadataLimiter(100, 1000, 100000, 10, Set.of(), Set.of(), true);
         Metadata m = new Metadata(standardWriteFilter);

@@ -425,15 +425,21 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
 
         String groupId = group.get(0);
-        if (suppressedAlignedGroups.contains(groupId)) {
-            return false;
-        }
         String boundaryField = null;
         for (String member : group) {
             if (includeField(member)) {
                 boundaryField = member;
                 break;
             }
+        }
+        if (suppressedAlignedGroups.contains(groupId)) {
+            if (!field.equals(boundaryField)) {
+                return false;
+            }
+            // A failed reservation suppresses the remainder of that logical
+            // record. The next boundary begins a new record and must retry:
+            // callers may have removed metadata and released total budget.
+            suppressedAlignedGroups.remove(groupId);
         }
         if (boundaryField == null
                 || !field.equals(boundaryField)
@@ -447,7 +453,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
                 continue;
             }
             int keyBytes = estimateSize(member);
-            if (keyBytes > maxKeySize
+            if (maxKeySize >= 0 && keyBytes > maxKeySize
                     || keyBytes > maxTotalEstimatedSize - estimatedSize - requiredKeyBytes) {
                 suppressedAlignedGroups.add(groupId);
                 setTruncated(data);
@@ -616,7 +622,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
 
     private StringSizePair filterKey(String field, String value, Map<String, String[]> data) {
         int size = estimateSize(field);
-        if (size <= maxKeySize) {
+        if (maxKeySize < 0 || size <= maxKeySize) {
             return new StringSizePair(field, size, false);
         }
 

@@ -2397,7 +2397,7 @@ public class WinShortcutParser implements Parser {
 
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        Metadata embeddedMeta = new Metadata();
+        Metadata embeddedMeta = Metadata.newInstance(context);
         embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "lnk-appended-data");
         try (TikaInputStream embeddedTis = TikaInputStream.get(appendedBytes)) {
             if (extractor.shouldParseEmbedded(embeddedMeta)) {

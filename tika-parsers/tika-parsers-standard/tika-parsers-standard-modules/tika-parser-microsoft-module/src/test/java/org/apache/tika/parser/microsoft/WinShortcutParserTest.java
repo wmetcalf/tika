@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -30,6 +31,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -37,6 +40,8 @@ import org.xml.sax.ContentHandler;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.writefilter.MetadataWriteLimiterFactory;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
 
@@ -70,6 +75,38 @@ public class WinShortcutParserTest {
                 result.metadata.get("lnk:AppendedDataMimeType"));
         assertEquals(1, result.embedded.size());
         assertArrayEquals(HTML, result.embedded.get(0));
+    }
+
+    @Test
+    public void testAppendedMetadataUsesContextLimiter() throws Exception {
+        ParseContext context = new ParseContext();
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of("allowed"));
+        context.set(MetadataWriteLimiterFactory.class, factory);
+        AtomicBoolean limiterApplied = new AtomicBoolean();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                metadata.set("not-allowed", "probe");
+                limiterApplied.set(metadata.get("not-allowed") == null);
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                throw new AssertionError("embedded parsing should be disabled");
+            }
+        });
+
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            new WinShortcutParser().parse(
+                    stream, new BodyContentHandler(-1), new Metadata(), context);
+        }
+
+        assertTrue(limiterApplied.get(),
+                "fork-created appended metadata must inherit the context limiter");
     }
 
     @Test

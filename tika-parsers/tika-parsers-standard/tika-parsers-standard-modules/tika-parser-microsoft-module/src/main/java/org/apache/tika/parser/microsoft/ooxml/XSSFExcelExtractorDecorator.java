@@ -60,6 +60,7 @@ import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.PageAnchoring;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.TikaExcelDataFormatter;
@@ -189,8 +190,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         org.apache.tika.parser.ColorAwareConfig colorAware =
                 parseContext.get(org.apache.tika.parser.ColorAwareConfig.class);
         boolean colorAwareOn = colorAware != null && colorAware.isEnabled();
-        java.util.List<java.util.List<Integer>> aggregatedColorRows =
-                new java.util.ArrayList<>();
+        BoundedColorGridCollector aggregatedColorRows =
+                new BoundedColorGridCollector();
         try {
             xssfReader = new XSSFReader(container);
             iter = (XSSFReader.SheetIterator) xssfReader.getSheetsData();
@@ -313,7 +314,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             // All done with this sheet
             xhtml.endElement("div");
             if (colorAwareOn) {
-                aggregatedColorRows.addAll(sheetExtractor.colorRows);
+                aggregatedColorRows.addCollector(sheetExtractor.colorCollector);
             }
         }
         OOXMLColorQRScanHelper.scan(aggregatedColorRows, parseContext, metadata,
@@ -1233,10 +1234,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         private String pendingFontColor;
         // Per-sheet color rows: each row is a list of luma values, one per
         // non-empty cell. Populated only when color-aware mode is enabled.
-        protected final java.util.List<java.util.List<Integer>> colorRows =
-                new java.util.ArrayList<>();
+        protected final BoundedColorGridCollector colorCollector =
+                new BoundedColorGridCollector();
         protected boolean colorAwareEnabled;
-        private java.util.List<Integer> currentColorRow;
         // XLM cross-sheet value capture — see workbookCellValues javadoc on
         // the enclosing class. Both fields are null on workbooks where the
         // outer extractor decided not to capture (currently always non-null
@@ -1293,7 +1293,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 rowOpen = true;
                 lastSeenCol = -1;
                 if (colorAwareEnabled) {
-                    currentColorRow = new java.util.ArrayList<>();
+                    colorCollector.startRow();
                 }
             } catch (SAXException e) {
                 //swallow
@@ -1309,11 +1309,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             } catch (SAXException e) {
                 throw new RuntimeSAXException(e);
             }
-            if (colorAwareEnabled && currentColorRow != null) {
-                if (!currentColorRow.isEmpty()) {
-                    colorRows.add(currentColorRow);
-                }
-                currentColorRow = null;
+            if (colorAwareEnabled) {
+                colorCollector.finishRow();
             }
         }
 
@@ -1376,10 +1373,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     xhtml.characters(formattedValue);
                 }
 
-                if (colorAwareEnabled && currentColorRow != null && formattedValue != null
+                if (colorAwareEnabled && formattedValue != null
                         && !formattedValue.isEmpty()) {
                     int luma = lumaForHex(pendingFontColor);
-                    currentColorRow.add(luma);
+                    colorCollector.addCell(luma);
                 }
 
                 // Comments

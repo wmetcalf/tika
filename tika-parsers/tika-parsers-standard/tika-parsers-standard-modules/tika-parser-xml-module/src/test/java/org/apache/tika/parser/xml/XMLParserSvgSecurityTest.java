@@ -99,6 +99,10 @@ class XMLParserSvgSecurityTest {
 
             assertFalse(requested.get());
             assertNotNull(result.metadata.get(ImageHash.PHASH), warnings(result.metadata));
+            assertTrue(result.metadata
+                    .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                    "a raster that omits image elements must be marked incomplete");
+            assertNotNull(result.metadata.get("ExploitClass"));
         }
     }
 

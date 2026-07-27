@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft.chm;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Timeout;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
 
@@ -142,6 +144,18 @@ public class TestChmMalformed {
             }
         };
         assertThrows(IOException.class, () -> new ChmExtractor(broken));
+    }
+
+    @Test
+    public void testSkippedEntryIsSecurityVisible() {
+        Metadata metadata = new Metadata();
+
+        ChmParser.markEntryAnalysisIncomplete(
+                metadata, "/payload.lnk", new TikaException("malformed entry"));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"));
     }
 
     // ------------------------------------------------------------------

@@ -365,6 +365,7 @@ public class XMLParser implements Parser {
         private int securityReferenceCount;
         private int securityReferenceChars;
         private boolean securityReferenceLimitExceeded;
+        private boolean imageOmissionReported;
 
         SvgEnrichingHandler(ContentHandler delegate, Metadata metadata) {
             this.delegate = delegate;
@@ -391,6 +392,12 @@ public class XMLParser implements Parser {
             // Feature 1: foreignObject detection
             if ("foreignObject".equals(local)) {
                 metadata.set("svg:hasForeignObject", "true");
+            }
+            if ("image".equals(local) && !imageOmissionReported) {
+                imageOmissionReported = true;
+                markSvgEnrichmentIncomplete(metadata,
+                        "SVG raster enrichment omitted image elements to prevent "
+                                + "external or unbounded image loading");
             }
 
             // Feature 2: event handler attribute extraction

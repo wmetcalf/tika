@@ -27,6 +27,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,6 +37,8 @@ import org.xml.sax.ContentHandler;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.writefilter.MetadataWriteLimiterFactory;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
 
@@ -173,6 +177,37 @@ public class MscParserSecurityTest {
                 "dropping excess binary blobs must be signaled");
         assertNotNull(result.metadata.get("ExploitClass"),
                 "skipped binary blobs may hide executable content");
+    }
+
+    @Test
+    public void testEmbeddedMetadataUsesContextLimiter() throws Exception {
+        ParseContext context = new ParseContext();
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setIncludeFields(Set.of("allowed"));
+        context.set(MetadataWriteLimiterFactory.class, factory);
+        AtomicBoolean limiterApplied = new AtomicBoolean();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                metadata.set("not-allowed", "probe");
+                limiterApplied.set(metadata.get("not-allowed") == null);
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                throw new AssertionError("embedded parsing should be disabled");
+            }
+        });
+
+        parse("<MMC_ConsoleFile><Binary>"
+                + "QUJDREVGR0hJSktMTU5PUA=="
+                + "</Binary></MMC_ConsoleFile>", context);
+
+        assertTrue(limiterApplied.get(),
+                "fork-created embedded metadata must inherit the context limiter");
     }
 
     @Test

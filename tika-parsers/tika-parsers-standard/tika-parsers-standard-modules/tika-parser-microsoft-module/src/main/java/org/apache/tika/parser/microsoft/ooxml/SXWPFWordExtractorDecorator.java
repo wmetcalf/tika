@@ -44,6 +44,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.EMFParser;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
@@ -320,7 +321,7 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     ExceptionUtils.getStackTrace(e));
         }
         if (mainBodyHandler != null) {
-            scanColorAwareQR(mainBodyHandler.getColorRows());
+            scanColorAwareQR(mainBodyHandler.getColorCollector());
         }
         //dump remaining components at end (diagrams, charts, footers)
         for (String rel : new String[]{AbstractOOXMLExtractor.RELATION_DIAGRAM_DATA,
@@ -680,7 +681,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
      * invisible to image-based scanners and to standard DOCX text
      * extraction (which strips color).
      */
-    private void scanColorAwareQR(java.util.List<java.util.List<Integer>> rows) {
-        OOXMLColorQRScanHelper.scan(rows, context, metadata, "docx_color_qr", "DOCX");
+    private void scanColorAwareQR(BoundedColorGridCollector collector) {
+        OOXMLColorQRScanHelper.scan(
+                collector, context, metadata, "docx_color_qr", "DOCX");
     }
 }

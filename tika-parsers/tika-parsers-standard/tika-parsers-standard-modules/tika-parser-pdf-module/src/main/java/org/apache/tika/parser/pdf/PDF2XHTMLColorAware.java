@@ -63,10 +63,12 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
      *  row. Most PDFs render QR cells at fixed font sizes so 1.5pt is a
      *  generous bin without merging adjacent rows. */
     private static final float ROW_BIN_TOLERANCE = 1.5f;
+    private static final int MAX_GLYPHS_PER_PAGE = 262_144;
 
     private final ZXingCPPScanner scanner;
     private final ZXingCPPConfig zxingConfig;
-    private final List<Glyph> pageGlyphs = new ArrayList<>();
+    private final GlyphBuffer pageGlyphs =
+            new GlyphBuffer(MAX_GLYPHS_PER_PAGE);
 
     PDF2XHTMLColorAware(PDDocument document, ContentHandler handler,
                          ParseContext context, Metadata metadata,
@@ -89,7 +91,7 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
     }
 
     /** One captured text glyph with its position + fill color luminance. */
-    private static final class Glyph {
+    static final class Glyph {
         final float x;
         final float y;
         final int luma;
@@ -100,19 +102,55 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         }
     }
 
+    static final class GlyphBuffer {
+        private final int maxGlyphs;
+        private final List<Glyph> glyphs = new ArrayList<>();
+        private boolean truncated;
+
+        GlyphBuffer(int maxGlyphs) {
+            if (maxGlyphs < 1) {
+                throw new IllegalArgumentException("maxGlyphs must be positive");
+            }
+            this.maxGlyphs = maxGlyphs;
+        }
+
+        void add(float x, float y, int luma) {
+            if (glyphs.size() >= maxGlyphs) {
+                truncated = true;
+                return;
+            }
+            glyphs.add(new Glyph(x, y, luma));
+        }
+
+        List<Glyph> glyphs() {
+            return glyphs;
+        }
+
+        boolean isTruncated() {
+            return truncated;
+        }
+
+        void clear() {
+            glyphs.clear();
+            truncated = false;
+        }
+    }
+
     @Override
     protected void processTextPosition(TextPosition text) {
-        try {
-            PDColor c = getGraphicsState().getNonStrokingColor();
-            float[] rgb = c.getColorSpace().toRGB(c.getComponents());
-            int luma = ColorGridQRDecoder.luma(
-                    (int) (rgb[0] * 255),
-                    (int) (rgb[1] * 255),
-                    (int) (rgb[2] * 255));
-            pageGlyphs.add(new Glyph(text.getXDirAdj(), text.getYDirAdj(), luma));
-        } catch (Exception ignored) {
-            // No color available for this glyph — skip (it won't contribute
-            // to a QR module either way).
+        if (!pageGlyphs.isTruncated()) {
+            try {
+                PDColor c = getGraphicsState().getNonStrokingColor();
+                float[] rgb = c.getColorSpace().toRGB(c.getComponents());
+                int luma = ColorGridQRDecoder.luma(
+                        (int) (rgb[0] * 255),
+                        (int) (rgb[1] * 255),
+                        (int) (rgb[2] * 255));
+                pageGlyphs.add(text.getXDirAdj(), text.getYDirAdj(), luma);
+            } catch (Exception ignored) {
+                // No color available for this glyph — skip (it won't contribute
+                // to a QR module either way).
+            }
         }
         super.processTextPosition(text);
     }
@@ -127,13 +165,18 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
     }
 
     private void scanPageForColorQR() {
-        metadata.add("pdf_color_qr:glyphs", String.valueOf(pageGlyphs.size()));
-        if (pageGlyphs.size() < 64) {
+        List<Glyph> glyphs = pageGlyphs.glyphs();
+        metadata.add("pdf_color_qr:glyphs", String.valueOf(glyphs.size()));
+        if (pageGlyphs.isTruncated()) {
+            BarcodeMetadataUtil.markAnalysisIncomplete(
+                    metadata, "PDF color-QR analysis limit", null);
+        }
+        if (glyphs.size() < 64) {
             metadata.add("pdf_color_qr:stage", "skip-below-64");
             return;
         }
         try {
-            ClusterResult cr = clusterToGridDiag(pageGlyphs);
+            ClusterResult cr = clusterToGridDiag(glyphs);
             metadata.add("pdf_color_qr:rows", String.valueOf(cr.rowCount));
             metadata.add("pdf_color_qr:maxcols", String.valueOf(cr.maxCols));
             metadata.add("pdf_color_qr:qualifying", String.valueOf(cr.qualifying));

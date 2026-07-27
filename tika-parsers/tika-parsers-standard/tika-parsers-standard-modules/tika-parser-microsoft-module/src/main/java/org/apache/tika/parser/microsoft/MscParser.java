@@ -491,7 +491,7 @@ public class MscParser implements Parser {
                 rootMeta.add("msc:binary_type", "imagelist");
             }
 
-            Metadata embMeta = new Metadata();
+            Metadata embMeta = Metadata.newInstance(context);
             embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY,
                     "msc-binary-" + (idx - 1) + (isImageList ? ".bmp" : ""));
             String mime = "application/octet-stream";

@@ -31,6 +31,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import javax.xml.XMLConstants;
 
 import org.jsoup.Jsoup;
@@ -279,76 +280,85 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             HtmlColorQRExtractor.StylesheetParseResult stylesheets =
                     HtmlColorQRExtractor.parseStylesheetsBounded(document);
             Map<String, String> stylesheetRules = stylesheets.rules;
-            // Avoid repeatedly selecting the document once per CSS rule. When
-            // stylesheet rules exist, visit each element once and resolve only
-            // its simple tag/class/id keys.
-            org.jsoup.select.Elements candidates = stylesheetRules.isEmpty()
-                    ? document.select("pre, code, [style]") : document.getAllElements();
             boolean incomplete = stylesheets.truncated;
             int inspected = 0;
             CssRuleBudget ruleBudget = new CssRuleBudget();
             Set<Element> seen =
                     Collections.newSetFromMap(new IdentityHashMap<>());
-            for (Element element : candidates) {
-                boolean preformatted = "pre".equalsIgnoreCase(element.tagName())
-                        || "code".equalsIgnoreCase(element.tagName());
-                if (!preformatted && element.hasAttr("style")) {
-                    String style = element.attr("style");
-                    if (style.length() > MAX_UNICODE_QR_STYLE_CHARS) {
-                        incomplete = true;
-                        style = style.substring(0, MAX_UNICODE_QR_STYLE_CHARS);
+            // Stream the tree instead of materializing getAllElements(). A
+            // hostile document can otherwise allocate an unbounded candidate
+            // list before the lookup/candidate budgets below take effect.
+            try (Stream<Element> candidateStream = document.nodeStream(Element.class)) {
+                Iterator<Element> candidates = candidateStream.iterator();
+                while (candidates.hasNext()) {
+                    Element element = candidates.next();
+                    if (stylesheetRules.isEmpty()
+                            && !"pre".equalsIgnoreCase(element.tagName())
+                            && !"code".equalsIgnoreCase(element.tagName())
+                            && !element.hasAttr("style")) {
+                        continue;
                     }
-                    WhitespaceInspection inspection = inspectWhitespace(style);
-                    incomplete |= inspection.incomplete;
-                    preformatted = inspection.preserves;
-                }
-                if (!preformatted && !stylesheetRules.isEmpty()) {
-                    WhitespaceInspection inspection = stylesheetPreservesWhitespace(
-                            element, stylesheetRules, ruleBudget);
-                    incomplete |= inspection.incomplete;
-                    preformatted = inspection.preserves;
-                }
-                if (!preformatted) {
-                    if (ruleBudget.exhausted) {
+                    boolean preformatted = "pre".equalsIgnoreCase(element.tagName())
+                            || "code".equalsIgnoreCase(element.tagName());
+                    if (!preformatted && element.hasAttr("style")) {
+                        String style = element.attr("style");
+                        if (style.length() > MAX_UNICODE_QR_STYLE_CHARS) {
+                            incomplete = true;
+                            style = style.substring(0, MAX_UNICODE_QR_STYLE_CHARS);
+                        }
+                        WhitespaceInspection inspection = inspectWhitespace(style);
+                        incomplete |= inspection.incomplete;
+                        preformatted = inspection.preserves;
+                    }
+                    if (!preformatted && !stylesheetRules.isEmpty()) {
+                        WhitespaceInspection inspection = stylesheetPreservesWhitespace(
+                                element, stylesheetRules, ruleBudget);
+                        incomplete |= inspection.incomplete;
+                        preformatted = inspection.preserves;
+                    }
+                    if (!preformatted) {
+                        if (ruleBudget.exhausted) {
+                            incomplete = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (!seen.add(element)) {
+                        continue;
+                    }
+                    if (inspected++ >= MAX_UNICODE_QR_CANDIDATES) {
                         incomplete = true;
                         break;
                     }
-                    continue;
-                }
-                if (!seen.add(element)) {
-                    continue;
-                }
-                if (inspected++ >= MAX_UNICODE_QR_CANDIDATES) {
-                    incomplete = true;
-                    break;
-                }
-                BoundedMonospaceText candidate = collectMonospaceText(element);
-                incomplete |= candidate.truncated;
-                if (candidate.text.isEmpty()) {
-                    continue;
-                }
-                int glyphCount = org.apache.tika.parser.image.UnicodeQRExtractor
-                        .countQrGlyphs(candidate.text);
-                if (glyphCount < 50) {
-                    continue;
-                }
-                metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
-                try {
-                    org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                            new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
-                    java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
-                            org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
-                                    candidate.text, scanner, zCfg, context);
-                    org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(
-                            decoded, metadata);
-                    if (!decoded.isEmpty()) {
-                        metadata.add("ExploitClass",
-                                "Decoded " + decoded.size()
-                              + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
-                              + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
+                    BoundedMonospaceText candidate = collectMonospaceText(element);
+                    incomplete |= candidate.truncated;
+                    if (candidate.text.isEmpty()) {
+                        continue;
                     }
-                } catch (Throwable t) {
-                    incomplete = true;
+                    int glyphCount = org.apache.tika.parser.image.UnicodeQRExtractor
+                            .countQrGlyphs(candidate.text);
+                    if (glyphCount < 50) {
+                        continue;
+                    }
+                    metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
+                    try {
+                        org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                                new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+                        java.util.List<
+                                org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
+                                org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
+                                        candidate.text, scanner, zCfg, context);
+                        org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(
+                                decoded, metadata);
+                        if (!decoded.isEmpty()) {
+                            metadata.add("ExploitClass",
+                                    "Decoded " + decoded.size()
+                                  + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
+                                  + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
+                        }
+                    } catch (Throwable t) {
+                        incomplete = true;
+                    }
                 }
             }
             if (incomplete) {
@@ -367,7 +377,41 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         CssNormalization normalization = normalizeCss(style);
         return new WhitespaceInspection(
                 preservesWhitespaceCanonical(normalization.css),
-                normalization.incomplete);
+                normalization.incomplete
+                        || hasUnresolvedWhitespaceValue(normalization.css));
+    }
+
+    private static boolean hasUnresolvedWhitespaceValue(String style) {
+        int declarationStart = 0;
+        while (declarationStart < style.length()) {
+            int declarationEnd = style.indexOf(';', declarationStart);
+            if (declarationEnd < 0) {
+                declarationEnd = style.length();
+            }
+            int colon = style.indexOf(':', declarationStart);
+            if (colon >= declarationStart && colon < declarationEnd) {
+                String name = style.substring(declarationStart, colon).trim();
+                if ("white-space".equalsIgnoreCase(name)) {
+                    String value = style.substring(colon + 1, declarationEnd)
+                            .trim().toLowerCase(java.util.Locale.ROOT);
+                    int important = value.indexOf("!important");
+                    if (important >= 0
+                            && value.substring(important).trim().equals("!important")) {
+                        value = value.substring(0, important).trim();
+                    }
+                    if (!value.equals("normal")
+                            && !value.equals("nowrap")
+                            && !value.equals("pre")
+                            && !value.equals("pre-wrap")
+                            && !value.equals("pre-line")
+                            && !value.equals("break-spaces")) {
+                        return true;
+                    }
+                }
+            }
+            declarationStart = declarationEnd + 1;
+        }
+        return false;
     }
 
     private static boolean preservesWhitespaceCanonical(String style) {

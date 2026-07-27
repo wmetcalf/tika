@@ -759,7 +759,8 @@ public final class HtmlColorQRExtractor {
             return true;
         }
         String lower = css.toLowerCase(Locale.ROOT);
-        return lower.contains("color") || lower.contains("background");
+        return lower.contains("color") || lower.contains("background")
+                || lower.contains("white-space");
     }
 
     private static StringBuilder stripCssComments(CharSequence css) {

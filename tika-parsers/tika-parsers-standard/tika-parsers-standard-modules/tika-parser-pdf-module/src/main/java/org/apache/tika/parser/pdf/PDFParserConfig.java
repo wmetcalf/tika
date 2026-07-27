@@ -36,6 +36,8 @@ public class PDFParserConfig implements Serializable {
 
     private static final long serialVersionUID = 6492570218190936986L;
 
+    public static final int DEFAULT_MAX_PAGES = 100;
+
     /**
      * Mode for checking document access permissions.
      */
@@ -147,7 +149,7 @@ public class PDFParserConfig implements Serializable {
 
     int maxIncrementalUpdates = 10;
 
-    private int maxPages = -1;
+    private int maxPages = DEFAULT_MAX_PAGES;
 
     private boolean throwOnEncryptedPayload = false;
 
@@ -668,7 +670,8 @@ public class PDFParserConfig implements Serializable {
 
     /**
      * Set the maximum number of pages to process per document.
-     * Use -1 (the default) for no limit.
+     * The default is {@value #DEFAULT_MAX_PAGES}; use -1 to explicitly opt
+     * into unlimited processing.
      *
      * @param maxPages must be -1 or &gt;= 1
      * @throws IllegalArgumentException if the value is 0 or less than -1
