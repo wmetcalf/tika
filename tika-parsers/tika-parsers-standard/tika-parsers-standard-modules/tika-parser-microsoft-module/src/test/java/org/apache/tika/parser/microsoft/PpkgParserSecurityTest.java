@@ -505,6 +505,20 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void commandLineClassifiesArbitraryExecutable() throws Exception {
+        Metadata metadata = parseMetadata(buildWim("""
+                <wap-provisioningdoc>
+                  <parm name="CommandLine"
+                        value="C:\\Users\\Public\\stage.exe --run"/>
+                </wap-provisioningdoc>
+                """));
+
+        assertEquals("C:\\Users\\Public\\stage.exe --run",
+                metadata.get("ppkg:command"));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void nestedCommandCapturesAreBounded() throws Exception {
         String xml = "<wap-provisioningdoc>"
                 + "<CommandLine>".repeat(64)

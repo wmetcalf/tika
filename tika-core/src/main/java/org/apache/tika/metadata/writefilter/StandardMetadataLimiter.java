@@ -24,6 +24,7 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -191,6 +192,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
 
     private Map<String, Integer> fieldSizes = new HashMap<>();
     private Set<String> suppressedAlignedGroups = new HashSet<>();
+    private Map<String, Integer> removedAlignedFieldCounts = new HashMap<>();
 
     //tracks the estimated size in utf16 bytes. Can be > maxEstimated size
     int estimatedSize = 0;
@@ -229,6 +231,9 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
         if (suppressedAlignedGroups == null) {
             suppressedAlignedGroups = new HashSet<>();
+        }
+        if (removedAlignedFieldCounts == null) {
+            removedAlignedFieldCounts = new HashMap<>();
         }
     }
 
@@ -269,6 +274,9 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
         String[] removed = data.remove(storedField);
         Integer trackedValueSize = fieldSizes.remove(storedField);
+        if (removed != null && ALIGNED_ADD_FIELDS.contains(storedField)) {
+            removedAlignedFieldCounts.put(storedField, removed.length);
+        }
         if (trackedValueSize != null) {
             estimatedSize = Math.max(0,
                     estimatedSize - trackedValueSize - estimateSize(storedField));
@@ -461,11 +469,14 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             // callers may have removed metadata and released total budget.
             suppressedAlignedGroups.remove(groupId);
         }
-        if (boundaryField == null
-                || !field.equals(boundaryField)
-                || fieldSizes.containsKey(boundaryField)) {
+        if (boundaryField == null || !field.equals(boundaryField)) {
             return true;
         }
+
+        String[] boundaryValues = data.get(boundaryField);
+        int priorRecordCount = boundaryValues == null ? 0 : boundaryValues.length;
+        priorRecordCount = Math.max(priorRecordCount,
+                removedAlignedFieldCounts.getOrDefault(boundaryField, 0));
 
         int requiredKeyBytes = 0;
         for (String member : group) {
@@ -483,9 +494,27 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
 
         for (String member : group) {
-            if (includeField(member) && !fieldSizes.containsKey(member)) {
+            if (!includeField(member)) {
+                continue;
+            }
+            if (!fieldSizes.containsKey(member)) {
                 fieldSizes.put(member, 0);
             }
+            Integer removedCount = removedAlignedFieldCounts.get(member);
+            if (removedCount == null) {
+                continue;
+            }
+            String[] values = data.get(member);
+            int valueCount = values == null ? 0 : values.length;
+            int alignedRecordCount = Math.max(priorRecordCount, removedCount);
+            if (valueCount < alignedRecordCount) {
+                String[] aligned = values == null
+                        ? new String[alignedRecordCount]
+                        : Arrays.copyOf(values, alignedRecordCount);
+                Arrays.fill(aligned, valueCount, alignedRecordCount, "");
+                data.put(member, aligned);
+            }
+            removedAlignedFieldCounts.remove(member);
         }
         estimatedSize += requiredKeyBytes;
         return true;

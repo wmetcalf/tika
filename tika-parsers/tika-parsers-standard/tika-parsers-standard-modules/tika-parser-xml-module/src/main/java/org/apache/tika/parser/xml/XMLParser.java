@@ -106,12 +106,15 @@ public class XMLParser implements Parser {
         xhtml.startElement("p");
 
         TaggedContentHandler tagged = new TaggedContentHandler(handler);
+        ContentHandler enrichingHandler = getContentHandler(tagged, metadata, context);
+        SvgEnrichingHandler svgEnrichingHandler =
+                enrichingHandler instanceof SvgEnrichingHandler
+                        ? (SvgEnrichingHandler) enrichingHandler : null;
         tis.setCloseShield();
         boolean parsedSuccessfully = false;
         try {
             XMLReaderUtils.parseSAX(tis,
-                            new EmbeddedContentHandler(
-                                    getContentHandler(tagged, metadata, context)),
+                            new EmbeddedContentHandler(enrichingHandler),
                     context);
             parsedSuccessfully = true;
         } catch (SAXException e) {
@@ -120,7 +123,14 @@ public class XMLParser implements Parser {
         } finally {
             tis.removeCloseShield();
             if (svgPath != null && parsedSuccessfully) {
-                trySvgOcr(svgPath, xhtml, metadata, context);
+                if (svgEnrichingHandler != null
+                        && svgEnrichingHandler.isRasterElementLimitExceeded()) {
+                    markSvgEnrichmentIncomplete(metadata,
+                            "SVG raster enrichment skipped because input exceeds the "
+                                    + SVG_RASTER_MAX_ELEMENTS + " element limit");
+                } else {
+                    trySvgOcr(svgPath, xhtml, metadata, context);
+                }
             }
             xhtml.endElement("p");
             xhtml.endDocument();
@@ -131,6 +141,7 @@ public class XMLParser implements Parser {
     // Data URI images are stripped before rendering so the main crash vector is handled;
     // 10 MB covers legitimate AI-generated art, data visualisations, and complex diagrams.
     private static final long SVG_RASTER_MAX_BYTES = 10L * 1024 * 1024; // 10 MB
+    private static final int SVG_RASTER_MAX_ELEMENTS = 50_000;
     private static final int SVG_USE_MAX_ELEMENTS = 4_096;
     private static final int SVG_USE_MAX_EXPANSIONS = 4_096;
     private static final int SVG_USE_MAX_REFERENCE_DEPTH = 64;
@@ -456,8 +467,10 @@ public class XMLParser implements Parser {
         private final Metadata metadata;
         private int securityReferenceCount;
         private int securityReferenceChars;
+        private int elementCount;
         private boolean securityReferenceLimitExceeded;
         private boolean imageOmissionReported;
+        private boolean rasterElementLimitExceeded;
 
         SvgEnrichingHandler(ContentHandler delegate, Metadata metadata) {
             this.delegate = delegate;
@@ -479,6 +492,11 @@ public class XMLParser implements Parser {
         @Override
         public void startElement(String uri, String localName, String qName, Attributes atts)
                 throws SAXException {
+            if (elementCount < SVG_RASTER_MAX_ELEMENTS) {
+                elementCount++;
+            } else {
+                rasterElementLimitExceeded = true;
+            }
             String local = localName != null && !localName.isEmpty() ? localName : qName;
 
             // Feature 1: foreignObject detection
@@ -531,6 +549,10 @@ public class XMLParser implements Parser {
             }
 
             delegate.startElement(uri, localName, qName, atts);
+        }
+
+        private boolean isRasterElementLimitExceeded() {
+            return rasterElementLimitExceeded;
         }
 
         private void addSecurityReference(String field, String value) {

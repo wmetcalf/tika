@@ -1333,6 +1333,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 xhtml.endElement("tr");
                 rowOpen = false;
             }
+            colorCollector.abandonCurrentRow();
         }
 
         public void cell(String cellRef, String formattedValue,

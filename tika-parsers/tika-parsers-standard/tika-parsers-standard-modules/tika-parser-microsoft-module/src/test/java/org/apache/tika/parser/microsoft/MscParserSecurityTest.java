@@ -104,6 +104,22 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testShellCommandDefinitionClassifiesArbitraryExecutable() throws Exception {
+        ParseResult result = parse("""
+                <MMC_ConsoleFile>
+                  <ShellCommandDefinition>
+                    <Command>C:\\Users\\Public\\stage.exe</Command>
+                    <Params>--run</Params>
+                  </ShellCommandDefinition>
+                </MMC_ConsoleFile>
+                """);
+
+        assertEquals("C:\\Users\\Public\\stage.exe --run",
+                result.metadata.get("msc:task_command"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void testNestedCommandCapturesAreBounded() throws Exception {
         String xml = "<MMC_ConsoleFile>"
                 + "<CommandLine>".repeat(64)

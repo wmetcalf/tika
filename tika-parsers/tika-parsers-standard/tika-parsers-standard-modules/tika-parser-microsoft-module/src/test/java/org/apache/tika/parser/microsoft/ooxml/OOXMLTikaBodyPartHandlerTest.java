@@ -60,6 +60,73 @@ class OOXMLTikaBodyPartHandlerTest {
     }
 
     @Test
+    void testRecoveryFlushesPendingExternalHyperlink() throws Exception {
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+
+        xhtml.startDocument();
+        handler.hyperlinkStart("https://payload.invalid/launch");
+        handler.run(new RunProperties(), "click me");
+        handler.closeAnyPending();
+        xhtml.endDocument();
+
+        assertEquals(1, metadata.getValues(Office.OFFICE_LINK_URL).length);
+        assertEquals("https://payload.invalid/launch",
+                metadata.get(Office.OFFICE_LINK_URL));
+        assertEquals("click me", metadata.get(Office.OFFICE_LINK_TEXT));
+        assertEquals(1, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+    }
+
+    @Test
+    void testRecoveryAbandonsPendingColorRowAndSignalsTruncation() throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        context.set(ColorAwareConfig.class, new ColorAwareConfig().setEnabled(true));
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, context);
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        handler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
+
+        xhtml.startDocument();
+        handler.startParagraph(new ParagraphProperties());
+        handler.run(new RunProperties(), "XXXXXX");
+        handler.closeAnyPending();
+        xhtml.endDocument();
+
+        assertEquals(0, handler.getColorRows().size());
+        assertEquals(0, handler.getColorCollector().getCellCount());
+        assertTrue(handler.getColorCollector().isTruncated());
+    }
+
+    @Test
+    void testWorksheetRecoveryAbandonsPendingColorRowAndSignalsTruncation()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XSSFExcelExtractorDecorator.SheetTextAsHTML handler =
+                new XSSFExcelExtractorDecorator.SheetTextAsHTML(
+                        new org.apache.tika.parser.microsoft.OfficeParserConfig(), xhtml);
+        handler.colorAwareEnabled = true;
+
+        xhtml.startDocument();
+        handler.startRow(0);
+        for (int col = 0; col < 6; col++) {
+            handler.cell(null, "X", (XSSFCommentsShim.CommentData) null);
+        }
+        handler.closeAnyPending();
+        xhtml.endDocument();
+
+        assertEquals(0, handler.colorCollector.getRows().size());
+        assertEquals(0, handler.colorCollector.getCellCount());
+        assertTrue(handler.colorCollector.isTruncated());
+    }
+
+    @Test
     void testInlineFootnoteHyperlinkAddsMetadata() throws Exception {
         Metadata metadata = new Metadata();
         XHTMLContentHandler xhtml = new XHTMLContentHandler(new ToXMLContentHandler(),

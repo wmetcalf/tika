@@ -18,11 +18,14 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 
 public class OfficeLinkMetadataUtilTest {
@@ -120,5 +123,24 @@ public class OfficeLinkMetadataUtilTest {
                     "tight total budgets must not split Office compatibility records at "
                             + field);
         }
+    }
+
+    @Test
+    public void testLinkCardinalityIsBoundedAndSignaled() {
+        Metadata metadata = new Metadata();
+
+        for (int i = 0; i < 4_200; i++) {
+            OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
+                    "https://example.invalid/" + i, null, null, "document.xml",
+                    "shape-" + i, "hyperlink", "rId" + i);
+        }
+
+        assertEquals(4_096, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals(4_096, metadata.getValues(Office.OFFICE_LINK_URL).length);
+        assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertTrue(java.util.Arrays.stream(metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .anyMatch(v -> v.contains("Office link")));
+        assertNotNull(metadata.get("ExploitClass"));
     }
 }

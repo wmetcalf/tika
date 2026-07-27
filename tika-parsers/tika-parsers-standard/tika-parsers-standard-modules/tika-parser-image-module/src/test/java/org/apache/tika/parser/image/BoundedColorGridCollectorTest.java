@@ -44,4 +44,22 @@ public class BoundedColorGridCollectorTest {
         assertEquals(1, collector.getRows().get(1).size());
         assertTrue(collector.isTruncated());
     }
+
+    @Test
+    public void abandoningCurrentRowDropsUncommittedCellsAndSignalsTruncation() {
+        BoundedColorGridCollector collector = new BoundedColorGridCollector();
+
+        collector.startRow();
+        collector.addCell(10);
+        collector.addCell(20);
+        collector.finishRow();
+        collector.startRow();
+        collector.addCell(30);
+        collector.addCell(40);
+        collector.abandonCurrentRow();
+
+        assertEquals(1, collector.getRows().size());
+        assertEquals(2, collector.getCellCount());
+        assertTrue(collector.isTruncated());
+    }
 }

@@ -310,6 +310,9 @@ public class OOXMLTikaBodyPartHandler
      * collide with the outer {@code </body></html>}.
      */
     public void closeAnyPending() throws SAXException {
+        flushActiveHyperlink();
+        flushRunHyperlink();
+        colorCollector.abandonCurrentRow();
         formattingTags.closeAll();
         // Drain the structural-element stack in reverse open order. This
         // handles nested tables correctly (multiple cells/rows/tables

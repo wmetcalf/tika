@@ -35,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -91,13 +92,13 @@ class XMLParserSvgSecurityTest {
             Thread responder = new Thread(() -> respondOnce(server, requested));
             responder.setDaemon(true);
             responder.start();
-            String svg = """
+            String svg = String.format(Locale.ROOT, """
                     <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
                       <rect width="64" height="64" fill="red"/>
                       <image href='http://127.0.0.1:%d/pixel.png'
                              width="64" height="64"/>
                     </svg>
-                    """.formatted(server.getLocalPort());
+                    """, server.getLocalPort());
 
             ParseResult result = parse(svg);
             server.close();
@@ -117,7 +118,7 @@ class XMLParserSvgSecurityTest {
         String secret = "SVG_XXE_SECRET_SHOULD_NOT_LEAK";
         Path secretFile = temporaryDirectory.resolve("secret.txt");
         Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
-        String svg = """
+        String svg = String.format(Locale.ROOT, """
                 <!DOCTYPE svg [
                   <!ENTITY xxe SYSTEM "%s">
                 ]>
@@ -125,7 +126,7 @@ class XMLParserSvgSecurityTest {
                   <rect width="64" height="64" fill="red"/>
                   <text x="2" y="32">&xxe;</text>
                 </svg>
-                """.formatted(secretFile.toUri());
+                """, secretFile.toUri());
 
         ParseResult result = parse(svg);
 
@@ -303,6 +304,23 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
         assertNotNull(result.metadata.get("ExploitClass"),
                 "truncated external-script/reference extraction must fail closed");
+    }
+
+    @Test
+    void testElementFloodSkipsDomRasterizationAndFailsClosed() throws Exception {
+        StringBuilder svg = new StringBuilder(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">");
+        for (int i = 0; i < 50_001; i++) {
+            svg.append("<g/>");
+        }
+        svg.append("</svg>");
+
+        ParseResult result = assertTimeoutPreemptively(
+                Duration.ofSeconds(5), () -> parse(svg.toString()));
+
+        assertNull(result.metadata.get(ImageHash.PHASH));
+        assertTrue(warnings(result.metadata).contains("element limit"));
+        assertNotNull(result.metadata.get("ExploitClass"));
     }
 
     @Test

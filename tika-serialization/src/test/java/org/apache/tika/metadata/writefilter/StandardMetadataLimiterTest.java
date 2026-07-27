@@ -382,6 +382,29 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testRemovedAlignedMemberIsBackfilledBeforeNextRecord() {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "first-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "first-text");
+        metadata.remove(Office.OFFICE_LINK_TYPE.getName());
+
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "second-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "second-text");
+
+        assertArrayEquals(
+                new String[]{"https://first.invalid", "https://second.invalid"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"", "second-type"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+        assertArrayEquals(new String[]{"first-text", "second-text"},
+                metadata.getValues(Office.OFFICE_LINK_TEXT));
+    }
+
+    @Test
     public void testAlignedGroupReservesKeysFromFirstIncludedField() {
         Set<String> included = Set.of(
                 Office.OFFICE_LINK_TYPE.getName(),

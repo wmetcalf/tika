@@ -114,6 +114,10 @@ public class MscParser implements Parser {
             "certutil", "bitsadmin", "regsvr32", "rundll32", "msiexec", "wmic",
             "mshta.exe", "wscript.exe", "cscript.exe", "conhost"
     };
+    private static final Set<String> EXECUTABLE_EXTENSIONS = Set.of(
+            ".exe", ".com", ".scr", ".pif", ".cpl", ".bat", ".cmd", ".ps1",
+            ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta", ".msi",
+            ".msp", ".jar", ".py");
 
     // Known MMC snap-in CLSIDs → human-readable names.
     // Source: Windows SDK, MSDN, public documentation.
@@ -683,7 +687,15 @@ public class MscParser implements Parser {
         }
         int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
         String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
-        return "cmd".equals(executable) || "cmd.exe".equals(executable);
+        if ("cmd".equals(executable) || "cmd.exe".equals(executable)) {
+            return true;
+        }
+        for (String extension : EXECUTABLE_EXTENSIONS) {
+            if (executable.endsWith(extension)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class BoundedStringSet extends LinkedHashSet<String> {

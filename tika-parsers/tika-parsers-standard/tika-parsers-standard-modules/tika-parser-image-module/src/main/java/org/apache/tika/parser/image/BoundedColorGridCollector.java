@@ -84,6 +84,19 @@ public final class BoundedColorGridCollector {
         currentRow = null;
     }
 
+    /**
+     * Discards a row interrupted before its closing event and records that the
+     * captured grid is incomplete.
+     */
+    public void abandonCurrentRow() {
+        if (currentRow == null) {
+            return;
+        }
+        cellCount -= currentRow.size();
+        currentRow = null;
+        truncated = true;
+    }
+
     public void addRows(Iterable<? extends List<Integer>> sourceRows) {
         if (sourceRows == null) {
             return;

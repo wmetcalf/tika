@@ -506,7 +506,15 @@ public class PpkgParser implements Parser {
         }
         int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
         String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
-        return "cmd".equals(executable) || "cmd.exe".equals(executable);
+        if ("cmd".equals(executable) || "cmd.exe".equals(executable)) {
+            return true;
+        }
+        for (String extension : DANGEROUS_EXTENSIONS) {
+            if (executable.endsWith(extension)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── XPRESS Huffman decompressor (MS-XCA §2.3 "LZ77+Huffman") ─────────────

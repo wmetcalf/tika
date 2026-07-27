@@ -19,11 +19,16 @@ package org.apache.tika.parser.microsoft;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.MetadataRecord;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.TikaCoreProperties;
 
 /**
  * Writes aligned multi-value Office link metadata records.
  */
 public final class OfficeLinkMetadataUtil {
+
+    private static final int MAX_LINKS = 4_096;
+    private static final String LINK_LIMIT_WARNING =
+            "Office link metadata limit reached; additional links were skipped";
 
     private OfficeLinkMetadataUtil() {
     }
@@ -40,6 +45,10 @@ public final class OfficeLinkMetadataUtil {
                                String relationshipType, String id, String trigger,
                                String actionType) {
         if (metadata == null || isBlank(type) || isBlank(url)) {
+            return;
+        }
+        if (getLinkCount(metadata) >= MAX_LINKS) {
+            markLinkLimitReached(metadata);
             return;
         }
         metadata.add(Office.OFFICE_LINK_URL, url);
@@ -63,6 +72,43 @@ public final class OfficeLinkMetadataUtil {
                 "id", id,
                 "trigger", trigger,
                 "actionType", actionType));
+    }
+
+    private static int getLinkCount(Metadata metadata) {
+        int count = metadata.getValues(Office.OFFICE_LINK_RECORD).length;
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_URL).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_TYPE).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_TEXT).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_OCR_TEXT).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_SOURCE).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_CONTEXT).length);
+        count = Math.max(count,
+                metadata.getValues(Office.OFFICE_LINK_RELATIONSHIP_TYPE).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_ID).length);
+        count = Math.max(count, metadata.getValues(Office.OFFICE_LINK_TRIGGER).length);
+        return Math.max(count,
+                metadata.getValues(Office.OFFICE_LINK_ACTION_TYPE).length);
+    }
+
+    private static void markLinkLimitReached(Metadata metadata) {
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        boolean warningPresent = false;
+        for (String warning :
+                metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (LINK_LIMIT_WARNING.equals(warning)) {
+                warningPresent = true;
+                break;
+            }
+        }
+        if (!warningPresent) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    LINK_LIMIT_WARNING);
+        }
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "Office link extraction incomplete; executable references "
+                            + "may be hidden");
+        }
     }
 
     public static String normalizeType(String rawType) {
