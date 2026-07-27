@@ -61,6 +61,9 @@ import org.apache.tika.sax.XHTMLContentHandler;
 
 class XlmCaptureBoundsTest {
 
+    private static final int INPUT_BUDGET_BYTES = 32 * 1_024 * 1_024;
+    private static final int INPUT_PART_BYTES = 8 * 1_024 * 1_024;
+
     @Test
     void testXmlMacrosheetFormulaLengthIsBounded() throws Exception {
         String formula = "A".repeat(
@@ -585,6 +588,274 @@ class XlmCaptureBoundsTest {
             assertFalse(output.toString().contains(">sheet128<"),
                     "the parser must stop before processing every attacker-controlled part");
         }
+    }
+
+    @Test
+    void testXlmInputBudgetStopsBeforeOverCapMacroPart()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        String output = processPaddedXmlMacroParts(
+                metadata, INPUT_BUDGET_BYTES, true);
+
+        assertTrue(output.contains("exact-cap-4"),
+                "content ending exactly at the input cap must be captured");
+        assertFalse(output.contains("over-cap-value"),
+                "content beyond the shared input cap must not be captured");
+        assertEquals("true",
+                metadata.get("msoffice:xlm-capture-limit-reached"));
+        assertEquals("true",
+                metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertNotNull(metadata.get(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    @Test
+    void testXlmInputBudgetAcceptsExactCap() throws Exception {
+        Metadata metadata = new Metadata();
+        String output = processPaddedXmlMacroParts(
+                metadata, INPUT_BUDGET_BYTES, false);
+
+        assertTrue(output.contains("exact-cap-4"));
+        assertEquals(null,
+                metadata.get("msoffice:xlm-capture-limit-reached"));
+        assertEquals(null, metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+    }
+
+    @Test
+    void testXlsbInputBudgetIsSharedFromWorksheetsToExactCapMacro()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        String output = processPaddedBinaryWorksheetAndMacroParts(
+                metadata, false);
+
+        assertTrue(output.contains("exact-binary-cap"),
+                "the macro record ending at the shared cap must be captured");
+        assertEquals(null,
+                metadata.get("msoffice:xlm-capture-limit-reached"));
+        assertEquals(null, metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+    }
+
+    @Test
+    void testXlsbInputBudgetStopsAfterSharedWorksheetAndMacroCap()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        String output = processPaddedBinaryWorksheetAndMacroParts(
+                metadata, true);
+
+        assertTrue(output.contains("exact-binary-cap"));
+        assertFalse(output.contains("over-binary-cap"),
+                "a later binary macro part must not reset the worksheet budget");
+        assertEquals("true",
+                metadata.get("msoffice:xlm-capture-limit-reached"));
+        assertEquals("true",
+                metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertNotNull(metadata.get(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    private static String processPaddedXmlMacroParts(
+            Metadata metadata, int totalBytes, boolean addOverCapPart)
+            throws Exception {
+        ParseContext parseContext = new ParseContext();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            int fullParts = totalBytes / INPUT_PART_BYTES;
+            for (int i = 1; i <= fullParts; i++) {
+                createXmlMacroPart(
+                        opcPackage, "sheet" + i,
+                        paddedMacrosheetXml(
+                                "exact-cap-" + i, INPUT_PART_BYTES));
+            }
+            if (addOverCapPart) {
+                createXmlMacroPart(
+                        opcPackage, "zz-over-cap",
+                        paddedMacrosheetXml("over-cap-value", 1_024));
+            }
+            XSSFExcelExtractorDecorator decorator =
+                    new XSSFExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmXmlMacroSheets", OPCPackage.class,
+                    XHTMLContentHandler.class, XSSFSharedStringsShim.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            process.invoke(decorator, opcPackage, xhtml, null);
+            xhtml.endDocument();
+        }
+        return output.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String processPaddedBinaryWorksheetAndMacroParts(
+            Metadata metadata, boolean addOverCapPart) throws Exception {
+        ParseContext parseContext = new ParseContext();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, parseContext);
+        try (InputStream template = XlmCaptureBoundsTest.class.getResourceAsStream(
+                "/test-documents/testEXCEL.xlsb");
+             OPCPackage opcPackage = OPCPackage.open(template)) {
+            boolean firstWorksheet = true;
+            for (PackagePart worksheet : opcPackage.getPartsByContentType(
+                    "application/vnd.ms-excel.worksheet")) {
+                try (OutputStream stream = worksheet.getOutputStream()) {
+                    writePaddedBiffStream(
+                            stream,
+                            firstWorksheet ? 3 * INPUT_PART_BYTES : 0,
+                            -1, null);
+                }
+                firstWorksheet = false;
+            }
+            assertFalse(firstWorksheet,
+                    "the XLSB template must contain a worksheet");
+
+            createBinaryMacroPart(
+                    opcPackage, "sheet-exact", INPUT_PART_BYTES,
+                    "exact-binary-cap");
+            if (addOverCapPart) {
+                createBinaryMacroPart(
+                        opcPackage, "zz-over-cap", 1_024,
+                        "over-binary-cap");
+            }
+
+            XSSFBExcelExtractorDecorator decorator =
+                    new XSSFBExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method capture = XSSFBExcelExtractorDecorator.class
+                    .getDeclaredMethod(
+                            "captureWorksheetValues", OPCPackage.class,
+                            Metadata.class,
+                            XSSFExcelExtractorDecorator.XlmInputBudget.class);
+            capture.setAccessible(true);
+            Map<String, Double> values = (Map<String, Double>) capture.invoke(
+                    null, opcPackage, metadata, decorator.xlmInputBudget);
+
+            Method process = XSSFBExcelExtractorDecorator.class
+                    .getDeclaredMethod(
+                            "processXlmBinaryMacroSheets", OPCPackage.class,
+                            XSSFBStylesTable.class,
+                            TikaXSSFBSharedStringsTable.class,
+                            XHTMLContentHandler.class, Map.class,
+                            XlmWorkbookSheetMap.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            process.invoke(
+                    decorator, opcPackage, null, null, xhtml, values,
+                    XlmWorkbookSheetMap.empty());
+            xhtml.endDocument();
+        }
+        return output.toString();
+    }
+
+    private static void createXmlMacroPart(
+            OPCPackage opcPackage, String sheetName, String xml)
+            throws Exception {
+        PackagePart macroPart = opcPackage.createPart(
+                PackagingURIHelper.createPartName(
+                        "/xl/macrosheets/" + sheetName + ".xml"),
+                XSSFRelation.MACRO_SHEET_XML.getContentType());
+        try (OutputStream stream = macroPart.getOutputStream()) {
+            stream.write(xml.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void createBinaryMacroPart(
+            OPCPackage opcPackage, String sheetName, int byteLength,
+            String formulaValue) throws Exception {
+        PackagePart macroPart = opcPackage.createPart(
+                PackagingURIHelper.createPartName(
+                        "/xl/macrosheets/" + sheetName + ".bin"),
+                XSSFRelation.MACRO_SHEET_BIN.getContentType());
+        try (OutputStream stream = macroPart.getOutputStream()) {
+            writePaddedBiffStream(
+                    stream, byteLength, 0x0009,
+                    formulaRecord(execFormula(formulaValue)));
+        }
+    }
+
+    private static void writePaddedBiffStream(
+            OutputStream stream, int byteLength, int terminalRecordType,
+            byte[] terminalRecord) throws Exception {
+        int terminalLength = terminalRecord == null
+                ? 0 : biffRecordLength(terminalRecordType, terminalRecord.length);
+        int paddingLength = byteLength - terminalLength;
+        if (paddingLength < 0) {
+            throw new IllegalArgumentException("part length is too small");
+        }
+        byte[] zeroBuffer = new byte[8_192];
+        while (paddingLength > 0) {
+            int payloadLength = Math.min(900_000, Math.max(0, paddingLength - 2));
+            while (biffRecordLength(0x007f, payloadLength) > paddingLength) {
+                payloadLength--;
+            }
+            int recordLength = biffRecordLength(0x007f, payloadLength);
+            if (paddingLength - recordLength == 1) {
+                payloadLength--;
+                recordLength = biffRecordLength(0x007f, payloadLength);
+            }
+            writeBiffRecordHeader(stream, 0x007f, payloadLength);
+            int remainingPayload = payloadLength;
+            while (remainingPayload > 0) {
+                int chunk = Math.min(remainingPayload, zeroBuffer.length);
+                stream.write(zeroBuffer, 0, chunk);
+                remainingPayload -= chunk;
+            }
+            paddingLength -= recordLength;
+        }
+        if (terminalRecord != null) {
+            writeBiffRecordHeader(
+                    stream, terminalRecordType, terminalRecord.length);
+            stream.write(terminalRecord);
+        }
+    }
+
+    private static int biffRecordLength(int type, int payloadLength) {
+        return biffVarIntLength(type)
+                + biffVarIntLength(payloadLength) + payloadLength;
+    }
+
+    private static int biffVarIntLength(int value) {
+        int length = 1;
+        while ((value >>>= 7) != 0) {
+            length++;
+        }
+        return length;
+    }
+
+    private static void writeBiffRecordHeader(
+            OutputStream stream, int type, int payloadLength) throws Exception {
+        writeBiffVarInt(stream, type);
+        writeBiffVarInt(stream, payloadLength);
+    }
+
+    private static void writeBiffVarInt(OutputStream stream, int value)
+            throws Exception {
+        do {
+            int current = value & 0x7f;
+            value >>>= 7;
+            stream.write(value == 0 ? current : current | 0x80);
+        } while (value != 0);
+    }
+
+    private static String paddedMacrosheetXml(
+            String value, int byteLength) {
+        String prefix = "<worksheet xmlns=\""
+                + "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                + "\"><sheetData>";
+        String suffix = "<row r=\"1\"><c r=\"A1\"><f>" + value
+                + "</f></c></row></sheetData></worksheet>";
+        int paddingLength = byteLength - prefix.length() - suffix.length();
+        if (paddingLength < 0) {
+            throw new IllegalArgumentException("part length is too small");
+        }
+        return prefix + " ".repeat(paddingLength) + suffix;
     }
 
     private static XlmMacroEmulator emulatorWithLimits(XlmMacroEmulator.Limits limits) {

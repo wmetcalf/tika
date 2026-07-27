@@ -115,7 +115,7 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 || !container.getPartsByContentType(
                         XSSFRelation.INTL_MACRO_SHEET_BIN.getContentType()).isEmpty();
         Map<String, Double> xlmCellValues = hasXlmMacroParts
-                ? captureWorksheetValues(container, metadata)
+                ? captureWorksheetValues(container, metadata, xlmInputBudget)
                 : java.util.Collections.emptyMap();
 
         int sheetIdx = 0;
@@ -215,6 +215,10 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
 
         int processedMacroParts = 0;
         for (PackagePart macroPart : macroParts) {
+            if (xlmInputBudget.isLimitReached()) {
+                markXlmCaptureLimit(metadata, "XLSB XLM input capture limit reached");
+                break;
+            }
             if (processedMacroParts >= MAX_XLM_MACRO_PARTS) {
                 markXlmCaptureLimit(metadata, "XLSB XLM macro-part limit reached");
                 break;
@@ -227,7 +231,10 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             XlmMacroEmulator emulator = new XlmMacroEmulator(
                     cellValues, sheetMap, XlmMacroEmulator.Limits.DEFAULT, documentBudget);
 
-            try (InputStream is = macroPart.getInputStream()) {
+            try (InputStream is = xlmInputBudget.limit(
+                    macroPart.getInputStream(),
+                    () -> markXlmCaptureLimit(
+                            metadata, "XLSB XLM input capture limit reached"))) {
                 Biff12XlmMacrosheetParser parser =
                         new Biff12XlmMacrosheetParser(is, xhtml, emulator);
                 parser.parse();
@@ -263,11 +270,15 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             }
 
             xhtml.endElement("div");
+            if (xlmInputBudget.isLimitReached()) {
+                break;
+            }
         }
     }
 
     private static Map<String, Double> captureWorksheetValues(
-            OPCPackage container, Metadata metadata) {
+            OPCPackage container, Metadata metadata,
+            XlmInputBudget inputBudget) {
         Map<String, Double> values = new java.util.HashMap<>();
         // Capture numeric cell values keyed by "{sheetName}:{row}:{col}".
         // Using the sheet name (from the iterator) matches the xtiIndex→name resolution
@@ -277,7 +288,14 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             XSSFBReader.SheetIterator iter =
                     (XSSFBReader.SheetIterator) reader.getSheetsData();
             while (iter.hasNext()) {
-                try (InputStream stream = iter.next()) {
+                if (inputBudget.isLimitReached()) {
+                    break;
+                }
+                try (InputStream stream = inputBudget.limit(
+                        iter.next(),
+                        () -> markXlmCaptureLimit(
+                                metadata,
+                                "XLSB XLM input capture limit reached"))) {
                     String sheetName = iter.getSheetName(); // called after next()
                     XlmWorksheetCellCapture capture =
                             new XlmWorksheetCellCapture(stream, sheetName, values);
@@ -285,6 +303,9 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                     if (capture.isLimitReached()) {
                         markXlmCaptureLimit(metadata,
                                 "XLSB worksheet-value capture limit reached");
+                        break;
+                    }
+                    if (inputBudget.isLimitReached()) {
                         break;
                     }
                 } catch (Exception ignored) {

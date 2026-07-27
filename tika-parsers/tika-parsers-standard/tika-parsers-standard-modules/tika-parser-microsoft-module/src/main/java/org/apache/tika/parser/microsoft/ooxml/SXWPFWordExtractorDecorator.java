@@ -555,13 +555,20 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 OOXMLPartContentCollector collector =
                         new OOXMLPartContentCollector(
                                 wrapperElements, skipIds, collectionBudget);
-                try (InputStream stream = part.getInputStream()) {
+                try (InputStream stream =
+                             collectionBudget.limitInput(part.getInputStream())) {
                     try {
                         XMLReaderUtils.parseSAX(stream, collector, context);
                     } catch (OOXMLPartContentCollector
                             .CollectionLimitReachedException expected) {
                         // The collector deliberately aborts optional precollection
                         // once its document budget is exhausted.
+                    } catch (SAXException e) {
+                        if (!collectionBudget.isInputLimitReached()) {
+                            throw e;
+                        }
+                        // The input limiter presents EOF at the document cap.
+                        // Preserve fragments completed before that boundary.
                     }
                 }
                 for (Map.Entry<String, byte[]> entry :

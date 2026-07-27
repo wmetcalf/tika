@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 import org.apache.poi.hssf.extractor.ExcelExtractor;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
@@ -95,9 +96,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     // ~20% of a typical worker JVM heap from a single optional capture map.
     // Drop to 1 KB → ~200 MB worst case.
     static final int WORKBOOK_VALUE_MAX_LEN = 1024;
+    static final int MAX_XLM_MACRO_PARTS = 128;
+    static final long MAX_XLM_INPUT_BYTES = 32L * 1_024 * 1_024;
     private static final int MAX_XLM_MACRO_TEXT_CHARS = 1024 * 1024;
     private final java.util.Map<String, String> workbookCellValues =
             new java.util.HashMap<>();
+    protected final XlmInputBudget xlmInputBudget =
+            new XlmInputBudget(MAX_XLM_INPUT_BYTES);
     private static final String QUERY_TABLE_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/queryTable";
     private static final String PIVOT_CACHE_DEFINITION_RELATION =
@@ -217,6 +222,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
         }
+        boolean captureXlmValues = !container.getPartsByContentType(
+                XSSFRelation.MACRO_SHEET_XML.getContentType()).isEmpty()
+                || !container.getPartsByContentType(
+                        XSSFRelation.INTL_MACRO_SHEET_XML.getContentType()).isEmpty();
         while (true) {
             try {
                 if (!iter.hasNext()) {
@@ -242,16 +251,25 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         ExceptionUtils.getStackTrace(e));
                 break;
             }
-            try (InputStream stream = nextStream) {
+            InputStream captureStream = captureXlmValues
+                    ? xlmInputBudget.observe(
+                            nextStream,
+                            () -> markXlmCaptureLimit(
+                                    "XLM input capture limit reached"))
+                    : nextStream;
+            try (InputStream stream = captureStream) {
                 sheetPart = iter.getSheetPart();
                 // Wire the workbook-wide cell capture sink now that iter.next()
                 // has run — POI's SheetIterator throws if getSheetName() is
                 // called before next(), so this MUST come after the try-with
                 // takes ownership of nextStream.
-                sheetExtractor.setCellValueCapture(
-                        workbookCellValues, iter.getSheetName(),
-                        () -> markXlmCaptureLimit(
-                                "XLM worksheet-value capture limit reached"));
+                if (captureXlmValues) {
+                    sheetExtractor.setCellValueCapture(
+                            workbookCellValues, iter.getSheetName(),
+                            () -> markXlmCaptureLimit(
+                                    "XLM worksheet-value capture limit reached"),
+                            () -> !xlmInputBudget.isLimitReached());
+                }
 
                 sheetParts.add(sheetPart);
 
@@ -405,12 +423,25 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         Map<String, String> allFormulas = new HashMap<>();
         Map<String, String> allValues = new HashMap<>(workbookCellValues);
 
+        int processedMacroParts = 0;
         for (PackagePart macroPart : macroParts) {
+            if (xlmInputBudget.isLimitReached()) {
+                markXlmCaptureLimit("XLM input capture limit reached");
+                break;
+            }
+            if (processedMacroParts >= MAX_XLM_MACRO_PARTS) {
+                markXlmCaptureLimit("XML XLM macro-part limit reached");
+                break;
+            }
+            processedMacroParts++;
             String sheetName = sheetNameFromPart(macroPart);
             xhtml.startElement("div", "class", "xlm-macrosheet");
             xhtml.element("h1", sheetName);
 
-            try (InputStream is = macroPart.getInputStream()) {
+            try (InputStream is = xlmInputBudget.limit(
+                    macroPart.getInputStream(),
+                    () -> markXlmCaptureLimit(
+                            "XLM input capture limit reached"))) {
                 XlmXmlMacrosheetParser parser =
                         new XlmXmlMacrosheetParser(
                                 is, xhtml, sheetName, sharedStrings,
@@ -438,6 +469,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             }
 
             xhtml.endElement("div");
+            if (xlmInputBudget.isLimitReached()) {
+                break;
+            }
         }
 
         // Pattern-scan everything once we've seen all sheets. Cross-sheet
@@ -487,6 +521,145 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "XLM analysis incomplete; macro content may not have been analyzed");
+        }
+    }
+
+    static final class XlmInputBudget {
+
+        private final long maxInputBytes;
+        private long consumedInputBytes;
+        private boolean limitReached;
+
+        XlmInputBudget(long maxInputBytes) {
+            if (maxInputBytes < 0) {
+                throw new IllegalArgumentException(
+                        "XLM input limit must be non-negative");
+            }
+            this.maxInputBytes = maxInputBytes;
+        }
+
+        InputStream limit(InputStream stream, Runnable limitHandler) {
+            return new BudgetedInputStream(stream, limitHandler, true);
+        }
+
+        InputStream observe(InputStream stream, Runnable limitHandler) {
+            return new BudgetedInputStream(stream, limitHandler, false);
+        }
+
+        boolean isLimitReached() {
+            return limitReached;
+        }
+
+        private void consume(long bytes, Runnable limitHandler) {
+            if (bytes <= 0 || limitReached) {
+                return;
+            }
+            long remaining = maxInputBytes - consumedInputBytes;
+            if (bytes <= remaining) {
+                consumedInputBytes += bytes;
+                return;
+            }
+            consumedInputBytes = maxInputBytes;
+            signalLimit(limitHandler);
+        }
+
+        private void signalLimit(Runnable limitHandler) {
+            if (limitReached) {
+                return;
+            }
+            limitReached = true;
+            if (limitHandler != null) {
+                limitHandler.run();
+            }
+        }
+
+        private final class BudgetedInputStream extends InputStream {
+
+            private final InputStream stream;
+            private final Runnable limitHandler;
+            private final boolean stopAtLimit;
+
+            private BudgetedInputStream(
+                    InputStream stream, Runnable limitHandler,
+                    boolean stopAtLimit) {
+                this.stream = stream;
+                this.limitHandler = limitHandler;
+                this.stopAtLimit = stopAtLimit;
+            }
+
+            @Override
+            public int read() throws IOException {
+                if (stopAtLimit && consumedInputBytes >= maxInputBytes) {
+                    return probeForOverflow();
+                }
+                int value = stream.read();
+                if (value >= 0) {
+                    consume(1, limitHandler);
+                }
+                return value;
+            }
+
+            @Override
+            public int read(byte[] bytes, int offset, int length)
+                    throws IOException {
+                if (length == 0) {
+                    return 0;
+                }
+                long remaining = maxInputBytes - consumedInputBytes;
+                if (stopAtLimit && remaining <= 0) {
+                    return probeForOverflow();
+                }
+                int allowed = stopAtLimit
+                        ? (int) Math.min(length, remaining) : length;
+                int read = stream.read(bytes, offset, allowed);
+                if (read > 0) {
+                    consume(read, limitHandler);
+                }
+                return read;
+            }
+
+            @Override
+            public long skip(long length) throws IOException {
+                if (length <= 0) {
+                    return 0;
+                }
+                long remaining = maxInputBytes - consumedInputBytes;
+                if (stopAtLimit && remaining <= 0) {
+                    probeForOverflow();
+                    return 0;
+                }
+                long allowed = stopAtLimit
+                        ? Math.min(length, remaining) : length;
+                long skipped = stream.skip(allowed);
+                if (skipped > 0) {
+                    consume(skipped, limitHandler);
+                }
+                return skipped;
+            }
+
+            @Override
+            public void close() throws IOException {
+                stream.close();
+            }
+
+            private int probeForOverflow() throws IOException {
+                int value = stream.read();
+                if (value >= 0) {
+                    signalLimit(limitHandler);
+                    throw new XlmInputLimitReachedException();
+                }
+                return -1;
+            }
+        }
+
+        private static final class XlmInputLimitReachedException
+                extends IOException {
+
+            private static final long serialVersionUID = 1L;
+
+            private XlmInputLimitReachedException() {
+                super("XLM input capture limit reached");
+            }
         }
     }
 
@@ -1280,11 +1453,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         protected boolean colorAwareEnabled;
         // XLM cross-sheet value capture — see workbookCellValues javadoc on
         // the enclosing class. Both fields are null on workbooks where the
-        // outer extractor decided not to capture (currently always non-null
-        // because capture is unconditional).
+        // outer extractor found no XLM macro-sheet parts to analyze.
         private java.util.Map<String, String> cellValueSink;
         private String captureSheetName;
         private Runnable cellValueCaptureLimitHandler;
+        private BooleanSupplier cellValueCaptureAllowed = () -> true;
         private boolean cellValueCaptureLimitSignaled;
         private int currentRowForCapture = -1;
         // Track open <tr>/<td> so the outer catch can emit balanced closes
@@ -1309,9 +1482,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
          */
         protected void setCellValueCapture(java.util.Map<String, String> sink, String sheetName,
                                            Runnable limitHandler) {
+            setCellValueCapture(sink, sheetName, limitHandler, () -> true);
+        }
+
+        protected void setCellValueCapture(java.util.Map<String, String> sink,
+                                           String sheetName,
+                                           Runnable limitHandler,
+                                           BooleanSupplier captureAllowed) {
             this.cellValueSink = sink;
             this.captureSheetName = sheetName;
             this.cellValueCaptureLimitHandler = limitHandler;
+            this.cellValueCaptureAllowed = captureAllowed;
         }
 
         public void startRow(int rowNum) {
@@ -1390,6 +1571,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // per-value past WORKBOOK_VALUE_MAX_LEN. See javadoc on
                 // workbookCellValues for the threat model.
                 if (cellValueSink != null && captureSheetName != null
+                        && cellValueCaptureAllowed.getAsBoolean()
                         && cellRef != null && formattedValue != null && !formattedValue.isEmpty()) {
                     String key =
                             captureSheetName + ":" + currentRowForCapture + ":" + cellRef;

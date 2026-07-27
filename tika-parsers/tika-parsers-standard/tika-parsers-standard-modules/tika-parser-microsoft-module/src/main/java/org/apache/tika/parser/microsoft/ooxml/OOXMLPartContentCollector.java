@@ -17,8 +17,14 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -45,19 +51,28 @@ class OOXMLPartContentCollector extends DefaultHandler {
 
     private static final String W_NS =
             "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    private static final String XMLNS_NS = "http://www.w3.org/2000/xmlns/";
     private static final int DEFAULT_MAX_PARTS = 1_024;
     private static final long DEFAULT_MAX_SERIALIZED_BYTES = 8L * 1_024 * 1_024;
+    private static final long DEFAULT_MAX_INPUT_BYTES = 32L * 1_024 * 1_024;
+    private static final int DEFAULT_MAX_AUXILIARY_ENTRIES = 1_024;
+    private static final int RETAINED_ENTRY_OVERHEAD_BYTES = 64;
     private static final int ESCAPE_CHUNK_CHARS = 4_096;
 
     private final Set<String> wrapperElementNames;
     private final Set<String> skipIds;
     private final CollectionBudget collectionBudget;
     private final Map<String, byte[]> contentMap = new HashMap<>();
-    private final Map<String, String> namespaceMappings = new HashMap<>();
+    private final Map<String, ArrayDeque<String>> activeNamespaceMappings =
+            new LinkedHashMap<>();
+    private final List<NamespaceMapping> pendingNamespaceMappings =
+            new ArrayList<>();
 
     private String currentId = null;
     private ByteArrayOutputStream buffer = null;
+    private Map<String, String> currentPartRootNamespaceMappings = Map.of();
     private boolean currentPartDropped = false;
+    private boolean namespaceCollectionStopped = false;
     private char pendingHighSurrogate = 0;
     private int depth = 0;
 
@@ -86,12 +101,51 @@ class OOXMLPartContentCollector extends DefaultHandler {
     }
 
     static CollectionBudget newDefaultCollectionBudget() {
-        return new CollectionBudget(DEFAULT_MAX_PARTS, DEFAULT_MAX_SERIALIZED_BYTES);
+        return new CollectionBudget(DEFAULT_MAX_PARTS,
+                DEFAULT_MAX_SERIALIZED_BYTES, DEFAULT_MAX_AUXILIARY_ENTRIES,
+                DEFAULT_MAX_INPUT_BYTES);
     }
 
     @Override
-    public void startPrefixMapping(String prefix, String uri) {
-        namespaceMappings.put(prefix, uri);
+    public void startPrefixMapping(String prefix, String uri)
+            throws SAXException {
+        throwIfLimitReached();
+        if (namespaceCollectionStopped) {
+            return;
+        }
+        String normalizedPrefix = prefix == null ? "" : prefix;
+        String normalizedUri = uri == null ? "" : uri;
+        if (!collectionBudget.tryRetainAuxiliaryEntry(
+                normalizedPrefix, normalizedUri)) {
+            namespaceCollectionStopped = true;
+            activeNamespaceMappings.clear();
+            pendingNamespaceMappings.clear();
+            if (currentId != null) {
+                dropCurrentPart();
+            }
+            throwIfLimitReached();
+        }
+        activeNamespaceMappings.computeIfAbsent(
+                normalizedPrefix, ignored -> new ArrayDeque<>()).addLast(normalizedUri);
+        pendingNamespaceMappings.add(
+                new NamespaceMapping(normalizedPrefix, normalizedUri));
+    }
+
+    @Override
+    public void endPrefixMapping(String prefix) {
+        if (namespaceCollectionStopped) {
+            return;
+        }
+        String normalizedPrefix = prefix == null ? "" : prefix;
+        ArrayDeque<String> mappings =
+                activeNamespaceMappings.get(normalizedPrefix);
+        if (mappings == null || mappings.isEmpty()) {
+            return;
+        }
+        mappings.removeLast();
+        if (mappings.isEmpty()) {
+            activeNamespaceMappings.remove(normalizedPrefix);
+        }
     }
 
     Map<String, byte[]> getContentMap() {
@@ -101,25 +155,29 @@ class OOXMLPartContentCollector extends DefaultHandler {
     @Override
     public void startElement(String uri, String localName, String qName,
             Attributes atts) throws SAXException {
+        throwIfLimitReached();
         if (currentId != null) {
             flushPendingHighSurrogate();
             depth++;
-            appendStartTag(localName, qName, atts);
+            appendStartTag(localName, qName, atts, pendingNamespaceMappings);
+            pendingNamespaceMappings.clear();
+            throwIfLimitReached();
             return;
         }
 
         if (wrapperElementNames.contains(localName)) {
             String id = atts.getValue(W_NS, "id");
             if (id != null && !skipIds.contains(id)) {
-                currentId = id;
-                currentPartDropped = !collectionBudget.tryStartPart();
+                currentPartDropped = !collectionBudget.tryStartPart(id);
+                currentId = currentPartDropped ? "" : id;
                 buffer = currentPartDropped ? null : new ByteArrayOutputStream();
-                // Don't write wrapper open tag yet — inline xmlns declarations
-                // (e.g., xmlns:a on nested elements) haven't been captured via
-                // startPrefixMapping. Defer to endElement when all are known.
+                currentPartRootNamespaceMappings =
+                        snapshotActiveNamespaceMappings();
                 depth = 0;
             }
         }
+        pendingNamespaceMappings.clear();
+        throwIfLimitReached();
     }
 
     @Override
@@ -139,6 +197,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
                 }
             }
             resetCurrentPart();
+            throwIfLimitReached();
             return;
         }
 
@@ -148,6 +207,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
         } else {
             writeString("</" + localName + ">");
         }
+        throwIfLimitReached();
     }
 
     @Override
@@ -173,6 +233,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
         if (start < end) {
             writeEscaped(new String(ch, start, end - start));
         }
+        throwIfLimitReached();
     }
 
     private byte[] finishCurrentPart() {
@@ -183,8 +244,8 @@ class OOXMLPartContentCollector extends DefaultHandler {
         if (!writeString(combined, "<w:body", maxBytes)) {
             return dropFinishedPart();
         }
-        // include all namespace declarations from the source document
-        for (Map.Entry<String, String> entry : namespaceMappings.entrySet()) {
+        for (Map.Entry<String, String> entry :
+                currentPartRootNamespaceMappings.entrySet()) {
             String prefix = entry.getKey();
             String nsUri = entry.getValue();
             if (prefix == null || prefix.isEmpty()) {
@@ -204,7 +265,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
             }
         }
         // ensure w namespace is present
-        if (!namespaceMappings.containsKey("w")) {
+        if (!currentPartRootNamespaceMappings.containsKey("w")) {
             if (!writeString(combined, " xmlns:w=\"", maxBytes) ||
                     !writeString(combined, W_NS, maxBytes) ||
                     !writeString(combined, "\"", maxBytes)) {
@@ -231,14 +292,43 @@ class OOXMLPartContentCollector extends DefaultHandler {
         return null;
     }
 
-    private void appendStartTag(String localName, String qName, Attributes atts) {
+    private Map<String, String> snapshotActiveNamespaceMappings() {
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        for (Map.Entry<String, ArrayDeque<String>> entry :
+                activeNamespaceMappings.entrySet()) {
+            if (!entry.getValue().isEmpty()) {
+                snapshot.put(entry.getKey(), entry.getValue().peekLast());
+            }
+        }
+        return snapshot;
+    }
+
+    private void appendStartTag(String localName, String qName, Attributes atts,
+            List<NamespaceMapping> namespaceMappings) {
         String tagName = (qName != null && !qName.isEmpty()) ? qName : localName;
         writeString("<");
         writeString(tagName);
+        for (NamespaceMapping mapping : namespaceMappings) {
+            if (mapping.prefix().isEmpty()) {
+                writeString(" xmlns=\"");
+            } else {
+                writeString(" xmlns:");
+                writeString(mapping.prefix());
+                writeString("=\"");
+            }
+            writeEscaped(mapping.uri());
+            writeString("\"");
+        }
         for (int i = 0; i < atts.getLength(); i++) {
+            String attributeUri = atts.getURI(i);
             String attName = atts.getQName(i);
             if (attName == null || attName.isEmpty()) {
                 attName = atts.getLocalName(i);
+            }
+            if (XMLNS_NS.equals(attributeUri)
+                    || "xmlns".equals(attName)
+                    || attName.startsWith("xmlns:")) {
+                continue;
             }
             writeString(" ");
             writeString(attName);
@@ -339,6 +429,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
     private void resetCurrentPart() {
         currentId = null;
         buffer = null;
+        currentPartRootNamespaceMappings = Map.of();
         currentPartDropped = false;
         pendingHighSurrogate = 0;
     }
@@ -350,31 +441,70 @@ class OOXMLPartContentCollector extends DefaultHandler {
         }
     }
 
+    private void throwIfLimitReached()
+            throws CollectionLimitReachedException {
+        if (collectionBudget.isLimitReached()) {
+            throw new CollectionLimitReachedException();
+        }
+    }
+
+    static final class CollectionLimitReachedException extends SAXException {
+
+        private static final long serialVersionUID = 1L;
+
+        private CollectionLimitReachedException() {
+            super("OOXML inline-part collection limit reached");
+        }
+    }
+
     static final class CollectionBudget {
 
         private final int maxParts;
         private final long maxSerializedBytes;
+        private final int maxAuxiliaryEntries;
+        private final long maxInputBytes;
         private int retainedParts;
         private long retainedBytes;
+        private int retainedAuxiliaryEntries;
+        private long consumedInputBytes;
         private boolean limitReached;
+        private boolean inputLimitReached;
 
         CollectionBudget(int maxParts, long maxSerializedBytes) {
-            if (maxParts < 0 || maxSerializedBytes < 0) {
+            this(maxParts, maxSerializedBytes, DEFAULT_MAX_AUXILIARY_ENTRIES,
+                    DEFAULT_MAX_INPUT_BYTES);
+        }
+
+        CollectionBudget(int maxParts, long maxSerializedBytes,
+                int maxAuxiliaryEntries) {
+            this(maxParts, maxSerializedBytes, maxAuxiliaryEntries,
+                    DEFAULT_MAX_INPUT_BYTES);
+        }
+
+        CollectionBudget(int maxParts, long maxSerializedBytes,
+                int maxAuxiliaryEntries, long maxInputBytes) {
+            if (maxParts < 0 || maxSerializedBytes < 0 ||
+                    maxAuxiliaryEntries < 0 || maxInputBytes < 0) {
                 throw new IllegalArgumentException("Collection limits must be non-negative");
             }
             this.maxParts = maxParts;
             this.maxSerializedBytes = maxSerializedBytes;
+            this.maxAuxiliaryEntries = maxAuxiliaryEntries;
+            this.maxInputBytes = maxInputBytes;
         }
 
-        private boolean tryStartPart() {
+        private boolean tryStartPart(String id) {
             if (limitReached) {
                 return false;
             }
+            long remaining = maxSerializedBytes - retainedBytes;
+            long idCharge = retainedEntryCharge(id, "", remaining);
             if (retainedParts >= maxParts ||
-                    retainedBytes >= maxSerializedBytes) {
+                    idCharge > remaining) {
                 limitReached = true;
                 return false;
             }
+            retainedBytes += idCharge;
             return true;
         }
 
@@ -389,6 +519,30 @@ class OOXMLPartContentCollector extends DefaultHandler {
             return true;
         }
 
+        boolean tryRetainAuxiliaryEntry(String key, String value) {
+            long remaining = maxSerializedBytes - retainedBytes;
+            long charge = retainedEntryCharge(key, value, remaining);
+            if (limitReached ||
+                    retainedAuxiliaryEntries >= maxAuxiliaryEntries ||
+                    charge > remaining) {
+                limitReached = true;
+                return false;
+            }
+            retainedAuxiliaryEntries++;
+            retainedBytes += charge;
+            return true;
+        }
+
+        private static long retainedEntryCharge(
+                String key, String value, long remaining) {
+            long chars = (long) key.length() + value.length();
+            if (remaining < RETAINED_ENTRY_OVERHEAD_BYTES ||
+                    chars > (remaining - RETAINED_ENTRY_OVERHEAD_BYTES) / 2) {
+                return remaining + 1;
+            }
+            return RETAINED_ENTRY_OVERHEAD_BYTES + chars * 2;
+        }
+
         private long getRemainingBytes() {
             return maxSerializedBytes - retainedBytes;
         }
@@ -397,9 +551,98 @@ class OOXMLPartContentCollector extends DefaultHandler {
             limitReached = true;
         }
 
+        InputStream limitInput(InputStream stream) {
+            return new BudgetedInputStream(stream);
+        }
+
+        boolean isInputLimitReached() {
+            return inputLimitReached;
+        }
+
         boolean isLimitReached() {
             return limitReached;
         }
+
+        private void consumeInput(long bytes) {
+            consumedInputBytes += bytes;
+        }
+
+        private void markInputLimitReached() {
+            inputLimitReached = true;
+            limitReached = true;
+        }
+
+        private final class BudgetedInputStream extends InputStream {
+
+            private final InputStream stream;
+
+            private BudgetedInputStream(InputStream stream) {
+                this.stream = stream;
+            }
+
+            @Override
+            public int read() throws IOException {
+                if (consumedInputBytes >= maxInputBytes) {
+                    return probeForOverflow();
+                }
+                int value = stream.read();
+                if (value >= 0) {
+                    consumeInput(1);
+                }
+                return value;
+            }
+
+            @Override
+            public int read(byte[] bytes, int offset, int length)
+                    throws IOException {
+                if (length == 0) {
+                    return 0;
+                }
+                long remaining = maxInputBytes - consumedInputBytes;
+                if (remaining <= 0) {
+                    return probeForOverflow();
+                }
+                int read = stream.read(bytes, offset,
+                        (int) Math.min(length, remaining));
+                if (read > 0) {
+                    consumeInput(read);
+                }
+                return read;
+            }
+
+            @Override
+            public long skip(long length) throws IOException {
+                if (length <= 0) {
+                    return 0;
+                }
+                long remaining = maxInputBytes - consumedInputBytes;
+                if (remaining <= 0) {
+                    probeForOverflow();
+                    return 0;
+                }
+                long skipped = stream.skip(Math.min(length, remaining));
+                if (skipped > 0) {
+                    consumeInput(skipped);
+                }
+                return skipped;
+            }
+
+            @Override
+            public void close() throws IOException {
+                stream.close();
+            }
+
+            private int probeForOverflow() throws IOException {
+                int value = stream.read();
+                if (value >= 0) {
+                    markInputLimitReached();
+                }
+                return -1;
+            }
+        }
+    }
+
+    private record NamespaceMapping(String prefix, String uri) {
     }
 
     static String escape(String s) {
