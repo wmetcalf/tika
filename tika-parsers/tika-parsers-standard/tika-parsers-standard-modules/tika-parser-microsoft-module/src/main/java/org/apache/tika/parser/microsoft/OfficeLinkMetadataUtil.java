@@ -32,6 +32,8 @@ public final class OfficeLinkMetadataUtil {
     private static final int MAX_TOTAL_LINK_RECORD_CHARS = 1_024 * 1_024;
     private static final String LINK_LIMIT_WARNING =
             "Office link metadata limit reached; additional links were skipped";
+    private static final String LINK_VALUE_TRUNCATED_WARNING =
+            "Office link metadata value truncated; retained link was bounded";
 
     private OfficeLinkMetadataUtil() {
     }
@@ -50,7 +52,9 @@ public final class OfficeLinkMetadataUtil {
         if (metadata == null || isBlank(type) || isBlank(url)) {
             return;
         }
-        if (isLinkLimitReached(metadata) || getLinkCount(metadata) >= MAX_LINKS) {
+        long retainedRecordChars = getLinkRecordChars(metadata);
+        if (getLinkCount(metadata) >= MAX_LINKS
+                || retainedRecordChars >= MAX_TOTAL_LINK_RECORD_CHARS) {
             markLinkLimitReached(metadata);
             return;
         }
@@ -77,7 +81,7 @@ public final class OfficeLinkMetadataUtil {
                 "id", boundedId,
                 "trigger", boundedTrigger,
                 "actionType", boundedActionType);
-        if (getLinkRecordChars(metadata) + record.length()
+        if (retainedRecordChars + record.length()
                 > MAX_TOTAL_LINK_RECORD_CHARS) {
             markLinkLimitReached(metadata);
             return;
@@ -95,7 +99,7 @@ public final class OfficeLinkMetadataUtil {
         metadata.add(Office.OFFICE_LINK_ACTION_TYPE, boundedActionType);
         metadata.add(Office.OFFICE_LINK_RECORD, record);
         if (budget.isTruncated()) {
-            markLinkLimitReached(metadata);
+            markLinkValueTruncated(metadata);
         }
     }
 
@@ -123,10 +127,10 @@ public final class OfficeLinkMetadataUtil {
         return chars;
     }
 
-    private static boolean isLinkLimitReached(Metadata metadata) {
+    private static boolean hasWarning(Metadata metadata, String expected) {
         for (String warning :
                 metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
-            if (LINK_LIMIT_WARNING.equals(warning)) {
+            if (expected.equals(warning)) {
                 return true;
             }
         }
@@ -138,10 +142,26 @@ public final class OfficeLinkMetadataUtil {
             return;
         }
         metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-        if (!isLinkLimitReached(metadata)) {
+        if (!hasWarning(metadata, LINK_LIMIT_WARNING)) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     LINK_LIMIT_WARNING);
         }
+        markLinkAnalysisIncomplete(metadata);
+    }
+
+    public static void markLinkValueTruncated(Metadata metadata) {
+        if (metadata == null) {
+            return;
+        }
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        if (!hasWarning(metadata, LINK_VALUE_TRUNCATED_WARNING)) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    LINK_VALUE_TRUNCATED_WARNING);
+        }
+        markLinkAnalysisIncomplete(metadata);
+    }
+
+    private static void markLinkAnalysisIncomplete(Metadata metadata) {
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "Office link extraction incomplete; executable references "

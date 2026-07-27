@@ -286,6 +286,7 @@ public class AbstractOOXMLExtractorSecurityTest {
         ParseContext context = new ParseContext();
         context.set(OfficeParserConfig.class, new OfficeParserConfig());
         Metadata metadata = new Metadata();
+        LinkCountingHandler linkCountingHandler = new LinkCountingHandler();
         String executableUrl =
                 "https://attacker.invalid/non-main-template.dotm";
         try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
@@ -293,7 +294,7 @@ public class AbstractOOXMLExtractorSecurityTest {
             PackagePart document = opcPackage.createPart(
                     PackagingURIHelper.createPartName("/word/document.xml"),
                     "application/xml");
-            for (int i = 0; i < 1_024; i++) {
+            for (int i = 0; i < 4_096; i++) {
                 document.addExternalRelationship(
                         "https://decoy.invalid/main-" + i,
                         "http://schemas.openxmlformats.org/officeDocument/"
@@ -308,7 +309,7 @@ public class AbstractOOXMLExtractorSecurityTest {
                             + "2006/relationships/attachedTemplate");
 
             new EmptyExtractor(context, opcPackage, List.of(document))
-                    .getXHTML(new BodyContentHandler(-1), metadata, context);
+                    .getXHTML(linkCountingHandler, metadata, context);
         }
 
         assertEquals(1L,
@@ -317,11 +318,15 @@ public class AbstractOOXMLExtractorSecurityTest {
                         .filter(executableUrl::equals)
                         .count(),
                 "a non-main executable link must survive main-part decoys");
-        assertEquals(1_025,
+        assertEquals(1_024,
                 metadata.getValues(Office.OFFICE_LINK_RECORD).length,
-                "already-handled main relationships must not be emitted twice");
-        assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA),
-                "handled main relationships must not consume the catch-all quota");
+                "main and catch-all relationships must share one hard budget");
+        assertEquals(1_024, linkCountingHandler.anchorCount);
+        assertEquals("true",
+                metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
+        assertEquals("true", metadata.get(Office.HAS_ATTACHED_TEMPLATE));
     }
 
     @Test
@@ -585,6 +590,18 @@ public class AbstractOOXMLExtractorSecurityTest {
                                  Attributes attributes) throws SAXException {
             if ("a".equals(localName) || "a".equals(qName)) {
                 throw new SAXException("simulated strict content handler");
+            }
+        }
+    }
+
+    private static final class LinkCountingHandler extends DefaultHandler {
+        private int anchorCount;
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) {
+            if ("a".equals(localName) || "a".equals(qName)) {
+                anchorCount++;
             }
         }
     }

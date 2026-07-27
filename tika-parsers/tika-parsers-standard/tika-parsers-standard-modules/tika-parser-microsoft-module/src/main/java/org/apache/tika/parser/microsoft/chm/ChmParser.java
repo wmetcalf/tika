@@ -32,6 +32,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -131,7 +132,10 @@ public class ChmParser implements Parser {
                         embeddedExtractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta,
                                 context, true);
                     }
+                } catch (SecurityException e) {
+                    throw e;
                 } catch (Exception e) {
+                    WriteLimitReachedException.throwIfWriteLimitReached(e);
                     LOG.warn("Failed to parse embedded CHM entry '{}': {}", displayName,
                             e.getMessage());
                     markEntryAnalysisIncomplete(metadata, displayName, e);

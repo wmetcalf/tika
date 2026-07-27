@@ -38,6 +38,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -432,7 +433,7 @@ public class RdpParser implements Parser {
         }
 
         // Feed raw bytes through embedded pipeline regardless of parse success
-        Metadata embMeta = new Metadata();
+        Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "rdp-pcb-cert");
         embMeta.set(Metadata.CONTENT_TYPE, "application/pkix-cert");
         try (TikaInputStream tis = TikaInputStream.get(der)) {
@@ -440,6 +441,10 @@ public class RdpParser implements Parser {
                 extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
             }
         } catch (Exception e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            if (e instanceof SecurityException securityException) {
+                throw securityException;
+            }
             rootMeta.add("rdp:pcb_warning", "embedded parse error: " + e.getMessage());
         }
     }

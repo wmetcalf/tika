@@ -16,6 +16,7 @@
  */
 package org.apache.tika.parser.microsoft.ooxml;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -88,7 +89,7 @@ class OOXMLTikaBodyPartHandlerTest {
     }
 
     @Test
-    void testPendingHyperlinkTextIsBoundedAndSignaled() throws Exception {
+    void testTruncatedHyperlinkTextDoesNotBlockFollowingLink() throws Exception {
         Metadata metadata = new Metadata();
         XHTMLContentHandler xhtml = new XHTMLContentHandler(
                 new ToXMLContentHandler(), metadata, new ParseContext());
@@ -97,15 +98,27 @@ class OOXMLTikaBodyPartHandlerTest {
 
         xhtml.startDocument();
         handler.hyperlinkStart("https://payload.invalid/large-anchor");
-        handler.run(new RunProperties(), "x".repeat(1_000_000));
-        handler.closeAnyPending();
+        handler.run(new RunProperties(), "x".repeat(65_537));
+        handler.hyperlinkEnd();
+        handler.hyperlinkStart("https://payload.invalid/follow-up");
+        handler.run(new RunProperties(), "launch");
+        handler.hyperlinkEnd();
         xhtml.endDocument();
 
         assertTrue(metadata.get(Office.OFFICE_LINK_TEXT).length() <= 64 * 1024);
+        assertArrayEquals(new String[]{
+                "https://payload.invalid/large-anchor",
+                "https://payload.invalid/follow-up"
+        }, metadata.getValues(Office.OFFICE_LINK_URL));
+        assertEquals(2, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
         assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
-        assertTrue(java.util.Arrays.stream(metadata.getValues(
-                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
-                .anyMatch(v -> v.contains("Office link")));
+        String[] warnings = metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        assertEquals(1, java.util.Arrays.stream(warnings)
+                .filter(v -> v.contains("value truncated"))
+                .count());
+        assertFalse(java.util.Arrays.stream(warnings)
+                .anyMatch(v -> v.contains("additional links were skipped")));
         assertTrue(metadata.get("ExploitClass").contains("link"));
     }
 

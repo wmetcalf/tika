@@ -158,8 +158,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         buildXHTML(xhtml);
 
         // Now do any embedded parts
+        ExternalReferenceBudget externalReferenceBudget =
+                createExternalReferenceBudget();
         Set<String> handledRelationshipParts =
-                handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap());
+                handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap(),
+                        externalReferenceBudget);
 
         // Catch-all: walk package-root and every remaining part's relationships
         // for external Targets. Settings/footnotes/comments/header/footer/
@@ -168,7 +171,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         // TargetMode=External, and handleEmbeddedParts() above only walks
         // getMainDocumentParts(). Frame URLs in webSettings.xml.rels were the
         // historical example — generalize to anything analogous.
-        surfaceExternalRefsFromAllParts(xhtml, metadata, handledRelationshipParts);
+        surfaceExternalRefsFromAllParts(xhtml, metadata, handledRelationshipParts,
+                externalReferenceBudget);
+        externalReferenceBudget.markTruncation(metadata);
 
         // thumbnail
         handleThumbnail(xhtml, metadata);
@@ -359,7 +364,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
 
     private Set<String> handleEmbeddedParts(
             XHTMLContentHandler xhtml, Metadata metadata,
-            Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap)
+            Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap,
+            ExternalReferenceBudget externalReferenceBudget)
             throws TikaException, IOException, SAXException {
         //keep track of media items that have been handled
         //there can be multiple relationships pointing to the
@@ -376,7 +382,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 for (PackageRelationship rel : source.getRelationships()) {
                     try {
                         handleEmbeddedPart(source, rel, xhtml, metadata,
-                                embeddedPartMetadataMap, handledInternalPartNames);
+                                embeddedPartMetadataMap, handledInternalPartNames,
+                                externalReferenceBudget);
                     } catch (SAXException | SecurityException e) {
                         throw e;
                     } catch (Exception e) {
@@ -396,7 +403,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     private void handleEmbeddedPart(PackagePart source, PackageRelationship rel,
                                     XHTMLContentHandler xhtml, Metadata parentMetadata,
                                     Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap,
-                                    Set<String> handledInternalPartNames)
+                                    Set<String> handledInternalPartNames,
+                                    ExternalReferenceBudget externalReferenceBudget)
             throws IOException, SAXException, TikaException, InvalidFormatException {
         URI targetURI = rel.getTargetURI();
         URI sourceURI = rel.getSourceURI();
@@ -412,6 +420,12 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             sourceDesc = "";
         }
         if (rel.getTargetMode() != TargetMode.INTERNAL) {
+            if (targetURI == null || targetURI.toString().isEmpty()) {
+                return;
+            }
+            if (!externalReferenceBudget.tryAcquire(rel)) {
+                return;
+            }
             // External target - emit as external reference for security analysis
             String type = rel.getRelationshipType();
             String sourcePath = sourceURI != null ? sourceURI.getPath() : "";
@@ -1059,16 +1073,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
 
     private void surfaceExternalRefsFromAllParts(
             XHTMLContentHandler xhtml, Metadata metadata,
-            Set<String> handledRelationshipParts)
+            Set<String> handledRelationshipParts,
+            ExternalReferenceBudget externalReferenceBudget)
             throws SAXException {
         if (opcPackage == null) return;
         // Preserve relationship semantics while suppressing only exact duplicate
         // records. A benign root hyperlink must not hide a later executable
         // relationship that happens to target the same URL.
         java.util.Set<String> seen = new java.util.HashSet<>();
-        // Hard cap to bound total emissions. Counted across the package root
-        // and every part. If exceeded, signal that the link index is incomplete.
-        int[] emitted = new int[]{0};
         // Package-level relationships (/_rels/.rels at the OPC root). These
         // sit ABOVE any part and could in principle carry an external Target
         // (e.g. a malformed/handcrafted package). opcPackage.getParts() does
@@ -1076,10 +1088,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         try {
             PackageRelationshipCollection rootRels = opcPackage.getRelationships();
             if (rootRels != null) {
-                if (surfaceExternalRels(
-                        xhtml, metadata, rootRels, "_rels/.rels", seen, emitted)) {
-                    return;
-                }
+                surfaceExternalRels(
+                        xhtml, metadata, rootRels, "_rels/.rels", seen,
+                        externalReferenceBudget);
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
@@ -1098,10 +1109,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     continue;
                 }
                 if (rels == null) continue;
-                if (surfaceExternalRels(
-                        xhtml, metadata, rels, partName, seen, emitted)) {
-                    return;
-                }
+                surfaceExternalRels(
+                        xhtml, metadata, rels, partName, seen,
+                        externalReferenceBudget);
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
@@ -1115,9 +1125,10 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      * already been recorded in {@code seen}. Shared between the per-part walk
      * and the package-level root rels walk. Honors the per-doc emission cap.
      */
-    private boolean surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
-                                        PackageRelationshipCollection rels, String partName,
-                                        java.util.Set<String> seen, int[] emitted)
+    private void surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
+                                     PackageRelationshipCollection rels, String partName,
+                                     java.util.Set<String> seen,
+                                     ExternalReferenceBudget externalReferenceBudget)
             throws SAXException {
         for (PackageRelationship rel : rels) {
             if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
@@ -1127,10 +1138,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             String relationshipKey = partName + "\u0000" + rel.getId()
                     + "\u0000" + rel.getRelationshipType() + "\u0000" + url;
             if (seen.contains(relationshipKey)) continue;
-            if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) {
-                OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
-                return true;
-            }
+            if (!externalReferenceBudget.tryAcquire(rel)) continue;
             seen.add(relationshipKey);
 
             String refType = shortRelType(rel.getRelationshipType());
@@ -1138,7 +1146,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 emitExternalRef(xhtml, metadata, refType, url,
                         partName.startsWith("/") ? partName.substring(1) : partName,
                         rel.getRelationshipType(), rel.getId());
-                emitted[0]++;
             } catch (SAXException e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
             }
@@ -1147,7 +1154,103 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // an addLink entry via emitExternalRef.
             setHasFlagFor(rel.getRelationshipType(), metadata);
         }
-        return false;
+    }
+
+    private ExternalReferenceBudget createExternalReferenceBudget() {
+        int highPriorityCount = 0;
+        if (opcPackage == null) {
+            return new ExternalReferenceBudget(highPriorityCount);
+        }
+        try {
+            highPriorityCount = countHighPriorityExternalRelationships(
+                    opcPackage.getRelationships(), highPriorityCount);
+        } catch (Exception ignored) {
+            // best-effort
+        }
+        try {
+            for (PackagePart part : opcPackage.getParts()) {
+                if (part == null) continue;
+                try {
+                    highPriorityCount = countHighPriorityExternalRelationships(
+                            part.getRelationships(), highPriorityCount);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                if (highPriorityCount >= MAX_EXTERNAL_REFS_PER_DOC) {
+                    break;
+                }
+            }
+        } catch (Exception ignored) {
+            // best-effort
+        }
+        return new ExternalReferenceBudget(highPriorityCount);
+    }
+
+    private int countHighPriorityExternalRelationships(
+            PackageRelationshipCollection relationships, int count) {
+        if (relationships == null) {
+            return count;
+        }
+        for (PackageRelationship relationship : relationships) {
+            if (relationship.getTargetMode() == TargetMode.EXTERNAL
+                    && relationship.getTargetURI() != null
+                    && !relationship.getTargetURI().toString().isEmpty()
+                    && isHighPriorityExternalRelationship(
+                    relationship.getRelationshipType())) {
+                count++;
+                if (count >= MAX_EXTERNAL_REFS_PER_DOC) {
+                    return count;
+                }
+            }
+        }
+        return count;
+    }
+
+    private static boolean isHighPriorityExternalRelationship(
+            String relationshipType) {
+        switch (shortRelType(relationshipType)) {
+            case "attachedTemplate":
+            case "ddeLink":
+            case "externalLink":
+            case "frame":
+            case "oleObject":
+            case "subDocument":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static final class ExternalReferenceBudget {
+        private int remainingHighPriority;
+        private int emitted;
+        private boolean truncated;
+
+        private ExternalReferenceBudget(int remainingHighPriority) {
+            this.remainingHighPriority = remainingHighPriority;
+        }
+
+        private boolean tryAcquire(PackageRelationship relationship) {
+            boolean highPriority = isHighPriorityExternalRelationship(
+                    relationship.getRelationshipType());
+            if (highPriority && remainingHighPriority > 0) {
+                remainingHighPriority--;
+            }
+            int remaining = MAX_EXTERNAL_REFS_PER_DOC - emitted;
+            if (remaining <= 0
+                    || !highPriority && remaining <= remainingHighPriority) {
+                truncated = true;
+                return false;
+            }
+            emitted++;
+            return true;
+        }
+
+        private void markTruncation(Metadata metadata) {
+            if (truncated) {
+                OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+            }
+        }
     }
 
     /** Trim a fully-qualified relationship type URI down to its last path component. */

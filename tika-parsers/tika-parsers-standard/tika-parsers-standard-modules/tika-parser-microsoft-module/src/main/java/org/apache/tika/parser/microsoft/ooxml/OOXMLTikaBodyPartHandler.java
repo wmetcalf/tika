@@ -663,7 +663,7 @@ public class OOXMLTikaBodyPartHandler
         activeHyperlinkText.setLength(0);
         activeHyperlinkTextTruncated = false;
         if (textTruncated) {
-            OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+            OfficeLinkMetadataUtil.markLinkValueTruncated(metadata);
         }
     }
 
@@ -691,7 +691,7 @@ public class OOXMLTikaBodyPartHandler
         activeHyperlinkText.setLength(0);
         activeHyperlinkTextTruncated = false;
         if (textTruncated) {
-            OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+            OfficeLinkMetadataUtil.markLinkValueTruncated(metadata);
         }
     }
 

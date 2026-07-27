@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -145,21 +146,32 @@ public class OfficeLinkMetadataUtilTest {
     }
 
     @Test
-    public void testOversizedLinkValuesAreBoundedBeforeRecordConstruction() {
+    public void testOversizedLinkValuesDoNotBlockLaterHighRiskLink() {
         Metadata metadata = new Metadata();
         String oversized = "x".repeat(1_000_000);
+        String highRiskUrl = "ms-msdt:/id PCWDiagnostic";
 
         OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
                 "https://example.invalid/" + oversized, oversized, oversized,
                 oversized, oversized, oversized, oversized, "click", "external_url");
+        OfficeLinkMetadataUtil.addLink(metadata, "external_relationship",
+                highRiskUrl, "run diagnostic", null, "document.xml",
+                "external-ref", "external", "rId9", "click", "external_url");
 
         assertTrue(metadata.get(Office.OFFICE_LINK_URL).length() <= 64 * 1024);
         assertTrue(metadata.get(Office.OFFICE_LINK_TEXT).length() <= 64 * 1024);
         assertTrue(metadata.get(Office.OFFICE_LINK_RECORD).length() <= 512 * 1024);
+        assertEquals(2, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals(highRiskUrl,
+                metadata.getValues(Office.OFFICE_LINK_URL)[1]);
         assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
-        assertTrue(java.util.Arrays.stream(metadata.getValues(
-                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
-                .anyMatch(v -> v.contains("Office link")));
+        String[] warnings = metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        assertEquals(1, java.util.Arrays.stream(warnings)
+                .filter(v -> v.contains("value truncated"))
+                .count());
+        assertFalse(java.util.Arrays.stream(warnings)
+                .anyMatch(v -> v.contains("additional links were skipped")));
         assertNotNull(metadata.get("ExploitClass"));
     }
 }

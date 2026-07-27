@@ -40,6 +40,7 @@ import org.xml.sax.SAXException;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -393,7 +394,7 @@ public class ICalParser implements Parser {
         if (altDesc != null && !altDesc.isEmpty()) {
             try {
                 byte[] htmlBytes = altDesc.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                Metadata embMeta = new Metadata();
+                Metadata embMeta = Metadata.newInstance(context);
                 embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "x-alt-desc.html");
                 embMeta.set(Metadata.CONTENT_TYPE, "text/html");
                 try (TikaInputStream tis = TikaInputStream.get(
@@ -410,6 +411,10 @@ public class ICalParser implements Parser {
                 // but barcode:* values are appended via metadata.add and
                 // already land on the parent.)
             } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                if (e instanceof SecurityException securityException) {
+                    throw securityException;
+                }
                 metadata.add("ical:warning",
                         "x-alt-desc HTML parse failed: " + e.getMessage());
             }
@@ -825,7 +830,7 @@ public class ICalParser implements Parser {
                                   + "almost always phishing kits; ");
                         }
                         // Feed through embedded pipeline
-                        Metadata embMeta = new Metadata();
+                        Metadata embMeta = Metadata.newInstance(context);
                         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "ical-attach");
                         embMeta.set(Metadata.CONTENT_TYPE, mime);
                         try (TikaInputStream tis2 = TikaInputStream.get(data)) {
@@ -833,7 +838,11 @@ public class ICalParser implements Parser {
                                 extractor.parseEmbedded(tis2, xhtml, embMeta,
                                         context, true);
                             }
-                        } catch (Exception ignored) {
+                        } catch (Exception embeddedFailure) {
+                            WriteLimitReachedException.throwIfWriteLimitReached(embeddedFailure);
+                            if (embeddedFailure instanceof SecurityException securityException) {
+                                throw securityException;
+                            }
                             // embedded parse is best-effort
                         }
                     }

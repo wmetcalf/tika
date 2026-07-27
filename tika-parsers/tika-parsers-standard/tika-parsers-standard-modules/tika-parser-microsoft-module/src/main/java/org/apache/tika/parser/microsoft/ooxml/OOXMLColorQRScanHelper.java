@@ -33,8 +33,11 @@ import org.apache.tika.parser.image.ZXingCPPScanner;
  * streaming OOXML body part handler ({@link OOXMLTikaBodyPartHandler}).
  *
  * <p>Each row is a list of luma values (one per non-whitespace glyph in the
- * paragraph or cell). The helper applies a 70% grid-shape filter to drop
- * body-text rows, then renders the dark/light grid and runs ZXing-CPP.</p>
+ * paragraph or cell). The helper retains rows within 70% of the widest row
+ * and requires at least the minimum QR-grid height. Unrelated short rows from
+ * headers, footers, comments, or ordinary body text therefore cannot suppress
+ * an otherwise complete grid. The retained grid is rendered and sent to
+ * ZXing-CPP.</p>
  *
  * <p>Use a different {@code keyPrefix} per format so metadata keys don't
  * collide across DOCX/PPTX/XLSX entries.</p>
@@ -88,7 +91,7 @@ public final class OOXMLColorQRScanHelper {
                 qualifying++;
             }
         }
-        if (qualifying < (int) Math.ceil(rows.size() * 0.7)) {
+        if (qualifying < ColorGridQRDecoder.MIN_LINES) {
             return;
         }
         List<List<ColorGridQRDecoder.Cell>> grid = new ArrayList<>();
