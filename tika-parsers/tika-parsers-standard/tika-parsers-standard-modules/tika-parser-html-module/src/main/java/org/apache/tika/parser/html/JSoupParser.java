@@ -22,6 +22,7 @@ import java.io.InputStreamReader;
 import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -64,6 +65,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AbstractEncodingDetectorParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.TaggedContentHandler;
 
 
 /**
@@ -226,16 +228,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         // Failures are non-fatal — the QR scan is best-effort.
         scanForColorQR(document, metadata, context);
         document.quirksMode(Document.QuirksMode.quirks);
+        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
-                new HtmlHandler(mapper, handler, metadata, context, extractScripts));
-        xhtml.startDocument();
-        try {
-            NodeTraversor.filter(new TikaNodeFilter(xhtml), document);
-        } catch (RuntimeSAXException e) {
-            throw e.getWrapped();
-        } finally {
-            xhtml.endDocument();
-        }
+                new HtmlHandler(mapper, taggedOutput, metadata, context, extractScripts));
+        emitDocument(document, xhtml, taggedOutput);
     }
 
     private static void scanForColorQR(Document document, Metadata metadata, ParseContext context) {
@@ -1012,16 +1008,155 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         Document document = Jsoup.parse(html, Parser.htmlParser().tagSet(SELF_CLOSEABLE_TAGS));
         scanForColorQR(document, metadata, context);
         document.quirksMode(Document.QuirksMode.quirks);
+        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
-                new HtmlHandler(mapper, handler, metadata, context, extractScripts));
-        xhtml.startDocument();
+                new HtmlHandler(mapper, taggedOutput, metadata, context, extractScripts));
+        emitDocument(document, xhtml, taggedOutput);
+    }
+
+    private void emitDocument(Document document, ContentHandler xhtml,
+                              TaggedContentHandler taggedOutput) throws SAXException {
+        Throwable primaryFailure = null;
+        boolean documentStarted = false;
+        boolean outputRefused = false;
         try {
+            xhtml.startDocument();
+            documentStarted = true;
             NodeTraversor.filter(new TikaNodeFilter(xhtml), document);
+            Throwable outputFailure = taggedOutput.getUncheckedFailure();
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throwUnchecked(outputFailure);
+            }
         } catch (RuntimeSAXException e) {
-            throw e.getWrapped();
+            SAXException saxFailure = e.getWrapped();
+            SAXException outputFailure = findTaggedOutputFailure(taggedOutput, saxFailure);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throw outputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, saxFailure);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            primaryFailure = saxFailure;
+            throw saxFailure;
+        } catch (SAXException e) {
+            SAXException outputFailure = findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throw outputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            primaryFailure = e;
+            throw e;
+        } catch (RuntimeException | Error e) {
+            Throwable outputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throwUnchecked(outputFailure);
+            }
+            primaryFailure = e;
+            outputRefused = e instanceof Error;
+            throw e;
         } finally {
-            xhtml.endDocument();
+            if (documentStarted && !outputRefused) {
+                try {
+                    xhtml.endDocument();
+                } catch (SAXException cleanupFailure) {
+                    handleCleanupFailure(taggedOutput, primaryFailure, cleanupFailure);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    Throwable outputFailure =
+                            findUncheckedOutputFailure(taggedOutput, cleanupFailure);
+                    Throwable failure =
+                            outputFailure != null ? outputFailure : cleanupFailure;
+                    addSuppressed(failure, primaryFailure);
+                    throwUnchecked(failure);
+                }
+            }
         }
+    }
+
+    private static SAXException findTaggedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    return outputFailure;
+                }
+                return null;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Throwable findUncheckedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Throwable outputFailure = taggedOutput.findUncheckedCause(failure);
+        return outputFailure != null
+                ? outputFailure : taggedOutput.getUncheckedFailure();
+    }
+
+    private static void handleCleanupFailure(
+            TaggedContentHandler taggedOutput, Throwable primaryFailure,
+            SAXException cleanupFailure) throws SAXException {
+        SAXException outputFailure = findTaggedOutputFailure(taggedOutput, cleanupFailure);
+        if (outputFailure != null) {
+            addSuppressed(outputFailure, primaryFailure);
+            throw outputFailure;
+        }
+        if (primaryFailure == null) {
+            throw cleanupFailure;
+        }
+        addSuppressed(primaryFailure, cleanupFailure);
+    }
+
+    private static void addSuppressed(Throwable primaryFailure, Throwable suppressedFailure) {
+        if (suppressedFailure != null && primaryFailure != suppressedFailure) {
+            primaryFailure.addSuppressed(suppressedFailure);
+        }
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        throw (Error) failure;
     }
 
     private class TikaNodeFilter implements NodeFilter {
