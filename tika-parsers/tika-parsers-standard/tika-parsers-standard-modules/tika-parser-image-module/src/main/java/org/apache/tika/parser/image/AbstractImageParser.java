@@ -17,6 +17,7 @@
 package org.apache.tika.parser.image;
 
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBuffer;
 import java.awt.image.SampleModel;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,7 +55,7 @@ public abstract class AbstractImageParser implements Parser {
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
     private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
     private static final long MAX_IMAGE_HASH_PIXELS = 16L * 1024 * 1024;
-    private static final long MAX_IMAGE_HASH_RASTER_BYTES = 64L * 1024 * 1024;
+    private static final long MAX_IMAGE_HASH_RASTER_BYTES = 16L * 1024 * 1024;
     private static final String IMAGE_HASH_DIMENSION_WARNING =
             "Image hashing skipped because decoded dimensions exceed the "
                     + MAX_IMAGE_HASH_PIXELS + " pixel limit";
@@ -168,6 +169,10 @@ public abstract class AbstractImageParser implements Parser {
                 for (int sampleBits : sampleModel.getSampleSize()) {
                     bitsPerPixel += sampleBits;
                 }
+                long storageBitsPerPixel =
+                        (long) DataBuffer.getDataTypeSize(sampleModel.getDataType())
+                                * sampleModel.getNumDataElements();
+                bitsPerPixel = Math.max(bitsPerPixel, storageBitsPerPixel);
                 long decodedBytes =
                         (((long) width * height * bitsPerPixel) + 7) / 8;
                 if (bitsPerPixel <= 0 || decodedBytes > MAX_IMAGE_HASH_RASTER_BYTES) {

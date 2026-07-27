@@ -875,24 +875,8 @@ public class PpkgParser implements Parser {
         }
         embMeta.set(Metadata.CONTENT_TYPE, mime);
 
-        // Canonical per-asset record. The limiter treats this as one atomic value,
-        // so hashes, name, size, and MIME cannot be partially associated.
-        String asset = "reference=" + sanitizeAssetField(name)
-                + ";mime_type=" + sanitizeAssetField(mime)
-                + ";size=" + data.length
-                + ";sha256=" + sha256
-                + ";sha1=" + sha1Hex
-                + ";md5=" + md5;
-        rootMeta.add(MetadataRecord.PPKG_DATA_ASSET_RECORD, asset);
-
-        // Compatibility arrays. Consumers that need record association should use
-        // the atomic ppkg:data_asset representation above.
-        rootMeta.add("ppkg:embedded_file_sha256", sha256);
-        rootMeta.add("ppkg:embedded_file_md5", md5);
-        rootMeta.add("ppkg:embedded_file_sha1", sha1Hex);
-        rootMeta.add("ppkg:embedded_file_name", name);
-        rootMeta.add("ppkg:embedded_file_size", Long.toString(data.length));
-        rootMeta.add("ppkg:embedded_file_mime", mime);
+        emitDataAssetMetadata(
+                rootMeta, name, mime, data.length, sha256, sha1Hex, md5);
 
         try (TikaInputStream tis = TikaInputStream.get(data)) {
             if (extractor.shouldParseEmbedded(embMeta)) {
@@ -904,6 +888,31 @@ public class PpkgParser implements Parser {
 
         // ppkg:data_asset metadata is canonical; don't duplicate as
         // "DataAsset: ..." body text.
+    }
+
+    private static void emitDataAssetMetadata(
+            Metadata metadata, String name, String mime, long size,
+            String sha256, String sha1, String md5) {
+        // Retain the established compatibility-first budget policy. If a low
+        // total metadata budget is reached, aligned placeholders preserve all
+        // six legacy array positions before the duplicate canonical record is
+        // considered.
+        metadata.add("ppkg:embedded_file_sha256", sha256);
+        metadata.add("ppkg:embedded_file_md5", md5);
+        metadata.add("ppkg:embedded_file_sha1", sha1);
+        metadata.add("ppkg:embedded_file_name", name);
+        metadata.add("ppkg:embedded_file_size", Long.toString(size));
+        metadata.add("ppkg:embedded_file_mime", mime);
+
+        // Canonical per-asset record. The limiter treats this as one atomic
+        // value, so it is either retained whole or dropped whole.
+        String asset = "reference=" + sanitizeAssetField(name)
+                + ";mime_type=" + sanitizeAssetField(mime)
+                + ";size=" + size
+                + ";sha256=" + sha256
+                + ";sha1=" + sha1
+                + ";md5=" + md5;
+        metadata.add(MetadataRecord.PPKG_DATA_ASSET_RECORD, asset);
     }
 
     /**

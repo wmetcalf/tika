@@ -225,6 +225,9 @@ public class XMLParser implements Parser {
         try {
             // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
             if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
+                markSvgEnrichmentIncomplete(metadata,
+                        "SVG raster enrichment skipped because input exceeds the "
+                                + SVG_RASTER_MAX_BYTES + " byte limit");
                 return;
             }
 
@@ -274,7 +277,11 @@ public class XMLParser implements Parser {
                             new org.apache.tika.sax.EmbeddedContentHandler(
                                 new BodyContentHandler(xhtml)),
                             ocrMeta, context);
-                    } catch (Exception ignored) { }
+                    } catch (Exception e) {
+                        markSvgEnrichmentIncomplete(metadata,
+                                "SVG OCR enrichment failed: "
+                                        + e.getClass().getSimpleName());
+                    }
                 }
             }
 
@@ -314,7 +321,15 @@ public class XMLParser implements Parser {
                 warning.append(": ").append(failure.getMessage());
             }
         }
-        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning.toString());
+        markSvgEnrichmentIncomplete(metadata, warning.toString());
+    }
+
+    private static void markSvgEnrichmentIncomplete(Metadata metadata, String warning) {
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "SVG enrichment incomplete; hidden visual content may not be analyzed");
+        }
     }
 
     protected ContentHandler getContentHandler(ContentHandler handler, Metadata metadata,

@@ -143,10 +143,12 @@ public final class HtmlColorQRExtractor {
                         decoded.add(r);
                     }
                 }
-            } catch (IOException e) {
-                // best-effort
-            } catch (RuntimeException e) {
-                // best-effort
+            } catch (IOException | RuntimeException e) {
+                if (metadata != null) {
+                    markAnalysisIncomplete(metadata,
+                            "HTML color-QR scanner failed: "
+                                    + e.getClass().getSimpleName());
+                }
             } finally {
                 if (tmp != null) {
                     try {
@@ -654,7 +656,7 @@ public final class HtmlColorQRExtractor {
         return parseStylesheetsBounded(doc).rules;
     }
 
-    private static StylesheetParseResult parseStylesheetsBounded(Document doc) {
+    static StylesheetParseResult parseStylesheetsBounded(Document doc) {
         StylesheetAccumulator accumulator = new StylesheetAccumulator();
         try {
             doc.traverse(accumulator);
@@ -770,9 +772,9 @@ public final class HtmlColorQRExtractor {
         return -1;
     }
 
-    private static final class StylesheetParseResult {
-        private final Map<String, String> rules;
-        private final boolean truncated;
+    static final class StylesheetParseResult {
+        final Map<String, String> rules;
+        final boolean truncated;
 
         private StylesheetParseResult(Map<String, String> rules, boolean truncated) {
             this.rules = rules;

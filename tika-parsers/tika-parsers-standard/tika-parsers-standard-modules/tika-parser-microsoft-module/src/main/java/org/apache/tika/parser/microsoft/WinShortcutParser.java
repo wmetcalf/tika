@@ -305,6 +305,10 @@ public class WinShortcutParser implements Parser {
     private static final int VT_VECTOR   = 0x1000; // OR'd with base type
     private static final int MAX_PROPERTY_VECTOR_ELEMENTS = 4_096;
     private static final int MAX_PROPERTY_VALUE_CHARS = 64 * 1024;
+    private static final int MAX_STRUCTURED_FIELDS = 4_096;
+    private static final int MAX_IDLIST_COMPONENTS = 4_096;
+    private static final int MAX_IDLIST_PATH_CHARS = 64 * 1024;
+    private static final int MAX_WARNINGS = 256;
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -329,7 +333,8 @@ public class WinShortcutParser implements Parser {
         metadata.set(Metadata.CONTENT_TYPE, LNK_TYPE.toString());
 
         if (inputTruncated) {
-            warnings.add("LNK input exceeded the 16 MiB analysis limit; extraction is incomplete");
+            addWarning(warnings,
+                    "LNK input exceeded the 16 MiB analysis limit; extraction is incomplete");
             fields.put("ExploitClass",
                     "LNK input extraction incomplete; exploit indicators may be hidden");
         }
@@ -485,8 +490,14 @@ public class WinShortcutParser implements Parser {
     private List<String> walkIdList(ByteBuffer buf, int start, int end, int fileLen,
                                     Map<String, String> fields, List<String> warnings) {
         List<String> path = new ArrayList<>();
+        int retainedChars = 0;
         int itemStart = start;
         while (itemStart + 2 < end && itemStart + 2 <= fileLen) {
+            if (path.size() >= MAX_IDLIST_COMPONENTS) {
+                markAnalysisIncomplete(fields, warnings,
+                        "IDList component count exceeded the analysis limit");
+                break;
+            }
             int itemSize = Short.toUnsignedInt(buf.getShort(itemStart));
             if (itemSize == 0) {
                 break;
@@ -499,10 +510,18 @@ public class WinShortcutParser implements Parser {
                 try {
                     String comp = parseShellItem(buf, itemStart, itemSize, itemEnd, fields);
                     if (comp != null && !comp.isEmpty()) {
+                        long joinedChars = (long) retainedChars + comp.length()
+                                + (path.isEmpty() ? 0 : 1);
+                        if (joinedChars > MAX_IDLIST_PATH_CHARS) {
+                            markAnalysisIncomplete(fields, warnings,
+                                    "IDList path exceeded the output limit");
+                            break;
+                        }
                         path.add(comp);
+                        retainedChars = (int) joinedChars;
                     }
                 } catch (Exception e) {
-                    warnings.add("IDList item error: " + e.getMessage());
+                    addWarning(warnings, "IDList item error: " + e.getMessage());
                 }
             }
             itemStart = itemEnd;
@@ -994,7 +1013,7 @@ public class WinShortcutParser implements Parser {
             }
             pos += structuralBytes;
             if (actualUnicode != unicode && !value.isEmpty()) {
-                warnings.add(keyNames[fi] + ": IsUnicode flag=" + unicode
+                addWarning(warnings, keyNames[fi] + ": IsUnicode flag=" + unicode
                         + " but content decodes cleanly as "
                         + (actualUnicode ? "UTF-16LE" : "ANSI/cp1252")
                         + " (flag/content mismatch — possible parser-confusion attempt)");
@@ -1017,7 +1036,8 @@ public class WinShortcutParser implements Parser {
                     String hidden  = value.substring(260);
                     if (!hidden.trim().isEmpty()) {
                         fields.put("Arguments.Hidden", hidden.trim());
-                        warnings.add("Arguments field padded past 260 chars — hidden content detected");
+                        addWarning(warnings,
+                                "Arguments field padded past 260 chars — hidden content detected");
                     }
                 }
             }
@@ -1028,9 +1048,15 @@ public class WinShortcutParser implements Parser {
     private static void markAnalysisIncomplete(Map<String, String> fields,
                                                List<String> warnings,
                                                String warning) {
-        warnings.add(warning);
+        addWarning(warnings, warning);
         fields.putIfAbsent("ExploitClass",
                 "LNK parsing incomplete; exploit indicators may be hidden");
+    }
+
+    private static void addWarning(List<String> warnings, String warning) {
+        if (warnings.size() < MAX_WARNINGS) {
+            warnings.add(warning);
+        }
     }
 
     /**
@@ -1353,6 +1379,11 @@ public class WinShortcutParser implements Parser {
             int vpos = spos + 24;
             int sEnd = spos + storageSize;
             while (vpos + 8 <= sEnd) {
+                if (fields.size() >= MAX_STRUCTURED_FIELDS) {
+                    markAnalysisIncomplete(fields, warnings,
+                            "PropertyStore field count exceeded the analysis limit");
+                    return;
+                }
                 int valueSize = buf.getInt(vpos);
                 if (valueSize < 4) {
                     break;
@@ -1369,7 +1400,8 @@ public class WinShortcutParser implements Parser {
                                 propNames, fields, warnings);
                     }
                 } catch (Exception e) {
-                    warnings.add("PropertyStore parse error: " + e.getMessage());
+                    addWarning(warnings,
+                            "PropertyStore parse error: " + e.getMessage());
                 }
                 vpos += valueSize;
             }
@@ -1912,13 +1944,13 @@ public class WinShortcutParser implements Parser {
             if (matchedDescs.size() > 1) {
                 // Surface additional indicators as warnings
                 for (String desc : matchedDescs.subList(1, matchedDescs.size())) {
-                    warnings.add("ExploitIndicator: " + desc);
+                    addWarning(warnings, "ExploitIndicator: " + desc);
                 }
             }
         }
         if (scanState.incompleteJScriptJoin) {
             if (!warnings.contains(INCOMPLETE_JSCRIPT_JOIN_WARNING)) {
-                warnings.add(INCOMPLETE_JSCRIPT_JOIN_WARNING);
+                addWarning(warnings, INCOMPLETE_JSCRIPT_JOIN_WARNING);
             }
             fields.putIfAbsent("ExploitClass",
                     "LNK script-indicator analysis incomplete; executable "
@@ -2345,7 +2377,7 @@ public class WinShortcutParser implements Parser {
             }
             fields.put("AppendedDataSHA256", hex.toString());
         } catch (NoSuchAlgorithmException e) {
-            warnings.add("SHA-256 unavailable: " + e.getMessage());
+            addWarning(warnings, "SHA-256 unavailable: " + e.getMessage());
         }
 
         byte[] appendedBytes = new byte[remaining];
@@ -2372,7 +2404,7 @@ public class WinShortcutParser implements Parser {
                 extractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta, context, true);
             }
         } catch (Exception e) {
-            warnings.add("Appended data parse error: " + e.getMessage());
+            addWarning(warnings, "Appended data parse error: " + e.getMessage());
         }
     }
 

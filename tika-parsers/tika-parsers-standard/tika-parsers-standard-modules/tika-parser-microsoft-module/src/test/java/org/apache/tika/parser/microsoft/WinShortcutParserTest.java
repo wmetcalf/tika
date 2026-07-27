@@ -44,6 +44,8 @@ public class WinShortcutParserTest {
 
     private static final int HEADER_SIZE = 76;
     private static final int SIG_CONSOLE_FE = 0xA0000004;
+    private static final int SIG_PROPERTY_STORE = 0xA0000009;
+    private static final int SIG_VISTA_IDLIST = 0xA000000C;
     private static final int SIG_TOLERATED_UNKNOWN = 0xA0001337;
     private static final int UNKNOWN_BLOCK_SIZE = 70000;
     private static final byte[] CONTROL_PANEL_GUID = new byte[]{
@@ -309,6 +311,28 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testPropertyStoreRecordCardinalityIsBoundedAndSignaled() throws Exception {
+        ParseResult result = assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> parse(buildPropertyRecordCardinalityLnk(5_000)));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "distinct PropertyStore records must have a parse-wide retention cap");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testVistaIdListComponentCardinalityIsBoundedAndSignaled() throws Exception {
+        ParseResult result = assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> parse(buildVistaIdListCardinalityLnk(5_000)));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "Vista ID-list path components must have a retained-item cap");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void testMalformedSectionLengthsFailClosed() throws Exception {
         for (byte[] lnk : List.of(
                 buildMalformedIdListLnk(),
@@ -524,6 +548,51 @@ public class WinShortcutParserTest {
         buffer.putInt(value + 17, chars);
         for (int i = 0; i < chars; i++) {
             buffer.putChar(value + 21 + i * 2, 'A');
+        }
+        return bytes;
+    }
+
+    private static byte[] buildPropertyRecordCardinalityLnk(int records) {
+        int valueSize = 14;
+        int storageSize = 24 + records * valueSize;
+        int blockSize = 8 + storageSize;
+        byte[] bytes = new byte[HEADER_SIZE + blockSize + 4];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0, HEADER_SIZE);
+        buffer.putInt(60, 1);
+        int block = HEADER_SIZE;
+        buffer.putInt(block, blockSize);
+        buffer.putInt(block + 4, SIG_PROPERTY_STORE);
+        int storage = block + 8;
+        buffer.putInt(storage, storageSize);
+        buffer.putInt(storage + 4, 0x53505331);
+        int value = storage + 24;
+        for (int i = 0; i < records; i++, value += valueSize) {
+            buffer.putInt(value, valueSize);
+            buffer.putInt(value + 4, i);
+            buffer.put(value + 8, (byte) 0);
+            buffer.putShort(value + 9, (short) 0x0011);
+            buffer.putShort(value + 11, (short) 0);
+            buffer.put(value + 13, (byte) 1);
+        }
+        return bytes;
+    }
+
+    private static byte[] buildVistaIdListCardinalityLnk(int components) {
+        int blockSize = 8 + components * 4;
+        byte[] bytes = new byte[HEADER_SIZE + blockSize + 4];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0, HEADER_SIZE);
+        buffer.putInt(60, 1);
+        buffer.putInt(HEADER_SIZE, blockSize);
+        buffer.putInt(HEADER_SIZE + 4, SIG_VISTA_IDLIST);
+        int item = HEADER_SIZE + 8;
+        for (int i = 0; i < components; i++, item += 4) {
+            buffer.putShort(item, (short) 4);
+            buffer.put(item + 2, (byte) 0x2f);
+            buffer.put(item + 3, (byte) 'A');
         }
         return bytes;
     }

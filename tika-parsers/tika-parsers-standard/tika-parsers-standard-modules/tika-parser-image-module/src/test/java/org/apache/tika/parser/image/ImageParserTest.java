@@ -328,6 +328,24 @@ public class ImageParserTest extends TikaTest {
     }
 
     @Test
+    public void testImageHashRasterAtOldByteCeilingIsSkippedBeforeDecode() throws Exception {
+        ImageParser hashingParser = new ImageParser();
+        hashingParser.setImageHashingEnabled(true);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+
+        try (TikaInputStream tis = TikaInputStream.get(
+                buildPngWithFormat(4_096, 4_096, 8, 2))) {
+            hashingParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+
+        assertEquals(null, metadata.get(ImageHash.PHASH));
+        assertEquals(1, metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length,
+                "a 48-64 MiB raster needs working-memory headroom before ImageIO.read");
+    }
+
+    @Test
     public void testBarcodeMetadataEmittedFromImageParsing() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/png");

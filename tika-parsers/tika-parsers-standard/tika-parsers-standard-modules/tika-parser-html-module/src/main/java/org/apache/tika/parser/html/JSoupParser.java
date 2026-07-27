@@ -25,8 +25,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.xml.XMLConstants;
 
@@ -94,6 +96,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
     private static final int MAX_UNICODE_QR_CANDIDATES = 16;
     private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_CHARS = 64 * 1024;
+    private static final int MAX_UNICODE_QR_STYLE_RULE_LOOKUPS = 64 * 1024;
     private static final String UNICODE_QR_LIMIT_WARNING =
             "HTML Unicode-QR analysis limit reached; Unicode-QR extraction is incomplete";
 
@@ -272,23 +275,46 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             return;
         }
         try {
-            // Collect raw text from <pre>, <code>, and any element with an
-            // inline style declaring whitespace pre-served rendering.
-            org.jsoup.select.Elements candidates = document.select("pre, code, [style]");
-            boolean incomplete = false;
+            HtmlColorQRExtractor.StylesheetParseResult stylesheets =
+                    HtmlColorQRExtractor.parseStylesheetsBounded(document);
+            Map<String, String> stylesheetRules = stylesheets.rules;
+            // Avoid repeatedly selecting the document once per CSS rule. When
+            // stylesheet rules exist, visit each element once and resolve only
+            // its simple tag/class/id keys.
+            org.jsoup.select.Elements candidates = stylesheetRules.isEmpty()
+                    ? document.select("pre, code, [style]") : document.getAllElements();
+            boolean incomplete = stylesheets.truncated;
             int inspected = 0;
+            CssRuleBudget ruleBudget = new CssRuleBudget();
+            Set<Element> seen =
+                    Collections.newSetFromMap(new IdentityHashMap<>());
             for (Element element : candidates) {
                 boolean preformatted = "pre".equalsIgnoreCase(element.tagName())
                         || "code".equalsIgnoreCase(element.tagName());
-                if (!preformatted) {
+                if (!preformatted && element.hasAttr("style")) {
                     String style = element.attr("style");
                     if (style.length() > MAX_UNICODE_QR_STYLE_CHARS) {
                         incomplete = true;
                         style = style.substring(0, MAX_UNICODE_QR_STYLE_CHARS);
                     }
-                    preformatted = preservesWhitespace(style);
+                    WhitespaceInspection inspection = inspectWhitespace(style);
+                    incomplete |= inspection.incomplete;
+                    preformatted = inspection.preserves;
+                }
+                if (!preformatted && !stylesheetRules.isEmpty()) {
+                    WhitespaceInspection inspection = stylesheetPreservesWhitespace(
+                            element, stylesheetRules, ruleBudget);
+                    incomplete |= inspection.incomplete;
+                    preformatted = inspection.preserves;
                 }
                 if (!preformatted) {
+                    if (ruleBudget.exhausted) {
+                        incomplete = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (!seen.add(element)) {
                     continue;
                 }
                 if (inspected++ >= MAX_UNICODE_QR_CANDIDATES) {
@@ -333,6 +359,17 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
     }
 
     private static boolean preservesWhitespace(String style) {
+        return inspectWhitespace(style).preserves;
+    }
+
+    private static WhitespaceInspection inspectWhitespace(String style) {
+        CssNormalization normalization = normalizeCss(style);
+        return new WhitespaceInspection(
+                preservesWhitespaceCanonical(normalization.css),
+                normalization.incomplete);
+    }
+
+    private static boolean preservesWhitespaceCanonical(String style) {
         int declarationStart = 0;
         while (declarationStart < style.length()) {
             int declarationEnd = style.indexOf(';', declarationStart);
@@ -358,13 +395,11 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                             && Character.isWhitespace(style.charAt(valueStart))) {
                         valueStart++;
                     }
-                    int afterPre = valueStart + 3;
-                    if (afterPre <= declarationEnd
-                            && style.regionMatches(true, valueStart, "pre", 0, 3)
-                            && (afterPre == declarationEnd
-                            || Character.isWhitespace(style.charAt(afterPre))
-                            || style.charAt(afterPre) == '-'
-                            || style.charAt(afterPre) == '!')) {
+                    if (cssValueStartsWithKeyword(
+                            style, valueStart, declarationEnd, "pre", true)
+                            || cssValueStartsWithKeyword(
+                            style, valueStart, declarationEnd,
+                            "break-spaces", false)) {
                         return true;
                     }
                 }
@@ -372,6 +407,164 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             declarationStart = declarationEnd + 1;
         }
         return false;
+    }
+
+    private static boolean cssValueStartsWithKeyword(
+            String style, int valueStart, int declarationEnd,
+            String keyword, boolean allowHyphenatedSuffix) {
+        int afterKeyword = valueStart + keyword.length();
+        if (afterKeyword > declarationEnd
+                || !style.regionMatches(
+                true, valueStart, keyword, 0, keyword.length())) {
+            return false;
+        }
+        return afterKeyword == declarationEnd
+                || Character.isWhitespace(style.charAt(afterKeyword))
+                || style.charAt(afterKeyword) == '!'
+                || allowHyphenatedSuffix && style.charAt(afterKeyword) == '-';
+    }
+
+    private static WhitespaceInspection stylesheetPreservesWhitespace(
+            Element element, Map<String, String> rules, CssRuleBudget budget) {
+        boolean incomplete = false;
+        WhitespaceInspection inspection = inspectRule(
+                rules, element.tagName().toLowerCase(java.util.Locale.ROOT), budget);
+        incomplete |= inspection.incomplete;
+        if (inspection.preserves) {
+            return new WhitespaceInspection(true, incomplete);
+        }
+
+        String classes = element.attr("class");
+        int classLimit = Math.min(classes.length(), MAX_UNICODE_QR_STYLE_CHARS);
+        if (classLimit < classes.length()) {
+            incomplete = true;
+        }
+        int cursor = 0;
+        while (cursor < classLimit) {
+            while (cursor < classLimit && Character.isWhitespace(classes.charAt(cursor))) {
+                cursor++;
+            }
+            int start = cursor;
+            while (cursor < classLimit && !Character.isWhitespace(classes.charAt(cursor))) {
+                cursor++;
+            }
+            if (start < cursor) {
+                inspection = inspectRule(rules, "."
+                        + classes.substring(start, cursor)
+                        .toLowerCase(java.util.Locale.ROOT), budget);
+                incomplete |= inspection.incomplete;
+                if (inspection.preserves) {
+                    return new WhitespaceInspection(true, incomplete);
+                }
+            }
+        }
+
+        String id = element.id();
+        if (id.length() > MAX_UNICODE_QR_STYLE_CHARS) {
+            return new WhitespaceInspection(false, true);
+        }
+        if (!id.isEmpty()) {
+            inspection = inspectRule(rules,
+                    "#" + id.toLowerCase(java.util.Locale.ROOT), budget);
+            incomplete |= inspection.incomplete;
+            if (inspection.preserves) {
+                return new WhitespaceInspection(true, incomplete);
+            }
+        }
+        return new WhitespaceInspection(false, incomplete);
+    }
+
+    private static WhitespaceInspection inspectRule(
+            Map<String, String> rules, String selector, CssRuleBudget budget) {
+        if (!budget.consume()) {
+            return new WhitespaceInspection(false, true);
+        }
+        String declaration = rules.get(selector);
+        return declaration == null
+                ? new WhitespaceInspection(false, false)
+                : inspectWhitespace(declaration);
+    }
+
+    private static CssNormalization normalizeCss(String css) {
+        StringBuilder normalized = new StringBuilder(css.length());
+        boolean incomplete = false;
+        int cursor = 0;
+        while (cursor < css.length()) {
+            char current = css.charAt(cursor);
+            if (current == '/' && cursor + 1 < css.length()
+                    && css.charAt(cursor + 1) == '*') {
+                int close = css.indexOf("*/", cursor + 2);
+                if (close < 0) {
+                    incomplete = true;
+                    break;
+                }
+                cursor = close + 2;
+                continue;
+            }
+            if (current != '\\') {
+                normalized.append(current);
+                cursor++;
+                continue;
+            }
+            if (++cursor >= css.length()) {
+                incomplete = true;
+                break;
+            }
+            char escaped = css.charAt(cursor);
+            if (escaped == '\r' || escaped == '\n' || escaped == '\f') {
+                if (escaped == '\r' && cursor + 1 < css.length()
+                        && css.charAt(cursor + 1) == '\n') {
+                    cursor++;
+                }
+                cursor++;
+                continue;
+            }
+            int codePoint = 0;
+            int digits = 0;
+            while (cursor < css.length() && digits < 6) {
+                int hex = Character.digit(css.charAt(cursor), 16);
+                if (hex < 0) {
+                    break;
+                }
+                codePoint = codePoint * 16 + hex;
+                cursor++;
+                digits++;
+            }
+            if (digits == 0) {
+                normalized.append(escaped);
+                cursor++;
+                continue;
+            }
+            if (cursor < css.length() && Character.isWhitespace(css.charAt(cursor))) {
+                cursor++;
+            }
+            if (codePoint <= 0 || !Character.isValidCodePoint(codePoint)) {
+                normalized.append('\ufffd');
+            } else {
+                normalized.appendCodePoint(codePoint);
+            }
+        }
+        return new CssNormalization(normalized.toString(), incomplete);
+    }
+
+    private static final class CssRuleBudget {
+        private int lookups;
+        private boolean exhausted;
+
+        private boolean consume() {
+            if (lookups >= MAX_UNICODE_QR_STYLE_RULE_LOOKUPS) {
+                exhausted = true;
+                return false;
+            }
+            lookups++;
+            return true;
+        }
+    }
+
+    private record CssNormalization(String css, boolean incomplete) {
+    }
+
+    private record WhitespaceInspection(boolean preserves, boolean incomplete) {
     }
 
     private static BoundedMonospaceText collectMonospaceText(Element element) {

@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
 
@@ -275,6 +277,35 @@ public class PpkgParserSecurityTest {
         assertEquals(1, result.metadata.getValues("ppkg:command").length);
         assertEquals(1, countOccurrences(result.body, "Source: "),
                 "content-addressed WIM aliases must not repeatedly expand one resource");
+    }
+
+    @Test
+    public void embeddedAssetCompatibilityArraysStayAlignedUnderLowTotalBudget()
+            throws Exception {
+        StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
+        factory.setMaxKeySize(100);
+        factory.setMaxFieldSize(10_000);
+        factory.setMaxTotalBytes(626);
+        factory.setMaxValuesPerField(10);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        emitDataAssetMetadataForTest(metadata, 'a', "first.exe");
+        emitDataAssetMetadataForTest(metadata, 'b', "second.ps1");
+
+        String[] fields = {
+                "ppkg:embedded_file_sha256",
+                "ppkg:embedded_file_md5",
+                "ppkg:embedded_file_sha1",
+                "ppkg:embedded_file_name",
+                "ppkg:embedded_file_size",
+                "ppkg:embedded_file_mime"
+        };
+        int expected = metadata.getValues(fields[0]).length;
+        assertTrue(expected > 0, "at least one compatibility record must survive");
+        for (String field : fields) {
+            assertEquals(expected, metadata.getValues(field).length,
+                    "low total budgets must not split PPKG compatibility records at " + field);
+        }
     }
 
     @Test
@@ -601,6 +632,19 @@ public class PpkgParserSecurityTest {
             offset += needle.length();
         }
         return count;
+    }
+
+    private static void emitDataAssetMetadataForTest(
+            Metadata metadata, char fill, String name) throws Exception {
+        Method method = PpkgParser.class.getDeclaredMethod(
+                "emitDataAssetMetadata",
+                Metadata.class, String.class, String.class, long.class,
+                String.class, String.class, String.class);
+        method.setAccessible(true);
+        method.invoke(null, metadata, name, "application/octet-stream", 1234L,
+                String.valueOf(fill).repeat(64),
+                String.valueOf(fill).repeat(40),
+                String.valueOf(fill).repeat(32));
     }
 
     private static void putResourceHeader(byte[] bytes, ByteBuffer buffer, int offset,

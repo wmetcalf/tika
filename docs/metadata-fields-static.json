@@ -1,11 +1,11 @@
 {
-  "scanned_at": "2026-07-26T22:26:23.654459+00:00",
-  "tika_root": "/tmp/claude-1000/-home-coz-Downloads-RedTusk/3e4e9d0b-d2e9-4c4b-b435-ff24445dca07/scratchpad/tika-inv",
+  "scanned_at": "2026-07-27T01:22:53.218847+00:00",
+  "tika_root": "/home/coz/.config/superpowers/worktrees/tika/mantis-fork-findings",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 715,
-    "parsers_emitting_fields": 198,
-    "undeclared_string_fields": 280,
+    "property_declarations": 716,
+    "parsers_emitting_fields": 199,
+    "undeclared_string_fields": 279,
     "templated_patterns": 118
   },
   "properties": {
@@ -949,6 +949,9 @@
       "emitted_by": [
         "org.apache.tika.parser.audio.AudioParser",
         "org.apache.tika.parser.crypto.Pkcs7Parser",
+        "org.apache.tika.parser.html.HtmlColorQRExtractor",
+        "org.apache.tika.parser.html.JSoupParser",
+        "org.apache.tika.parser.image.AbstractImageParser",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.ooxml.SXSLFPowerPointExtractorDecorator",
         "org.apache.tika.parser.microsoft.ooxml.SXWPFWordExtractorDecorator",
@@ -4048,6 +4051,15 @@
       "javadoc": "The version number of the PLUS standards in place at the time of the transaction. <p> This property was included into the IPTC Extension schema from PLUS version 1.2 as all other PLUS properties. To reflect this the value of \"PLUS Version\" should be set to the string \"1.2.0\"",
       "emitted_by": []
     },
+    "ppkg:data_asset": {
+      "type": "String",
+      "declared_in": "org.apache.tika.metadata.MetadataRecord",
+      "constant_name": "PPKG_DATA_ASSET_RECORD",
+      "javadoc": null,
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.PpkgParser"
+      ]
+    },
     "pst:discriptorNodeId": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.PST",
@@ -6159,14 +6171,29 @@
     "ExploitClass": {
       "emitted_by": [
         {
-          "class": "org.apache.tika.parser.html.JSoupParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 239
+          "class": "org.apache.tika.parser.html.HtmlColorQRExtractor",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlColorQRExtractor.java",
+          "line": 113
+        },
+        {
+          "class": "org.apache.tika.parser.html.HtmlColorQRExtractor",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlColorQRExtractor.java",
+          "line": 845
         },
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 319
+          "line": 250
+        },
+        {
+          "class": "org.apache.tika.parser.html.JSoupParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
+          "line": 344
+        },
+        {
+          "class": "org.apache.tika.parser.html.JSoupParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
+          "line": 585
         },
         {
           "class": "org.apache.tika.parser.image.UnicodeQRContentHandler",
@@ -6181,42 +6208,47 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 286
+          "line": 307
         },
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 299
+          "line": 320
         },
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 309
+          "line": 332
+        },
+        {
+          "class": "org.apache.tika.parser.microsoft.MscParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
+          "line": 360
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 139
+          "line": 145
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 268
+          "line": 276
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 274
+          "line": 289
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 804
+          "line": 819
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 809
+          "line": 824
         },
         {
           "class": "org.apache.tika.parser.microsoft.RdpParser",
@@ -6249,6 +6281,11 @@
           "line": 232
         },
         {
+          "class": "org.apache.tika.parser.microsoft.WinShortcutParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/WinShortcutParser.java",
+          "line": 395
+        },
+        {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
           "line": 102
@@ -6257,6 +6294,16 @@
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
           "line": 151
+        },
+        {
+          "class": "org.apache.tika.parser.xml.XMLParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
+          "line": 330
+        },
+        {
+          "class": "org.apache.tika.parser.xml.XMLParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
+          "line": 464
         }
       ]
     },
@@ -7074,7 +7121,7 @@
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 317
+          "line": 334
         }
       ]
     },
@@ -7621,7 +7668,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.WinShortcutParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/WinShortcutParser.java",
-          "line": 388
+          "line": 399
         }
       ]
     },
@@ -7639,7 +7686,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 412
+          "line": 508
         }
       ]
     },
@@ -7648,7 +7695,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 390
+          "line": 484
         }
       ]
     },
@@ -7657,7 +7704,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 397
+          "line": 491
         }
       ]
     },
@@ -7666,7 +7713,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 258
+          "line": 279
         }
       ]
     },
@@ -7675,7 +7722,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 249
+          "line": 270
         }
       ]
     },
@@ -7684,7 +7731,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 252
+          "line": 273
         }
       ]
     },
@@ -7693,7 +7740,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 280
+          "line": 301
         }
       ]
     },
@@ -7702,7 +7749,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 262
+          "line": 283
         }
       ]
     },
@@ -7711,7 +7758,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 270
+          "line": 291
         }
       ]
     },
@@ -7720,7 +7767,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 267
+          "line": 288
         }
       ]
     },
@@ -7729,7 +7776,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 275
+          "line": 296
         }
       ]
     },
@@ -7738,12 +7785,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 167
+          "line": 174
         },
         {
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
-          "line": 337
+          "line": 365
         }
       ]
     },
@@ -8105,16 +8152,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 262
-        }
-      ]
-    },
-    "ppkg:data_asset": {
-      "emitted_by": [
-        {
-          "class": "org.apache.tika.parser.microsoft.PpkgParser",
-          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 887
+          "line": 270
         }
       ]
     },
@@ -8123,7 +8161,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 280
+          "line": 295
         }
       ]
     },
@@ -8132,7 +8170,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 864
+          "line": 901
         }
       ]
     },
@@ -8141,7 +8179,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 868
+          "line": 905
         }
       ]
     },
@@ -8150,7 +8188,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 866
+          "line": 903
         }
       ]
     },
@@ -8159,7 +8197,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 865
+          "line": 902
         }
       ]
     },
@@ -8168,7 +8206,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 863
+          "line": 900
         }
       ]
     },
@@ -8177,7 +8215,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 867
+          "line": 904
         }
       ]
     },
@@ -8186,12 +8224,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 137
+          "line": 143
         },
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 283
+          "line": 298
         }
       ]
     },
@@ -8467,7 +8505,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 461
+          "line": 437
         }
       ]
     },
@@ -8476,7 +8514,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 451
+          "line": 424
         }
       ]
     },
@@ -8485,7 +8523,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 438
+          "line": 411
         }
       ]
     },
@@ -8494,7 +8532,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 427
+          "line": 400
         }
       ]
     },
@@ -8503,7 +8541,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 473
+          "line": 475
         }
       ]
     },
@@ -8512,7 +8550,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 456
+          "line": 429
         }
       ]
     },
@@ -8741,7 +8779,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 182
+          "line": 188
         }
       ]
     },
@@ -8750,7 +8788,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 184
+          "line": 190
         }
       ]
     }
@@ -9628,7 +9666,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.WinShortcutParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/WinShortcutParser.java",
-          "line": 385
+          "line": 393
         }
       ]
     },
@@ -9826,7 +9864,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.PpkgParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/PpkgParser.java",
-          "line": 250
+          "line": 258
         }
       ]
     },
@@ -10631,6 +10669,12 @@
         "grib:*"
       ]
     },
+    "org.apache.tika.parser.html.HtmlColorQRExtractor": {
+      "emits": [
+        "ExploitClass",
+        "X-TIKA:EXCEPTION:warn"
+      ]
+    },
     "org.apache.tika.parser.html.HtmlHandler": {
       "emits": [
         "Content-Language",
@@ -10647,6 +10691,7 @@
         "Content-Encoding",
         "Content-Type",
         "ExploitClass",
+        "X-TIKA:EXCEPTION:warn",
         "X-TIKA:decodedCharset",
         "html_unicode_qr:glyph_count"
       ]
@@ -10669,7 +10714,8 @@
     "org.apache.tika.parser.image.AbstractImageParser": {
       "emits": [
         "Content-Type",
-        "Content-Type-Parser-Override"
+        "Content-Type-Parser-Override",
+        "X-TIKA:EXCEPTION:warn"
       ]
     },
     "org.apache.tika.parser.image.BPGParser": {
@@ -11121,6 +11167,7 @@
     "org.apache.tika.parser.microsoft.WinShortcutParser": {
       "emits": [
         "Content-Type",
+        "ExploitClass",
         "X-TIKA:origResourceName",
         "X-TIKA:resourceName",
         "lnk:*",
@@ -11873,6 +11920,7 @@
       "emits": [
         "Content-Type",
         "Content-Type-Parser-Override",
+        "ExploitClass",
         "X-TIKA:EXCEPTION:warn",
         "svg:externalScript",
         "svg:externalUseRef",

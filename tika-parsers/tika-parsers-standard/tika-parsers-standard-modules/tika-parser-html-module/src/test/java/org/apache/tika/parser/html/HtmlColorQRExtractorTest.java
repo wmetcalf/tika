@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.AbstractList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +43,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.ZXingCPPConfig;
+import org.apache.tika.parser.image.ZXingCPPScanner;
 import org.apache.tika.sax.BodyContentHandler;
 
 public class HtmlColorQRExtractorTest {
@@ -220,6 +222,55 @@ public class HtmlColorQRExtractorTest {
         assertEquals("decoded-control", metadata.get(Barcode.BARCODE_VALUE));
     }
 
+    @Test
+    public void equivalentCssWhitespaceRulesDoNotHideUnicodeQr() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        ParseContext context = contextFor(fakeScanner);
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        List<String> carriers = List.of(
+                "<div style=\"white-space/**/ : /**/ pre\">"
+                        + unicodeGrid + "</div>",
+                "<div style=\"white-space:pre/**/\">"
+                        + unicodeGrid + "</div>",
+                "<div style=\"white\\2d space:pre\">"
+                        + unicodeGrid + "</div>",
+                "<style>.mono{white-space:pre}</style><div class=\"mono\">"
+                        + unicodeGrid + "</div>",
+                "<div style=\"white-space:break-spaces\">"
+                        + unicodeGrid + "</div>");
+
+        for (String carrier : carriers) {
+            Metadata metadata = new Metadata();
+            parse("<html><body>" + carrier + "</body></html>",
+                    new BodyContentHandler(-1), metadata, context);
+
+            assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                    "browser-equivalent whitespace-preserving CSS must be inspected: "
+                            + carrier);
+        }
+    }
+
+    @Test
+    public void colorQrScannerFailureIsSecurityVisible() {
+        Document document = Jsoup.parse("<html><body>" + VALID_GRID + "</body></html>");
+        Metadata metadata = new Metadata();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ThrowingScanner scanner = new ThrowingScanner();
+
+        List<ZXingCPPScanner.Result> decoded = HtmlColorQRExtractor.extractAndDecode(
+                document, scanner, config, new ParseContext(), metadata);
+
+        assertTrue(scanner.invoked);
+        assertEquals(Collections.emptyList(), decoded);
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "a configured scanner failure must not look like a clean negative");
+    }
+
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,
                               ParseContext context) throws Exception {
         metadata.set(Metadata.CONTENT_TYPE, "text/html; charset=UTF-8");
@@ -264,6 +315,22 @@ public class HtmlColorQRExtractorTest {
         public String get(Object key) {
             lookups++;
             return super.get(key);
+        }
+    }
+
+    private static final class ThrowingScanner extends ZXingCPPScanner {
+        private boolean invoked;
+
+        @Override
+        public boolean hasZXingCPP() {
+            return true;
+        }
+
+        @Override
+        public List<Result> scan(
+                Path imagePath, ZXingCPPConfig config, ParseContext context) {
+            invoked = true;
+            throw new RuntimeException("simulated scanner failure");
         }
     }
 }

@@ -32,17 +32,23 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
 import org.apache.tika.config.EmbeddedLimits;
+import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.ImageHash;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 
 class XMLParserSvgSecurityTest {
@@ -127,6 +133,46 @@ class XMLParserSvgSecurityTest {
     }
 
     @Test
+    void testOversizedSvgRasterSkipIsSecurityVisible() throws Exception {
+        String svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+                + "width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" "
+                + "fill=\"red\"/><text x=\"2\" y=\"32\">visible-svg-text</text><!--"
+                + "A".repeat(10 * 1024 * 1024 + 256)
+                + "--></svg>";
+
+        ParseResult result = parse(svg);
+
+        assertNull(result.metadata.get(ImageHash.PHASH));
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "a configured enrichment limit must not look like a clean negative");
+    }
+
+    @Test
+    void testSvgOcrFailureIsSecurityVisibleEvenWhenHashingSucceeds() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                  <text x="2" y="32">visible-svg-text</text>
+                </svg>
+                """;
+        ThrowingOcrParser ocrParser = new ThrowingOcrParser();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        context.set(Parser.class, ocrParser);
+
+        ParseResult result = parse(svg, context);
+
+        assertTrue(ocrParser.invoked);
+        assertNotNull(result.metadata.get(ImageHash.PHASH), warnings(result.metadata));
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "a configured OCR backend failure must not look like a clean negative");
+    }
+
+    @Test
     void testDeepUseChainDoesNotEscapeRasterEnrichment() throws Exception {
         StringBuilder svg = new StringBuilder(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">"
@@ -195,10 +241,14 @@ class XMLParserSvgSecurityTest {
     }
 
     private static ParseResult parse(String svg) throws Exception {
-        Metadata metadata = new Metadata();
-        metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");
         ParseContext context = new ParseContext();
         context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        return parse(svg, context);
+    }
+
+    private static ParseResult parse(String svg, ParseContext context) throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");
         BodyContentHandler body = new BodyContentHandler(-1);
         try (TikaInputStream stream = TikaInputStream.get(
                 svg.getBytes(StandardCharsets.UTF_8))) {
@@ -223,6 +273,24 @@ class XMLParserSvgSecurityTest {
     private static String warnings(Metadata metadata) {
         return String.join("\n",
                 metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    private static final class ThrowingOcrParser implements Parser {
+        private static final long serialVersionUID = 1L;
+        private boolean invoked;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.image("ocr-png"));
+        }
+
+        @Override
+        public void parse(TikaInputStream stream, ContentHandler handler,
+                          Metadata metadata, ParseContext context)
+                throws IOException, SAXException, TikaException {
+            invoked = true;
+            throw new TikaException("simulated OCR backend failure");
+        }
     }
 
     private record ParseResult(String body, Metadata metadata) {
