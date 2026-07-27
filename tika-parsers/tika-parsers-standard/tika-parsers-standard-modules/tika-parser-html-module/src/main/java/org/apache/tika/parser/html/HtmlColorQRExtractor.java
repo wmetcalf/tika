@@ -730,16 +730,36 @@ public final class HtmlColorQRExtractor {
                 if (++accumulator.selectors > MAX_STYLESHEET_SELECTORS) {
                     throw StylesheetLimitException.INSTANCE;
                 }
-                String selector = css.subSequence(selectorStart, i)
+                String rawSelector = css.subSequence(selectorStart, i)
                         .toString().trim().toLowerCase(Locale.ROOT);
+                JSoupParser.CssNormalization normalization =
+                        JSoupParser.normalizeCss(rawSelector);
+                String selector = normalization.css().trim();
+                if (normalization.incomplete()) {
+                    accumulator.truncated = true;
+                }
                 if (!selector.isEmpty()
                         && SIMPLE_CSS_SELECTOR.matcher(selector).matches()) {
                     accumulator.rules.put(selector, declaration);
+                } else if (!selector.isEmpty()
+                        && isSecurityRelevantDeclaration(declaration)) {
+                    accumulator.truncated = true;
                 }
                 selectorStart = i + 1;
             }
             cursor = close + 1;
         }
+    }
+
+    private static boolean isSecurityRelevantDeclaration(String declaration) {
+        JSoupParser.CssNormalization normalization =
+                JSoupParser.normalizeCss(declaration);
+        String css = normalization.css();
+        if (JSoupParser.inspectWhitespace(css).preserves()) {
+            return true;
+        }
+        String lower = css.toLowerCase(Locale.ROOT);
+        return lower.contains("color") || lower.contains("background");
     }
 
     private static StringBuilder stripCssComments(CharSequence css) {

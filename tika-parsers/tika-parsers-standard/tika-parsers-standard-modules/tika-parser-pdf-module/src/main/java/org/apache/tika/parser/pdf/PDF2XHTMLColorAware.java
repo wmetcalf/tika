@@ -36,6 +36,7 @@ import org.xml.sax.ContentHandler;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BarcodeMetadataUtil;
 import org.apache.tika.parser.image.ColorGridQRDecoder;
 import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.parser.image.ZXingCPPScanner;
@@ -156,6 +157,8 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
             }
         } catch (RuntimeException ex) {
             metadata.add("pdf_color_qr:stage", "exception:" + ex.getClass().getSimpleName() + ":" + ex.getMessage());
+            BarcodeMetadataUtil.markAnalysisIncomplete(
+                    metadata, "PDF color-QR analysis", ex);
         }
     }
 

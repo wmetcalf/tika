@@ -231,13 +231,6 @@ public class XMLParser implements Parser {
                 return;
             }
 
-            // Only rasterize in the primary parse pass (where EmbeddedLimits is set by
-            // ParserRunner). EmbeddedFileExtractor's second pass does not set EmbeddedLimits,
-            // so this guard prevents rasterizing the same SVG a second time unnecessarily.
-            if (context.get(org.apache.tika.config.EmbeddedLimits.class) == null) {
-                return;
-            }
-
             // Full-resolution raster for OCR and phash (1200px max).
             // Ordinary render failures fall through to the lower-res phash
             // fallback. Resource failures are recorded but not retried.

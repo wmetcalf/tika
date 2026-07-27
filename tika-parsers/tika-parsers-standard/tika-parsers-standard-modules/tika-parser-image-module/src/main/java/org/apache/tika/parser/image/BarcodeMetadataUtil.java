@@ -21,11 +21,12 @@ import java.util.Locale;
 import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.MetadataRecord;
+import org.apache.tika.metadata.TikaCoreProperties;
 
 /**
  * Writes decoded barcode results to canonical records and compatibility fields.
  */
-final class BarcodeMetadataUtil {
+public final class BarcodeMetadataUtil {
 
     private BarcodeMetadataUtil() {
     }
@@ -55,6 +56,21 @@ final class BarcodeMetadataUtil {
                 "position", position,
                 "errorCorrectionLevel", errorCorrectionLevel,
                 "mirrored", mirrored));
+    }
+
+    public static void markAnalysisIncomplete(Metadata metadata, String analysis,
+                                              Throwable failure) {
+        if (metadata == null) {
+            return;
+        }
+        String failureType = failure == null
+                ? "unknown failure" : failure.getClass().getSimpleName();
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                analysis + " failed: " + failureType);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    analysis + " incomplete; encoded content may not have been analyzed");
+        }
     }
 
     private static String normalizeFormat(String format, String defaultFormat) {

@@ -18,6 +18,7 @@ package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -387,6 +388,27 @@ public class ImageParserTest extends TikaTest {
     }
 
     @Test
+    public void testBarcodeScannerFailureIsSecurityVisible() throws Exception {
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+        ParseContext context = new ParseContext();
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        context.set(ZXingCPPConfig.class, config);
+        Parser parser = new ScannerBackedBarcodeParser(new FailingScanner());
+
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
+            parser.parse(tis, new DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(0, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals(1, metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
+        assertNotNull(metadata.get("ExploitClass"),
+                "a configured scanner failure must not look like a clean negative");
+    }
+
+    @Test
     public void testNoBarcodeMetadataWhenScanningDisabled() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/png");
@@ -672,6 +694,20 @@ public class ImageParserTest extends TikaTest {
         public List<ZXingCPPScanner.Result> scan(Path imagePath, ZXingCPPConfig config,
                                                  ParseContext context) {
             return results;
+        }
+    }
+
+    private static class FailingScanner extends ZXingCPPScanner {
+
+        @Override
+        boolean checkCommand(String[] command) {
+            return true;
+        }
+
+        @Override
+        public List<ZXingCPPScanner.Result> scan(Path imagePath, ZXingCPPConfig config,
+                                                 ParseContext context) {
+            throw new ScanException("simulated scanner failure");
         }
     }
 

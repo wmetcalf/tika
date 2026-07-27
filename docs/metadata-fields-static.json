@@ -1,5 +1,5 @@
 {
-  "scanned_at": "2026-07-27T01:22:53.218847+00:00",
+  "scanned_at": "2026-07-27T02:07:34.495832+00:00",
   "tika_root": "/home/coz/.config/superpowers/worktrees/tika/mantis-fork-findings",
   "extra_roots": [],
   "summary": {
@@ -952,6 +952,7 @@
         "org.apache.tika.parser.html.HtmlColorQRExtractor",
         "org.apache.tika.parser.html.JSoupParser",
         "org.apache.tika.parser.image.AbstractImageParser",
+        "org.apache.tika.parser.image.BarcodeMetadataUtil",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.ooxml.SXSLFPowerPointExtractorDecorator",
         "org.apache.tika.parser.microsoft.ooxml.SXWPFWordExtractorDecorator",
@@ -6178,27 +6179,32 @@
         {
           "class": "org.apache.tika.parser.html.HtmlColorQRExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/HtmlColorQRExtractor.java",
-          "line": 845
+          "line": 865
         },
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 250
+          "line": 251
         },
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 344
+          "line": 345
         },
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 585
+          "line": 597
+        },
+        {
+          "class": "org.apache.tika.parser.image.BarcodeMetadataUtil",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/BarcodeMetadataUtil.java",
+          "line": 71
         },
         {
           "class": "org.apache.tika.parser.image.UnicodeQRContentHandler",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/main/java/org/apache/tika/parser/image/UnicodeQRContentHandler.java",
-          "line": 120
+          "line": 121
         },
         {
           "class": "org.apache.tika.parser.microsoft.ICalParser",
@@ -6288,22 +6294,22 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
-          "line": 102
+          "line": 103
         },
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 151
+          "line": 152
         },
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 330
+          "line": 323
         },
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 464
+          "line": 457
         }
       ]
     },
@@ -7121,7 +7127,7 @@
         {
           "class": "org.apache.tika.parser.html.JSoupParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/main/java/org/apache/tika/parser/html/JSoupParser.java",
-          "line": 334
+          "line": 335
         }
       ]
     },
@@ -8061,7 +8067,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 139
+          "line": 140
         }
       ]
     },
@@ -8070,7 +8076,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 149
+          "line": 150
         }
       ]
     },
@@ -8079,7 +8085,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 129
+          "line": 130
         }
       ]
     },
@@ -8088,7 +8094,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 137
+          "line": 138
         }
       ]
     },
@@ -8097,7 +8103,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 138
+          "line": 139
         }
       ]
     },
@@ -8106,7 +8112,7 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 136
+          "line": 137
         }
       ]
     },
@@ -8115,17 +8121,17 @@
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 131
+          "line": 132
         },
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 141
+          "line": 142
         },
         {
           "class": "org.apache.tika.parser.pdf.PDF2XHTMLColorAware",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/main/java/org/apache/tika/parser/pdf/PDF2XHTMLColorAware.java",
-          "line": 158
+          "line": 159
         }
       ]
     },
@@ -8505,7 +8511,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 437
+          "line": 430
         }
       ]
     },
@@ -8514,7 +8520,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 424
+          "line": 417
         }
       ]
     },
@@ -8523,7 +8529,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 411
+          "line": 404
         }
       ]
     },
@@ -8532,7 +8538,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 400
+          "line": 393
         }
       ]
     },
@@ -8541,7 +8547,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 475
+          "line": 468
         }
       ]
     },
@@ -8550,7 +8556,7 @@
         {
           "class": "org.apache.tika.parser.xml.XMLParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/main/java/org/apache/tika/parser/xml/XMLParser.java",
-          "line": 429
+          "line": 422
         }
       ]
     },
@@ -8801,7 +8807,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
-          "line": 100
+          "line": 101
         }
       ]
     },
@@ -8812,7 +8818,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
-          "line": 109
+          "line": 110
         }
       ]
     },
@@ -8823,7 +8829,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
-          "line": 99
+          "line": 100
         }
       ]
     },
@@ -8834,7 +8840,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/OOXMLColorQRScanHelper.java",
-          "line": 98
+          "line": 99
         }
       ]
     },
@@ -10728,6 +10734,8 @@
     },
     "org.apache.tika.parser.image.BarcodeMetadataUtil": {
       "emits": [
+        "ExploitClass",
+        "X-TIKA:EXCEPTION:warn",
         "barcode:error-correction-level",
         "barcode:format",
         "barcode:is-mirrored",

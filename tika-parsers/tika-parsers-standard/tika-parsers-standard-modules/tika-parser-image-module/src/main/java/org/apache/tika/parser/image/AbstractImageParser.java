@@ -55,7 +55,7 @@ public abstract class AbstractImageParser implements Parser {
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
     private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
     private static final long MAX_IMAGE_HASH_PIXELS = 16L * 1024 * 1024;
-    private static final long MAX_IMAGE_HASH_RASTER_BYTES = 16L * 1024 * 1024;
+    private static final long MAX_IMAGE_HASH_RASTER_BYTES = 4L * 1024 * 1024;
     private static final String IMAGE_HASH_DIMENSION_WARNING =
             "Image hashing skipped because decoded dimensions exceed the "
                     + MAX_IMAGE_HASH_PIXELS + " pixel limit";
@@ -112,6 +112,8 @@ public abstract class AbstractImageParser implements Parser {
             }
         } catch (ZXingCPPScanner.ScanException e) {
             LOG.warn("Unable to scan barcodes from image {}", imagePath, e);
+            BarcodeMetadataUtil.markAnalysisIncomplete(
+                    metadata, "Image barcode analysis", e);
         }
     }
 

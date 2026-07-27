@@ -24,6 +24,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -117,6 +118,33 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             "ppkg:embedded_file_size",
             "ppkg:embedded_file_mime");
 
+    private static final List<List<String>> ALIGNED_FIELD_GROUPS = List.of(
+            List.of(
+                    Office.OFFICE_LINK_URL.getName(),
+                    Office.OFFICE_LINK_TYPE.getName(),
+                    Office.OFFICE_LINK_TEXT.getName(),
+                    Office.OFFICE_LINK_OCR_TEXT.getName(),
+                    Office.OFFICE_LINK_SOURCE.getName(),
+                    Office.OFFICE_LINK_CONTEXT.getName(),
+                    Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
+                    Office.OFFICE_LINK_ID.getName(),
+                    Office.OFFICE_LINK_TRIGGER.getName(),
+                    Office.OFFICE_LINK_ACTION_TYPE.getName()),
+            List.of(
+                    Barcode.BARCODE_VALUE.getName(),
+                    Barcode.BARCODE_FORMAT.getName(),
+                    Barcode.BARCODE_RAW_BYTES.getName(),
+                    Barcode.BARCODE_POSITION.getName(),
+                    Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
+                    Barcode.BARCODE_IS_MIRRORED.getName()),
+            List.of(
+                    "ppkg:embedded_file_sha256",
+                    "ppkg:embedded_file_md5",
+                    "ppkg:embedded_file_sha1",
+                    "ppkg:embedded_file_name",
+                    "ppkg:embedded_file_size",
+                    "ppkg:embedded_file_mime"));
+
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_TYPE);
@@ -160,6 +188,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     private final Set<String> excludeFields;
 
     private Map<String, Integer> fieldSizes = new HashMap<>();
+    private Set<String> suppressedAlignedGroups = new HashSet<>();
 
     //tracks the estimated size in utf16 bytes. Can be > maxEstimated size
     int estimatedSize = 0;
@@ -204,9 +233,12 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             setAlwaysInclude(field, value, data);
             return;
         }
+        if (!prepareAlignedGroup(field, data)) {
+            return;
+        }
 
         StringSizePair filterKey = filterKey(field, value, data);
-        if (ATOMIC_ADD_FIELDS.contains(field)) {
+        if (ATOMIC_ADD_FIELDS.contains(field) || ALIGNED_ADD_FIELDS.contains(field)) {
             setAtomic(filterKey, value, data);
             return;
         }
@@ -322,8 +354,11 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             addAlwaysInclude(field, value, data);
             return;
         }
+        if (!prepareAlignedGroup(field, data)) {
+            return;
+        }
         StringSizePair filterKey = filterKey(field, value, data);
-        if (ATOMIC_ADD_FIELDS.contains(field)) {
+        if (ATOMIC_ADD_FIELDS.contains(field) || ALIGNED_ADD_FIELDS.contains(field)) {
             addAtomic(filterKey, value, data);
             return;
         }
@@ -369,6 +404,65 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         fieldSizes.put(filterKey.string, valueLength + fieldSize);
 
         data.put(filterKey.string, appendValue(data.get(filterKey.string), toAdd ));
+    }
+
+    /**
+     * The first member emitted by each compatibility helper is the record boundary.
+     * Reserve every included member key at that boundary, or suppress the whole
+     * group. Once the keys are admitted, {@link #addAlignedPlaceholder} can always
+     * append a zero-cost placeholder when a later value no longer fits.
+     */
+    private boolean prepareAlignedGroup(String field, Map<String, String[]> data) {
+        List<String> group = null;
+        for (List<String> candidate : ALIGNED_FIELD_GROUPS) {
+            if (candidate.contains(field)) {
+                group = candidate;
+                break;
+            }
+        }
+        if (group == null) {
+            return true;
+        }
+
+        String groupId = group.get(0);
+        if (suppressedAlignedGroups.contains(groupId)) {
+            return false;
+        }
+        String boundaryField = null;
+        for (String member : group) {
+            if (includeField(member)) {
+                boundaryField = member;
+                break;
+            }
+        }
+        if (boundaryField == null
+                || !field.equals(boundaryField)
+                || fieldSizes.containsKey(boundaryField)) {
+            return true;
+        }
+
+        int requiredKeyBytes = 0;
+        for (String member : group) {
+            if (!includeField(member) || fieldSizes.containsKey(member)) {
+                continue;
+            }
+            int keyBytes = estimateSize(member);
+            if (keyBytes > maxKeySize
+                    || keyBytes > maxTotalEstimatedSize - estimatedSize - requiredKeyBytes) {
+                suppressedAlignedGroups.add(groupId);
+                setTruncated(data);
+                return false;
+            }
+            requiredKeyBytes += keyBytes;
+        }
+
+        for (String member : group) {
+            if (includeField(member) && !fieldSizes.containsKey(member)) {
+                fieldSizes.put(member, 0);
+            }
+        }
+        estimatedSize += requiredKeyBytes;
+        return true;
     }
 
     private void addAtomic(StringSizePair filterKey, String value,
@@ -426,6 +520,17 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
                 maxTotalEstimatedSize - estimatedSize + existingSize - keySize;
         int valueSize = estimateSize(value);
         if (valueSize > Math.min(maxFieldSize, allowedByTotal)) {
+            if (ALIGNED_ADD_FIELDS.contains(filterKey.string)) {
+                if (keySize > maxTotalEstimatedSize - estimatedSize) {
+                    setTruncated(data);
+                    return;
+                }
+                estimatedSize += keySize - existingSize;
+                fieldSizes.put(filterKey.string, 0);
+                data.put(filterKey.string, new String[]{""});
+                setTruncated(data);
+                return;
+            }
             remove(filterKey.string, data);
             setTruncated(data);
             return;

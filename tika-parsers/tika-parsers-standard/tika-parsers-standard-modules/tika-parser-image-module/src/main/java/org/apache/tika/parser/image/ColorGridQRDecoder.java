@@ -109,9 +109,7 @@ public final class ColorGridQRDecoder {
                     break;
                 }
             } catch (IOException e) {
-                // best-effort
-            } catch (RuntimeException e) {
-                // best-effort
+                throw new IllegalStateException("Color-grid QR rendering failed", e);
             } finally {
                 if (tmp != null) {
                     try {

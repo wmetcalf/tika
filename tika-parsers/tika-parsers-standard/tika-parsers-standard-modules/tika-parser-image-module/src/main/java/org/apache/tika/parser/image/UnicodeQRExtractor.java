@@ -259,9 +259,7 @@ public final class UnicodeQRExtractor {
                     break;
                 }
             } catch (IOException e) {
-                // Best-effort — skip this cluster
-            } catch (RuntimeException e) {
-                // ZXing scan failures are non-fatal
+                throw new IllegalStateException("Unicode QR rendering failed", e);
             } finally {
                 if (tmp != null) {
                     try {

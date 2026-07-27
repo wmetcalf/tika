@@ -42,8 +42,8 @@ public final class OfficeLinkMetadataUtil {
         if (metadata == null || isBlank(type) || isBlank(url)) {
             return;
         }
-        metadata.add(Office.OFFICE_LINK_TYPE, type);
         metadata.add(Office.OFFICE_LINK_URL, url);
+        metadata.add(Office.OFFICE_LINK_TYPE, type);
         metadata.add(Office.OFFICE_LINK_TEXT, safe(text));
         metadata.add(Office.OFFICE_LINK_OCR_TEXT, safe(ocrText));
         metadata.add(Office.OFFICE_LINK_SOURCE, safe(source));

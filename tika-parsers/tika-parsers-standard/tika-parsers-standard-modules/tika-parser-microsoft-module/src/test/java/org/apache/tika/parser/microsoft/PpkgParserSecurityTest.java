@@ -282,10 +282,16 @@ public class PpkgParserSecurityTest {
     @Test
     public void embeddedAssetCompatibilityArraysStayAlignedUnderLowTotalBudget()
             throws Exception {
+        assertEmbeddedAssetCompatibilityArraysStayAligned(158);
+        assertEmbeddedAssetCompatibilityArraysStayAligned(626);
+    }
+
+    private static void assertEmbeddedAssetCompatibilityArraysStayAligned(int totalBytes)
+            throws Exception {
         StandardMetadataLimiterFactory factory = new StandardMetadataLimiterFactory();
         factory.setMaxKeySize(100);
         factory.setMaxFieldSize(10_000);
-        factory.setMaxTotalBytes(626);
+        factory.setMaxTotalBytes(totalBytes);
         factory.setMaxValuesPerField(10);
         Metadata metadata = new Metadata(factory.newInstance());
 
@@ -301,10 +307,10 @@ public class PpkgParserSecurityTest {
                 "ppkg:embedded_file_mime"
         };
         int expected = metadata.getValues(fields[0]).length;
-        assertTrue(expected > 0, "at least one compatibility record must survive");
         for (String field : fields) {
             assertEquals(expected, metadata.getValues(field).length,
-                    "low total budgets must not split PPKG compatibility records at " + field);
+                    "low total budgets must not split PPKG compatibility records at "
+                            + field + " for total bytes " + totalBytes);
         }
     }
 

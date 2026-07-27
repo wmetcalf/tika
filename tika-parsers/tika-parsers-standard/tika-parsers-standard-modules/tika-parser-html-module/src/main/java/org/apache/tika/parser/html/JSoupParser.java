@@ -24,6 +24,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -362,7 +363,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         return inspectWhitespace(style).preserves;
     }
 
-    private static WhitespaceInspection inspectWhitespace(String style) {
+    static WhitespaceInspection inspectWhitespace(String style) {
         CssNormalization normalization = normalizeCss(style);
         return new WhitespaceInspection(
                 preservesWhitespaceCanonical(normalization.css),
@@ -482,10 +483,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         String declaration = rules.get(selector);
         return declaration == null
                 ? new WhitespaceInspection(false, false)
-                : inspectWhitespace(declaration);
+                : budget.inspect(selector, declaration);
     }
 
-    private static CssNormalization normalizeCss(String css) {
+    static CssNormalization normalizeCss(String css) {
         StringBuilder normalized = new StringBuilder(css.length());
         boolean incomplete = false;
         int cursor = 0;
@@ -550,6 +551,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
     private static final class CssRuleBudget {
         private int lookups;
         private boolean exhausted;
+        private final Map<String, WhitespaceInspection> inspections = new HashMap<>();
 
         private boolean consume() {
             if (lookups >= MAX_UNICODE_QR_STYLE_RULE_LOOKUPS) {
@@ -559,12 +561,22 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             lookups++;
             return true;
         }
+
+        private WhitespaceInspection inspect(String selector, String declaration) {
+            WhitespaceInspection cached = inspections.get(selector);
+            if (cached != null) {
+                return cached;
+            }
+            WhitespaceInspection inspection = inspectWhitespace(declaration);
+            inspections.put(selector, inspection);
+            return inspection;
+        }
     }
 
-    private record CssNormalization(String css, boolean incomplete) {
+    record CssNormalization(String css, boolean incomplete) {
     }
 
-    private record WhitespaceInspection(boolean preserves, boolean incomplete) {
+    record WhitespaceInspection(boolean preserves, boolean incomplete) {
     }
 
     private static BoundedMonospaceText collectMonospaceText(Element element) {

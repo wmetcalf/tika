@@ -23,6 +23,8 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -30,6 +32,7 @@ import org.xml.sax.SAXException;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.digest.DigestDef;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Property;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.HexCoDec;
 import org.apache.tika.parser.ParseContext;
@@ -46,6 +49,8 @@ public class TextDigestingContentHandlerDecoratorFactory
 
     private static final char[] BASE32_ALPHABET =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".toCharArray();
+    private static final Map<String, Property> METADATA_KEY_PROPERTIES =
+            new ConcurrentHashMap<>();
 
     private volatile List<DigestDef> digests = Arrays.asList(
             new DigestDef(DigestDef.Algorithm.MD5),
@@ -107,7 +112,9 @@ public class TextDigestingContentHandlerDecoratorFactory
             flushBuffer();
             for (int i = 0; i < digestDefs.size(); i++) {
                 DigestDef digestDef = digestDefs.get(i);
-                metadata.set(metadataKey(digestDef),
+                Property property = METADATA_KEY_PROPERTIES.computeIfAbsent(
+                        metadataKey(digestDef), Property::internalText);
+                metadata.set(property,
                         encode(messageDigests.get(i).digest(), digestDef.getEncoding()));
             }
             super.endDocument();

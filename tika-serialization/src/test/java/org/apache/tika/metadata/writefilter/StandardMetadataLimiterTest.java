@@ -368,6 +368,35 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testAlignedGroupReservesKeysFromFirstIncludedField() {
+        Set<String> included = Set.of(
+                Office.OFFICE_LINK_TYPE.getName(),
+                Office.OFFICE_LINK_ID.getName());
+        Metadata metadata = filter(100, 1000, 80, 10,
+                included, Collections.EMPTY_SET, false);
+
+        metadata.add(Office.OFFICE_LINK_TYPE, "hyperlink");
+        metadata.add(Office.OFFICE_LINK_ID, "rId2");
+
+        assertEquals(1, metadata.getValues(Office.OFFICE_LINK_TYPE).length);
+        assertEquals(1, metadata.getValues(Office.OFFICE_LINK_ID).length);
+        assertTruncated(metadata);
+    }
+
+    @Test
+    public void testAlignedGroupIsSuppressedWhenItsKeysCannotFit() {
+        Metadata metadata = filter(100, 1000, 130, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+
+        metadata.add("ppkg:embedded_file_sha256", "a".repeat(64));
+        metadata.add("ppkg:embedded_file_md5", "b".repeat(32));
+
+        assertEquals(0, metadata.getValues("ppkg:embedded_file_sha256").length);
+        assertEquals(0, metadata.getValues("ppkg:embedded_file_md5").length);
+        assertTruncated(metadata);
+    }
+
+    @Test
     public void testNullValues() throws Exception {
         StandardMetadataLimiter standardWriteFilter = new StandardMetadataLimiter(100, 1000, 100000, 10, Set.of(), Set.of(), true);
         Metadata m = new Metadata(standardWriteFilter);

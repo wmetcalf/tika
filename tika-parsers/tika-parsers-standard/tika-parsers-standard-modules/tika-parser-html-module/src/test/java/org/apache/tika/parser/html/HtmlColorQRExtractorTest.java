@@ -19,6 +19,7 @@ package org.apache.tika.parser.html;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
 import java.util.AbstractList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -253,6 +255,71 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void escapedStylesheetSelectorDoesNotHideUnicodeQr() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>.q\\72 {white-space:pre}</style>"
+                        + "<div class=\"qr\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"));
+    }
+
+    @Test
+    public void unsupportedRelevantSelectorIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>.mono.qr{white-space:pre}</style>"
+                        + "<div class=\"mono qr\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "an unsupported rendered selector must not look like a clean negative");
+    }
+
+    @Test
+    public void matchingLargeStylesheetDeclarationIsInspectedOnce() {
+        String declaration = "a".repeat(64 * 1024);
+        String elements = "<div>x</div>".repeat(20_000);
+        Document document = Jsoup.parse(
+                "<html><style>div{" + declaration + "}</style><body>"
+                        + elements + "</body></html>");
+
+        assertTimeoutPreemptively(Duration.ofSeconds(3),
+                () -> new JSoupParser().parseString(
+                        document.outerHtml(), new BodyContentHandler(-1),
+                        new Metadata(), contextForUncheckedScanner()));
+    }
+
+    @Test
+    public void unicodeQrScannerFailureIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFailingScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><div style=\"white-space:pre\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"));
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "a configured Unicode-QR scanner failure must fail closed");
+    }
+
+    @Test
     public void colorQrScannerFailureIsSecurityVisible() {
         Document document = Jsoup.parse("<html><body>" + VALID_GRID + "</body></html>");
         Metadata metadata = new Metadata();
@@ -289,6 +356,14 @@ public class HtmlColorQRExtractorTest {
         return context;
     }
 
+    private static ParseContext contextForUncheckedScanner() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ParseContext context = new ParseContext();
+        context.set(ZXingCPPConfig.class, config);
+        return context;
+    }
+
     private Path createFakeScanner() throws IOException {
         Path script = temporaryDirectory.resolve("fake-zxing-reader");
         Files.writeString(script, """
@@ -299,6 +374,20 @@ public class HtmlColorQRExtractorTest {
                 fi
                 if [ "$1" = "-json" ]; then
                     printf '%s\\n' '{"FilePath":"grid.png","Text":"decoded-control","Format":"QRCode","IsMirrored":false}'
+                    exit 0
+                fi
+                exit 2
+                """, StandardCharsets.UTF_8);
+        Files.setPosixFilePermissions(script,
+                PosixFilePermissions.fromString("rwx------"));
+        return script;
+    }
+
+    private Path createFailingScanner() throws IOException {
+        Path script = temporaryDirectory.resolve("failing-zxing-reader");
+        Files.writeString(script, """
+                #!/bin/sh
+                if [ "$1" = "-version" ]; then
                     exit 0
                 fi
                 exit 2

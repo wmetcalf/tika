@@ -173,6 +173,21 @@ class XMLParserSvgSecurityTest {
     }
 
     @Test
+    void testDirectParserContextStillRunsSvgRasterEnrichment() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+                  <rect width="64" height="64" fill="red"/>
+                  <text x="2" y="32">visible-svg-text</text>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg, new ParseContext());
+
+        assertNotNull(result.metadata.get(ImageHash.PHASH),
+                "ordinary direct Parser API calls must not silently disable SVG hashing");
+    }
+
+    @Test
     void testDeepUseChainDoesNotEscapeRasterEnrichment() throws Exception {
         StringBuilder svg = new StringBuilder(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">"

@@ -102,5 +102,23 @@ public class OfficeLinkMetadataUtilTest {
 
         assertEquals("https://compatibility.invalid/payload",
                 metadata.get(Office.OFFICE_LINK_URL));
+        String[] fields = {
+                Office.OFFICE_LINK_TYPE.getName(),
+                Office.OFFICE_LINK_URL.getName(),
+                Office.OFFICE_LINK_TEXT.getName(),
+                Office.OFFICE_LINK_OCR_TEXT.getName(),
+                Office.OFFICE_LINK_SOURCE.getName(),
+                Office.OFFICE_LINK_CONTEXT.getName(),
+                Office.OFFICE_LINK_RELATIONSHIP_TYPE.getName(),
+                Office.OFFICE_LINK_ID.getName(),
+                Office.OFFICE_LINK_TRIGGER.getName(),
+                Office.OFFICE_LINK_ACTION_TYPE.getName()
+        };
+        int expected = metadata.getValues(fields[0]).length;
+        for (String field : fields) {
+            assertEquals(expected, metadata.getValues(field).length,
+                    "tight total budgets must not split Office compatibility records at "
+                            + field);
+        }
     }
 }

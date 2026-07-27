@@ -22,6 +22,7 @@ import java.util.List;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.BarcodeMetadataUtil;
 import org.apache.tika.parser.image.ColorGridQRDecoder;
 import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.parser.image.ZXingCPPScanner;
@@ -108,6 +109,8 @@ public final class OOXMLColorQRScanHelper {
         } catch (RuntimeException ex) {
             metadata.add(keyPrefix + ":error",
                     ex.getClass().getSimpleName() + ":" + ex.getMessage());
+            BarcodeMetadataUtil.markAnalysisIncomplete(
+                    metadata, exploitFormatLabel + " color-QR analysis", ex);
         }
     }
 }

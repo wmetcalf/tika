@@ -17,7 +17,10 @@
 package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -25,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
+import org.apache.tika.parser.ParseContext;
 
 public class ColorGridQRDecoderMetadataTest {
 
@@ -68,5 +72,35 @@ public class ColorGridQRDecoderMetadataTest {
                 metadata.getValues(Barcode.BARCODE_RAW_BYTES));
         assertArrayEquals(new String[]{"", "20x20 30x20 30x30 20x30"},
                 metadata.getValues(Barcode.BARCODE_POSITION));
+    }
+
+    @Test
+    public void testScannerFailuresPropagateToFormatCaller() {
+        List<ColorGridQRDecoder.Cell> row = new ArrayList<>();
+        for (int i = 0; i < ColorGridQRDecoder.MIN_COLS; i++) {
+            row.add(new ColorGridQRDecoder.Cell((i & 1) == 0));
+        }
+        List<List<ColorGridQRDecoder.Cell>> grid = new ArrayList<>();
+        for (int i = 0; i < ColorGridQRDecoder.MIN_LINES; i++) {
+            grid.add(row);
+        }
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+
+        assertThrows(RuntimeException.class, () -> ColorGridQRDecoder.decode(
+                List.of(grid), new ThrowingScanner(), config, new ParseContext()));
+    }
+
+    private static final class ThrowingScanner extends ZXingCPPScanner {
+        @Override
+        public boolean hasZXingCPP() {
+            return true;
+        }
+
+        @Override
+        public List<Result> scan(Path imagePath, ZXingCPPConfig config,
+                                 ParseContext context) {
+            throw new ScanException("simulated scanner failure");
+        }
     }
 }
