@@ -23,7 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -34,9 +37,12 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.w3c.dom.Document;
+import org.w3c.dom.NodeList;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -229,6 +235,38 @@ class XMLParserSvgSecurityTest {
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
         assertNotNull(result.metadata.get("ExploitClass"),
                 "unsafe internal use expansion must not reach Batik");
+    }
+
+    @Test
+    void testSharedUseTargetsHaveCumulativeExpansionBudget() throws Exception {
+        StringBuilder svg = new StringBuilder(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"target\">");
+        for (int i = 0; i < 20_000; i++) {
+            svg.append("<rect/>");
+        }
+        svg.append("</g>");
+        for (int i = 0; i < 100; i++) {
+            svg.append("<use href=\"#target\"/>");
+        }
+        svg.append("</svg>");
+
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newDefaultInstance();
+        factory.setNamespaceAware(true);
+        Document document = factory.newDocumentBuilder().parse(
+                new ByteArrayInputStream(
+                        svg.toString().getBytes(StandardCharsets.UTF_8)));
+        NodeList uses = document.getElementsByTagNameNS(
+                "http://www.w3.org/2000/svg", "use");
+        Method validate = XMLParser.class.getDeclaredMethod(
+                "validateSvgUseGraph", Document.class, NodeList.class);
+        validate.setAccessible(true);
+
+        InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> validate.invoke(null, document, uses));
+        assertTrue(thrown.getCause() instanceof IOException,
+                "repeated traversal of one shared subtree must exhaust a "
+                        + "cumulative expansion-node budget");
     }
 
     @Test

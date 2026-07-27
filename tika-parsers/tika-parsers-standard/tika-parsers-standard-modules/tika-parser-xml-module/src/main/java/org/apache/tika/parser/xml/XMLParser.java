@@ -134,6 +134,7 @@ public class XMLParser implements Parser {
     private static final int SVG_USE_MAX_ELEMENTS = 4_096;
     private static final int SVG_USE_MAX_EXPANSIONS = 4_096;
     private static final int SVG_USE_MAX_REFERENCE_DEPTH = 64;
+    private static final int SVG_USE_MAX_TRAVERSED_NODES = 1_000_000;
 
     /**
      * Rasterize {@code svgPath} to PNG bytes at the given max dimension.
@@ -263,6 +264,9 @@ public class XMLParser implements Parser {
             pending.add(target);
             while (!pending.isEmpty()) {
                 Node node = pending.removeLast();
+                if (++budget.traversedNodes > SVG_USE_MAX_TRAVERSED_NODES) {
+                    return false;
+                }
                 if (node instanceof Element
                         && SVGConstants.SVG_USE_TAG.equals(node.getLocalName())
                         && !validateUseReference(
@@ -283,6 +287,7 @@ public class XMLParser implements Parser {
 
     private static final class UseExpansionBudget {
         private int expansions;
+        private int traversedNodes;
     }
 
     private static final class SecurePngTranscoder extends PNGTranscoder {

@@ -343,11 +343,13 @@ final class TextExtractor {
     // \colortbl entries: each is a 6-char uppercase RGB hex, or null for the
     // implicit "auto" color at index 0. Populated by \red/\green/\blue plus
     // the table-terminator ';' inside the {\colortbl} group.
+    private static final int MAX_COLOR_TABLE_ENTRIES = 4_096;
     private final java.util.List<String> colorTable = new java.util.ArrayList<>();
     private int colorTableR;
     private int colorTableG;
     private int colorTableB;
     private boolean colorTableHasFirst;  // any of R/G/B set for the entry being built
+    private boolean colorTableTruncated;
     // Per-paragraph row of luma values (one per emitted, non-whitespace char).
     // Active only when ColorAwareConfig is enabled; otherwise null/no-op.
     private boolean colorAwareEnabled;
@@ -561,12 +563,27 @@ final class TextExtractor {
                 // ';' terminates one \colortbl entry. Finalize it here even
                 // when the rest of the table body is ignored, so the table
                 // index → RGB map is built for later \cfN resolution.
-                if (colorTableHasFirst) {
-                    String hex = String.format(java.util.Locale.ROOT, "%02X%02X%02X",
-                            colorTableR, colorTableG, colorTableB);
-                    colorTable.add(hex);
-                } else {
-                    colorTable.add(null);
+                if (colorAwareEnabled) {
+                    if (colorTable.size() < MAX_COLOR_TABLE_ENTRIES) {
+                        if (colorTableHasFirst) {
+                            String hex = String.format(
+                                    java.util.Locale.ROOT, "%02X%02X%02X",
+                                    colorTableR, colorTableG, colorTableB);
+                            colorTable.add(hex);
+                        } else {
+                            colorTable.add(null);
+                        }
+                    } else if (!colorTableTruncated) {
+                        colorTableTruncated = true;
+                        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                                "RTF color table exceeds the "
+                                        + MAX_COLOR_TABLE_ENTRIES + " entry limit");
+                        if (metadata.get("ExploitClass") == null) {
+                            metadata.set("ExploitClass",
+                                    "RTF color analysis incomplete; encoded "
+                                            + "content may be hidden");
+                        }
+                    }
                 }
                 colorTableR = 0;
                 colorTableG = 0;
@@ -1341,6 +1358,7 @@ final class TextExtractor {
                 colorTableB = 0;
                 colorTableHasFirst = false;
                 colorTable.clear();
+                colorTableTruncated = false;
                 // The first ';' in {\colortbl; ...} is the implicit "auto"
                 // entry at index 0 — the byte-level handler will add a
                 // null for it.

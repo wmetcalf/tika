@@ -351,6 +351,38 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void transparentRgbaColorIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><body><pre style=\"color:rgba(255,255,255,0);background:black\">"
+                        + "######\n######\n######\n######\n######\n######"
+                        + "</pre></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "discarded alpha must not turn transparent text into a clean opaque grid");
+    }
+
+    @Test
+    public void standardNamedColorOutsideShortcutTableIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><body><pre style=\"color:navy;background:white\">"
+                        + "######\n######\n######\n######\n######\n######"
+                        + "</pre></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "unresolved browser-valid named colors must not look like a clean negative");
+    }
+
+    @Test
     public void transparentBackgroundShorthandIsSecurityVisible() throws Exception {
         Path fakeScanner = createFakeScanner();
         Metadata metadata = new Metadata();
@@ -396,6 +428,18 @@ public class HtmlColorQRExtractorTest {
                 () -> new JSoupParser().parseString(
                         document.outerHtml(), new BodyContentHandler(-1),
                         new Metadata(), contextForUncheckedScanner()));
+    }
+
+    @Test
+    public void inheritedColorResolutionIsLinearAcrossDeepCandidates() {
+        assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
+            StringBuilder html = new StringBuilder("<pre>");
+            for (int i = 0; i < 100_000; i++) {
+                html.append("<div>x");
+            }
+            html.append("</pre>");
+            HtmlColorQRExtractor.findClusters(Jsoup.parse(html.toString()), Map.of());
+        });
     }
 
     @Test

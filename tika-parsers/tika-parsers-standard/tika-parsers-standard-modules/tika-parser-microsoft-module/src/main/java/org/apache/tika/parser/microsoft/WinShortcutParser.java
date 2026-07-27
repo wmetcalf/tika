@@ -103,6 +103,8 @@ public class WinShortcutParser implements Parser {
     private static final int LNK_MAGIC   = 0x0000004C;
     private static final int HEADER_SIZE = 76;
     private static final int MAX_INPUT_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_LINK_INFO_STRING_CHARS = 32 * 1024;
+    private static final int MAX_LINK_INFO_TOTAL_STRING_CHARS = 128 * 1024;
 
     private static final int FLAG_HAS_TARGET_IDLIST  = 0x00000001;
     private static final int FLAG_HAS_LINK_INFO      = 0x00000002;
@@ -834,6 +836,7 @@ public class WinShortcutParser implements Parser {
             return fileLen;
         }
         try {
+            int linkInfoEnd = pos + linkInfoSize;
             int headerSize    = buf.getInt(pos + 4);
             int infoFlags     = buf.getInt(pos + 8);
             int volIdOff      = buf.getInt(pos + 12);
@@ -848,33 +851,47 @@ public class WinShortcutParser implements Parser {
 
             boolean hasLocal   = (infoFlags & 0x01) != 0;
             boolean hasNetwork = (infoFlags & 0x02) != 0;
+            LinkInfoStringBudget stringBudget = new LinkInfoStringBudget();
 
             if (hasLocal) {
                 String localPath = (localBaseOffU > 0)
-                        ? readNullTermW(buf, pos + localBaseOffU, fileLen) : null;
+                        ? readLinkInfoStringW(
+                                buf, pos + localBaseOffU, linkInfoEnd,
+                                stringBudget, fields, warnings) : null;
                 if (localPath == null || localPath.isEmpty()) {
-                    localPath = readNullTermA(buf, pos + localBaseOff, fileLen);
+                    localPath = readLinkInfoStringA(
+                            buf, pos + localBaseOff, linkInfoEnd,
+                            stringBudget, fields, warnings);
                 }
                 if (localPath != null && !localPath.isEmpty()) {
                     fields.put("LocalBasePath", localPath);
                 }
 
                 String suffix = (pathSuffixOffU > 0)
-                        ? readNullTermW(buf, pos + pathSuffixOffU, fileLen) : null;
+                        ? readLinkInfoStringW(
+                                buf, pos + pathSuffixOffU, linkInfoEnd,
+                                stringBudget, fields, warnings) : null;
                 if (suffix == null || suffix.isEmpty()) {
-                    suffix = readNullTermA(buf, pos + pathSuffixOff, fileLen);
+                    suffix = readLinkInfoStringA(
+                            buf, pos + pathSuffixOff, linkInfoEnd,
+                            stringBudget, fields, warnings);
                 }
                 if (suffix != null && !suffix.isEmpty()) {
                     fields.put("CommonPathSuffix", suffix);
                 }
 
-                if (volIdOff > 0 && pos + volIdOff + 16 <= fileLen) {
-                    parseVolumeId(buf, pos + volIdOff, fileLen, fields);
+                if (volIdOff > 0 && pos + volIdOff + 16 <= linkInfoEnd) {
+                    parseVolumeId(
+                            buf, pos + volIdOff, linkInfoEnd, fields,
+                            warnings, stringBudget);
                 }
             }
 
-            if (hasNetwork && netLinkOff > 0 && pos + netLinkOff + 8 <= fileLen) {
-                parseNetworkLink(buf, pos + netLinkOff, fileLen, fields);
+            if (hasNetwork && netLinkOff > 0
+                    && pos + netLinkOff + 8 <= linkInfoEnd) {
+                parseNetworkLink(
+                        buf, pos + netLinkOff, linkInfoEnd, fields,
+                        warnings, stringBudget);
             }
         } catch (Exception e) {
             markAnalysisIncomplete(fields, warnings,
@@ -884,9 +901,10 @@ public class WinShortcutParser implements Parser {
     }
 
     private void parseVolumeId(ByteBuffer buf, int base, int fileLen,
-                               Map<String, String> fields) {
+                               Map<String, String> fields, List<String> warnings,
+                               LinkInfoStringBudget stringBudget) {
         int volSize = buf.getInt(base);
-        if (volSize < 16 || base + volSize > fileLen) {
+        if (volSize < 16 || (long) base + volSize > fileLen) {
             return;
         }
         int driveType   = buf.getInt(base + 4);
@@ -902,11 +920,15 @@ public class WinShortcutParser implements Parser {
         if (labelOff == 0x14 && volSize >= 20) {
             int labelOffU = buf.getInt(base + 16);
             if (labelOffU > 0) {
-                label = readNullTermW(buf, base + labelOffU, fileLen);
+                label = readLinkInfoStringW(
+                        buf, base + labelOffU, fileLen,
+                        stringBudget, fields, warnings);
             }
         }
         if (label == null || label.isEmpty()) {
-            label = readNullTermA(buf, base + labelOff, fileLen);
+            label = readLinkInfoStringA(
+                    buf, base + labelOff, fileLen,
+                    stringBudget, fields, warnings);
         }
         if (label != null && !label.isEmpty()) {
             fields.put("VolumeLabel", label);
@@ -914,9 +936,10 @@ public class WinShortcutParser implements Parser {
     }
 
     private void parseNetworkLink(ByteBuffer buf, int base, int fileLen,
-                                  Map<String, String> fields) {
+                                  Map<String, String> fields, List<String> warnings,
+                                  LinkInfoStringBudget stringBudget) {
         int size = buf.getInt(base);
-        if (size < 20 || base + size > fileLen) {
+        if (size < 20 || (long) base + size > fileLen) {
             return;
         }
         int linkFlags   = buf.getInt(base + 4);
@@ -928,18 +951,26 @@ public class WinShortcutParser implements Parser {
         int devNameOffU = (netNameOff > 20 && base + 28 <= fileLen) ? buf.getInt(base + 24) : 0;
 
         String netName = (netNameOffU > 0)
-                ? readNullTermW(buf, base + netNameOffU, fileLen) : null;
+                ? readLinkInfoStringW(
+                        buf, base + netNameOffU, fileLen,
+                        stringBudget, fields, warnings) : null;
         if (netName == null || netName.isEmpty()) {
-            netName = readNullTermA(buf, base + netNameOff, fileLen);
+            netName = readLinkInfoStringA(
+                    buf, base + netNameOff, fileLen,
+                    stringBudget, fields, warnings);
         }
         if (netName != null && !netName.isEmpty()) {
             fields.put("NetworkShareName", netName);
         }
 
         String devName = (devNameOffU > 0)
-                ? readNullTermW(buf, base + devNameOffU, fileLen) : null;
+                ? readLinkInfoStringW(
+                        buf, base + devNameOffU, fileLen,
+                        stringBudget, fields, warnings) : null;
         if (devName == null || devName.isEmpty()) {
-            devName = readNullTermA(buf, base + devNameOff, fileLen);
+            devName = readLinkInfoStringA(
+                    buf, base + devNameOff, fileLen,
+                    stringBudget, fields, warnings);
         }
         if (devName != null && !devName.isEmpty()) {
             fields.put("NetworkDeviceName", devName);
@@ -1915,43 +1946,29 @@ public class WinShortcutParser implements Parser {
 
     private static boolean matchesEncodedHtmlTagName(
             byte[] payload, int offset, int encoding) {
-        return switch (lowerAscii(readEncodedAscii(payload, offset, encoding))) {
-            case '!' -> matchesEncodedHtmlTagName(
+        int first = lowerAscii(readEncodedAscii(payload, offset, encoding));
+        if (first == '!') {
+            return matchesEncodedHtmlTagName(
                     payload, offset, encoding, "!doctype");
-            case 'a' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "a");
-            case 'b' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "body");
-            case 'd' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "div");
-            case 'e' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "embed");
-            case 'h' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "html")
-                    || matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "head");
-            case 'i' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "iframe")
-                    || matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "img");
-            case 'l' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "link");
-            case 'm' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "meta");
-            case 'o' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "object");
-            case 's' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "script")
-                    || matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "svg")
-                    || matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "style")
-                    || matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "span");
-            case 't' -> matchesEncodedHtmlTagName(
-                    payload, offset, encoding, "table");
-            default -> false;
-        };
+        }
+        if (first < 'a' || first > 'z') {
+            return false;
+        }
+        int stride = encoding == 0 ? 1 : 2;
+        for (int i = 1; i <= 64; i++) {
+            int value = lowerAscii(readEncodedAscii(
+                    payload, offset + i * stride, encoding));
+            if (value < 0 || value == '>' || value == '/'
+                    || Character.isWhitespace((char) value)) {
+                return true;
+            }
+            if (!((value >= 'a' && value <= 'z')
+                    || (value >= '0' && value <= '9')
+                    || value == '-' || value == '_' || value == ':')) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static boolean matchesEncodedHtmlTagName(
@@ -2505,6 +2522,76 @@ public class WinShortcutParser implements Parser {
         }
         return end == pos ? null
                 : new String(data, pos, end - pos, StandardCharsets.UTF_16LE);
+    }
+
+    private String readLinkInfoStringA(
+            ByteBuffer buf, int pos, int limit, LinkInfoStringBudget budget,
+            Map<String, String> fields, List<String> warnings) {
+        if (pos < 0 || pos >= limit || budget.remainingChars == 0) {
+            if (budget.remainingChars == 0) {
+                budget.markExceeded(fields, warnings);
+            }
+            return null;
+        }
+        byte[] data = buf.array();
+        int allowed = Math.min(
+                MAX_LINK_INFO_STRING_CHARS, budget.remainingChars);
+        int end = pos;
+        while (end < limit && data[end] != 0 && end - pos < allowed) {
+            end++;
+        }
+        int retained = end - pos;
+        budget.remainingChars -= retained;
+        if (end >= limit || (retained == allowed && data[end] != 0)) {
+            budget.markExceeded(fields, warnings);
+        }
+        return retained == 0 ? null
+                : new String(data, pos, retained, cp1252());
+    }
+
+    private String readLinkInfoStringW(
+            ByteBuffer buf, int pos, int limit, LinkInfoStringBudget budget,
+            Map<String, String> fields, List<String> warnings) {
+        if (pos < 0 || pos + 2 > limit || budget.remainingChars == 0) {
+            if (budget.remainingChars == 0) {
+                budget.markExceeded(fields, warnings);
+            }
+            return null;
+        }
+        byte[] data = buf.array();
+        int allowed = Math.min(
+                MAX_LINK_INFO_STRING_CHARS, budget.remainingChars);
+        int end = pos;
+        int retained = 0;
+        while (end + 1 < limit
+                && (data[end] != 0 || data[end + 1] != 0)
+                && retained < allowed) {
+            end += 2;
+            retained++;
+        }
+        budget.remainingChars -= retained;
+        if (end + 1 >= limit
+                || (retained == allowed
+                && (data[end] != 0 || data[end + 1] != 0))) {
+            budget.markExceeded(fields, warnings);
+        }
+        return retained == 0 ? null
+                : new String(
+                        data, pos, retained * 2, StandardCharsets.UTF_16LE);
+    }
+
+    private static final class LinkInfoStringBudget {
+        private int remainingChars = MAX_LINK_INFO_TOTAL_STRING_CHARS;
+        private boolean exceeded;
+
+        private void markExceeded(
+                Map<String, String> fields, List<String> warnings) {
+            if (!exceeded) {
+                exceeded = true;
+                markAnalysisIncomplete(fields, warnings,
+                        "LinkInfo strings exceed safe retention limits");
+            }
+        }
     }
 
     private String readFixedA(ByteBuffer buf, int pos, int maxChars, int fileLen) {

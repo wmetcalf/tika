@@ -153,6 +153,15 @@ public class StandardMetadataLimiterTest extends TikaTest {
         metadata.set(OfficeOpenXMLExtended.APP_VERSION, "some other string");
         assertEquals("some other string", metadata.getValues("exten")[0]);
         assertTruncated(metadata);
+
+        metadata.remove(OfficeOpenXMLExtended.APP_VERSION.getName());
+        assertNull(metadata.get("exten"),
+                "removing the original key must remove its limiter-truncated form");
+
+        metadata.set(OfficeOpenXMLExtended.APP_VERSION, "replacement");
+        metadata.set(OfficeOpenXMLExtended.APP_VERSION.getName(), null);
+        assertNull(metadata.get("exten"),
+                "setting the original key to null must remove its truncated form");
     }
 
     @Test

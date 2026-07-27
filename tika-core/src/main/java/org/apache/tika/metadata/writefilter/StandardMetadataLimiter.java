@@ -260,19 +260,26 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
 
     @Override
     public void remove(String field, Map<String, String[]> data) {
-        String[] removed = data.remove(field);
-        Integer trackedValueSize = fieldSizes.remove(field);
+        String storedField = field;
+        if (!ALWAYS_SET_FIELDS.contains(field)
+                && !ALWAYS_ADD_FIELDS.contains(field)
+                && maxKeySize >= 0
+                && estimateSize(field) > maxKeySize) {
+            storedField = truncateValue(field, maxKeySize);
+        }
+        String[] removed = data.remove(storedField);
+        Integer trackedValueSize = fieldSizes.remove(storedField);
         if (trackedValueSize != null) {
             estimatedSize = Math.max(0,
-                    estimatedSize - trackedValueSize - estimateSize(field));
+                    estimatedSize - trackedValueSize - estimateSize(storedField));
             return;
         }
-        if (removed == null || TIKA_CONTENT_KEY.equals(field)
-                || (!ALWAYS_SET_FIELDS.contains(field)
-                && !ALWAYS_ADD_FIELDS.contains(field))) {
+        if (removed == null || TIKA_CONTENT_KEY.equals(storedField)
+                || (!ALWAYS_SET_FIELDS.contains(storedField)
+                && !ALWAYS_ADD_FIELDS.contains(storedField))) {
             return;
         }
-        int removedSize = estimateSize(field);
+        int removedSize = estimateSize(storedField);
         for (String value : removed) {
             if (value != null) {
                 removedSize += estimateSize(value);
@@ -647,7 +654,10 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
 
     private String truncate(String value, int length, Map<String, String[]> data) {
         setTruncated(data);
+        return truncateValue(value, length);
+    }
 
+    private String truncateValue(String value, int length) {
         //correctly handle multibyte characters
         byte[] bytes = value.getBytes(StandardCharsets.UTF_16BE);
         ByteBuffer bb = ByteBuffer.wrap(bytes, 0, length);

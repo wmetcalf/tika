@@ -18,6 +18,8 @@ package org.apache.tika.metadata;
 
 import static org.apache.tika.utils.DateUtils.formatDate;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.text.DateFormat;
 import java.text.DateFormatSymbols;
@@ -118,6 +120,14 @@ public class Metadata
     public Metadata(MetadataWriteLimiter writeLimiter) {
         metadata = new HashMap<>();
         this.writeLimiter = writeLimiter != null ? writeLimiter : ACCEPT_ALL;
+    }
+
+    private void readObject(ObjectInputStream input)
+            throws IOException, ClassNotFoundException {
+        input.defaultReadObject();
+        if (writeLimiter == null) {
+            writeLimiter = ACCEPT_ALL;
+        }
     }
 
     /**
@@ -432,7 +442,7 @@ public class Metadata
         Enumeration<String> names = (Enumeration<String>) properties.propertyNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            metadata.put(name, new String[]{properties.getProperty(name)});
+            set(name, properties.getProperty(name));
         }
     }
 

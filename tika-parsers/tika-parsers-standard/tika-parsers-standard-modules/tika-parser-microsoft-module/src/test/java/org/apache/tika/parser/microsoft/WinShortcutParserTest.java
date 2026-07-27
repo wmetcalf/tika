@@ -310,6 +310,38 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testLateFramesetTagTriggersStructuralExploitDetection() throws Exception {
+        ParseResult result = parse(buildVirtualFolderHtmlLnk(
+                StandardCharsets.US_ASCII, new byte[0], " ".repeat(100_000),
+                "<frameset onload=\"alert(1)\"></frameset>"));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "active HTML elements outside a hand-picked tag list must not "
+                        + "bypass structural MSHTML detection");
+    }
+
+    @Test
+    public void testAliasedLinkInfoStringsAreBoundedAndSignaled() throws Exception {
+        ParseResult result = parse(buildAliasedLinkInfoLnk(200_000));
+
+        int retainedCharacters = 0;
+        for (String key : List.of(
+                "lnk:LocalBasePath", "lnk:CommonPathSuffix", "lnk:VolumeLabel",
+                "lnk:NetworkShareName", "lnk:NetworkDeviceName")) {
+            String value = result.metadata.get(key);
+            if (value != null) {
+                retainedCharacters += value.length();
+            }
+        }
+        assertTrue(retainedCharacters <= 128 * 1024,
+                "aliased LinkInfo offsets must not multiply one input region "
+                        + "into unbounded retained strings");
+        assertNotNull(result.metadata.get("lnk:warning"));
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "bounded LinkInfo strings must be reported as incomplete");
+    }
+
+    @Test
     public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
         byte[] oversized = new byte[16 * 1024 * 1024 + 1];
         System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
@@ -679,6 +711,13 @@ public class WinShortcutParserTest {
 
     private static byte[] buildVirtualFolderHtmlLnk(
             Charset charset, byte[] bom, String prefix) throws IOException {
+        return buildVirtualFolderHtmlLnk(
+                charset, bom, prefix,
+                "<!doctype html><script>alert(1)</script>");
+    }
+
+    private static byte[] buildVirtualFolderHtmlLnk(
+            Charset charset, byte[] bom, String prefix, String html) throws IOException {
         byte[] header = new byte[HEADER_SIZE];
         ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
         fields.putInt(0, HEADER_SIZE);
@@ -700,8 +739,46 @@ public class WinShortcutParserTest {
         out.write(new byte[2]);
         out.write(new byte[4]);
         out.write(bom);
-        out.write((prefix + "<!doctype html><script>alert(1)</script>").getBytes(charset));
+        out.write((prefix + html).getBytes(charset));
         return out.toByteArray();
+    }
+
+    private static byte[] buildAliasedLinkInfoLnk(int payloadBytes) {
+        int linkInfoStart = HEADER_SIZE;
+        int payloadOffset = 160;
+        byte[] data = new byte[payloadOffset + payloadBytes + 2];
+        ByteBuffer fields = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        int linkSize = data.length - linkInfoStart;
+        int payloadRelative = payloadOffset - linkInfoStart;
+
+        fields.putInt(0, HEADER_SIZE);
+        fields.putInt(20, 0x02);
+        fields.putInt(linkInfoStart, linkSize);
+        fields.putInt(linkInfoStart + 4, 0x24);
+        fields.putInt(linkInfoStart + 8, 0x03);
+        fields.putInt(linkInfoStart + 12, 36);
+        fields.putInt(linkInfoStart + 16, payloadRelative);
+        fields.putInt(linkInfoStart + 20, 60);
+        fields.putInt(linkInfoStart + 24, payloadRelative);
+        fields.putInt(linkInfoStart + 28, payloadRelative);
+        fields.putInt(linkInfoStart + 32, payloadRelative);
+
+        int volume = linkInfoStart + 36;
+        fields.putInt(volume, data.length - volume);
+        fields.putInt(volume + 12, 0x14);
+        fields.putInt(volume + 16, payloadOffset - volume);
+
+        int network = linkInfoStart + 60;
+        fields.putInt(network, data.length - network);
+        fields.putInt(network + 8, 28);
+        fields.putInt(network + 20, payloadOffset - network);
+        fields.putInt(network + 24, payloadOffset - network);
+
+        for (int i = payloadOffset; i < payloadOffset + payloadBytes; i += 2) {
+            data[i] = 0x41;
+            data[i + 1] = 0x41;
+        }
+        return data;
     }
 
     private record ParseResult(Metadata metadata, List<byte[]> embedded) {

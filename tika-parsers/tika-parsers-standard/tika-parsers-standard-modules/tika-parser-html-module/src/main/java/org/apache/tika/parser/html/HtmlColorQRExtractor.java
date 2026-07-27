@@ -81,6 +81,29 @@ public final class HtmlColorQRExtractor {
             "HTML color-QR analysis limit reached; color-QR extraction is incomplete";
     private static final Pattern SIMPLE_CSS_SELECTOR = Pattern.compile(
             "^(?:[a-z][a-z0-9-]*|\\.[a-z0-9_-]+|#[a-z0-9_-]+)$");
+    private static final Pattern COLOR_DECLARATION = Pattern.compile(
+            "(?i)(?:^|;|\\s)color\\s*:\\s*([^;]+)");
+    private static final Pattern BACKGROUND_COLOR_DECLARATION = Pattern.compile(
+            "(?i)(?:^|;|\\s)background-color\\s*:\\s*([^;]+)");
+    private static final Pattern BACKGROUND_DECLARATION = Pattern.compile(
+            "(?i)(?:^|;|\\s)background\\s*:\\s*([^;]+)");
+    private static final Pattern BACKGROUND_HEX_COLOR = Pattern.compile(
+            "#[0-9a-fA-F]{3,8}");
+    private static final Pattern BACKGROUND_RGB_COLOR = Pattern.compile(
+            "(?i)rgba?\\([^)]+\\)");
+    private static final Pattern TRANSPARENT_TOKEN = Pattern.compile(
+            "(?i)(?:^|[\\s/,])transparent(?:$|[\\s/,])");
+    private static final Pattern RGB_COMMA_COLOR = Pattern.compile(
+            "rgb\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*\\)");
+    private static final Pattern RGBA_COMMA_COLOR = Pattern.compile(
+            "rgba\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)"
+                    + "\\s*,\\s*([0-9.]+%?)\\s*\\)");
+    private static final Pattern MODERN_RGB_COLOR = Pattern.compile(
+            ".*rgba?\\([^,)]*\\s+[^,)]*\\).*");
+    private static final Pattern ALPHA_HEX_COLOR = Pattern.compile(
+            "#(?:[0-9a-f]{4}|[0-9a-f]{8})");
+    private static final Pattern CSS_IDENTIFIER_COLOR = Pattern.compile(
+            "[a-z][a-z0-9-]*");
 
     /** Luminance threshold below which a colour counts as "dark". 0..255. */
     private static final int DARK_LUMA_THRESHOLD = 128;
@@ -524,6 +547,8 @@ public final class HtmlColorQRExtractor {
         private final StyleBudget budget;
         private final Map<Element, String> combinedStyles = new IdentityHashMap<>();
         private final Map<Element, EffectiveStyle> effectiveStyles = new IdentityHashMap<>();
+        private final Map<Element, ForegroundStyle> foregroundStyles =
+                new IdentityHashMap<>();
 
         private StyleResolutionContext(Map<String, String> rules, StyleBudget budget) {
             this.rules = rules;
@@ -538,9 +563,7 @@ public final class HtmlColorQRExtractor {
             if (cached != null) {
                 return cached;
             }
-            int fgLuma = 0;
             int bgLuma = 255;
-            boolean fgFound = false;
             boolean bgFound = false;
 
             String startStyle = combinedStyle(start);
@@ -567,28 +590,51 @@ public final class HtmlColorQRExtractor {
                 bgFound = true;
             }
 
+            ForegroundStyle foreground = resolveForeground(start);
+            EffectiveStyle result =
+                    new EffectiveStyle(
+                            foreground.luma, bgLuma, foreground.found, bgFound);
+            effectiveStyles.put(start, result);
+            return result;
+        }
+
+        private ForegroundStyle resolveForeground(Element start) {
+            List<Element> uncached = new ArrayList<>();
             Element element = start;
-            while (element != null && !fgFound) {
-                ColorReadResult fgResult =
-                        readColorResult(combinedStyle(element), "color");
-                if (fgResult.unresolved) {
+            ForegroundStyle result = null;
+            while (element != null) {
+                ForegroundStyle cached = foregroundStyles.get(element);
+                if (cached != null) {
+                    result = cached;
+                    break;
+                }
+                uncached.add(element);
+                String style = combinedStyle(element);
+                ColorReadResult foreground = style.isEmpty()
+                        ? ColorReadResult.NONE
+                        : readColorResult(style, "color");
+                if (foreground.unresolved) {
                     budget.incomplete = true;
+                    result = ForegroundStyle.NONE;
                     break;
                 }
-                if (fgResult.luma != null) {
-                    fgLuma = fgResult.luma;
-                    fgFound = true;
+                if (foreground.luma != null) {
+                    result = new ForegroundStyle(foreground.luma, true);
                     break;
                 }
-                if (fgResult.declared) {
+                if (foreground.declared) {
+                    result = ForegroundStyle.NONE;
                     break;
                 }
                 element = element.parent() instanceof Element
                         ? (Element) element.parent() : null;
             }
-            EffectiveStyle result =
-                    new EffectiveStyle(fgLuma, bgLuma, fgFound, bgFound);
-            effectiveStyles.put(start, result);
+            if (result == null) {
+                result = ForegroundStyle.NONE;
+            }
+            for (Element unresolved : uncached) {
+                foregroundStyles.put(unresolved, result);
+            }
             return result;
         }
 
@@ -866,9 +912,11 @@ public final class HtmlColorQRExtractor {
     }
 
     private static ColorReadResult readColorResult(String style, String property) {
-        Matcher m = Pattern.compile(
-                "(?i)(?:^|;|\\s)" + Pattern.quote(property) + "\\s*:\\s*([^;]+)"
-        ).matcher(style);
+        if (style == null || style.isEmpty()) {
+            return ColorReadResult.NONE;
+        }
+        Matcher m = ("background-color".equalsIgnoreCase(property)
+                ? BACKGROUND_COLOR_DECLARATION : COLOR_DECLARATION).matcher(style);
         Integer luma = null;
         boolean declared = false;
         boolean unresolved = false;
@@ -882,7 +930,7 @@ public final class HtmlColorQRExtractor {
             } else if ("transparent".equalsIgnoreCase(value)) {
                 luma = null;
                 declared = true;
-                unresolved = "background-color".equalsIgnoreCase(property);
+                unresolved = true;
             } else if (isUnsupportedBrowserColor(value)) {
                 luma = null;
                 declared = true;
@@ -897,9 +945,10 @@ public final class HtmlColorQRExtractor {
     }
 
     private static ColorReadResult readBackgroundShorthandResult(String style) {
-        Matcher m = Pattern.compile(
-                "(?i)(?:^|;|\\s)background\\s*:\\s*([^;]+)"
-        ).matcher(style);
+        if (style == null || style.isEmpty()) {
+            return ColorReadResult.NONE;
+        }
+        Matcher m = BACKGROUND_DECLARATION.matcher(style);
         Integer luma = null;
         boolean declared = false;
         boolean unresolved = false;
@@ -924,11 +973,11 @@ public final class HtmlColorQRExtractor {
     }
 
     private static Integer parseBackgroundColor(String value) {
-        Matcher hex = Pattern.compile("#[0-9a-fA-F]{3,8}").matcher(value);
+        Matcher hex = BACKGROUND_HEX_COLOR.matcher(value);
         if (hex.find()) {
             return parseColor(hex.group());
         }
-        Matcher rgb = Pattern.compile("(?i)rgba?\\([^)]+\\)").matcher(value);
+        Matcher rgb = BACKGROUND_RGB_COLOR.matcher(value);
         if (rgb.find()) {
             return parseColor(rgb.group());
         }
@@ -955,10 +1004,7 @@ public final class HtmlColorQRExtractor {
     }
 
     private static boolean containsTransparentToken(String value) {
-        return Pattern.compile(
-                "(?i)(?:^|[\\s/,])transparent(?:$|[\\s/,])")
-                .matcher(value)
-                .find();
+        return TRANSPARENT_TOKEN.matcher(value).find();
     }
 
     private static boolean isUnsupportedBrowserColor(String value) {
@@ -971,10 +1017,16 @@ public final class HtmlColorQRExtractor {
                 || normalized.contains("oklab(")
                 || normalized.contains("oklch(")
                 || normalized.contains("color(")
-                || normalized.matches(".*rgba?\\([^,)]*\\s+[^,)]*\\).*");
+                || normalized.contains("rgba(")
+                || MODERN_RGB_COLOR.matcher(normalized).matches()
+                || ALPHA_HEX_COLOR.matcher(normalized).matches()
+                || CSS_IDENTIFIER_COLOR.matcher(normalized).matches();
     }
 
     private static final class ColorReadResult {
+        private static final ColorReadResult NONE =
+                new ColorReadResult(null, false, false);
+
         private final Integer luma;
         private final boolean declared;
         private final boolean unresolved;
@@ -983,6 +1035,19 @@ public final class HtmlColorQRExtractor {
             this.luma = luma;
             this.declared = declared;
             this.unresolved = unresolved;
+        }
+    }
+
+    private static final class ForegroundStyle {
+        private static final ForegroundStyle NONE =
+                new ForegroundStyle(0, false);
+
+        private final int luma;
+        private final boolean found;
+
+        private ForegroundStyle(int luma, boolean found) {
+            this.luma = luma;
+            this.found = found;
         }
     }
 
@@ -1010,7 +1075,21 @@ public final class HtmlColorQRExtractor {
                     r = Integer.parseInt(v.substring(0, 1).repeat(2), 16);
                     g = Integer.parseInt(v.substring(1, 2).repeat(2), 16);
                     b = Integer.parseInt(v.substring(2, 3).repeat(2), 16);
-                } else if (v.length() == 6 || v.length() == 8) {
+                } else if (v.length() == 4) {
+                    if (v.charAt(3) != 'f') {
+                        return null;
+                    }
+                    r = Integer.parseInt(v.substring(0, 1).repeat(2), 16);
+                    g = Integer.parseInt(v.substring(1, 2).repeat(2), 16);
+                    b = Integer.parseInt(v.substring(2, 3).repeat(2), 16);
+                } else if (v.length() == 6) {
+                    r = Integer.parseInt(v.substring(0, 2), 16);
+                    g = Integer.parseInt(v.substring(2, 4), 16);
+                    b = Integer.parseInt(v.substring(4, 6), 16);
+                } else if (v.length() == 8) {
+                    if (!"ff".equals(v.substring(6, 8))) {
+                        return null;
+                    }
                     r = Integer.parseInt(v.substring(0, 2), 16);
                     g = Integer.parseInt(v.substring(2, 4), 16);
                     b = Integer.parseInt(v.substring(4, 6), 16);
@@ -1022,11 +1101,23 @@ public final class HtmlColorQRExtractor {
                 return null;
             }
         }
+        if (v.startsWith("rgba")) {
+            Matcher m = RGBA_COMMA_COLOR.matcher(v);
+            if (m.matches() && isOpaqueAlpha(m.group(4))) {
+                try {
+                    int r = clamp(Integer.parseInt(m.group(1)));
+                    int g = clamp(Integer.parseInt(m.group(2)));
+                    int b = clamp(Integer.parseInt(m.group(3)));
+                    return luma(r, g, b);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            }
+            return null;
+        }
         if (v.startsWith("rgb")) {
-            Matcher m = Pattern.compile(
-                    "rgba?\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)"
-            ).matcher(v);
-            if (m.find()) {
+            Matcher m = RGB_COMMA_COLOR.matcher(v);
+            if (m.matches()) {
                 try {
                     int r = clamp(Integer.parseInt(m.group(1)));
                     int g = clamp(Integer.parseInt(m.group(2)));
@@ -1053,6 +1144,18 @@ public final class HtmlColorQRExtractor {
                 return null;
             default:
                 return null;
+        }
+    }
+
+    private static boolean isOpaqueAlpha(String alpha) {
+        try {
+            if (alpha.endsWith("%")) {
+                return Double.parseDouble(
+                        alpha.substring(0, alpha.length() - 1)) == 100.0d;
+            }
+            return Double.parseDouble(alpha) == 1.0d;
+        } catch (NumberFormatException e) {
+            return false;
         }
     }
 

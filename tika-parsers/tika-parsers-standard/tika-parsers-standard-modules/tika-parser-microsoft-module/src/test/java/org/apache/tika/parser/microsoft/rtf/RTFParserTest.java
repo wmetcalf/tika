@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -40,13 +41,35 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.BodyContentHandler;
 
 /**
  * Junit test class for the Tika {@link RTFParser}
  */
 public class RTFParserTest extends TikaTest {
+
+    @Test
+    public void testColorTableIsNotRetainedWhenColorAnalysisIsDisabled() throws Exception {
+        Metadata metadata = parseColorTable(20_000, false);
+
+        assertEquals("0", metadata.get("rtf_color_qr:colortbl_size"),
+                "disabled color analysis must not retain attacker-controlled color entries");
+    }
+
+    @Test
+    public void testColorTableCardinalityIsBoundedWhenColorAnalysisIsEnabled()
+            throws Exception {
+        Metadata metadata = parseColorTable(5_000, true);
+
+        assertTrue(Integer.parseInt(metadata.get("rtf_color_qr:colortbl_size")) <= 4_096);
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertTrue(metadata.get("ExploitClass") != null,
+                "a truncated color table must make color analysis visibly incomplete");
+    }
 
     @Test
     public void testBasicExtraction() throws Exception {
@@ -58,6 +81,21 @@ public class RTFParserTest extends TikaTest {
         assertEquals(1, metadata.getValues(Metadata.CONTENT_TYPE).length);
         assertContains("Test", content);
         assertContains("indexation Word", content);
+    }
+
+    private static Metadata parseColorTable(int entries, boolean colorAware)
+            throws Exception {
+        String rtf = "{\\rtf1{\\colortbl"
+                + "\\red1\\green2\\blue3;".repeat(entries) + "}x}";
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        context.set(ColorAwareConfig.class,
+                new ColorAwareConfig().setEnabled(colorAware));
+        try (TikaInputStream stream = TikaInputStream.get(
+                rtf.getBytes(StandardCharsets.US_ASCII))) {
+            new RTFParser().parse(stream, new BodyContentHandler(-1), metadata, context);
+        }
+        return metadata;
     }
 
     @Test //TIKA-4744

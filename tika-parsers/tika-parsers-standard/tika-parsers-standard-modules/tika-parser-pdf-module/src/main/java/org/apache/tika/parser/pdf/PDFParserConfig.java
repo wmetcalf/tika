@@ -16,6 +16,8 @@
  */
 package org.apache.tika.parser.pdf;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -152,6 +154,14 @@ public class PDFParserConfig implements Serializable {
     private int maxPages = DEFAULT_MAX_PAGES;
 
     private boolean throwOnEncryptedPayload = false;
+
+    private void readObject(ObjectInputStream input)
+            throws IOException, ClassNotFoundException {
+        input.defaultReadObject();
+        if (maxPages == 0) {
+            maxPages = DEFAULT_MAX_PAGES;
+        }
+    }
 
     /**
      * @return whether or not to extract only inline image metadata and not render the images

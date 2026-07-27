@@ -25,6 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -118,6 +121,27 @@ public class PDFParserSlicingSecurityTest {
 
         assertTrue(result.embeddedTypes.contains("application/javascript"),
                 "maxPages=-1 must preserve explicit unlimited whole-document analysis");
+    }
+
+    @Test
+    public void testLegacySerializedConfigRestoresSecurePageDefault() throws Exception {
+        PDFParserConfig config = new PDFParserConfig();
+        Field maxPages = PDFParserConfig.class.getDeclaredField("maxPages");
+        maxPages.setAccessible(true);
+        maxPages.setInt(config, 0);
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(config);
+        }
+        PDFParserConfig restored;
+        try (ObjectInputStream input = new ObjectInputStream(
+                new ByteArrayInputStream(bytes.toByteArray()))) {
+            restored = (PDFParserConfig) input.readObject();
+        }
+
+        assertEquals(PDFParserConfig.DEFAULT_MAX_PAGES, restored.getMaxPages(),
+                "streams created before maxPages existed must not deserialize as unlimited");
     }
 
     private static ParseResult parse(byte[] pdf,
