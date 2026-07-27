@@ -365,7 +365,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         //there can be multiple relationships pointing to the
         //same underlying media item.  We only want to process
         //the underlying media item once.
-        Set<String> handledTarget = new HashSet<>();
+        Set<String> handledInternalPartNames = new HashSet<>();
         Set<String> handledRelationshipParts = new HashSet<>();
         try {
             for (PackagePart source : getMainDocumentParts()) {
@@ -376,7 +376,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 for (PackageRelationship rel : source.getRelationships()) {
                     try {
                         handleEmbeddedPart(source, rel, xhtml, metadata,
-                                embeddedPartMetadataMap, handledTarget);
+                                embeddedPartMetadataMap, handledInternalPartNames);
                     } catch (SAXException | SecurityException e) {
                         throw e;
                     } catch (Exception e) {
@@ -396,7 +396,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     private void handleEmbeddedPart(PackagePart source, PackageRelationship rel,
                                     XHTMLContentHandler xhtml, Metadata parentMetadata,
                                     Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap,
-                                    Set<String> handledTarget)
+                                    Set<String> handledInternalPartNames)
             throws IOException, SAXException, TikaException, InvalidFormatException {
         URI targetURI = rel.getTargetURI();
         URI sourceURI = rel.getSourceURI();
@@ -412,10 +412,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             sourceDesc = "";
         }
         if (rel.getTargetMode() != TargetMode.INTERNAL) {
-            if (targetURI != null
-                    && handledTarget.contains(targetURI.toString())) {
-                return;
-            }
             // External target - emit as external reference for security analysis
             String type = rel.getRelationshipType();
             String sourcePath = sourceURI != null ? sourceURI.getPath() : "";
@@ -440,7 +436,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             return;
         }
         String targetPartName = target.getPartName().getName();
-        if (handledTarget.contains(targetPartName)) {
+        if (handledInternalPartNames.contains(targetPartName)) {
             return;
         }
         EmbeddedPartMetadata embeddedPartMetadata = embeddedPartMetadataMap.get(rel.getId());
@@ -450,11 +446,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 TYPE_OLE_OBJECT.equals(target.getContentType())) {
             handleEmbeddedOLE(target, xhtml, sourceDesc + rel.getId(), parentMetadata,
                     embeddedPartMetadata);
-            handledTarget.add(targetPartName);
+            handledInternalPartNames.add(targetPartName);
         } else if (PackageRelationshipTypes.IMAGE_PART.equals(type)) {
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata, TikaCoreProperties.EmbeddedResourceType.INLINE);
-            handledTarget.add(targetPartName);
+            handledInternalPartNames.add(targetPartName);
         } else if (RELATION_MEDIA.equals(type) || RELATION_VIDEO.equals(type) ||
                 RELATION_AUDIO.equals(type) ||
                 PACK_OBJECT_REL_TYPE.equals(type) ||
@@ -462,20 +458,20 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata,
                     TikaCoreProperties.EmbeddedResourceType.ATTACHMENT);
-            handledTarget.add(targetPartName);
+            handledInternalPartNames.add(targetPartName);
         } else if (XSSFRelation.VBA_MACROS.getRelation().equals(type)) {
             // Skip if handleMacrosEarly() already emitted this macro part (it runs before
             // buildXHTML so the VBA source survives the cumulative write-limit).
             if (!macroTargetsHandledEarly.contains(targetPartName)) {
                 handleMacros(target, xhtml);
             }
-            handledTarget.add(targetPartName);
+            handledInternalPartNames.add(targetPartName);
         } else if (RELATION_ALTERNATE_FORMAT_CHUNK.equals(type)) {
             //TODO check for targetMode=INTERNAL?
             handleEmbeddedFile(target, xhtml, sourceDesc + rel.getId(),
                     embeddedPartMetadata,
                     TikaCoreProperties.EmbeddedResourceType.ALTERNATE_FORMAT_CHUNK);
-            handledTarget.add(targetPartName);
+            handledInternalPartNames.add(targetPartName);
         }
     }
 

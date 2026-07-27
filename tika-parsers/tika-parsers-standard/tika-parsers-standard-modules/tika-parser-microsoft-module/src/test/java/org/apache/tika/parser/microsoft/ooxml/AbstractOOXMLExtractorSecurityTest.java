@@ -244,6 +244,43 @@ public class AbstractOOXMLExtractorSecurityTest {
     }
 
     @Test
+    public void testInternalPartNameDoesNotSuppressMatchingExternalTarget()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        Metadata metadata = new Metadata();
+        String externalTarget = "/word/media/payload.bin";
+        String attachedTemplateRelationship =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart document = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            PackagePart internalPayload = createMacroPart(
+                    opcPackage, externalTarget);
+            document.addRelationship(
+                    internalPayload.getPartName(), TargetMode.INTERNAL,
+                    XSSFRelation.VBA_MACROS.getRelation());
+            document.addExternalRelationship(
+                    externalTarget, attachedTemplateRelationship);
+
+            new EmptyExtractor(context, opcPackage, List.of(document))
+                    .getXHTML(new BodyContentHandler(-1), metadata, context);
+        }
+
+        assertArrayEquals(
+                new String[]{externalTarget},
+                metadata.getValues(Office.OFFICE_LINK_URL),
+                "an internal part name must not deduplicate an external target URI");
+        assertArrayEquals(
+                new String[]{attachedTemplateRelationship},
+                metadata.getValues(Office.OFFICE_LINK_RELATIONSHIP_TYPE));
+        assertEquals(1,
+                metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+    }
+
+    @Test
     public void testHandledMainRelationshipsDoNotStarveNonMainExecutableLink()
             throws Exception {
         ParseContext context = new ParseContext();
