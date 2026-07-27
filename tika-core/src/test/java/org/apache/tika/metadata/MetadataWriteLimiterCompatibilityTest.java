@@ -16,6 +16,7 @@
  */
 package org.apache.tika.metadata;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -156,5 +157,35 @@ public class MetadataWriteLimiterCompatibilityTest {
 
         assertEquals(0, metadata.getValues(Office.OFFICE_LINK_TYPE).length);
         assertEquals(0, metadata.getValues(Office.OFFICE_LINK_URL).length);
+    }
+
+    @Test
+    public void testAlignedRemovalBackfillDoesNotDependOnReplacementOrder() {
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setMaxKeySize(100);
+        factory.setMaxFieldSize(10_000);
+        factory.setMaxTotalBytes(10_000);
+        factory.setMaxValuesPerField(10);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        metadata.add(Office.OFFICE_LINK_URL, "https://example.invalid/first");
+        metadata.add(Office.OFFICE_LINK_TYPE, "ole");
+        metadata.remove(Office.OFFICE_LINK_TYPE.getName());
+
+        // HashMap-backed merge paths may present a sibling before the URL
+        // boundary for the next logical record.
+        metadata.add(Office.OFFICE_LINK_TYPE, "external");
+        metadata.add(Office.OFFICE_LINK_URL, "https://example.invalid/second");
+
+        assertArrayEquals(
+                new String[]{
+                    "https://example.invalid/first",
+                    "https://example.invalid/second"
+                },
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(
+                new String[]{"", "external"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
     }
 }

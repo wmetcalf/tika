@@ -99,6 +99,21 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
+    public void testSuccessfulOutputIsCachedBeforeCleanup()
+            throws Exception {
+        Path output = tempDir.resolve("successful-output.txt");
+        String expected = "successful OCR output";
+        Files.writeString(output, expected, UTF_8);
+        OcrResultCache cache = new OcrResultCache(0, false);
+
+        TesseractOCRParser.cacheAndDeleteOcrOutput(
+                output.toFile(), cache, "image-hash");
+
+        assertEquals(expected, cache.get("image-hash"));
+        assertFalse(Files.exists(output));
+    }
+
+    @Test
     public void testCacheHitReplaysNormalOcrXhtmlStructure() throws Exception {
         Path image = writeImage("cache-hit.png", 10, 10);
         TesseractOCRConfig config = new TesseractOCRConfig();
@@ -127,7 +142,7 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
-    public void testZeroDisablesImagePreparationAndBorrowsInput() throws Exception {
+    public void testZeroDisablesDownscalingAndBorrowsSafeInput() throws Exception {
         Path image = writeImage("disabled.png", 300, 180);
         try (TemporaryResources tmp = new TemporaryResources();
              TikaInputStream original = TikaInputStream.get(image);
@@ -136,6 +151,27 @@ public class TesseractOCRResourceSafetyTest {
             assertSame(original, prepared.stream());
             assertFalse(prepared.isSkipped());
         }
+    }
+
+    @Test
+    public void testZeroStillRejectsOversizedDeclaredImageBeforeRasterDecode()
+            throws Exception {
+        Path image = tempDir.resolve("oversized-without-downscaling.png");
+        Files.write(image, pngWithDimensions(200_000, 200_000));
+        Metadata metadata = new Metadata();
+
+        try (TemporaryResources tmp = new TemporaryResources();
+             TikaInputStream original = TikaInputStream.get(image);
+             TesseractOCRParser.PreparedOcrInput prepared =
+                     TesseractOCRParser.prepareOcrInput(original, tmp, 0, metadata)) {
+            assertTrue(prepared.isSkipped());
+            assertNull(prepared.stream());
+        }
+
+        assertEquals("image_safety_limit",
+                metadata.get("X-Tika-OCR-Skipped-Reason"));
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
     }
 
     @Test
@@ -195,6 +231,35 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
+    public void testOversizedLaterImageFrameIsRejected()
+            throws Exception {
+        Path image = tempDir.resolve("multiframe-reader.img");
+        Files.write(image, new byte[]{0x7d});
+        MultiFrameImageReaderSpi provider =
+                new MultiFrameImageReaderSpi();
+        IIORegistry registry = IIORegistry.getDefaultInstance();
+        registry.registerServiceProvider(provider);
+        Metadata metadata = new Metadata();
+        try {
+            try (TemporaryResources tmp = new TemporaryResources();
+                 TikaInputStream original = TikaInputStream.get(image);
+                 TesseractOCRParser.PreparedOcrInput prepared =
+                         TesseractOCRParser.prepareOcrInput(
+                                 original, tmp, 2000, metadata)) {
+                assertTrue(prepared.isSkipped());
+                assertNull(prepared.stream());
+            }
+        } finally {
+            registry.deregisterServiceProvider(provider);
+        }
+
+        assertEquals("image_safety_limit",
+                metadata.get("X-Tika-OCR-Skipped-Reason"));
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void testUncheckedImageReaderFailureIsSkippedAndSignaled()
             throws Exception {
         Path image = tempDir.resolve("runtime-reader.img");
@@ -223,6 +288,65 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
+    public void testUncheckedImageReaderCleanupFailureIsSkippedAndSignaled()
+            throws Exception {
+        Path image = tempDir.resolve("cleanup-reader.img");
+        Files.write(image, new byte[]{0x7e});
+        CleanupThrowingImageReaderSpi provider =
+                new CleanupThrowingImageReaderSpi(
+                        new IllegalStateException(
+                                "simulated image reader cleanup failure"));
+        IIORegistry registry = IIORegistry.getDefaultInstance();
+        registry.registerServiceProvider(provider);
+        Metadata metadata = new Metadata();
+        try {
+            try (TemporaryResources tmp = new TemporaryResources();
+                 TikaInputStream original = TikaInputStream.get(image);
+                 TesseractOCRParser.PreparedOcrInput prepared =
+                         assertDoesNotThrow(
+                                 () -> TesseractOCRParser.prepareOcrInput(
+                                         original, tmp, 2000, metadata))) {
+                assertTrue(prepared.isSkipped());
+                assertNull(prepared.stream());
+            }
+        } finally {
+            registry.deregisterServiceProvider(provider);
+        }
+
+        assertEquals("image_safety_limit",
+                metadata.get("X-Tika-OCR-Skipped-Reason"));
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testImageReaderCleanupSecurityExceptionPropagates()
+            throws Exception {
+        Path image = tempDir.resolve("cleanup-security-reader.img");
+        Files.write(image, new byte[]{0x7e});
+        SecurityException denial =
+                new SecurityException(
+                        "simulated image reader cleanup policy denial");
+        CleanupThrowingImageReaderSpi provider =
+                new CleanupThrowingImageReaderSpi(denial);
+        IIORegistry registry = IIORegistry.getDefaultInstance();
+        registry.registerServiceProvider(provider);
+        try {
+            try (TemporaryResources tmp = new TemporaryResources();
+                 TikaInputStream original = TikaInputStream.get(image)) {
+                SecurityException thrown =
+                        assertThrows(SecurityException.class,
+                                () -> TesseractOCRParser.prepareOcrInput(
+                                        original, tmp, 2000,
+                                        new Metadata()));
+                assertSame(denial, thrown);
+            }
+        } finally {
+            registry.deregisterServiceProvider(provider);
+        }
+    }
+
+    @Test
     public void testSubsamplingKeepsIntermediateWithinPixelBudget() {
         int subsampling =
                 TesseractOCRParser.calculateSourceSubsampling(6000, 4000, 4_000_000, 1000);
@@ -248,6 +372,23 @@ public class TesseractOCRResourceSafetyTest {
 
             assertThrows(IOException.class, replacement::read);
         }
+    }
+
+    @Test
+    public void testCleanupFailureClosesAbandonedOwnedReplacement()
+            throws Exception {
+        Path replacementPath = tempDir.resolve("abandoned-replacement.bin");
+        Files.writeString(replacementPath, "replacement", UTF_8);
+        TikaInputStream replacement = TikaInputStream.get(replacementPath);
+        TesseractOCRParser.PreparedOcrInput prepared =
+                TesseractOCRParser.PreparedOcrInput.owned(replacement);
+
+        TesseractOCRParser.closePreparedAfterCleanupFailure(
+                prepared,
+                new IllegalStateException(
+                        "simulated image reader cleanup failure"));
+
+        assertThrows(IOException.class, replacement::read);
     }
 
     private Path writeImage(String name, int width, int height) throws IOException {
@@ -362,6 +503,199 @@ public class TesseractOCRResourceSafetyTest {
         @Override
         public BufferedImage read(int imageIndex, ImageReadParam param) {
             return null;
+        }
+    }
+
+    private static final class CleanupThrowingImageReaderSpi
+            extends ImageReaderSpi {
+
+        private final RuntimeException cleanupFailure;
+
+        private CleanupThrowingImageReaderSpi(
+                RuntimeException cleanupFailure) {
+            super("Apache Tika", "1.0",
+                    new String[]{"cleanup-reader"},
+                    new String[]{"img"},
+                    new String[]{"application/x-cleanup-reader"},
+                    CleanupThrowingImageReader.class.getName(),
+                    STANDARD_INPUT_TYPE,
+                    null, false, null, null, null, null,
+                    false, null, null, null, null);
+            this.cleanupFailure = cleanupFailure;
+        }
+
+        @Override
+        public boolean canDecodeInput(Object source) throws IOException {
+            if (!(source instanceof ImageInputStream input)) {
+                return false;
+            }
+            long position = input.getStreamPosition();
+            try {
+                return input.read() == 0x7e;
+            } finally {
+                input.seek(position);
+            }
+        }
+
+        @Override
+        public ImageReader createReaderInstance(Object extension) {
+            return new CleanupThrowingImageReader(
+                    this, cleanupFailure);
+        }
+
+        @Override
+        public String getDescription(Locale locale) {
+            return "ImageReader that simulates cleanup failure";
+        }
+    }
+
+    private static final class CleanupThrowingImageReader
+            extends ImageReader {
+
+        private final RuntimeException cleanupFailure;
+
+        private CleanupThrowingImageReader(
+                ImageReaderSpi provider,
+                RuntimeException cleanupFailure) {
+            super(provider);
+            this.cleanupFailure = cleanupFailure;
+        }
+
+        @Override
+        public int getNumImages(boolean allowSearch) {
+            return 1;
+        }
+
+        @Override
+        public int getWidth(int imageIndex) {
+            return 1;
+        }
+
+        @Override
+        public int getHeight(int imageIndex) {
+            return 1;
+        }
+
+        @Override
+        public ImageTypeSpecifier getRawImageType(int imageIndex) {
+            return ImageTypeSpecifier.createFromBufferedImageType(
+                    BufferedImage.TYPE_INT_RGB);
+        }
+
+        @Override
+        public Iterator<ImageTypeSpecifier> getImageTypes(int imageIndex) {
+            return Collections.singleton(
+                    getRawImageType(imageIndex)).iterator();
+        }
+
+        @Override
+        public IIOMetadata getStreamMetadata() {
+            return null;
+        }
+
+        @Override
+        public IIOMetadata getImageMetadata(int imageIndex) {
+            return null;
+        }
+
+        @Override
+        public BufferedImage read(int imageIndex, ImageReadParam param) {
+            throw new AssertionError(
+                    "safe borrowed input must not be decoded");
+        }
+
+        @Override
+        public void dispose() {
+            throw cleanupFailure;
+        }
+    }
+
+    private static final class MultiFrameImageReaderSpi
+            extends ImageReaderSpi {
+
+        private MultiFrameImageReaderSpi() {
+            super("Apache Tika", "1.0",
+                    new String[]{"multiframe-reader"},
+                    new String[]{"img"},
+                    new String[]{"application/x-multiframe-reader"},
+                    MultiFrameImageReader.class.getName(),
+                    STANDARD_INPUT_TYPE,
+                    null, false, null, null, null, null,
+                    false, null, null, null, null);
+        }
+
+        @Override
+        public boolean canDecodeInput(Object source) throws IOException {
+            if (!(source instanceof ImageInputStream input)) {
+                return false;
+            }
+            long position = input.getStreamPosition();
+            try {
+                return input.read() == 0x7d;
+            } finally {
+                input.seek(position);
+            }
+        }
+
+        @Override
+        public ImageReader createReaderInstance(Object extension) {
+            return new MultiFrameImageReader(this);
+        }
+
+        @Override
+        public String getDescription(Locale locale) {
+            return "Two-frame ImageReader with an oversized second frame";
+        }
+    }
+
+    private static final class MultiFrameImageReader
+            extends ImageReader {
+
+        private MultiFrameImageReader(ImageReaderSpi provider) {
+            super(provider);
+        }
+
+        @Override
+        public int getNumImages(boolean allowSearch) {
+            return 2;
+        }
+
+        @Override
+        public int getWidth(int imageIndex) {
+            return imageIndex == 0 ? 1 : 200_000;
+        }
+
+        @Override
+        public int getHeight(int imageIndex) {
+            return imageIndex == 0 ? 1 : 200_000;
+        }
+
+        @Override
+        public ImageTypeSpecifier getRawImageType(int imageIndex) {
+            return ImageTypeSpecifier.createFromBufferedImageType(
+                    BufferedImage.TYPE_INT_RGB);
+        }
+
+        @Override
+        public Iterator<ImageTypeSpecifier> getImageTypes(int imageIndex) {
+            return Collections.singleton(
+                    getRawImageType(imageIndex)).iterator();
+        }
+
+        @Override
+        public IIOMetadata getStreamMetadata() {
+            return null;
+        }
+
+        @Override
+        public IIOMetadata getImageMetadata(int imageIndex) {
+            return null;
+        }
+
+        @Override
+        public BufferedImage read(int imageIndex, ImageReadParam param) {
+            throw new AssertionError(
+                    "unsafe multiframe input must not be decoded");
         }
     }
 }

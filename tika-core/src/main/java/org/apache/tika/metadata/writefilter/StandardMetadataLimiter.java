@@ -556,14 +556,6 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
         estimatedSize += requiredKeyBytes;
 
-        // HashMap-backed metadata merge paths do not guarantee that the record
-        // boundary field arrives first. Reserving every member key above must
-        // therefore happen for any member; replacement alignment remains tied
-        // to the boundary that starts the logical record.
-        if (!field.equals(boundaryField)) {
-            return true;
-        }
-
         String[] boundaryValues = data.get(boundaryField);
         int priorRecordCount = boundaryValues == null ? 0 : boundaryValues.length;
         boolean groupHasReplacementCount = false;

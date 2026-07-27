@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +37,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.utils.FileProcessResult;
 
 public class ColorGridQRDecoderMetadataTest {
 
@@ -96,6 +98,27 @@ public class ColorGridQRDecoderMetadataTest {
 
         assertThrows(RuntimeException.class, () -> ColorGridQRDecoder.decode(
                 List.of(grid), new ThrowingScanner(), config, new ParseContext()));
+    }
+
+    @Test
+    public void testBudgetedDecodeDoesNotProbeScannerAvailability() {
+        List<ColorGridQRDecoder.Cell> row = new ArrayList<>();
+        for (int i = 0; i < ColorGridQRDecoder.MIN_COLS; i++) {
+            row.add(new ColorGridQRDecoder.Cell((i & 1) == 0));
+        }
+        List<List<ColorGridQRDecoder.Cell>> grid = new ArrayList<>();
+        for (int i = 0; i < ColorGridQRDecoder.MIN_LINES; i++) {
+            grid.add(row);
+        }
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ProbeRejectingScanner scanner = new ProbeRejectingScanner();
+
+        ColorGridQRDecoder.decode(
+                List.of(grid), scanner, config, new ParseContext(),
+                new ZXingCPPScanner.ScanBudget(1, 1_000));
+
+        assertEquals(1, scanner.executions);
     }
 
     @Test
@@ -233,6 +256,26 @@ public class ColorGridQRDecoderMetadataTest {
         public List<Result> scan(Path imagePath, ZXingCPPConfig config,
                                  ParseContext context) {
             throw new ScanException("simulated scanner failure");
+        }
+    }
+
+    private static final class ProbeRejectingScanner extends ZXingCPPScanner {
+
+        private int executions;
+
+        @Override
+        boolean checkCommand(String[] command) {
+            throw new AssertionError("budgeted scans must not launch a version probe");
+        }
+
+        @Override
+        FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis)
+                throws IOException {
+            executions++;
+            FileProcessResult result = new FileProcessResult();
+            result.setExitValue(0);
+            result.setStdout("");
+            return result;
         }
     }
 }

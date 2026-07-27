@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
@@ -118,8 +119,16 @@ public final class OOXMLColorQRScanHelper {
         try {
             ZXingCPPScanner scanner = injectedScanner == null
                     ? new ZXingCPPScanner(zcfg) : injectedScanner;
+            long aggregateTimeoutMillis =
+                    TimeoutLimits.getProcessTimeoutMillis(
+                            context, zcfg.getTimeoutSeconds() * 1000L);
+            ZXingCPPScanner.ScanBudget scanBudget =
+                    new ZXingCPPScanner.ScanBudget(
+                            ColorGridQRDecoder.MAX_CLUSTERS,
+                            aggregateTimeoutMillis);
             List<ZXingCPPScanner.Result> decoded =
-                    ColorGridQRDecoder.decode(grids, scanner, zcfg, null);
+                    ColorGridQRDecoder.decode(
+                            grids, scanner, zcfg, context, scanBudget);
             ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             metadata.add(keyPrefix + ":rows", String.valueOf(rows.size()));
             metadata.add(keyPrefix + ":maxcols", String.valueOf(maxCols));

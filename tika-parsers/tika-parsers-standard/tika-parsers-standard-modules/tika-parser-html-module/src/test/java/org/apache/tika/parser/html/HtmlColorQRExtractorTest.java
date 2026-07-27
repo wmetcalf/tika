@@ -1143,28 +1143,32 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
-    public void unicodeQrCandidatesShareOneSubprocessBudget() throws Exception {
+    public void colorAndUnicodeQrCandidatesShareOneSubprocessBudget() throws Exception {
         Path invocationLog = temporaryDirectory.resolve("zxing-invocations.log");
         Path fakeScanner = createCountingEmptyScanner(invocationLog);
-        Document document = Jsoup.parse("<html><body></body></html>");
         String unicodeGrid = String.join("\n",
                 "████████", "████████", "████████", "████████",
                 "████████", "████████", "████████", "████████");
+        StringBuilder html = new StringBuilder("<html><body>")
+                .append(VALID_GRID);
         for (int i = 0; i < 6; i++) {
-            document.body().appendElement("pre").text(unicodeGrid);
+            html.append("<pre>").append(unicodeGrid).append("</pre>");
         }
+        html.append("</body></html>");
         Metadata metadata = new Metadata();
-        Method scan = JSoupParser.class.getDeclaredMethod(
-                "scanForUnicodeArtQR", Document.class, Metadata.class, ParseContext.class);
-        scan.setAccessible(true);
 
-        scan.invoke(null, document, metadata, contextFor(fakeScanner));
+        parse(html.toString(), new BodyContentHandler(-1), metadata,
+                contextFor(fakeScanner));
 
-        assertEquals(4, Files.readAllLines(invocationLog).size());
+        List<String> invocations = Files.readAllLines(invocationLog);
+        assertEquals(4, invocations.stream()
+                .filter("scan"::equals).count());
+        assertEquals(0, invocations.stream()
+                .filter("probe"::equals).count());
         assertTrue(metadata
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
         assertNotNull(metadata.get("ExploitClass"),
-                "skipped Unicode-QR candidates must not look like a clean negative");
+                "skipped HTML QR candidates must not look like a clean negative");
     }
 
     @Test
@@ -1199,11 +1203,11 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
-    public void htmlScannerSecurityExceptionPropagates() {
+    public void htmlScannerSecurityExceptionPropagatesWhenCandidateIsScanned() {
         Metadata metadata = new Metadata();
 
         assertThrows(SecurityException.class, () ->
-                parse("<html><body>ordinary text</body></html>",
+                parse("<html><body>" + VALID_GRID + "</body></html>",
                         new BodyContentHandler(-1), metadata,
                         contextForSecurityException()));
     }
@@ -1310,6 +1314,7 @@ public class HtmlColorQRExtractorTest {
         Files.writeString(script, """
                 #!/bin/sh
                 if [ "$1" = "-version" ]; then
+                    printf '%%s\\n' probe >> '%s'
                     exit 0
                 fi
                 if [ "$1" = "-json" ]; then
@@ -1317,7 +1322,7 @@ public class HtmlColorQRExtractorTest {
                     exit 0
                 fi
                 exit 2
-                """.formatted(invocationLog), StandardCharsets.UTF_8);
+                """.formatted(invocationLog, invocationLog), StandardCharsets.UTF_8);
         Files.setPosixFilePermissions(script,
                 PosixFilePermissions.fromString("rwx------"));
         return script;

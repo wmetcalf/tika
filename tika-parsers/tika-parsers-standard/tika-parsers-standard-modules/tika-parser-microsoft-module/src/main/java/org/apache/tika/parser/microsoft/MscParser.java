@@ -211,6 +211,8 @@ public class MscParser implements Parser {
                 commands, taskNames, taskDescs, taskCommands, strings);
         try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(raw)) {
             XMLReaderUtils.parseSAX(xmlStream, xmlHandler, context);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             warnings.add("XML field extraction error: " + e.getMessage());
             xmlFieldExtractionFailed = true;

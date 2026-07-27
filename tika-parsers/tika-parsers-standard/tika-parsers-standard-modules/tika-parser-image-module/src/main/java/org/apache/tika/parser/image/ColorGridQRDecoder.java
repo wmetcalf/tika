@@ -75,9 +75,22 @@ public final class ColorGridQRDecoder {
                                       ZXingCPPScanner scanner,
                                       ZXingCPPConfig config,
                                       ParseContext context) {
+        return decode(grids, scanner, config, context, null);
+    }
+
+    /**
+     * Variant that shares an aggregate subprocess budget across several
+     * candidate grids or document pages.
+     */
+    public static List<ZXingCPPScanner.Result> decode(List<List<List<Cell>>> grids,
+                                      ZXingCPPScanner scanner,
+                                      ZXingCPPConfig config,
+                                      ParseContext context,
+                                      ZXingCPPScanner.ScanBudget budget) {
         List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (grids == null || grids.isEmpty()
-                || scanner == null || !scanner.hasZXingCPP()) {
+                || scanner == null
+                || (budget == null && !scanner.hasZXingCPP())) {
             return decoded;
         }
         int rendered = 0;
@@ -96,7 +109,10 @@ public final class ColorGridQRDecoder {
                 }
                 tmp = Files.createTempFile("colorqr-", ".png");
                 ImageIO.write(img, "PNG", tmp.toFile());
-                List<ZXingCPPScanner.Result> results = scanner.scan(tmp, config, context);
+                List<ZXingCPPScanner.Result> results =
+                        budget == null
+                                ? scanner.scan(tmp, config, context)
+                                : scanner.scan(tmp, config, context, budget);
                 boolean hit = false;
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();

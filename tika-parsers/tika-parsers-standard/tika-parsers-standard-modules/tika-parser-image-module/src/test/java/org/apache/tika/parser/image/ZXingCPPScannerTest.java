@@ -18,6 +18,7 @@ package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -159,6 +160,23 @@ public class ZXingCPPScannerTest {
 
         assertThrows(ZXingCPPScanner.ScanBudgetExceededException.class,
                 () -> scanner.scan(image, config, new ParseContext(), budget));
+        assertTrue(budget.hasRejectedScan());
+    }
+
+    @Test
+    public void zeroDurationBudgetRejectsBeforeProcessExecution() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        AtomicLong now = new AtomicLong();
+        ZXingCPPScanner.ScanBudget budget =
+                new ZXingCPPScanner.ScanBudget(1, 0, now::get);
+        StubScanner scanner = new StubScanner(successResult(""));
+
+        assertThrows(ZXingCPPScanner.ScanBudgetExceededException.class,
+                () -> scanner.scan(Paths.get("target/test-data/code.png"),
+                        config, new ParseContext(), budget));
+
+        assertNull(scanner.lastCommand);
         assertTrue(budget.hasRejectedScan());
     }
 

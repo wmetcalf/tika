@@ -33,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import javax.xml.parsers.SAXParser;
 
@@ -45,6 +46,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLFilterImpl;
 
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -214,6 +216,27 @@ public class PpkgParserSecurityTest {
         assertEquals(COMMAND, metadata.get("ppkg:command"),
                 "a rejected oversized resource must not starve a later valid "
                         + "metadata resource of the expanded-byte budget");
+    }
+
+    @Test
+    public void failedExpansionsStillConsumeBoundedWorkBudget() {
+        PpkgParser.ResourceProcessingState state =
+                new PpkgParser.ResourceProcessingState();
+        PpkgParser.ResHdr resource = new PpkgParser.ResHdr();
+        resource.uncompressed = 8L * 1024 * 1024;
+        List<String> warnings = new java.util.ArrayList<>();
+
+        for (int attempt = 0; attempt < 8; attempt++) {
+            assertTrue(state.reserve(
+                    "failed-" + attempt, resource, warnings));
+            state.releaseFailedExpansion(resource);
+        }
+
+        assertFalse(state.reserve("failed-8", resource, warnings));
+        assertNotNull(warnings.stream()
+                .filter(value -> value.contains("cumulative"))
+                .findFirst()
+                .orElse(null));
     }
 
     @Test
@@ -681,6 +704,29 @@ public class PpkgParserSecurityTest {
                         buildWimResource("payload.bin",
                                 "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
                         new SecurityException("simulated data security boundary")));
+    }
+
+    @Test
+    public void dataAssetMimeDetectionSecurityExceptionPropagates() {
+        SecurityException denial =
+                new SecurityException("simulated MIME policy denial");
+        ParseContext context = new ParseContext();
+        context.set(Detector.class, (stream, metadata, parseContext) -> {
+            throw denial;
+        });
+        byte[] wim = buildWimResource(
+                "payload.bin",
+                "ordinary embedded data".getBytes(StandardCharsets.UTF_8));
+
+        SecurityException thrown = assertThrows(SecurityException.class, () -> {
+            try (TikaInputStream stream = TikaInputStream.get(wim)) {
+                new PpkgParser().parse(
+                        stream, new BodyContentHandler(-1),
+                        new Metadata(), context);
+            }
+        });
+
+        assertEquals(denial, thrown);
     }
 
     @Test

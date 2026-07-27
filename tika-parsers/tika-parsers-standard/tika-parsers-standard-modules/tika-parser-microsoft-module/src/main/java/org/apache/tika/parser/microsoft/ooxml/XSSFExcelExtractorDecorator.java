@@ -202,6 +202,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // unreadable, log to metadata and continue with degraded extraction.
         try {
             stylesShim = new XSSFStylesShim(xssfReader.getStylesData(), parseContext);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
@@ -209,6 +211,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         try {
             stringsShim = new XSSFSharedStringsShim(xssfReader.getSharedStringsData(),
                     config.isConcatenatePhoneticRuns(), parseContext);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
@@ -339,7 +343,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // Extract external data sources (HIGH security risk - can hide malicious URLs)
         try {
             extractExternalDataSources(container, xhtml);
-        } catch (InvalidFormatException | TikaException | IOException | SAXException e) {
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            throw e;
+        } catch (InvalidFormatException | TikaException | IOException e) {
             //swallow
         }
 
@@ -351,6 +358,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         try {
             processXlmXmlMacroSheets(container, xhtml, stringsShim);
         } catch (SecurityException e) {
+            throw e;
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
             throw e;
         } catch (Exception e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
@@ -418,6 +428,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 emitMacroText(sheetName, "text/x-excel-macro",
                         boundedMacroText(parser.getFormulas().values()), xhtml);
             } catch (SecurityException e) {
+                throw e;
+            } catch (SAXException e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
                 throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);

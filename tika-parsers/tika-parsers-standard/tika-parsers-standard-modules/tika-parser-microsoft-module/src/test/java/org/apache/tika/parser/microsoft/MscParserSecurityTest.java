@@ -35,11 +35,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.xml.parsers.SAXParser;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.Parser;
 import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.XMLFilterImpl;
 
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -317,6 +322,19 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testXmlFieldExtractionSecurityExceptionPropagates() {
+        SecurityException denial =
+                new SecurityException("simulated XML policy denial");
+        ParseContext context = new ParseContext();
+        context.set(SAXParser.class, new SecurityDenyingSaxParser(denial));
+
+        SecurityException thrown = assertThrows(SecurityException.class,
+                () -> parse("<MMC_ConsoleFile/>", context));
+
+        assertEquals(denial, thrown);
+    }
+
+    @Test
     public void testOrdinaryBinaryParseFailureRemainsIncompleteWarning() throws Exception {
         ParseResult result = parseWithEmbeddedException(
                 new IOException("simulated ordinary binary failure"));
@@ -503,5 +521,55 @@ public class MscParserSecurityTest {
     }
 
     private record ParseResult(String body, Metadata metadata) {
+    }
+
+    @SuppressWarnings("deprecation")
+    private static final class SecurityDenyingSaxParser extends SAXParser {
+
+        private final SecurityException denial;
+
+        private SecurityDenyingSaxParser(SecurityException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public Parser getParser() {
+            throw new UnsupportedOperationException("SAX1 parser not used");
+        }
+
+        @Override
+        public XMLReader getXMLReader() {
+            return new XMLFilterImpl() {
+                @Override
+                public void parse(InputSource input) {
+                    throw denial;
+                }
+
+                @Override
+                public void parse(String systemId) {
+                    throw denial;
+                }
+            };
+        }
+
+        @Override
+        public boolean isNamespaceAware() {
+            return true;
+        }
+
+        @Override
+        public boolean isValidating() {
+            return false;
+        }
+
+        @Override
+        public void setProperty(String name, Object value) {
+            // no-op
+        }
+
+        @Override
+        public Object getProperty(String name) {
+            return null;
+        }
     }
 }

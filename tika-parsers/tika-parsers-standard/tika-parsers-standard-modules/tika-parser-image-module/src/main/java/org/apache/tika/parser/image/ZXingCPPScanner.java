@@ -112,9 +112,6 @@ public class ZXingCPPScanner {
         private final LongSupplier nanoTime;
         private int scans;
         private boolean rejectedScan;
-        private ZXingCPPScanner availabilityScanner;
-        private ZXingCPPConfig availabilityConfig;
-        private Boolean scannerAvailable;
 
         public ScanBudget(int maxScans, long maxDurationMillis) {
             this(maxScans, maxDurationMillis, System::nanoTime);
@@ -146,19 +143,6 @@ public class ZXingCPPScanner {
             this.deadlineNanos = deadline;
         }
 
-        synchronized boolean isScannerAvailable(
-                ZXingCPPScanner scanner, ZXingCPPConfig config) {
-            if (scannerAvailable == null) {
-                availabilityScanner = scanner;
-                availabilityConfig = config;
-                scannerAvailable = scanner.hasZXingCPP(config);
-            } else if (availabilityScanner != scanner || availabilityConfig != config) {
-                throw new IllegalArgumentException(
-                        "ScanBudget cannot be shared across scanner configurations");
-            }
-            return scannerAvailable;
-        }
-
         synchronized long acquireTimeoutMillis(long requestedTimeoutMillis) {
             long remainingNanos = deadlineNanos - nanoTime.getAsLong();
             if (scans >= maxScans || requestedTimeoutMillis <= 0 || remainingNanos <= 0) {
@@ -172,6 +156,11 @@ public class ZXingCPPScanner {
                 remainingMillis++;
             }
             return Math.min(requestedTimeoutMillis, remainingMillis);
+        }
+
+        synchronized void rejectAdditionalScan(String message) {
+            rejectedScan = true;
+            throw new ScanBudgetExceededException(message);
         }
 
         public synchronized boolean hasRejectedScan() {

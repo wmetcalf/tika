@@ -135,8 +135,18 @@ public final class HtmlColorQRExtractor {
                                                 ZXingCPPConfig config,
                                                 ParseContext context,
                                                 Metadata metadata) {
+        return extractAndDecode(doc, scanner, config, context, metadata, null);
+    }
+
+    public static List<ZXingCPPScanner.Result> extractAndDecode(Document doc,
+                                                ZXingCPPScanner scanner,
+                                                ZXingCPPConfig config,
+                                                ParseContext context,
+                                                Metadata metadata,
+                                                ZXingCPPScanner.ScanBudget budget) {
         List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
-        if (doc == null || scanner == null || !scanner.hasZXingCPP()) {
+        if (doc == null || scanner == null
+                || (budget == null && !scanner.hasZXingCPP())) {
             return decoded;
         }
         StylesheetParseResult stylesheetResult = parseStylesheetsBounded(
@@ -171,7 +181,10 @@ public final class HtmlColorQRExtractor {
                 }
                 tmp = Files.createTempFile("htmlcolorqr-", ".png");
                 ImageIO.write(img, "PNG", tmp.toFile());
-                List<ZXingCPPScanner.Result> results = scanner.scan(tmp, config, context);
+                List<ZXingCPPScanner.Result> results =
+                        budget == null
+                                ? scanner.scan(tmp, config, context)
+                                : scanner.scan(tmp, config, context, budget);
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();
                     if (t != null && !t.isEmpty()) {

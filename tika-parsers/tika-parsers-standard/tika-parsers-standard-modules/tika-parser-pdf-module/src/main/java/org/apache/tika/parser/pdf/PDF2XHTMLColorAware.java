@@ -34,6 +34,7 @@ import org.apache.pdfbox.rendering.PageDrawerParameters;
 import org.apache.pdfbox.text.TextPosition;
 import org.xml.sax.ContentHandler;
 
+import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.BarcodeMetadataUtil;
@@ -64,9 +65,11 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
      *  generous bin without merging adjacent rows. */
     private static final float ROW_BIN_TOLERANCE = 1.5f;
     private static final int MAX_GLYPHS_PER_PAGE = 262_144;
+    private static final int MAX_PDF_COLOR_QR_SCANS = 4;
 
     private final ZXingCPPScanner scanner;
     private final ZXingCPPConfig zxingConfig;
+    private ZXingCPPScanner.ScanBudget scanBudget;
     private final GlyphBuffer pageGlyphs =
             new GlyphBuffer(MAX_GLYPHS_PER_PAGE);
 
@@ -201,7 +204,8 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
             List<List<List<ColorGridQRDecoder.Cell>>> grids = new ArrayList<>();
             grids.add(cr.grid);
             List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
-                    ColorGridQRDecoder.decode(grids, scanner, zxingConfig, null);
+                    ColorGridQRDecoder.decode(
+                            grids, scanner, zxingConfig, context, getScanBudget());
             ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             metadata.add("pdf_color_qr:decode_count", String.valueOf(decoded.size()));
             if (!decoded.isEmpty()) {
@@ -218,6 +222,17 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
             BarcodeMetadataUtil.markAnalysisIncomplete(
                     metadata, "PDF color-QR analysis", ex);
         }
+    }
+
+    private ZXingCPPScanner.ScanBudget getScanBudget() {
+        if (scanBudget == null) {
+            long aggregateTimeoutMillis =
+                    TimeoutLimits.getProcessTimeoutMillis(
+                            context, zxingConfig.getTimeoutSeconds() * 1000L);
+            scanBudget = new ZXingCPPScanner.ScanBudget(
+                    MAX_PDF_COLOR_QR_SCANS, aggregateTimeoutMillis);
+        }
+        return scanBudget;
     }
 
     private static final class ClusterResult {

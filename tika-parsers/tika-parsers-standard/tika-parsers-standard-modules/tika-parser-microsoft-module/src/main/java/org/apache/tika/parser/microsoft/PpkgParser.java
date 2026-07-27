@@ -42,6 +42,7 @@ import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -97,6 +98,8 @@ public class PpkgParser implements Parser {
     private static final int MAX_PROCESSED_RESOURCES = 1_024;
     private static final long MAX_DECOMPRESSED_RESOURCE_BYTES = 8L * 1024 * 1024;
     private static final long MAX_CUMULATIVE_EXPANDED_BYTES = 16L * 1024 * 1024;
+    private static final long MAX_CUMULATIVE_EXPANSION_WORK_BYTES =
+            64L * 1024 * 1024;
     private static final int MAX_RETAINED_XML_VALUES = 4_096;
     private static final int MAX_RETAINED_XML_VALUE_CHARS = 1024 * 1024;
     private static final int MAX_SEMANTIC_EXTENSION_LENGTH = 16;
@@ -866,9 +869,15 @@ public class PpkgParser implements Parser {
         Metadata embMeta = Metadata.newInstance(context);
         embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         String mime = "application/octet-stream";
+        Detector detector = context.get(Detector.class);
+        if (detector == null) {
+            detector = new DefaultDetector();
+        }
         try (TikaInputStream tis = TikaInputStream.get(data)) {
-            mime = new DefaultDetector()
-                    .detect(tis, embMeta, context).getBaseType().toString();
+            mime = detector.detect(tis, embMeta, context)
+                    .getBaseType().toString();
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             warnings.add("MIME detect error " + name + ": " + e.getMessage());
         }
@@ -1374,19 +1383,24 @@ public class PpkgParser implements Parser {
 
     // ── Inner types ───────────────────────────────────────────────────────────
 
-    private static final class ResourceProcessingState {
+    static final class ResourceProcessingState {
         private final Set<String> processedKeys = new HashSet<>();
         private long expandedBytes;
+        private long expansionWorkBytes;
         private int resourceCount;
 
-        private boolean reserve(String processingKey, ResHdr resource,
-                                List<String> warnings) {
+        boolean reserve(String processingKey, ResHdr resource,
+                        List<String> warnings) {
             if (processingKey != null && processedKeys.contains(processingKey)) {
                 return false;
             }
             if (resource.uncompressed <= 0
                     || resourceCount >= MAX_PROCESSED_RESOURCES
-                    || resource.uncompressed > MAX_CUMULATIVE_EXPANDED_BYTES - expandedBytes) {
+                    || resource.uncompressed
+                            > MAX_CUMULATIVE_EXPANDED_BYTES - expandedBytes
+                    || resource.uncompressed
+                            > MAX_CUMULATIVE_EXPANSION_WORK_BYTES
+                                    - expansionWorkBytes) {
                 if (!warnings.contains(CUMULATIVE_RESOURCE_LIMIT_WARNING)) {
                     warnings.add(CUMULATIVE_RESOURCE_LIMIT_WARNING);
                 }
@@ -1398,16 +1412,17 @@ public class PpkgParser implements Parser {
             }
             resourceCount++;
             expandedBytes += resource.uncompressed;
+            expansionWorkBytes += resource.uncompressed;
             return true;
         }
 
-        private void releaseFailedExpansion(ResHdr resource) {
+        void releaseFailedExpansion(ResHdr resource) {
             expandedBytes = Math.max(0,
                     expandedBytes - resource.uncompressed);
         }
     }
 
-    private static final class ResHdr {
+    static final class ResHdr {
         long size;
         int  flags;
         long offset;

@@ -325,6 +325,49 @@ class XlmCaptureBoundsTest {
     }
 
     @Test
+    void testXmlMacrosheetHandlerAbortEscapesOpportunisticCatch()
+            throws Exception {
+        String xml = """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1"><c r="A1"><f>EXEC("payload")</f></c></row></sheetData>
+                </worksheet>
+                """;
+        SAXException denial =
+                new SAXException("simulated XLM output policy abort");
+        Metadata metadata = new Metadata();
+        ParseContext parseContext = new ParseContext();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new FormulaOneShotSaxExceptionHandler(denial),
+                metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart macroPart = opcPackage.createPart(
+                    PackagingURIHelper.createPartName(
+                            "/xl/macrosheets/sheet1.xml"),
+                    XSSFRelation.MACRO_SHEET_XML.getContentType());
+            try (OutputStream stream = macroPart.getOutputStream()) {
+                stream.write(xml.getBytes(StandardCharsets.UTF_8));
+            }
+            XSSFExcelExtractorDecorator decorator =
+                    new XSSFExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmXmlMacroSheets", OPCPackage.class,
+                    XHTMLContentHandler.class, XSSFSharedStringsShim.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            InvocationTargetException thrown =
+                    assertThrows(InvocationTargetException.class,
+                            () -> process.invoke(
+                                    decorator, opcPackage, xhtml, null));
+
+            assertEquals(denial, thrown.getCause());
+        }
+    }
+
+    @Test
     void testXlsbSheetSecurityExceptionEscapesRecoveryCatch()
             throws Exception {
         ParseContext context = new ParseContext();
@@ -441,6 +484,27 @@ class XlmCaptureBoundsTest {
             if (new String(ch, start, length).contains("EXEC")) {
                 throw new SecurityException(
                         "simulated XLM formula policy denial");
+            }
+        }
+    }
+
+    private static final class FormulaOneShotSaxExceptionHandler
+            extends DefaultHandler {
+
+        private final SAXException denial;
+        private boolean denied;
+
+        private FormulaOneShotSaxExceptionHandler(SAXException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (!denied
+                    && new String(ch, start, length).contains("EXEC")) {
+                denied = true;
+                throw denial;
             }
         }
     }

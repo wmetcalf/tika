@@ -126,12 +126,19 @@ public class OOXMLColorQRScanHelperTest {
         ZXingCPPScanner scanner = new ZXingCPPScanner(zxing) {
             @Override
             public boolean hasZXingCPP() {
-                return true;
+                throw new AssertionError("budgeted scans must not probe availability");
             }
 
             @Override
             public List<Result> scan(Path imagePath, ZXingCPPConfig config,
                                      ParseContext parseContext) {
+                throw new AssertionError("OOXML must use the budget-aware scan overload");
+            }
+
+            @Override
+            public List<Result> scan(Path imagePath, ZXingCPPConfig config,
+                                     ParseContext parseContext, ScanBudget budget) {
+                assertSame(context, parseContext);
                 throw failure;
             }
         };

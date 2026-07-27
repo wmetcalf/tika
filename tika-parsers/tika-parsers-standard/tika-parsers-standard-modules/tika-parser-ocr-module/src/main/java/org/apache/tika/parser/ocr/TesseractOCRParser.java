@@ -346,33 +346,63 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 XHTMLContentHandler xhtml =
                         new XHTMLContentHandler(baseHandler, metadata, parseContext);
                 xhtml.startDocument();
-                long ocrStart = System.nanoTime();
-                parse(prepared.stream(), tmpOCROutputFile, xhtml, metadata, parseContext, config);
-                metadata.set("X-Tika-OCR-Duration-Ms",
-                        Long.toString((System.nanoTime() - ocrStart) / 1_000_000L));
-                xhtml.endDocument();
+                File outputFile = getTesseractOutputFile(
+                        tmpOCROutputFile, config);
+                try {
+                    long ocrStart = System.nanoTime();
+                    parse(prepared.stream(), tmpOCROutputFile, xhtml,
+                            metadata, parseContext, config);
+                    metadata.set("X-Tika-OCR-Duration-Ms",
+                            Long.toString(
+                                    (System.nanoTime() - ocrStart)
+                                            / 1_000_000L));
+                    xhtml.endDocument();
 
-                // Populate cache from Tesseract's plain-text output file.
-                if (ocrCache != null && imageHash != null
-                        && !config.getPageSegMode().equals("0")) {
-                    String ext = config.getOutputType().toString().toLowerCase(Locale.US);
-                    if ("txt".equals(ext)) {
-                        File outFile = new File(tmpOCROutputFile.getAbsolutePath() + ".txt");
-                        if (outFile.exists()) {
-                            try {
-                                String text = readCacheableUtf8(
-                                        outFile.toPath(), ocrCache.getMaxEntryTextBytes());
-                                if (text != null) {
-                                    ocrCache.putIfWithinBudget(imageHash, text);
-                                }
-                            } catch (IOException ignored) {
-                                // Cache population is best-effort; OCR already succeeded.
-                            }
-                        }
+                    // Populate cache before deleting Tesseract's output.
+                    if (ocrCache != null && imageHash != null
+                            && "txt".equals(config.getOutputType()
+                                    .toString().toLowerCase(Locale.US))
+                            && !config.getPageSegMode().equals("0")) {
+                        cacheAndDeleteOcrOutput(
+                                outputFile, ocrCache, imageHash);
+                    }
+                } finally {
+                    if (outputFile.exists()) {
+                        outputFile.delete();
                     }
                 }
             }
         }
+    }
+
+    static void cacheAndDeleteOcrOutput(
+            File outputFile, OcrResultCache ocrCache,
+            String imageHash) {
+        try {
+            if (outputFile.exists()) {
+                String text = readCacheableUtf8(
+                        outputFile.toPath(),
+                        ocrCache.getMaxEntryTextBytes());
+                if (text != null) {
+                    ocrCache.putIfWithinBudget(imageHash, text);
+                }
+            }
+        } catch (IOException ignored) {
+            // Cache population is best-effort; OCR already succeeded.
+        } finally {
+            if (outputFile.exists()) {
+                outputFile.delete();
+            }
+        }
+    }
+
+    private static File getTesseractOutputFile(
+            File outputBase, TesseractOCRConfig config) {
+        String extension = config.getPageSegMode().equals("0")
+                ? "osd"
+                : config.getOutputType().toString()
+                        .toLowerCase(Locale.US);
+        return new File(outputBase.getAbsolutePath() + "." + extension);
     }
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
@@ -483,6 +513,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
     private static final long MAX_OCR_DECODED_PIXELS = 16_000_000L;
     private static final long MAX_OCR_RASTER_BYTES = 64L * 1024 * 1024;
     private static final int MAX_OCR_BITS_PER_PIXEL = 256;
+    private static final int MAX_OCR_IMAGE_FRAMES = 256;
 
     /**
      * Preflights image geometry and sample depth before raster allocation. If downscaling is
@@ -491,9 +522,24 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
      */
     static PreparedOcrInput prepareOcrInput(TikaInputStream tis, TemporaryResources tmp,
                                             int maxDim, Metadata metadata) {
-        if (maxDim <= 0) {
-            return PreparedOcrInput.borrowed(tis);
+        ImageReaderCleanupState cleanupState =
+                new ImageReaderCleanupState();
+        PreparedOcrInput prepared = prepareOcrInputInternal(
+                tis, tmp, maxDim, metadata, cleanupState);
+        if (cleanupState.failure == null) {
+            return prepared;
         }
+        closePreparedAfterCleanupFailure(
+                prepared, cleanupState.failure);
+        return rejectUnsafeImage(
+                metadata, -1, -1, "image reader cleanup");
+    }
+
+    private static PreparedOcrInput prepareOcrInputInternal(
+            TikaInputStream tis, TemporaryResources tmp,
+            int maxDim, Metadata metadata,
+            ImageReaderCleanupState cleanupState) {
+        boolean downscalingEnabled = maxDim > 0;
 
         ImageReader reader = null;
         try (ImageInputStream imageInput =
@@ -506,7 +552,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 return rejectUnsafeImage(metadata, -1, -1, "image format inspection");
             }
             reader = readers.next();
-            reader.setInput(imageInput, true, true);
+            reader.setInput(imageInput, false, true);
 
             int width = reader.getWidth(0);
             int height = reader.getHeight(0);
@@ -517,7 +563,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 return rejectUnsafeImage(metadata, width, height, "source dimensions or pixels");
             }
 
-            int bitsPerPixel = getBitsPerPixel(reader);
+            int bitsPerPixel = getBitsPerPixel(reader, 0);
             if (bitsPerPixel <= 0 || bitsPerPixel > MAX_OCR_BITS_PER_PIXEL) {
                 return rejectUnsafeImage(metadata, width, height, "sample depth");
             }
@@ -525,7 +571,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
             int targetWidth = width;
             int targetHeight = height;
-            if (width > maxDim || height > maxDim) {
+            if (downscalingEnabled && (width > maxDim || height > maxDim)) {
                 int longest = Math.max(width, height);
                 targetWidth = Math.max(1,
                         Math.toIntExact(Math.multiplyExact((long) width, maxDim) / longest));
@@ -539,6 +585,17 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             long targetBytes = Math.multiplyExact(targetPixels, targetBytesPerPixel);
             if (targetPixels > MAX_OCR_DECODED_PIXELS || targetBytes > MAX_OCR_RASTER_BYTES) {
                 return rejectUnsafeImage(metadata, width, height, "target raster");
+            }
+
+            AdditionalFrameInspection additionalFrames =
+                    inspectAdditionalFrames(
+                            reader, downscalingEnabled, maxDim,
+                            targetBytes,
+                            width != targetWidth || height != targetHeight);
+            if (!additionalFrames.safe) {
+                return rejectUnsafeImage(
+                        metadata, width, height,
+                        additionalFrames.limit);
             }
 
             if (width == targetWidth && height == targetHeight) {
@@ -594,9 +651,35 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             return rejectUnsafeImage(metadata, -1, -1, "image decoder failure");
         } finally {
             if (reader != null) {
-                reader.dispose();
+                try {
+                    reader.dispose();
+                } catch (SecurityException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    cleanupState.failure = e;
+                }
             }
         }
+    }
+
+    static void closePreparedAfterCleanupFailure(
+            PreparedOcrInput prepared,
+            RuntimeException cleanupFailure) {
+        if (prepared == null) {
+            return;
+        }
+        try {
+            prepared.close();
+        } catch (SecurityException e) {
+            e.addSuppressed(cleanupFailure);
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            cleanupFailure.addSuppressed(e);
+        }
+    }
+
+    private static final class ImageReaderCleanupState {
+        private RuntimeException failure;
     }
 
     static int calculateSourceSubsampling(int width, int height, long maxDecodedPixels,
@@ -618,10 +701,120 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         return Math.multiplyExact((long) width, height);
     }
 
-    private static int getBitsPerPixel(ImageReader reader) throws IOException {
-        ImageTypeSpecifier type = reader.getRawImageType(0);
+    private static AdditionalFrameInspection inspectAdditionalFrames(
+            ImageReader reader, boolean downscalingEnabled, int maxDim,
+            long firstFrameBytes, boolean firstFrameNeedsDownscaling)
+            throws IOException {
+        int declaredFrames = reader.getNumImages(false);
+        if (declaredFrames == 0 || declaredFrames > MAX_OCR_IMAGE_FRAMES) {
+            return AdditionalFrameInspection.unsafe("image frame count");
+        }
+
+        boolean unknownFrameCount = declaredFrames < 0;
+        int frameCount = 1;
+        long cumulativeRasterBytes = firstFrameBytes;
+        boolean needsDownscaling = firstFrameNeedsDownscaling;
+        int lastCandidate =
+                unknownFrameCount ? MAX_OCR_IMAGE_FRAMES : declaredFrames - 1;
+
+        for (int imageIndex = 1; imageIndex <= lastCandidate; imageIndex++) {
+            int width;
+            int height;
+            try {
+                width = reader.getWidth(imageIndex);
+                height = reader.getHeight(imageIndex);
+            } catch (IndexOutOfBoundsException e) {
+                if (unknownFrameCount) {
+                    break;
+                }
+                throw e;
+            }
+
+            frameCount++;
+            if (frameCount > MAX_OCR_IMAGE_FRAMES) {
+                return AdditionalFrameInspection.unsafe(
+                        "image frame count");
+            }
+
+            long sourcePixels = checkedPixels(width, height);
+            if (width <= 0 || height <= 0
+                    || width > MAX_OCR_SOURCE_DIMENSION
+                    || height > MAX_OCR_SOURCE_DIMENSION
+                    || sourcePixels > MAX_OCR_SOURCE_PIXELS) {
+                return AdditionalFrameInspection.unsafe(
+                        "additional frame dimensions or pixels");
+            }
+
+            int bitsPerPixel = getBitsPerPixel(reader, imageIndex);
+            if (bitsPerPixel <= 0
+                    || bitsPerPixel > MAX_OCR_BITS_PER_PIXEL) {
+                return AdditionalFrameInspection.unsafe(
+                        "additional frame sample depth");
+            }
+            int decodedBytesPerPixel =
+                    Math.max(Integer.BYTES,
+                            (bitsPerPixel + 7) / 8);
+
+            int targetWidth = width;
+            int targetHeight = height;
+            if (downscalingEnabled
+                    && (width > maxDim || height > maxDim)) {
+                int longest = Math.max(width, height);
+                targetWidth = Math.max(
+                        1,
+                        Math.toIntExact(
+                                Math.multiplyExact(
+                                        (long) width, maxDim)
+                                        / longest));
+                targetHeight = Math.max(
+                        1,
+                        Math.toIntExact(
+                                Math.multiplyExact(
+                                        (long) height, maxDim)
+                                        / longest));
+            }
+
+            long targetPixels =
+                    checkedPixels(targetWidth, targetHeight);
+            int targetBytesPerPixel =
+                    width == targetWidth
+                                    && height == targetHeight
+                            ? decodedBytesPerPixel
+                            : Integer.BYTES;
+            long targetBytes =
+                    Math.multiplyExact(
+                            targetPixels, targetBytesPerPixel);
+            if (targetPixels > MAX_OCR_DECODED_PIXELS
+                    || targetBytes > MAX_OCR_RASTER_BYTES) {
+                return AdditionalFrameInspection.unsafe(
+                        "additional frame target raster");
+            }
+            cumulativeRasterBytes =
+                    Math.addExact(
+                            cumulativeRasterBytes, targetBytes);
+            if (cumulativeRasterBytes > MAX_OCR_RASTER_BYTES) {
+                return AdditionalFrameInspection.unsafe(
+                        "cumulative image raster");
+            }
+            needsDownscaling |=
+                    width != targetWidth
+                            || height != targetHeight;
+        }
+
+        if (frameCount > 1 && needsDownscaling) {
+            return AdditionalFrameInspection.unsafe(
+                    "multi-frame image downscaling");
+        }
+        return AdditionalFrameInspection.safe();
+    }
+
+    private static int getBitsPerPixel(
+            ImageReader reader, int imageIndex) throws IOException {
+        ImageTypeSpecifier type =
+                reader.getRawImageType(imageIndex);
         if (type == null) {
-            Iterator<ImageTypeSpecifier> types = reader.getImageTypes(0);
+            Iterator<ImageTypeSpecifier> types =
+                    reader.getImageTypes(imageIndex);
             if (!types.hasNext()) {
                 return -1;
             }
@@ -635,6 +828,27 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             bitsPerPixel = Math.addExact(bitsPerPixel, sampleSize);
         }
         return bitsPerPixel;
+    }
+
+    private static final class AdditionalFrameInspection {
+
+        private final boolean safe;
+        private final String limit;
+
+        private AdditionalFrameInspection(
+                boolean safe, String limit) {
+            this.safe = safe;
+            this.limit = limit;
+        }
+
+        private static AdditionalFrameInspection safe() {
+            return new AdditionalFrameInspection(true, null);
+        }
+
+        private static AdditionalFrameInspection unsafe(
+                String limit) {
+            return new AdditionalFrameInspection(false, limit);
+        }
     }
 
     private static PreparedOcrInput rejectUnsafeImage(Metadata metadata, int width, int height,
@@ -768,57 +982,58 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         warnOnFirstParse();
         validateLangString(config.getLanguage());
 
-        File tmpTxtOutput = null;
-        try {
-            Path input = tikaInputStream.getPath();
-            long size = tikaInputStream.getLength();
+        Path input = tikaInputStream.getPath();
+        long size = tikaInputStream.getLength();
 
-            if (size >= config.getMinFileSizeToOcr() && size <= config.getMaxFileSizeToOcr()) {
+        if (size >= config.getMinFileSizeToOcr()
+                && size <= config.getMaxFileSizeToOcr()) {
 
-                // Process image
-                if (config.isEnableImagePreprocessing() || config.isApplyRotation()) {
-                    if (!hasImageMagick) {
-                        LOG.warn(
-                                "User has selected to preprocess images, " +
-                                        "but I can't find ImageMagick." +
-                                        "Backing off to original file.");
-                        doOCR(input.toFile(), tmpOCROutputFile, config, parseContext);
-                    } else {
-                        // copy the contents of the original input file into a temporary file
-                        // which will be preprocessed for OCR
-
-                        try (TemporaryResources tmp = new TemporaryResources()) {
-                            Path tmpFile = tmp.createTempFile();
-                            Files.copy(input, tmpFile, StandardCopyOption.REPLACE_EXISTING);
-                            imagePreprocessor.process(tmpFile, tmpFile, metadata, config);
-                            doOCR(tmpFile.toFile(), tmpOCROutputFile, config, parseContext);
-                        }
-                    }
+            // Process image
+            if (config.isEnableImagePreprocessing()
+                    || config.isApplyRotation()) {
+                if (!hasImageMagick) {
+                    LOG.warn(
+                            "User has selected to preprocess images, "
+                                    + "but I can't find ImageMagick."
+                                    + "Backing off to original file.");
+                    doOCR(input.toFile(), tmpOCROutputFile, config,
+                            parseContext);
                 } else {
-                    doOCR(input.toFile(), tmpOCROutputFile, config, parseContext);
-                }
+                    // copy the contents of the original input file into a
+                    // temporary file which will be preprocessed for OCR
 
-                String extension = config.getPageSegMode().equals("0") ? "osd" :
-                        config.getOutputType().toString().toLowerCase(Locale.US);
-                // Tesseract appends the output type (.txt or .hocr or .osd) to output file name
-                tmpTxtOutput = new File(tmpOCROutputFile.getAbsolutePath() +
-                        "." + extension);
-
-                if (tmpTxtOutput.exists()) {
-                    try (InputStream is = new FileInputStream(tmpTxtOutput)) {
-                        if (config.getPageSegMode().equals("0")) {
-                            extractOSD(is, metadata);
-                        } else if (config.getOutputType().equals(TesseractOCRConfig.OUTPUT_TYPE.HOCR)) {
-                            extractHOCROutput(is, parseContext, xhtml);
-                        } else {
-                            extractOutput(is, xhtml);
-                        }
+                    try (TemporaryResources tmp =
+                                 new TemporaryResources()) {
+                        Path tmpFile = tmp.createTempFile();
+                        Files.copy(input, tmpFile,
+                                StandardCopyOption.REPLACE_EXISTING);
+                        imagePreprocessor.process(
+                                tmpFile, tmpFile, metadata, config);
+                        doOCR(tmpFile.toFile(), tmpOCROutputFile,
+                                config, parseContext);
                     }
                 }
+            } else {
+                doOCR(input.toFile(), tmpOCROutputFile, config,
+                        parseContext);
             }
-        } finally {
-            if (tmpTxtOutput != null) {
-                tmpTxtOutput.delete();
+
+            // Tesseract appends the output type (.txt or .hocr or .osd).
+            File tmpTxtOutput =
+                    getTesseractOutputFile(tmpOCROutputFile, config);
+
+            if (tmpTxtOutput.exists()) {
+                try (InputStream is =
+                             new FileInputStream(tmpTxtOutput)) {
+                    if (config.getPageSegMode().equals("0")) {
+                        extractOSD(is, metadata);
+                    } else if (config.getOutputType().equals(
+                            TesseractOCRConfig.OUTPUT_TYPE.HOCR)) {
+                        extractHOCROutput(is, parseContext, xhtml);
+                    } else {
+                        extractOutput(is, xhtml);
+                    }
+                }
             }
         }
     }

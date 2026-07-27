@@ -256,9 +256,7 @@ public final class UnicodeQRExtractor {
         List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (text == null || text.isEmpty()
                 || scanner == null
-                || (budget == null
-                    ? !scanner.hasZXingCPP(config)
-                    : !budget.isScannerAvailable(scanner, config))) {
+                || (budget == null && !scanner.hasZXingCPP(config))) {
             return decoded;
         }
         List<Cluster> clusters = findClusters(text);
@@ -267,9 +265,14 @@ public final class UnicodeQRExtractor {
         }
         int rendered = 0;
         for (Cluster cluster : clusters) {
-            if (rendered++ >= MAX_CLUSTERS) {
+            if (rendered >= MAX_CLUSTERS) {
+                if (budget != null) {
+                    budget.rejectAdditionalScan(
+                            "Unicode QR cluster scan limit exhausted");
+                }
                 break;
             }
+            rendered++;
             Path tmp = null;
             try {
                 BufferedImage img = renderCluster(cluster);

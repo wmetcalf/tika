@@ -97,7 +97,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
 
     private static final TagSet SELF_CLOSEABLE_TAGS = TagSet.Html();
     private static final int MAX_UNICODE_QR_CANDIDATES = 16;
-    private static final int MAX_UNICODE_QR_SCANS = 4;
+    private static final int MAX_HTML_QR_SCANS = 4;
     private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_CHARS = 64 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_INSPECTION_CHARS = 2 * 1024 * 1024;
@@ -244,12 +244,18 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         if (zCfg == null || !zCfg.isEnabled()) {
             return;
         }
+        org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+        long aggregateTimeoutMillis =
+                org.apache.tika.config.TimeoutLimits.getProcessTimeoutMillis(
+                        context, zCfg.getTimeoutSeconds() * 1000L);
+        org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget scanBudget =
+                new org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget(
+                        MAX_HTML_QR_SCANS, aggregateTimeoutMillis);
         try {
-            org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
             java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
                     HtmlColorQRExtractor.extractAndDecode(
-                            document, scanner, zCfg, context, metadata);
+                            document, scanner, zCfg, context, metadata, scanBudget);
             org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(decoded, metadata);
             if (!decoded.isEmpty()) {
                 metadata.add("ExploitClass",
@@ -262,7 +268,8 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         } catch (RuntimeException e) {
             // Ordinary scanner failures remain best-effort.
         }
-        scanForUnicodeArtQR(document, metadata, context);
+        scanForUnicodeArtQR(
+                document, metadata, context, scanner, zCfg, scanBudget);
     }
 
     /** Pull text out of every monospace-preserving HTML element (&lt;pre&gt;,
@@ -281,6 +288,23 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         if (zCfg == null || !zCfg.isEnabled()) {
             return;
         }
+        org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+        long aggregateTimeoutMillis =
+                org.apache.tika.config.TimeoutLimits.getProcessTimeoutMillis(
+                        context, zCfg.getTimeoutSeconds() * 1000L);
+        org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget scanBudget =
+                new org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget(
+                        MAX_HTML_QR_SCANS, aggregateTimeoutMillis);
+        scanForUnicodeArtQR(
+                document, metadata, context, scanner, zCfg, scanBudget);
+    }
+
+    private static void scanForUnicodeArtQR(
+            Document document, Metadata metadata, ParseContext context,
+            org.apache.tika.parser.image.ZXingCPPScanner scanner,
+            org.apache.tika.parser.image.ZXingCPPConfig zCfg,
+            org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget scanBudget) {
         try {
             HtmlColorQRExtractor.StylesheetParseResult stylesheets =
                     HtmlColorQRExtractor.parseStylesheetsBounded(
@@ -289,14 +313,6 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             boolean incomplete = stylesheets.truncated;
             int inspected = 0;
             CssRuleBudget ruleBudget = new CssRuleBudget();
-            org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
-            long aggregateTimeoutMillis =
-                    org.apache.tika.config.TimeoutLimits.getProcessTimeoutMillis(
-                            context, zCfg.getTimeoutSeconds() * 1000L);
-            org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget scanBudget =
-                    new org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget(
-                            MAX_UNICODE_QR_SCANS, aggregateTimeoutMillis);
             Set<Element> seen =
                     Collections.newSetFromMap(new IdentityHashMap<>());
             // Stream the tree instead of materializing getAllElements(). A

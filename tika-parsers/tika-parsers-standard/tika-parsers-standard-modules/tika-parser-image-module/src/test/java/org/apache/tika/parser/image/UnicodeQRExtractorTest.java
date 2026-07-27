@@ -17,9 +17,16 @@
 package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.util.Collections;
+
 import org.junit.jupiter.api.Test;
+
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.utils.FileProcessResult;
 
 class UnicodeQRExtractorTest {
 
@@ -57,5 +64,63 @@ class UnicodeQRExtractorTest {
                 UnicodeQRExtractor.findClusters(art).get(0);
 
         assertEquals("□██████", cluster.lines[0]);
+    }
+
+    @Test
+    void budgetedExtractionDoesNotProbeScannerAvailability() {
+        String art = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ProbeRejectingScanner scanner = new ProbeRejectingScanner();
+
+        UnicodeQRExtractor.extractAndDecode(
+                art, scanner, config, new ParseContext(),
+                new ZXingCPPScanner.ScanBudget(1, 1_000));
+
+        assertEquals(1, scanner.executions);
+    }
+
+    @Test
+    void localClusterCapSignalsIncompleteBudgetedExtraction() {
+        String grid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        String art = String.join(
+                "\n\n\n\n", Collections.nCopies(5, grid));
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ProbeRejectingScanner scanner = new ProbeRejectingScanner();
+        ZXingCPPScanner.ScanBudget budget =
+                new ZXingCPPScanner.ScanBudget(10, 10_000);
+
+        assertThrows(
+                ZXingCPPScanner.ScanBudgetExceededException.class,
+                () -> UnicodeQRExtractor.extractAndDecode(
+                        art, scanner, config, new ParseContext(), budget));
+
+        assertEquals(4, scanner.executions);
+        assertTrue(budget.hasRejectedScan());
+    }
+
+    private static final class ProbeRejectingScanner extends ZXingCPPScanner {
+
+        private int executions;
+
+        @Override
+        boolean checkCommand(String[] command) {
+            throw new AssertionError("budgeted scans must not launch a version probe");
+        }
+
+        @Override
+        FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis)
+                throws IOException {
+            executions++;
+            FileProcessResult result = new FileProcessResult();
+            result.setExitValue(0);
+            result.setStdout("");
+            return result;
+        }
     }
 }
