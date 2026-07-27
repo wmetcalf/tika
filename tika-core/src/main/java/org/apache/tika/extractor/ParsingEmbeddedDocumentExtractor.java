@@ -194,7 +194,10 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                     new EmbeddedContentHandler(new BodyContentHandler(delegateHandler)),
                     metadata, context);
             Throwable swallowedOutputFailure =
-                    taggedOutput.getUncheckedFailure();
+                    taggedOutput.getSaxFailure();
+            if (swallowedOutputFailure == null) {
+                swallowedOutputFailure = taggedOutput.getUncheckedFailure();
+            }
             if (swallowedOutputFailure != null) {
                 primaryFailure = swallowedOutputFailure;
                 downstreamOutputFailure = true;
@@ -323,6 +326,10 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                 taggedOutput.findUncheckedCause(failure);
         if (uncheckedOutputFailure != null) {
             return uncheckedOutputFailure;
+        }
+        SAXException swallowedSaxFailure = taggedOutput.getSaxFailure();
+        if (swallowedSaxFailure != null) {
+            return swallowedSaxFailure;
         }
         return taggedOutput.getUncheckedFailure();
     }

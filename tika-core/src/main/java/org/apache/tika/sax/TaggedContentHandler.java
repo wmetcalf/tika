@@ -68,6 +68,7 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
 
     private final Set<Throwable> uncheckedFailures =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    private SAXException firstSaxFailure;
     private Throwable firstUncheckedFailure;
 
     /**
@@ -115,6 +116,17 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
         if (original != null) {
             throw original;
         }
+    }
+
+    /**
+     * Returns the first SAX exception thrown by the decorated content handler,
+     * preserving its exact identity even if a caller swallowed the tagged
+     * wrapper.
+     *
+     * @return first checked output failure, or {@code null} if none occurred
+     */
+    public SAXException getSaxFailure() {
+        return firstSaxFailure;
     }
 
     /**
@@ -275,6 +287,9 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
      */
     @Override
     protected void handleException(SAXException e) throws SAXException {
+        if (firstSaxFailure == null) {
+            firstSaxFailure = e;
+        }
         throw new TaggedSAXException(e, this);
     }
 

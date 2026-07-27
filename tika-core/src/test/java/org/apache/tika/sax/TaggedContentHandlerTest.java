@@ -57,6 +57,25 @@ public class TaggedContentHandlerTest {
     }
 
     @Test
+    public void testCheckedSaxFailureIsRecordedByIdentity() {
+        SAXException denial =
+                new SAXException("checked downstream denial");
+        TaggedContentHandler handler =
+                new TaggedContentHandler(new DefaultHandler() {
+                    @Override
+                    public void characters(char[] ch, int start, int length)
+                            throws SAXException {
+                        throw denial;
+                    }
+                });
+
+        assertThrows(TaggedSAXException.class,
+                () -> handler.characters(new char[]{'x'}, 0, 1));
+
+        assertSame(denial, handler.getSaxFailure());
+    }
+
+    @Test
     public void testUncheckedRuntimeIsRecordedByIdentity() {
         RuntimeException denial =
                 new RuntimeException("unchecked downstream denial");
