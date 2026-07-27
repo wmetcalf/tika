@@ -27,9 +27,11 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.RTFMetadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.sax.EmbeddedContentHandler;
 
 /**
@@ -45,6 +47,7 @@ public class RTFEmbeddedHandler {
     private final ParseContext context;
     private final EmbeddedDocumentUtil embeddedDocumentUtil;
     private final long maxBytes;
+    private final Metadata parentMetadata;
 
     private boolean inObject;
     private boolean isPictBitmap;
@@ -64,7 +67,14 @@ public class RTFEmbeddedHandler {
 
     public RTFEmbeddedHandler(ContentHandler handler, ParseContext context,
                               int maxBytesInKb) {
+        this(handler, Metadata.newInstance(context), context, maxBytesInKb);
+    }
+
+    public RTFEmbeddedHandler(ContentHandler handler, Metadata parentMetadata,
+                              ParseContext context, int maxBytesInKb) {
         this.handler = handler;
+        this.parentMetadata = parentMetadata == null
+                ? Metadata.newInstance(context) : parentMetadata;
         this.context = context;
         this.embeddedDocumentUtil = new EmbeddedDocumentUtil(context);
         this.maxBytes = maxBytesInKb > 0 ? (long) maxBytesInKb * 1024 : -1;
@@ -144,6 +154,9 @@ public class RTFEmbeddedHandler {
 
     private void handleCompletedObjData() throws IOException, SAXException, TikaException {
         try (TikaInputStream tis = objParser.onComplete(metadata, unknownFilenameCount)) {
+            if (objParser.isLinkedObject()) {
+                surfaceLinkedObject(metadata);
+            }
             if (tis != null) {
                 extractObj(tis, metadata);
             }
@@ -154,6 +167,17 @@ public class RTFEmbeddedHandler {
             objParser = null;
             reset();
         }
+    }
+
+    private void surfaceLinkedObject(Metadata linkedMetadata) {
+        String topic = linkedMetadata.get(RTFMetadata.EMB_TOPIC);
+        if (topic == null || topic.isBlank()) {
+            return;
+        }
+        parentMetadata.set(Office.HAS_LINKED_OLE_OBJECTS, true);
+        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", topic,
+                linkedMetadata.get(RTFMetadata.EMB_ITEM), null, "rtf", "ole1",
+                linkedMetadata.get(RTFMetadata.EMB_CLASS), "", "", "external_url");
     }
 
     private void handleCompletedPict() throws IOException, SAXException, TikaException {

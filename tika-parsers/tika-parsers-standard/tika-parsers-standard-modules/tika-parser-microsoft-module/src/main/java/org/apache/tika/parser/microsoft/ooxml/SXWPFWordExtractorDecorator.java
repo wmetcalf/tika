@@ -366,33 +366,41 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             XWPFStylesShim styles, XWPFListManager listManager,
             XHTMLContentHandler xhtml, OOXMLInlineBodyPartMap inlinePartMap,
             java.util.Set<String> emittedCommentIds,
-            BoundedColorGridCollector documentColorRows) {
+            BoundedColorGridCollector documentColorRows) throws SAXException {
         if (!inlinePartMap.hasComments()) {
             return;
         }
-        Map<String, String> linkedRelationships = inlinePartMap.getLinkedRelationships();
-        for (Map.Entry<String, byte[]> entry :
+        for (Map.Entry<String, OOXMLInlineBodyPartMap.InlineBodyPart> entry :
                 inlinePartMap.getCommentEntries()) {
             if (emittedCommentIds.contains(entry.getKey())) {
                 continue;
             }
             OOXMLTikaBodyPartHandler bodyHandler =
-                    new OOXMLTikaBodyPartHandler(xhtml);
+                    new OOXMLTikaBodyPartHandler(xhtml, metadata);
             bodyHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
+            boolean divStarted = false;
             try {
                 xhtml.startElement("div", "class", "comment");
+                divStarted = true;
                 XMLReaderUtils.parseSAX(
-                        new java.io.ByteArrayInputStream(entry.getValue()),
+                        new java.io.ByteArrayInputStream(entry.getValue().xml()),
                         new EmbeddedContentHandler(
                                 new OOXMLWordAndPowerPointTextHandler(
                                         bodyHandler,
-                                        linkedRelationships)),
+                                        entry.getValue().linkedRelationships())),
                         context);
-                xhtml.endElement("div");
-            } catch (TikaException | IOException | SAXException e) {
+            } catch (SAXException e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        ExceptionUtils.getStackTrace(e));
+            } catch (TikaException | IOException e) {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
             } finally {
+                bodyHandler.closeAnyPending();
+                if (divStarted) {
+                    xhtml.endElement("div");
+                }
                 documentColorRows.addCollector(bodyHandler.getColorCollector());
             }
         }
@@ -469,55 +477,58 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
     }
 
     private OOXMLInlineBodyPartMap collectInlineParts(PackagePart documentPart) {
-        Map<String, String> allRelationships = new java.util.HashMap<>();
-        Map<String, byte[]> footnoteMap = collectPartContent(documentPart,
-                XWPFRelation.FOOTNOTE.getRelation(), Set.of("footnote"),
-                allRelationships);
+        Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> footnoteMap =
+                collectPartContent(documentPart,
+                        XWPFRelation.FOOTNOTE.getRelation(), Set.of("footnote"));
         String endnoteRel =
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
-        Map<String, byte[]> endnoteMap = collectPartContent(documentPart,
-                endnoteRel, Set.of("endnote"), allRelationships);
+        Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> endnoteMap =
+                collectPartContent(documentPart, endnoteRel, Set.of("endnote"));
         String commentsRel =
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
-        Map<String, byte[]> commentMap = collectPartContent(documentPart,
-                commentsRel, Set.of("comment"),
-                allRelationships, Collections.emptySet());
-        return new OOXMLInlineBodyPartMap(footnoteMap, endnoteMap,
-                commentMap, allRelationships);
+        Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> commentMap =
+                collectPartContent(documentPart, commentsRel, Set.of("comment"),
+                        Collections.emptySet());
+        return new OOXMLInlineBodyPartMap(footnoteMap, endnoteMap, commentMap);
     }
 
-    private Map<String, byte[]> collectPartContent(PackagePart documentPart,
-            String relationshipType, Set<String> wrapperElements,
-            Map<String, String> allRelationships) {
+    private Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> collectPartContent(
+            PackagePart documentPart, String relationshipType,
+            Set<String> wrapperElements) {
         return collectPartContent(documentPart, relationshipType, wrapperElements,
-                allRelationships, Set.of("0", "-1"));
+                Set.of("0", "-1"));
     }
 
-    private Map<String, byte[]> collectPartContent(PackagePart documentPart,
-            String relationshipType, Set<String> wrapperElements,
-            Map<String, String> allRelationships, Set<String> skipIds) {
+    private Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> collectPartContent(
+            PackagePart documentPart, String relationshipType,
+            Set<String> wrapperElements, Set<String> skipIds) {
         try {
             PackageRelationshipCollection prc =
                     documentPart.getRelationshipsByType(relationshipType);
             if (prc == null || prc.size() == 0) {
                 return Collections.emptyMap();
             }
-            OOXMLPartContentCollector collector =
-                    new OOXMLPartContentCollector(wrapperElements, skipIds);
+            Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> content =
+                    new HashMap<>();
             for (int i = 0; i < prc.size(); i++) {
                 PackagePart part = safeGetRelatedPart(documentPart, prc.getRelationship(i));
                 if (part == null) {
                     continue;
                 }
-                // collect the part's linked relationships (for picture resolution)
                 Map<String, String> partRels =
                         loadLinkedRelationships(part, true, metadata);
-                allRelationships.putAll(partRels);
+                OOXMLPartContentCollector collector =
+                        new OOXMLPartContentCollector(wrapperElements, skipIds);
                 try (InputStream stream = part.getInputStream()) {
                     XMLReaderUtils.parseSAX(stream, collector, context);
                 }
+                for (Map.Entry<String, byte[]> entry :
+                        collector.getContentMap().entrySet()) {
+                    content.put(entry.getKey(),
+                            OOXMLInlineBodyPartMap.part(entry.getValue(), partRels));
+                }
             }
-            return collector.getContentMap();
+            return content;
         } catch (InvalidFormatException | IOException | TikaException | SAXException e) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));

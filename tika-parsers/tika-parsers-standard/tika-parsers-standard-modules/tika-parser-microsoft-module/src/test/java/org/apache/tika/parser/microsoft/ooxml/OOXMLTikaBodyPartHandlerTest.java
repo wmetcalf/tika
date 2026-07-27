@@ -17,6 +17,7 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -30,6 +31,7 @@ import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.ToXMLContentHandler;
@@ -78,6 +80,28 @@ class OOXMLTikaBodyPartHandlerTest {
                 metadata.get(Office.OFFICE_LINK_URL));
         assertEquals("click me", metadata.get(Office.OFFICE_LINK_TEXT));
         assertEquals(1, metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+    }
+
+    @Test
+    void testPendingHyperlinkTextIsBoundedAndSignaled() throws Exception {
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+
+        xhtml.startDocument();
+        handler.hyperlinkStart("https://payload.invalid/large-anchor");
+        handler.run(new RunProperties(), "x".repeat(1_000_000));
+        handler.closeAnyPending();
+        xhtml.endDocument();
+
+        assertTrue(metadata.get(Office.OFFICE_LINK_TEXT).length() <= 64 * 1024);
+        assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertTrue(java.util.Arrays.stream(metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .anyMatch(v -> v.contains("Office link")));
+        assertTrue(metadata.get("ExploitClass").contains("link"));
     }
 
     @Test
@@ -150,6 +174,41 @@ class OOXMLTikaBodyPartHandlerTest {
         assertTrue(List.of(metadata.getValues(Office.OFFICE_LINK_URL))
                 .contains("https://example.com/footnote"));
         assertTrue(List.of(metadata.getValues(Office.OFFICE_LINK_TEXT)).contains("note link"));
+    }
+
+    @Test
+    void testInlinePartRelationshipsRemainPartLocal() throws Exception {
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(new ToXMLContentHandler(),
+                metadata, new ParseContext());
+        OOXMLTikaBodyPartHandler handler = new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        byte[] footnote = ("<w:footnote "
+                + "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "
+                + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+                + "<w:p><w:hyperlink r:id=\"rId1\"><w:r><w:t>footnote target</w:t></w:r>"
+                + "</w:hyperlink></w:p></w:footnote>").getBytes(StandardCharsets.UTF_8);
+        byte[] comment = ("<w:comment "
+                + "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "
+                + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+                + "<w:p><w:hyperlink r:id=\"rId1\"><w:r><w:t>comment target</w:t></w:r>"
+                + "</w:hyperlink></w:p></w:comment>").getBytes(StandardCharsets.UTF_8);
+        Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> footnotes = new HashMap<>();
+        footnotes.put("1", OOXMLInlineBodyPartMap.part(footnote,
+                Map.of("rId1", "https://attacker.example/footnote")));
+        Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> comments = new HashMap<>();
+        comments.put("2", OOXMLInlineBodyPartMap.part(comment,
+                Map.of("rId1", "https://decoy.example/comment")));
+        handler.setInlineBodyPartMap(new OOXMLInlineBodyPartMap(
+                footnotes, Collections.emptyMap(), comments), new ParseContext());
+
+        xhtml.startDocument();
+        handler.footnoteReference("1");
+        xhtml.endDocument();
+
+        assertTrue(List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                .contains("https://attacker.example/footnote"));
+        assertFalse(List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                .contains("https://decoy.example/comment"));
     }
 
     @Test

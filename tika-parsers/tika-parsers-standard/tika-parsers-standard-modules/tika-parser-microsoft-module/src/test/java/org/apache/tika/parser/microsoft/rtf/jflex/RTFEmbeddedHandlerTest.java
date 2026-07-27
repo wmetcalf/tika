@@ -16,14 +16,19 @@
  */
 package org.apache.tika.parser.microsoft.rtf.jflex;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -35,6 +40,7 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 
@@ -128,5 +134,67 @@ public class RTFEmbeddedHandlerTest {
             }
             assertTrue(hasName, "at least one embedded should have a resource name");
         }
+    }
+
+    @Test
+    public void testLinkedOle1ObjectIsSurfacedOnParentMetadata() throws Exception {
+        Metadata parentMetadata = new Metadata();
+        RTFEmbeddedHandler embHandler = new RTFEmbeddedHandler(
+                new DefaultHandler(), parentMetadata, new ParseContext(), 20 * 1024);
+        processRtf(buildLinkedRtf(
+                "\\\\server\\share\\linked-document.doc", "Section1"), embHandler);
+
+        assertEquals("\\\\server\\share\\linked-document.doc",
+                parentMetadata.get(Office.OFFICE_LINK_URL));
+        assertEquals("linked_ole_object",
+                parentMetadata.get(Office.OFFICE_LINK_TYPE));
+        assertEquals("Section1",
+                parentMetadata.get(Office.OFFICE_LINK_TEXT));
+    }
+
+    private static void processRtf(String rtf, RTFEmbeddedHandler embHandler)
+            throws Exception {
+        RTFState state = new RTFState();
+        RTFTokenizer tokenizer = new RTFTokenizer(
+                new java.io.StringReader(rtf));
+        RTFToken tok;
+        while ((tok = tokenizer.yylex()) != null) {
+            if (tok.getType() == RTFTokenType.EOF) {
+                break;
+            }
+            boolean consumed = state.processToken(tok);
+            if (!consumed) {
+                RTFGroupState closingGroup =
+                        tok.getType() == RTFTokenType.GROUP_CLOSE
+                                ? state.getLastClosedGroup() : null;
+                embHandler.processToken(tok, state, closingGroup);
+            }
+        }
+    }
+
+    private static String buildLinkedRtf(String topic, String item) throws IOException {
+        ByteArrayOutputStream objData = new ByteArrayOutputStream();
+        writeUInt32LE(objData, 0x00000501);
+        writeUInt32LE(objData, 1);
+        writeLengthPrefixedAnsi(objData, "Word.Document.12");
+        writeLengthPrefixedAnsi(objData, topic);
+        writeLengthPrefixedAnsi(objData, item);
+        return "{\\rtf1\\ansi{\\object\\objlink{\\*\\objdata "
+                + HexFormat.of().formatHex(objData.toByteArray()) + "}}}";
+    }
+
+    private static void writeLengthPrefixedAnsi(
+            ByteArrayOutputStream out, String value) throws IOException {
+        byte[] bytes = (value + "\0").getBytes(StandardCharsets.US_ASCII);
+        writeUInt32LE(out, bytes.length);
+        out.write(bytes);
+    }
+
+    private static void writeUInt32LE(ByteArrayOutputStream out, long value)
+            throws IOException {
+        out.write(ByteBuffer.allocate(Integer.BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt((int) value)
+                .array());
     }
 }

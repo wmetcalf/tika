@@ -519,6 +519,20 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void commandLineClassifiesExtensionlessExecutable() throws Exception {
+        Metadata metadata = parseMetadata(buildWim("""
+                <wap-provisioningdoc>
+                  <parm name="CommandLine" value="dism /online /get-features"/>
+                </wap-provisioningdoc>
+                """));
+
+        assertEquals("dism /online /get-features",
+                metadata.get("ppkg:command"));
+        assertNotNull(metadata.get("ExploitClass"),
+                "every provisioning CommandLine is an execution boundary");
+    }
+
+    @Test
     public void nestedCommandCapturesAreBounded() throws Exception {
         String xml = "<wap-provisioningdoc>"
                 + "<CommandLine>".repeat(64)

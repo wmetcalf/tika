@@ -165,6 +165,20 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testAtomicRecordKeyIsDroppedInsteadOfRenamed() throws Exception {
+        Metadata metadata = filter(36, 100_000, 200_000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+
+        metadata.add(Office.OFFICE_LINK_RECORD,
+                "{\"url\":\"https://secret.invalid\"}");
+
+        assertNull(metadata.get(Office.OFFICE_LINK_RECORD));
+        assertNull(metadata.get("msoffice:link:reco"),
+                "renaming a structured record key bypasses member-aware output filters");
+        assertTruncated(metadata);
+    }
+
+    @Test
     public void testAfterMaxHit() throws Exception {
         String k = "dc:creator";//20 bytes
         //key is > maxTotalBytes, so the value isn't even added

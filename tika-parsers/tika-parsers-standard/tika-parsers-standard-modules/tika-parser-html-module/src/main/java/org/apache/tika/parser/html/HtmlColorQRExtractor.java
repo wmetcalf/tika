@@ -20,9 +20,14 @@ import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -75,6 +80,7 @@ public final class HtmlColorQRExtractor {
     private static final int MAX_COMBINED_STYLE_CHARS = 64 * 1024;
     private static final int MAX_STYLE_RESOLUTION_CHARS = 2 * 1024 * 1024;
     private static final int MAX_STYLE_RULE_LOOKUPS = 64 * 1024;
+    private static final int MAX_DATA_URI_HEADER_CHARS = 1_024;
     private static final String STYLESHEET_LIMIT_WARNING =
             "HTML color-QR stylesheet limit reached; color-QR extraction is incomplete";
     private static final String COLOR_QR_LIMIT_WARNING =
@@ -769,11 +775,18 @@ public final class HtmlColorQRExtractor {
 
         @Override
         public void head(Node node, int depth) {
-            if (!(node instanceof Element)
-                    || !"style".equalsIgnoreCase(((Element) node).tagName())) {
+            if (!(node instanceof Element)) {
                 return;
             }
-            Element style = (Element) node;
+            Element element = (Element) node;
+            if ("style".equalsIgnoreCase(element.tagName())) {
+                consumeStyleElement(element);
+            } else if (isStylesheetLink(element)) {
+                consumeDataStylesheet(element.attr("href"));
+            }
+        }
+
+        private void consumeStyleElement(Element style) {
             StringBuilder boundedCss = new StringBuilder();
             for (Node child : style.childNodes()) {
                 if (!(child instanceof DataNode)) {
@@ -792,7 +805,28 @@ public final class HtmlColorQRExtractor {
                     break;
                 }
             }
-            parseCssRules(stripCssComments(boundedCss), this);
+            parseBoundedCss(boundedCss);
+        }
+
+        private void consumeDataStylesheet(String href) {
+            int remaining = MAX_STYLESHEET_CHARS - consumedChars;
+            if (remaining <= 0) {
+                throw StylesheetLimitException.INSTANCE;
+            }
+            DataStylesheet dataStylesheet = decodeDataStylesheet(href, remaining);
+            if (dataStylesheet == null) {
+                truncated = true;
+                throw StylesheetLimitException.INSTANCE;
+            }
+            if (dataStylesheet.incomplete) {
+                truncated = true;
+            }
+            consumedChars += dataStylesheet.css.length();
+            parseBoundedCss(dataStylesheet.css);
+        }
+
+        private void parseBoundedCss(CharSequence css) {
+            parseCssRules(stripCssComments(css), this);
             if (truncated) {
                 throw StylesheetLimitException.INSTANCE;
             }
@@ -801,6 +835,137 @@ public final class HtmlColorQRExtractor {
         @Override
         public void tail(Node node, int depth) {
             // no-op
+        }
+    }
+
+    private static boolean isStylesheetLink(Element element) {
+        if (!"link".equalsIgnoreCase(element.tagName())) {
+            return false;
+        }
+        for (String relation : element.attr("rel").split("\\s+")) {
+            if ("stylesheet".equalsIgnoreCase(relation)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static DataStylesheet decodeDataStylesheet(String href, int maxDecodedChars) {
+        if (href == null || !href.regionMatches(true, 0, "data:", 0, 5)) {
+            return null;
+        }
+        int headerLimit = Math.min(href.length(), 5 + MAX_DATA_URI_HEADER_CHARS + 1);
+        int comma = -1;
+        for (int i = 5; i < headerLimit; i++) {
+            if (href.charAt(i) == ',') {
+                comma = i;
+                break;
+            }
+        }
+        if (comma < 0) {
+            return new DataStylesheet("", true);
+        }
+        String[] headerParts = href.substring(5, comma).split(";", -1);
+        if (headerParts.length == 0
+                || !"text/css".equalsIgnoreCase(headerParts[0].trim())) {
+            return null;
+        }
+        boolean base64 = false;
+        boolean incomplete = false;
+        for (int i = 1; i < headerParts.length; i++) {
+            String parameter = headerParts[i].trim();
+            if ("base64".equalsIgnoreCase(parameter)) {
+                base64 = true;
+            } else if (!parameter.equalsIgnoreCase("charset=utf-8")
+                    && !parameter.equalsIgnoreCase("charset=us-ascii")) {
+                incomplete = true;
+            }
+        }
+        DataStylesheet decoded = base64
+                ? decodeBase64Css(href, comma + 1, maxDecodedChars)
+                : decodePercentEncodedCss(href, comma + 1, maxDecodedChars);
+        return new DataStylesheet(decoded.css, incomplete || decoded.incomplete);
+    }
+
+    private static DataStylesheet decodeBase64Css(
+            String href, int payloadStart, int maxDecodedChars) {
+        int maxEncodedChars = ((maxDecodedChars + 2) / 3) * 4;
+        int available = href.length() - payloadStart;
+        int retained = Math.min(available, maxEncodedChars);
+        boolean incomplete = retained < available;
+        if (incomplete) {
+            retained -= retained % 4;
+        }
+        try {
+            byte[] bytes = Base64.getDecoder().decode(
+                    href.substring(payloadStart, payloadStart + retained));
+            String css = decodeUtf8(bytes);
+            if (css.length() > maxDecodedChars) {
+                css = css.substring(0, maxDecodedChars);
+                incomplete = true;
+            }
+            return new DataStylesheet(css, incomplete);
+        } catch (IllegalArgumentException | CharacterCodingException e) {
+            return new DataStylesheet("", true);
+        }
+    }
+
+    private static DataStylesheet decodePercentEncodedCss(
+            String href, int payloadStart, int maxDecodedChars) {
+        byte[] bytes = new byte[maxDecodedChars];
+        int byteCount = 0;
+        int cursor = payloadStart;
+        boolean incomplete = false;
+        while (cursor < href.length() && byteCount < bytes.length) {
+            char value = href.charAt(cursor);
+            if (value == '%') {
+                if (cursor + 2 >= href.length()) {
+                    incomplete = true;
+                    break;
+                }
+                int high = Character.digit(href.charAt(cursor + 1), 16);
+                int low = Character.digit(href.charAt(cursor + 2), 16);
+                if (high < 0 || low < 0) {
+                    incomplete = true;
+                    break;
+                }
+                bytes[byteCount++] = (byte) ((high << 4) | low);
+                cursor += 3;
+            } else if (value <= 0x7f) {
+                bytes[byteCount++] = (byte) value;
+                cursor++;
+            } else {
+                incomplete = true;
+                break;
+            }
+        }
+        if (cursor < href.length()) {
+            incomplete = true;
+        }
+        try {
+            return new DataStylesheet(
+                    decodeUtf8(java.util.Arrays.copyOf(bytes, byteCount)), incomplete);
+        } catch (CharacterCodingException e) {
+            return new DataStylesheet("", true);
+        }
+    }
+
+    private static String decodeUtf8(byte[] bytes) throws CharacterCodingException {
+        return StandardCharsets.UTF_8
+                .newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString();
+    }
+
+    private static final class DataStylesheet {
+        private final String css;
+        private final boolean incomplete;
+
+        private DataStylesheet(String css, boolean incomplete) {
+            this.css = css;
+            this.incomplete = incomplete;
         }
     }
 

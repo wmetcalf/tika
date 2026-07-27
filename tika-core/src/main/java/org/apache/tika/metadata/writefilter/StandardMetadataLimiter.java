@@ -251,6 +251,10 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             setAlwaysInclude(field, value, data);
             return;
         }
+        if (isOversizedAtomicKey(field)) {
+            setTruncated(data);
+            return;
+        }
         if (!prepareAlignedGroup(field, data)) {
             return;
         }
@@ -380,6 +384,10 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             return;
         } else if (ALWAYS_ADD_FIELDS.contains(field)) {
             addAlwaysInclude(field, value, data);
+            return;
+        }
+        if (isOversizedAtomicKey(field)) {
+            setTruncated(data);
             return;
         }
         if (!prepareAlignedGroup(field, data)) {
@@ -679,6 +687,12 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         return new StringSizePair(toWrite,
                 estimateSize(toWrite),
                 true);
+    }
+
+    private boolean isOversizedAtomicKey(String field) {
+        return ATOMIC_ADD_FIELDS.contains(field)
+                && maxKeySize >= 0
+                && estimateSize(field) > maxKeySize;
     }
 
     private String truncate(String value, int length, Map<String, String[]> data) {

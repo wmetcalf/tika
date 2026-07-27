@@ -345,6 +345,21 @@ class XMLParserSvgSecurityTest {
     }
 
     @Test
+    void testParameterizedSvgMediaTypeRetainsSecurityEnrichment() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg">
+                  <script href="https://example.invalid/parameterized.js"/>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg, "image/svg+xml; charset=UTF-8");
+
+        assertTrue(java.util.Arrays.asList(
+                        result.metadata.getValues("svg:externalScript"))
+                .contains("https://example.invalid/parameterized.js"));
+    }
+
+    @Test
     void testMalformedSvgDoesNotEnterQuadraticRasterNormalization() {
         String svg = "<svg xmlns=\"http://www.w3.org/2000/svg\">"
                 + "<image ".repeat(20_000);
@@ -360,8 +375,19 @@ class XMLParserSvgSecurityTest {
     }
 
     private static ParseResult parse(String svg, ParseContext context) throws Exception {
+        return parse(svg, context, "image/svg+xml");
+    }
+
+    private static ParseResult parse(String svg, String contentType) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedLimits.class, new EmbeddedLimits());
+        return parse(svg, context, contentType);
+    }
+
+    private static ParseResult parse(String svg, ParseContext context, String contentType)
+            throws Exception {
         Metadata metadata = new Metadata();
-        metadata.set(Metadata.CONTENT_TYPE, "image/svg+xml");
+        metadata.set(Metadata.CONTENT_TYPE, contentType);
         BodyContentHandler body = new BodyContentHandler(-1);
         try (TikaInputStream stream = TikaInputStream.get(
                 svg.getBytes(StandardCharsets.UTF_8))) {

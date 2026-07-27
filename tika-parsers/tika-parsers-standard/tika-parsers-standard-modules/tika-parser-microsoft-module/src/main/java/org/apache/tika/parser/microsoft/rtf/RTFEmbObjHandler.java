@@ -31,9 +31,11 @@ import org.apache.tika.exception.TikaMemoryLimitException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.RTFMetadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLBalancingHandler;
 
@@ -65,6 +67,7 @@ class RTFEmbObjHandler {
     private final EmbeddedDocumentUtil embeddedDocumentUtil;
     private final UnsynchronizedByteArrayOutputStream os;
     private final int memoryLimitInKb;
+    private final Metadata parentMetadata;
 
     private boolean isPictBitmap = false;
     //high hex cached for writing hexpair chars (data)
@@ -101,6 +104,7 @@ class RTFEmbObjHandler {
         this.embeddedDocumentUtil = new EmbeddedDocumentUtil(context);
         os = UnsynchronizedByteArrayOutputStream.builder().get();
         this.memoryLimitInKb = memoryLimitInKb;
+        this.parentMetadata = metadata;
     }
 
     protected void startPict() {
@@ -308,10 +312,24 @@ class RTFEmbObjHandler {
         RTFObjDataParser objParser = new RTFObjDataParser(memoryLimitInKb);
         try {
             byte[] objBytes = objParser.parse(bytes, savedMeta, unknownFilenameCount);
+            if (objParser.isLinkedObject()) {
+                surfaceLinkedObject(savedMeta);
+            }
             extractObj(objBytes, handler, savedMeta);
         } catch (IOException e) {
             EmbeddedDocumentUtil.recordException(e, savedMeta);
         }
+    }
+
+    private void surfaceLinkedObject(Metadata linkedMetadata) {
+        String topic = linkedMetadata.get(RTFMetadata.EMB_TOPIC);
+        if (topic == null || topic.isBlank()) {
+            return;
+        }
+        parentMetadata.set(Office.HAS_LINKED_OLE_OBJECTS, true);
+        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", topic,
+                linkedMetadata.get(RTFMetadata.EMB_ITEM), null, "rtf", "ole1",
+                linkedMetadata.get(RTFMetadata.EMB_CLASS), "", "", "external_url");
     }
 
     private void extractObj(byte[] bytes, ContentHandler handler, Metadata metadata)

@@ -143,4 +143,23 @@ public class OfficeLinkMetadataUtilTest {
                 .anyMatch(v -> v.contains("Office link")));
         assertNotNull(metadata.get("ExploitClass"));
     }
+
+    @Test
+    public void testOversizedLinkValuesAreBoundedBeforeRecordConstruction() {
+        Metadata metadata = new Metadata();
+        String oversized = "x".repeat(1_000_000);
+
+        OfficeLinkMetadataUtil.addLink(metadata, "hyperlink",
+                "https://example.invalid/" + oversized, oversized, oversized,
+                oversized, oversized, oversized, oversized, "click", "external_url");
+
+        assertTrue(metadata.get(Office.OFFICE_LINK_URL).length() <= 64 * 1024);
+        assertTrue(metadata.get(Office.OFFICE_LINK_TEXT).length() <= 64 * 1024);
+        assertTrue(metadata.get(Office.OFFICE_LINK_RECORD).length() <= 512 * 1024);
+        assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertTrue(java.util.Arrays.stream(metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .anyMatch(v -> v.contains("Office link")));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
 }

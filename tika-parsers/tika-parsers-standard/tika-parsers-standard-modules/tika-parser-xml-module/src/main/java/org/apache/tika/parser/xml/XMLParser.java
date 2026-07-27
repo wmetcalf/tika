@@ -98,7 +98,7 @@ public class XMLParser implements Parser {
             metadata.set(Metadata.CONTENT_TYPE, "application/xml");
         }
 
-        boolean isSvg = "image/svg+xml".equals(metadata.get(Metadata.CONTENT_TYPE));
+        boolean isSvg = isSvg(metadata);
         Path svgPath = isSvg ? tis.getPath() : null;
 
         final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
@@ -430,10 +430,16 @@ public class XMLParser implements Parser {
 
     protected ContentHandler getContentHandler(ContentHandler handler, Metadata metadata,
                                                ParseContext context) {
-        if ("image/svg+xml".equals(metadata.get(Metadata.CONTENT_TYPE))) {
+        if (isSvg(metadata)) {
             return new SvgEnrichingHandler(new TextContentHandler(handler, true), metadata);
         }
         return new TextContentHandler(handler, true);
+    }
+
+    private static boolean isSvg(Metadata metadata) {
+        MediaType mediaType = MediaType.parse(metadata.get(Metadata.CONTENT_TYPE));
+        return mediaType != null
+                && MediaType.image("svg+xml").equals(mediaType.getBaseType());
     }
 
     /**

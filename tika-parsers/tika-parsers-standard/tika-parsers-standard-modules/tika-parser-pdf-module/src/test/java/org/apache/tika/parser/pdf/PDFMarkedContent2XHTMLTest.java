@@ -18,6 +18,7 @@ package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayOutputStream;
@@ -48,7 +49,9 @@ import org.apache.tika.TikaTest;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.sax.ToXMLContentHandler;
 
 
@@ -81,6 +84,24 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         assertContains("a href=\"http://tika.apache.org/\">This is a hyperlink</a>", xml);
         assertContains("This is the header text.", xml);
         assertContains("This is the footer text.", xml);
+    }
+
+    @Test
+    public void testColorAwareAnalysisTakesPriorityOverMarkedContentExtraction()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        PDFParserConfig config = new PDFParserConfig();
+        config.setExtractMarkedContent(true);
+        context.set(PDFParserConfig.class, config);
+        context.set(ColorAwareConfig.class, new ColorAwareConfig().setEnabled(true));
+        context.set(ZXingCPPConfig.class, new ZXingCPPConfig());
+
+        XMLResult result = getXML("testJournalParser.pdf", context);
+
+        assertEquals("true", result.metadata.get(
+                org.apache.tika.metadata.PDF.HAS_MARKED_CONTENT));
+        assertNotNull(result.metadata.get("pdf_color_qr:glyphs"),
+                "tagged PDFs must still run color-aware glyph analysis");
     }
 
     @Test

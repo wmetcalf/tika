@@ -120,6 +120,23 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testShellCommandDefinitionClassifiesExtensionlessExecutable() throws Exception {
+        ParseResult result = parse("""
+                <MMC_ConsoleFile>
+                  <ShellCommandDefinition>
+                    <Command>dism</Command>
+                    <Params>/online /get-features</Params>
+                  </ShellCommandDefinition>
+                </MMC_ConsoleFile>
+                """);
+
+        assertEquals("dism /online /get-features",
+                result.metadata.get("msc:task_command"));
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "every ShellCommandDefinition is an execution boundary");
+    }
+
+    @Test
     public void testNestedCommandCapturesAreBounded() throws Exception {
         String xml = "<MMC_ConsoleFile>"
                 + "<CommandLine>".repeat(64)

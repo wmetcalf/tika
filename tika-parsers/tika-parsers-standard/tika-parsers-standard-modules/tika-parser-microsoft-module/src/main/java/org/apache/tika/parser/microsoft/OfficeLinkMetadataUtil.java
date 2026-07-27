@@ -27,6 +27,9 @@ import org.apache.tika.metadata.TikaCoreProperties;
 public final class OfficeLinkMetadataUtil {
 
     private static final int MAX_LINKS = 4_096;
+    private static final int MAX_LINK_TYPE_CHARS = 1_024;
+    private static final int MAX_LINK_RECORD_INPUT_CHARS = 64 * 1_024;
+    private static final int MAX_TOTAL_LINK_RECORD_CHARS = 1_024 * 1_024;
     private static final String LINK_LIMIT_WARNING =
             "Office link metadata limit reached; additional links were skipped";
 
@@ -47,31 +50,53 @@ public final class OfficeLinkMetadataUtil {
         if (metadata == null || isBlank(type) || isBlank(url)) {
             return;
         }
-        if (getLinkCount(metadata) >= MAX_LINKS) {
+        if (isLinkLimitReached(metadata) || getLinkCount(metadata) >= MAX_LINKS) {
             markLinkLimitReached(metadata);
             return;
         }
-        metadata.add(Office.OFFICE_LINK_URL, url);
-        metadata.add(Office.OFFICE_LINK_TYPE, type);
-        metadata.add(Office.OFFICE_LINK_TEXT, safe(text));
-        metadata.add(Office.OFFICE_LINK_OCR_TEXT, safe(ocrText));
-        metadata.add(Office.OFFICE_LINK_SOURCE, safe(source));
-        metadata.add(Office.OFFICE_LINK_CONTEXT, safe(context));
-        metadata.add(Office.OFFICE_LINK_RELATIONSHIP_TYPE, safe(relationshipType));
-        metadata.add(Office.OFFICE_LINK_ID, safe(id));
-        metadata.add(Office.OFFICE_LINK_TRIGGER, safe(trigger));
-        metadata.add(Office.OFFICE_LINK_ACTION_TYPE, safe(actionType));
-        metadata.add(Office.OFFICE_LINK_RECORD, MetadataRecord.encode(
-                "type", type,
-                "url", url,
-                "text", text,
-                "ocrText", ocrText,
-                "source", source,
-                "context", context,
-                "relationshipType", relationshipType,
-                "id", id,
-                "trigger", trigger,
-                "actionType", actionType));
+
+        LinkValueBudget budget = new LinkValueBudget();
+        String boundedType = budget.take(type, MAX_LINK_TYPE_CHARS);
+        String boundedUrl = budget.take(url);
+        String boundedText = budget.take(text);
+        String boundedOcrText = budget.take(ocrText);
+        String boundedSource = budget.take(source);
+        String boundedContext = budget.take(context);
+        String boundedRelationshipType = budget.take(relationshipType);
+        String boundedId = budget.take(id);
+        String boundedTrigger = budget.take(trigger);
+        String boundedActionType = budget.take(actionType);
+        String record = MetadataRecord.encode(
+                "type", boundedType,
+                "url", boundedUrl,
+                "text", boundedText,
+                "ocrText", boundedOcrText,
+                "source", boundedSource,
+                "context", boundedContext,
+                "relationshipType", boundedRelationshipType,
+                "id", boundedId,
+                "trigger", boundedTrigger,
+                "actionType", boundedActionType);
+        if (getLinkRecordChars(metadata) + record.length()
+                > MAX_TOTAL_LINK_RECORD_CHARS) {
+            markLinkLimitReached(metadata);
+            return;
+        }
+
+        metadata.add(Office.OFFICE_LINK_URL, boundedUrl);
+        metadata.add(Office.OFFICE_LINK_TYPE, boundedType);
+        metadata.add(Office.OFFICE_LINK_TEXT, boundedText);
+        metadata.add(Office.OFFICE_LINK_OCR_TEXT, boundedOcrText);
+        metadata.add(Office.OFFICE_LINK_SOURCE, boundedSource);
+        metadata.add(Office.OFFICE_LINK_CONTEXT, boundedContext);
+        metadata.add(Office.OFFICE_LINK_RELATIONSHIP_TYPE, boundedRelationshipType);
+        metadata.add(Office.OFFICE_LINK_ID, boundedId);
+        metadata.add(Office.OFFICE_LINK_TRIGGER, boundedTrigger);
+        metadata.add(Office.OFFICE_LINK_ACTION_TYPE, boundedActionType);
+        metadata.add(Office.OFFICE_LINK_RECORD, record);
+        if (budget.isTruncated()) {
+            markLinkLimitReached(metadata);
+        }
     }
 
     private static int getLinkCount(Metadata metadata) {
@@ -90,17 +115,30 @@ public final class OfficeLinkMetadataUtil {
                 metadata.getValues(Office.OFFICE_LINK_ACTION_TYPE).length);
     }
 
-    private static void markLinkLimitReached(Metadata metadata) {
-        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-        boolean warningPresent = false;
+    private static long getLinkRecordChars(Metadata metadata) {
+        long chars = 0;
+        for (String record : metadata.getValues(Office.OFFICE_LINK_RECORD)) {
+            chars += record.length();
+        }
+        return chars;
+    }
+
+    private static boolean isLinkLimitReached(Metadata metadata) {
         for (String warning :
                 metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
             if (LINK_LIMIT_WARNING.equals(warning)) {
-                warningPresent = true;
-                break;
+                return true;
             }
         }
-        if (!warningPresent) {
+        return false;
+    }
+
+    public static void markLinkLimitReached(Metadata metadata) {
+        if (metadata == null) {
+            return;
+        }
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        if (!isLinkLimitReached(metadata)) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     LINK_LIMIT_WARNING);
         }
@@ -108,6 +146,32 @@ public final class OfficeLinkMetadataUtil {
             metadata.set("ExploitClass",
                     "Office link extraction incomplete; executable references "
                             + "may be hidden");
+        }
+    }
+
+    private static final class LinkValueBudget {
+
+        private int remaining = MAX_LINK_RECORD_INPUT_CHARS;
+        private boolean truncated;
+
+        private String take(String value) {
+            return take(value, MAX_LINK_RECORD_INPUT_CHARS);
+        }
+
+        private String take(String value, int maxValueChars) {
+            String normalized = safe(value);
+            int retained = Math.min(normalized.length(),
+                    Math.min(maxValueChars, remaining));
+            if (retained < normalized.length()) {
+                truncated = true;
+            }
+            remaining -= retained;
+            return retained == normalized.length()
+                    ? normalized : normalized.substring(0, retained);
+        }
+
+        private boolean isTruncated() {
+            return truncated;
         }
     }
 

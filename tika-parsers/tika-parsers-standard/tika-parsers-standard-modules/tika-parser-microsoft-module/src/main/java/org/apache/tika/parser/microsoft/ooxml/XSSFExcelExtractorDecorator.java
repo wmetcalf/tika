@@ -137,7 +137,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
      * has deduped on second-and-later references.
      */
     private final Map<String, Set<Integer>> picturePages = new HashMap<>();
-    protected final Map<String, String> drawingHyperlinks = new HashMap<>();
     protected Metadata metadata;
     protected ParseContext parseContext;
 
@@ -246,7 +245,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // takes ownership of nextStream.
                 sheetExtractor.setCellValueCapture(workbookCellValues, iter.getSheetName());
 
-                addDrawingHyperLinks(sheetPart);
                 sheetParts.add(sheetPart);
 
                 XSSFCommentsShim commentsShim = parseSheetComments(sheetPart);
@@ -880,32 +878,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         }
     }
 
-    protected void addDrawingHyperLinks(PackagePart sheetPart) {
-        try {
-            for (PackageRelationship rel : sheetPart
-                    .getRelationshipsByType(RELATION_DRAWING)) {
-                if (rel.getTargetMode() == TargetMode.INTERNAL) {
-                    PackagePartName relName = PackagingURIHelper.createPartName(rel.getTargetURI());
-                    PackagePart part = rel.getPackage().getPart(relName);
-                    //parts can go missing, and Excel quietly ignores missing images -- TIKA-2134
-                    if (part == null) {
-                        continue;
-                    }
-                    for (PackageRelationship drawRel : part
-                            .getRelationshipsByType(RELATION_HYPERLINK)) {
-                        drawingHyperlinks.put(drawRel.getId(), drawRel.getTargetURI().toString());
-                    }
-                }
-            }
-        } catch (InvalidFormatException e) {
-            //swallow
-            //an exception trying to extract
-            //hyperlinks on drawings should not cause a parse failure
-        }
-
-    }
-
-
     protected void extractHyperLinks(PackagePart sheetPart, XHTMLContentHandler xhtml)
             throws SAXException {
         try {
@@ -946,6 +918,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 if (drawingPart == null) {
                     continue;
                 }
+                Map<String, String> drawingHyperlinks =
+                        loadLinkedRelationships(drawingPart, false, metadata);
                 // SAX-parse drawing XML for shape text and hyperlinks
                 try (InputStream is = drawingPart.getInputStream()) {
                     XMLReaderUtils.parseSAX(is,

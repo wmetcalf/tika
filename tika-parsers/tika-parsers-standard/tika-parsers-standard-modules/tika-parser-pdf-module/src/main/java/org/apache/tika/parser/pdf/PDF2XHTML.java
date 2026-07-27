@@ -96,12 +96,9 @@ class PDF2XHTML extends AbstractPDF2XHTML {
             // Extract text using a dummy Writer as we override the
             // key methods to output to the given content
             // handler.
-            org.apache.tika.parser.ColorAwareConfig colorConfig =
-                    context.get(org.apache.tika.parser.ColorAwareConfig.class);
             org.apache.tika.parser.image.ZXingCPPConfig zxingConfig =
                     context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
-            boolean colorAware = colorConfig != null && colorConfig.isEnabled()
-                    && zxingConfig != null;
+            boolean colorAware = usesColorAwareAnalysis(context, config);
             if (config.isDetectAngles()) {
                 pdf2XHTML =
                         new AngleDetectingPDF2XHTML(document, handler, context, metadata, config, renderer);
@@ -164,6 +161,13 @@ class PDF2XHTML extends AbstractPDF2XHTML {
                         pdf2XHTML.exceptions.get(0));
             }
         }
+    }
+
+    static boolean usesColorAwareAnalysis(ParseContext context, PDFParserConfig config) {
+        org.apache.tika.parser.ColorAwareConfig colorConfig =
+                context.get(org.apache.tika.parser.ColorAwareConfig.class);
+        return !config.isDetectAngles() && colorConfig != null && colorConfig.isEnabled()
+                && context.get(org.apache.tika.parser.image.ZXingCPPConfig.class) != null;
     }
 
     @Override

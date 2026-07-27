@@ -37,6 +37,7 @@ import org.xml.sax.ContentHandler;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.RTFMetadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
@@ -58,6 +59,19 @@ public class RTFObjDataParserTest {
                 extracted.get(0).metadata.get(RTFMetadata.EMB_SOURCE_PATH));
         assertEquals(DISTINCT_COMMAND,
                 extracted.get(0).metadata.get(RTFMetadata.EMB_COMMAND));
+    }
+
+    @Test
+    public void testLinkedOle1ObjectIsSurfacedOnParentMetadata() throws Exception {
+        Metadata metadata = parseMetadata(buildLinkedRtf(
+                "C:\\Users\\Public\\linked-document.doc", "Sheet1!R1C1"));
+
+        assertEquals("C:\\Users\\Public\\linked-document.doc",
+                metadata.get(Office.OFFICE_LINK_URL));
+        assertEquals("linked_ole_object",
+                metadata.get(Office.OFFICE_LINK_TYPE));
+        assertEquals("Sheet1!R1C1",
+                metadata.get(Office.OFFICE_LINK_TEXT));
     }
 
     private static List<ExtractedDocument> parse(byte[] rtf) throws Exception {
@@ -83,6 +97,15 @@ public class RTFObjDataParserTest {
         return extracted;
     }
 
+    private static Metadata parseMetadata(byte[] rtf) throws Exception {
+        Metadata metadata = new Metadata();
+        try (TikaInputStream stream = TikaInputStream.get(rtf)) {
+            new RTFParser().parse(
+                    stream, new BodyContentHandler(-1), metadata, new ParseContext());
+        }
+        return metadata;
+    }
+
     private static byte[] buildRtf(String command) throws IOException {
         byte[] poifs = buildOleCompoundDocument(command);
         ByteArrayOutputStream objData = new ByteArrayOutputStream();
@@ -97,6 +120,23 @@ public class RTFObjDataParserTest {
         String rtf = "{\\rtf1\\ansi"
                 + "{\\object\\objemb"
                 + "{\\*\\objclass Package}"
+                + "{\\*\\objdata " + HexFormat.of().formatHex(objData.toByteArray()) + "}"
+                + "}"
+                + "}";
+        return rtf.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] buildLinkedRtf(String topic, String item) throws IOException {
+        ByteArrayOutputStream objData = new ByteArrayOutputStream();
+        writeUInt32LE(objData, 0x00000501);
+        writeUInt32LE(objData, 1);
+        writeLengthPrefixedAnsi(objData, "Excel.Sheet.12");
+        writeLengthPrefixedAnsi(objData, topic);
+        writeLengthPrefixedAnsi(objData, item);
+
+        String rtf = "{\\rtf1\\ansi"
+                + "{\\object\\objlink"
+                + "{\\*\\objclass Excel.Sheet.12}"
                 + "{\\*\\objdata " + HexFormat.of().formatHex(objData.toByteArray()) + "}"
                 + "}"
                 + "}";

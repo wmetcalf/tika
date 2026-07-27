@@ -55,6 +55,7 @@ class RTFObjDataParser {
 
     private final static String WIN_ASCII = "WINDOWS-1252";
     private final int memoryLimitInKb;
+    private boolean linkedObject;
 
     RTFObjDataParser(int memoryLimitInKb) {
         this.memoryLimitInKb = memoryLimitInKb;
@@ -88,8 +89,10 @@ class RTFObjDataParser {
         metadata.add(RTFMetadata.EMB_APP_VERSION, Long.toString(version));
 
         long formatId = readUInt(is);
-        //2 is an embedded object. 1 is a link.
-        if (formatId != 2L) {
+        // 2 is an embedded object. 1 is a link. Both carry the three
+        // length-prefixed identity strings; linked objects end after them.
+        linkedObject = formatId == 1L;
+        if (!linkedObject && formatId != 2L) {
             return null;
         }
         // Strip embedded null bytes: weaponized OLE1 class names can contain nulls
@@ -107,6 +110,9 @@ class RTFObjDataParser {
         }
         if (itemName.length() > 0) {
             metadata.add(RTFMetadata.EMB_ITEM, itemName);
+        }
+        if (linkedObject) {
+            return null;
         }
 
         long dataSz = readUInt(is);
@@ -149,6 +155,10 @@ class RTFObjDataParser {
             }
         }
         return embObjBytes;
+    }
+
+    boolean isLinkedObject() {
+        return linkedObject;
     }
 
     //will throw IOException if not actually POIFS

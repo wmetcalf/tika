@@ -865,9 +865,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         // iteration order POI returns).
         java.util.Set<String> seen = new java.util.HashSet<>();
         // Hard cap to bound total emissions. Counted across the package root
-        // and every part. Once exceeded, downstream emissions are silently
-        // skipped — the link index still has the first MAX_EXTERNAL_REFS_PER_DOC
-        // links, which is more than any legitimate doc would carry.
+        // and every part. If exceeded, signal that the link index is incomplete.
         int[] emitted = new int[]{0};
         // Package-level relationships (/_rels/.rels at the OPC root). These
         // sit ABOVE any part and could in principle carry an external Target
@@ -876,14 +874,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         try {
             PackageRelationshipCollection rootRels = opcPackage.getRelationships();
             if (rootRels != null) {
-                surfaceExternalRels(xhtml, metadata, rootRels, "_rels/.rels", seen, emitted);
+                if (surfaceExternalRels(
+                        xhtml, metadata, rootRels, "_rels/.rels", seen, emitted)) {
+                    return;
+                }
             }
         } catch (Exception ignored) {
             // best-effort
         }
         try {
             for (PackagePart part : opcPackage.getParts()) {
-                if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) break;
                 if (part == null || part.getPartName() == null) continue;
                 String partName = part.getPartName().getName();
                 PackageRelationshipCollection rels;
@@ -893,7 +893,10 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     continue;
                 }
                 if (rels == null) continue;
-                surfaceExternalRels(xhtml, metadata, rels, partName, seen, emitted);
+                if (surfaceExternalRels(
+                        xhtml, metadata, rels, partName, seen, emitted)) {
+                    return;
+                }
             }
         } catch (Exception e) {
             // never fail the parse over a relationship walk
@@ -905,18 +908,22 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      * already been recorded in {@code seen}. Shared between the per-part walk
      * and the package-level root rels walk. Honors the per-doc emission cap.
      */
-    private void surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
-                                     PackageRelationshipCollection rels, String partName,
-                                     java.util.Set<String> seen, int[] emitted) {
+    private boolean surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
+                                        PackageRelationshipCollection rels, String partName,
+                                        java.util.Set<String> seen, int[] emitted) {
         for (PackageRelationship rel : rels) {
-            if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) return;
             if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
             if (rel.getTargetURI() == null) continue;
             String url = rel.getTargetURI().toString();
             if (url.isEmpty()) continue;
             // Dedup on URL alone — see class-level comment in
             // surfaceExternalRefsFromAllParts on attacker URL-bloat.
-            if (!seen.add(url)) continue;
+            if (seen.contains(url)) continue;
+            if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) {
+                OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+                return true;
+            }
+            seen.add(url);
 
             String refType = shortRelType(rel.getRelationshipType());
             try {
@@ -932,6 +939,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // an addLink entry via emitExternalRef.
             setHasFlagFor(rel.getRelationshipType(), metadata);
         }
+        return false;
     }
 
     /** Trim a fully-qualified relationship type URI down to its last path component. */

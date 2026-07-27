@@ -28,6 +28,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 
 /**
@@ -47,6 +48,12 @@ public class RTFHtmlDecapsulator {
     public RTFHtmlDecapsulator(ContentHandler handler, ParseContext context,
                                int maxBytesInKb) {
         this.embHandler = new RTFEmbeddedHandler(handler, context, maxBytesInKb);
+    }
+
+    public RTFHtmlDecapsulator(ContentHandler handler, Metadata metadata,
+                               ParseContext context, int maxBytesInKb) {
+        this.embHandler = new RTFEmbeddedHandler(
+                handler, metadata, context, maxBytesInKb);
     }
 
     public RTFHtmlDecapsulator(ContentHandler handler, ParseContext context) {

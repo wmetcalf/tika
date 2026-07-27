@@ -178,6 +178,95 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void percentEncodedDataStylesheetIsInspected() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><head><link rel=\"stylesheet\" "
+                        + "href=\"data:text/css,.qr%7Bwhite-space%3Apre%7D\"></head>"
+                        + "<body><div class=\"qr\">" + unicodeGrid + "</div></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "percent-encoded in-document CSS must participate in QR analysis");
+    }
+
+    @Test
+    public void base64DataStylesheetIsInspected() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><head><link rel=\"stylesheet\" "
+                        + "href=\"data:text/css;base64,LnFye3doaXRlLXNwYWNlOnByZX0=\"></head>"
+                        + "<body><div class=\"qr\">" + unicodeGrid + "</div></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "base64 in-document CSS must participate in QR analysis");
+    }
+
+    @Test
+    public void oversizedDataStylesheetsAreSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        ParseContext context = contextFor(fakeScanner);
+        for (String href : List.of(
+                "data:text/css," + "a".repeat(300_000),
+                "data:text/css;base64," + "YWFh".repeat(100_000))) {
+            Metadata metadata = new Metadata();
+
+            parse("<html><head><link rel=\"stylesheet\" href=\"" + href
+                            + "\"></head><body>visible</body></html>",
+                    new BodyContentHandler(-1), metadata, context);
+
+            assertTrue(metadata
+                    .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                    "bounded data CSS decoding must report incomplete analysis");
+            assertNotNull(metadata.get("ExploitClass"),
+                    "truncated data CSS must not look like a clean negative");
+        }
+    }
+
+    @Test
+    public void oversizedDataStylesheetHeaderIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><head><link rel=\"stylesheet\" href=\"data:text/css"
+                        + " ".repeat(300_000)
+                        + ",.qr%7Bwhite-space%3Apre%7D\"></head><body>visible</body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "data URI metadata scanning must also have a hard bound");
+        assertNotNull(metadata.get("ExploitClass"),
+                "an oversized data URI header must not look like a clean negative");
+    }
+
+    @Test
+    public void unsupportedLinkedStylesheetIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><head><link rel=\"stylesheet\" "
+                        + "href=\"https://attacker.example/hidden.css\"></head>"
+                        + "<body><div class=\"qr\">████████</div></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "an unavailable linked stylesheet makes color analysis incomplete");
+        assertNotNull(metadata.get("ExploitClass"),
+                "unsupported linked CSS must not look like a clean negative");
+    }
+
+    @Test
     public void oversizedInlineStyleIsBoundedAndSecurityVisible() throws Exception {
         Path fakeScanner = createFakeScanner();
         Metadata metadata = new Metadata();

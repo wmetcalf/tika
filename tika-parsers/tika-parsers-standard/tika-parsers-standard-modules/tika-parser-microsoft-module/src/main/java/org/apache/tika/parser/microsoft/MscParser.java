@@ -312,11 +312,18 @@ public class MscParser implements Parser {
                     "GrimResource: apds.dll XSL redirect to javascript: — "
                     + "MMC COM object model execution bypass (in-the-wild since June 2024)");
         } else {
-            // Check commands and task commands for shell execution keywords
-            Set<String> allCmds = new LinkedHashSet<>(commands);
-            allCmds.addAll(taskCommands);
             boolean exploitFound = false;
-            for (String cmd : allCmds) {
+            for (String taskCommand : taskCommands) {
+                if (taskCommand != null && !taskCommand.isBlank()) {
+                    metadata.set("ExploitClass",
+                            "MSC task command executes shell payload: " + taskCommand);
+                    exploitFound = true;
+                    break;
+                }
+            }
+            // Generic command-like fields are ambiguous, so retain the
+            // execution-indicator heuristic for them.
+            for (String cmd : commands) {
                 if (exploitFound) {
                     break;
                 }

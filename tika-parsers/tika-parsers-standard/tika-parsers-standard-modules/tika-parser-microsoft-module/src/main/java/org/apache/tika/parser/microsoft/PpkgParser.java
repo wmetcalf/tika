@@ -117,12 +117,6 @@ public class PpkgParser implements Parser {
             ".vhd", ".vhdx", ".lnk", ".msc", ".hta", ".pif", ".reg"
     ));
 
-    // Shell invocation prefixes that indicate code execution
-    private static final String[] EXEC_KEYWORDS = {
-            "powershell", "pwsh", "cmd.exe", "cmd /c", "wscript", "cscript", "mshta",
-            "certutil", "bitsadmin", "regsvr32", "rundll32", "msiexec", "wmic"
-    };
-
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
@@ -270,9 +264,11 @@ public class PpkgParser implements Parser {
             metadata.add("ppkg:command", cmd);
         }
 
-        // ExploitClass for dangerous command patterns
+        // Every retained value came from a provisioning execution boundary
+        // (CommandLine/Command), so even extensionless and environment-resolved
+        // commands must be classified.
         for (String cmd : seen) {
-            if (containsExecutionIndicator(cmd)) {
+            if (cmd != null && !cmd.isBlank()) {
                 metadata.set("ExploitClass",
                         "PPKG provisioning command executes shell payload: " + cmd);
             }
@@ -479,42 +475,6 @@ public class PpkgParser implements Parser {
     private static boolean isRangeWithin(byte[] raw, long offset, long size) {
         return size > 0 && offset >= 0 && offset <= raw.length
                 && size <= raw.length - offset;
-    }
-
-    private static boolean containsExecutionIndicator(String command) {
-        String lower = command.toLowerCase(Locale.ROOT);
-        for (String keyword : EXEC_KEYWORDS) {
-            if (lower.contains(keyword)) {
-                return true;
-            }
-        }
-        String trimmed = lower.stripLeading();
-        int tokenEnd;
-        if (trimmed.startsWith("\"")) {
-            tokenEnd = trimmed.indexOf('"', 1);
-            if (tokenEnd < 0) {
-                return false;
-            }
-            trimmed = trimmed.substring(1, tokenEnd);
-        } else {
-            tokenEnd = 0;
-            while (tokenEnd < trimmed.length()
-                    && !Character.isWhitespace(trimmed.charAt(tokenEnd))) {
-                tokenEnd++;
-            }
-            trimmed = trimmed.substring(0, tokenEnd);
-        }
-        int slash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-        String executable = slash < 0 ? trimmed : trimmed.substring(slash + 1);
-        if ("cmd".equals(executable) || "cmd.exe".equals(executable)) {
-            return true;
-        }
-        for (String extension : DANGEROUS_EXTENSIONS) {
-            if (executable.endsWith(extension)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     // ── XPRESS Huffman decompressor (MS-XCA §2.3 "LZ77+Huffman") ─────────────

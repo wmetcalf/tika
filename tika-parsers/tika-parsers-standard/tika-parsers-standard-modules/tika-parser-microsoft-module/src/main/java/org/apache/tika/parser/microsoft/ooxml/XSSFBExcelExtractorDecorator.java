@@ -120,7 +120,6 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             try {
                 InputStream stream = iter.next();
                 PackagePart sheetPart = iter.getSheetPart();
-                addDrawingHyperLinks(sheetPart);
                 sheetParts.add(sheetPart);
 
                 SheetTextAsHTML sheetExtractor = new SheetTextAsHTML(config, xhtml);

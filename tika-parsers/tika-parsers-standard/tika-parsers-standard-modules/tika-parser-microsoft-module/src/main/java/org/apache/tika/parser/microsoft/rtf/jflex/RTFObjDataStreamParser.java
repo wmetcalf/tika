@@ -124,8 +124,7 @@ public class RTFObjDataStreamParser implements Closeable {
                 fieldBuf[fieldPos++] = (byte) b;
                 if (fieldPos >= fieldTarget) {
                     formatId = readLE32(fieldBuf);
-                    if (formatId != 2L) {
-                        // Not an embedded object (1 = link). Skip everything.
+                    if (formatId != 1L && formatId != 2L) {
                         currentField = Field.SKIP;
                     } else {
                         initUint32Field(Field.CLASS_LEN);
@@ -177,7 +176,11 @@ public class RTFObjDataStreamParser implements Closeable {
                 stringBuf[stringPos++] = (byte) b;
                 if (stringPos >= fieldTarget) {
                     itemName = decodeString(stringBuf, fieldTarget);
-                    initUint32Field(Field.DATA_SIZE);
+                    if (formatId == 1L) {
+                        currentField = Field.DONE;
+                    } else {
+                        initUint32Field(Field.DATA_SIZE);
+                    }
                 }
                 break;
 
@@ -224,7 +227,7 @@ public class RTFObjDataStreamParser implements Closeable {
      */
     public TikaInputStream onComplete(Metadata metadata, AtomicInteger unknownFilenameCount)
             throws IOException, TikaException {
-        if (currentField == Field.SKIP || tempFile == null) {
+        if (currentField == Field.SKIP) {
             return null;
         }
 
@@ -238,6 +241,9 @@ public class RTFObjDataStreamParser implements Closeable {
         if (itemName != null && !itemName.isEmpty()) {
             metadata.add(RTFMetadata.EMB_ITEM, itemName);
         }
+        if (isLinkedObject() || tempFile == null) {
+            return null;
+        }
 
         String cn = className != null ? className.toLowerCase(Locale.ROOT) : "";
 
@@ -248,6 +254,10 @@ public class RTFObjDataStreamParser implements Closeable {
         } else {
             return handleGenericOrPOIFS(metadata, unknownFilenameCount);
         }
+    }
+
+    boolean isLinkedObject() {
+        return formatId == 1L;
     }
 
     @Override

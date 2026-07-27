@@ -601,7 +601,7 @@ public class OutlookExtractor extends AbstractPOIFSExtractor {
                 byte[] rtfData = rtf.getData();
                 // Try to extract encapsulated HTML + embedded objects in one pass
                 RTFHtmlDecapsulator decapsulator =
-                        new RTFHtmlDecapsulator(xhtml, parseContext,
+                        new RTFHtmlDecapsulator(xhtml, parentMetadata, parseContext,
                                 officeParserConfig.getRtfEmbeddedMaxBytesInKb());
                 String html = decapsulator.extract(rtfData);
                 if (html != null) {
@@ -617,9 +617,8 @@ public class OutlookExtractor extends AbstractPOIFSExtractor {
                 if (rtfParser == null) {
                     rtfParser = new RTFParser();
                 }
-                Metadata rtfMetadata = Metadata.newInstance(context);
                 try (TikaInputStream tis = TikaInputStream.get(rtfData)) {
-                    rtfParser.parseInline(tis, xhtml, rtfMetadata, parseContext);
+                    rtfParser.parseInline(tis, xhtml, parentMetadata, parseContext);
                 }
                 // Scan raw RTF bytes for cid: references
                 extractContentIdNames(rtfData, contentIdNames);

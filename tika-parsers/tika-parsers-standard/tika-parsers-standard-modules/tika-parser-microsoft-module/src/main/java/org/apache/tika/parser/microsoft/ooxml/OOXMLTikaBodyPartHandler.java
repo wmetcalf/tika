@@ -88,7 +88,9 @@ public class OOXMLTikaBodyPartHandler
     private String activeHyperlinkUrl = null;
     private String activeHyperlinkType = null;
     private String activeRunHyperlinkUrl = null;
+    private static final int MAX_LINK_TEXT_CHARS = 64 * 1_024;
     private final StringBuilder activeHyperlinkText = new StringBuilder();
+    private boolean activeHyperlinkTextTruncated;
 
     // Color-aware QR collector: optionally records (per-glyph color) for
     // every character emitted in run(), binned by paragraph row. Populated
@@ -165,7 +167,7 @@ public class OOXMLTikaBodyPartHandler
         formattingTags.applyFormatting(runProperties);
         xhtml.characters(contents);
         if (isCollectingLinkMetadata() && contents != null) {
-            activeHyperlinkText.append(contents);
+            appendHyperlinkText(contents);
         }
         if (colorAwareEnabled && contents != null) {
             int luma = lumaForHex(runProperties.getColor());
@@ -282,9 +284,9 @@ public class OOXMLTikaBodyPartHandler
             return;
         }
         for (String id : pendingCommentIds) {
-            byte[] xml = inlinePartMap.getComment(id);
-            if (xml != null) {
-                inlineNoteContent(xml, "comment");
+            OOXMLInlineBodyPartMap.InlineBodyPart part = inlinePartMap.getComment(id);
+            if (part != null) {
+                inlineNoteContent(part, "comment");
                 emittedCommentIds.add(id);
             }
         }
@@ -427,9 +429,9 @@ public class OOXMLTikaBodyPartHandler
         if (id == null) {
             return;
         }
-        byte[] xml = inlinePartMap.getFootnote(id);
-        if (xml != null) {
-            inlineNoteContent(xml, "footnote");
+        OOXMLInlineBodyPartMap.InlineBodyPart part = inlinePartMap.getFootnote(id);
+        if (part != null) {
+            inlineNoteContent(part, "footnote");
         } else {
             xhtml.characters("[");
             xhtml.characters(id);
@@ -442,9 +444,9 @@ public class OOXMLTikaBodyPartHandler
         if (id == null) {
             return;
         }
-        byte[] xml = inlinePartMap.getEndnote(id);
-        if (xml != null) {
-            inlineNoteContent(xml, "endnote");
+        OOXMLInlineBodyPartMap.InlineBodyPart part = inlinePartMap.getEndnote(id);
+        if (part != null) {
+            inlineNoteContent(part, "endnote");
         } else {
             xhtml.characters("[");
             xhtml.characters(id);
@@ -459,10 +461,9 @@ public class OOXMLTikaBodyPartHandler
         }
     }
 
-    private void inlineNoteContent(byte[] xml, String cssClass) throws SAXException {
-        // Use the inline part map's relationship map which includes relationships
-        // from the footnote/endnote parts (needed for picture resolution)
-        Map<String, String> noteRelationships = inlinePartMap.getLinkedRelationships();
+    private void inlineNoteContent(OOXMLInlineBodyPartMap.InlineBodyPart part,
+            String cssClass) throws SAXException {
+        Map<String, String> noteRelationships = part.linkedRelationships();
         xhtml.startElement("div", "class", cssClass);
         // Track the inner handler so we can call its closeAnyPending() if
         // the inline-note parseSAX aborts mid-element. Without the drain
@@ -472,7 +473,7 @@ public class OOXMLTikaBodyPartHandler
         OOXMLTikaBodyPartHandler innerHandler = new OOXMLTikaBodyPartHandler(xhtml, metadata);
         innerHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, parseContext);
         try {
-            XMLReaderUtils.parseSAX(new ByteArrayInputStream(xml),
+            XMLReaderUtils.parseSAX(new ByteArrayInputStream(part.xml()),
                     new EmbeddedContentHandler(
                             new OOXMLWordAndPowerPointTextHandler(
                                     innerHandler,
@@ -599,12 +600,14 @@ public class OOXMLTikaBodyPartHandler
         activeHyperlinkUrl = link;
         activeHyperlinkType = type;
         activeHyperlinkText.setLength(0);
+        activeHyperlinkTextTruncated = false;
     }
 
     private void flushActiveHyperlink() {
         if (activeHyperlinkUrl == null) {
             return;
         }
+        boolean textTruncated = activeHyperlinkTextTruncated;
         OfficeLinkMetadataUtil.addLink(metadata,
                 OfficeLinkMetadataUtil.normalizeType(activeHyperlinkType), activeHyperlinkUrl,
                 activeHyperlinkText.toString().trim(), null, "", "text", "", "",
@@ -613,6 +616,10 @@ public class OOXMLTikaBodyPartHandler
         activeHyperlinkUrl = null;
         activeHyperlinkType = null;
         activeHyperlinkText.setLength(0);
+        activeHyperlinkTextTruncated = false;
+        if (textTruncated) {
+            OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+        }
     }
 
     private void updateRunHyperlinkState(String hyperlinkUrl) {
@@ -628,17 +635,33 @@ public class OOXMLTikaBodyPartHandler
     private void flushRunHyperlink() {
         if (activeRunHyperlinkUrl == null) {
             activeHyperlinkText.setLength(0);
+            activeHyperlinkTextTruncated = false;
             return;
         }
+        boolean textTruncated = activeHyperlinkTextTruncated;
         OfficeLinkMetadataUtil.addLink(metadata, "hyperlink", activeRunHyperlinkUrl,
                 activeHyperlinkText.toString().trim(), null, "", "text", "", "",
                 "click", "external_url");
         activeRunHyperlinkUrl = null;
         activeHyperlinkText.setLength(0);
+        activeHyperlinkTextTruncated = false;
+        if (textTruncated) {
+            OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
+        }
     }
 
     private boolean isCollectingLinkMetadata() {
         return activeHyperlinkUrl != null || activeRunHyperlinkUrl != null;
+    }
+
+    private void appendHyperlinkText(String contents) {
+        int remaining = MAX_LINK_TEXT_CHARS - activeHyperlinkText.length();
+        if (remaining > 0) {
+            activeHyperlinkText.append(contents, 0, Math.min(contents.length(), remaining));
+        }
+        if (contents.length() > remaining) {
+            activeHyperlinkTextTruncated = true;
+        }
     }
 
     @Override

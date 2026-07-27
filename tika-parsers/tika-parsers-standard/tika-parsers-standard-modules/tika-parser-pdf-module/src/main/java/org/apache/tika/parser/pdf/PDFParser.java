@@ -241,7 +241,8 @@ public class PDFParser implements Parser, RenderingParser {
                         .equals(OcrConfig.Strategy.OCR_ONLY)) {
                     OCR2XHTML.process(pdfDocument, outputHandler, context, metadata,
                             localConfig, renderer);
-                } else if (hasMarkedContent && localConfig.isExtractMarkedContent()) {
+                } else if (hasMarkedContent && localConfig.isExtractMarkedContent()
+                        && !PDF2XHTML.usesColorAwareAnalysis(context, localConfig)) {
                     PDFMarkedContent2XHTML
                             .process(pdfDocument, outputHandler, context, metadata,
                                     localConfig, renderer,

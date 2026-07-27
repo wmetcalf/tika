@@ -30,37 +30,41 @@ import java.util.Map;
 class OOXMLInlineBodyPartMap {
 
     static final OOXMLInlineBodyPartMap EMPTY = new OOXMLInlineBodyPartMap(
-            Collections.emptyMap(), Collections.emptyMap(), Collections.emptyMap(),
-            Collections.emptyMap());
+            Collections.emptyMap(), Collections.emptyMap(), Collections.emptyMap());
 
-    private final Map<String, byte[]> footnotes;
-    private final Map<String, byte[]> endnotes;
-    private final Map<String, byte[]> comments;
-    private final Map<String, String> linkedRelationships;
+    private final Map<String, InlineBodyPart> footnotes;
+    private final Map<String, InlineBodyPart> endnotes;
+    private final Map<String, InlineBodyPart> comments;
 
+    OOXMLInlineBodyPartMap(Map<String, InlineBodyPart> footnotes,
+            Map<String, InlineBodyPart> endnotes,
+            Map<String, InlineBodyPart> comments) {
+        this.footnotes = footnotes;
+        this.endnotes = endnotes;
+        this.comments = comments;
+    }
+
+    /**
+     * Compatibility constructor for callers with one relationship namespace shared by
+     * all supplied fragments.
+     */
     OOXMLInlineBodyPartMap(Map<String, byte[]> footnotes,
             Map<String, byte[]> endnotes,
             Map<String, byte[]> comments,
             Map<String, String> linkedRelationships) {
-        this.footnotes = footnotes;
-        this.endnotes = endnotes;
-        this.comments = comments;
-        this.linkedRelationships = linkedRelationships;
+        this(wrap(footnotes, linkedRelationships), wrap(endnotes, linkedRelationships),
+                wrap(comments, linkedRelationships));
     }
 
-    Map<String, String> getLinkedRelationships() {
-        return linkedRelationships;
-    }
-
-    byte[] getFootnote(String id) {
+    InlineBodyPart getFootnote(String id) {
         return footnotes.get(id);
     }
 
-    byte[] getEndnote(String id) {
+    InlineBodyPart getEndnote(String id) {
         return endnotes.get(id);
     }
 
-    byte[] getComment(String id) {
+    InlineBodyPart getComment(String id) {
         return comments.get(id);
     }
 
@@ -76,7 +80,26 @@ class OOXMLInlineBodyPartMap {
         return !comments.isEmpty();
     }
 
-    Iterable<Map.Entry<String, byte[]>> getCommentEntries() {
+    Iterable<Map.Entry<String, InlineBodyPart>> getCommentEntries() {
         return comments.entrySet();
+    }
+
+    static InlineBodyPart part(byte[] xml, Map<String, String> linkedRelationships) {
+        return new InlineBodyPart(xml, linkedRelationships);
+    }
+
+    private static Map<String, InlineBodyPart> wrap(Map<String, byte[]> parts,
+            Map<String, String> linkedRelationships) {
+        if (parts.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, InlineBodyPart> wrapped = new java.util.HashMap<>();
+        for (Map.Entry<String, byte[]> entry : parts.entrySet()) {
+            wrapped.put(entry.getKey(), part(entry.getValue(), linkedRelationships));
+        }
+        return wrapped;
+    }
+
+    record InlineBodyPart(byte[] xml, Map<String, String> linkedRelationships) {
     }
 }
