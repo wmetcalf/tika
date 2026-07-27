@@ -16,7 +16,10 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -50,6 +53,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -105,6 +109,8 @@ public class ICalParser implements Parser {
     // prevents heap exhaustion (UTF-32 amplification, attendee spam, deep nesting).
     static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
     private static final int MAX_ATTACHMENTS_PER_DOCUMENT = 1_000;
+    private static final int MAX_DATA_URI_ATTACHMENT_BYTES =
+            16 * 1024 * 1024;
     private static final String ATTACHMENT_LIMIT_WARNING =
             "iCalendar attachment limit reached; additional ATTACH properties were skipped";
 
@@ -420,6 +426,8 @@ public class ICalParser implements Parser {
         // pattern — <table bgcolor="#000"> grid of cells).
         String altDesc = props.get("x-alt-desc");
         if (altDesc != null && !altDesc.isEmpty()) {
+            TaggedContentHandler taggedHandler =
+                    new TaggedContentHandler(xhtml);
             try {
                 byte[] htmlBytes = altDesc.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 Metadata embMeta = Metadata.newInstance(context);
@@ -428,7 +436,8 @@ public class ICalParser implements Parser {
                 try (TikaInputStream tis = TikaInputStream.get(
                         new java.io.ByteArrayInputStream(htmlBytes))) {
                     if (extractor.shouldParseEmbedded(embMeta)) {
-                        extractor.parseEmbedded(tis, xhtml, embMeta, context, true);
+                        extractor.parseEmbedded(
+                                tis, taggedHandler, embMeta, context, true);
                     }
                 }
                 // Hoist QR/exploit metadata from the embedded HTML parse
@@ -439,6 +448,7 @@ public class ICalParser implements Parser {
                 // but barcode:* values are appended via metadata.add and
                 // already land on the parent.)
             } catch (Exception e) {
+                taggedHandler.throwIfCauseOf(e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 if (e instanceof SecurityException securityException) {
                     throw securityException;
@@ -819,72 +829,35 @@ public class ICalParser implements Parser {
                 bareAttachProcessed = true;
             }
             String value = e.getValue();
-            boolean isB64 = key.contains("encoding=base64")
-                    || key.contains("encoding=b");
-            boolean isHttpUrl = startsWithHttpScheme(value);
-            if (isB64 || (value.length() > 100 && !isHttpUrl)) {
+            boolean isB64 = hasBase64Encoding(key);
+            boolean isAbsoluteUri = isAbsoluteUri(value);
+            if (startsWithDataScheme(value)) {
+                try {
+                    byte[] data = decodeDataUri(value);
+                    processLocalAttachment(data, metadata, xhtml, context,
+                            extractor, exploitDesc);
+                } catch (DataUriDecodeException dataUriFailure) {
+                    metadata.add(
+                            TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            dataUriFailure.getMessage());
+                    metadata.set(
+                            TikaCoreProperties.TRUNCATED_METADATA, true);
+                    exploitDesc.append(
+                            "Calendar data URI ATTACH analysis incomplete; ");
+                }
+                continue;
+            }
+            if (isB64 || (value.length() > 100 && !isAbsoluteUri)) {
                 // Likely inline base64
                 try {
                     byte[] data = Base64.getMimeDecoder().decode(
                             value.replaceAll("\\s", ""));
-                    if (data.length > 0) {
-                        String sha256 = sha256Hex(data);
-                        metadata.add("ical:attach_sha256", sha256);
-                        String mime = "application/octet-stream";
-                        Metadata embMeta = Metadata.newInstance(context);
-                        embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "ical-attach");
-                        Detector detector = context.get(Detector.class);
-                        if (detector == null) {
-                            detector = new DefaultDetector();
-                        }
-                        try (TikaInputStream tis = TikaInputStream.get(data)) {
-                            mime = detector
-                                    .detect(tis, embMeta, context)
-                                    .getBaseType().toString();
-                        } catch (SecurityException e1) {
-                            throw e1;
-                        } catch (Exception ignored) {
-                            // detection is best-effort
-                        }
-                        metadata.add("ical:attach_mime", mime);
-                        // Flag risky MIME types
-                        if (RISKY_ATTACH_MIME.contains(mime)
-                                || mime.contains("executable")
-                                || mime.contains("script")) {
-                            exploitDesc.append(
-                                    "Inline ATTACH with risky MIME type: " + mime + "; ");
-                        }
-                        // HTML attachments inside ICS invites are virtually
-                        // always weaponized — the Sublime "Microsoft Domain
-                        // Renewal" example used this exact shape (HTML phishing
-                        // kit auto-attached to a multi-day calendar event).
-                        if (mime.startsWith("text/html")
-                                || mime.equals("application/xhtml+xml")) {
-                            metadata.set("ical:attach_html", "true");
-                            exploitDesc.append(
-                                    "Inline ATTACH is an HTML file (" + mime
-                                  + ") — calendar invites with attached HTML are "
-                                  + "almost always phishing kits; ");
-                        }
-                        // Feed through embedded pipeline
-                        embMeta.set(Metadata.CONTENT_TYPE, mime);
-                        try (TikaInputStream tis2 = TikaInputStream.get(data)) {
-                            if (extractor.shouldParseEmbedded(embMeta)) {
-                                extractor.parseEmbedded(tis2, xhtml, embMeta,
-                                        context, true);
-                            }
-                        } catch (Exception embeddedFailure) {
-                            WriteLimitReachedException.throwIfWriteLimitReached(embeddedFailure);
-                            if (embeddedFailure instanceof SecurityException securityException) {
-                                throw securityException;
-                            }
-                            // embedded parse is best-effort
-                        }
-                    }
+                    processLocalAttachment(data, metadata, xhtml, context,
+                            extractor, exploitDesc);
                 } catch (IllegalArgumentException ignored) {
-                    // Not valid base64; treat as URL below
+                    // Neither valid inline Base64 nor an absolute URI
                 }
-            } else if (isHttpUrl) {
+            } else if (isAbsoluteUri) {
                 // Remote URL attachment
                 metadata.add("ical:attach_url", value);
                 allUrls.add(value);
@@ -892,11 +865,180 @@ public class ICalParser implements Parser {
         }
     }
 
+    private void processLocalAttachment(
+            byte[] data, Metadata metadata, XHTMLContentHandler xhtml,
+            ParseContext context, EmbeddedDocumentExtractor extractor,
+            StringBuilder exploitDesc)
+            throws IOException, SAXException, TikaException {
+        if (data.length == 0) {
+            return;
+        }
+        String sha256 = sha256Hex(data);
+        metadata.add("ical:attach_sha256", sha256);
+        String mime = "application/octet-stream";
+        Metadata embMeta = Metadata.newInstance(context);
+        embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "ical-attach");
+        Detector detector = context.get(Detector.class);
+        if (detector == null) {
+            detector = new DefaultDetector();
+        }
+        try (TikaInputStream tis = TikaInputStream.get(data)) {
+            mime = detector
+                    .detect(tis, embMeta, context)
+                    .getBaseType().toString();
+        } catch (SecurityException e) {
+            throw e;
+        } catch (Exception ignored) {
+            // detection is best-effort
+        }
+        metadata.add("ical:attach_mime", mime);
+        if (RISKY_ATTACH_MIME.contains(mime)
+                || mime.contains("executable")
+                || mime.contains("script")) {
+            exploitDesc.append(
+                    "Inline ATTACH with risky MIME type: " + mime + "; ");
+        }
+        if (mime.startsWith("text/html")
+                || mime.equals("application/xhtml+xml")) {
+            metadata.set("ical:attach_html", "true");
+            exploitDesc.append(
+                    "Inline ATTACH is an HTML file (" + mime
+                            + ") — calendar invites with attached HTML are "
+                            + "almost always phishing kits; ");
+        }
+        embMeta.set(Metadata.CONTENT_TYPE, mime);
+        TaggedContentHandler taggedHandler =
+                new TaggedContentHandler(xhtml);
+        try (TikaInputStream tis = TikaInputStream.get(data)) {
+            if (extractor.shouldParseEmbedded(embMeta)) {
+                extractor.parseEmbedded(
+                        tis, taggedHandler, embMeta, context, true);
+            }
+        } catch (Exception embeddedFailure) {
+            taggedHandler.throwIfCauseOf(embeddedFailure);
+            WriteLimitReachedException.throwIfWriteLimitReached(
+                    embeddedFailure);
+            if (embeddedFailure instanceof SecurityException securityException) {
+                throw securityException;
+            }
+            // embedded parse is best-effort
+        }
+    }
+
+    private static boolean startsWithDataScheme(String value) {
+        return value.regionMatches(true, 0, "data:", 0, 5);
+    }
+
+    private static byte[] decodeDataUri(String value)
+            throws DataUriDecodeException {
+        int comma = value.indexOf(',');
+        if (comma < 5) {
+            throw new DataUriDecodeException(
+                    "Malformed iCalendar data URI attachment was not decoded");
+        }
+        String header = value.substring(5, comma);
+        String payload = value.substring(comma + 1);
+        boolean base64 = false;
+        for (String token : header.split(";")) {
+            if ("base64".equalsIgnoreCase(token.trim())) {
+                base64 = true;
+                break;
+            }
+        }
+        if (base64) {
+            StringBuilder compact = new StringBuilder(payload.length());
+            for (int i = 0; i < payload.length(); i++) {
+                char c = payload.charAt(i);
+                if (!Character.isWhitespace(c)) {
+                    compact.append(c);
+                }
+            }
+            long maximumDecoded =
+                    ((long) compact.length() + 3L) / 4L * 3L;
+            if (maximumDecoded
+                    > (long) MAX_DATA_URI_ATTACHMENT_BYTES + 2L) {
+                throw oversizedDataUri();
+            }
+            try {
+                byte[] decoded =
+                        Base64.getDecoder().decode(compact.toString());
+                if (decoded.length > MAX_DATA_URI_ATTACHMENT_BYTES) {
+                    throw oversizedDataUri();
+                }
+                return decoded;
+            } catch (IllegalArgumentException e) {
+                throw new DataUriDecodeException(
+                        "Malformed iCalendar data URI attachment was not decoded");
+            }
+        }
+
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream(
+                Math.min(payload.length(), MAX_DATA_URI_ATTACHMENT_BYTES));
+        for (int i = 0; i < payload.length(); i++) {
+            char c = payload.charAt(i);
+            if (c == '%') {
+                if (i + 2 >= payload.length()) {
+                    throw new DataUriDecodeException(
+                            "Malformed iCalendar data URI attachment was not decoded");
+                }
+                int high = Character.digit(payload.charAt(++i), 16);
+                int low = Character.digit(payload.charAt(++i), 16);
+                if (high < 0 || low < 0) {
+                    throw new DataUriDecodeException(
+                            "Malformed iCalendar data URI attachment was not decoded");
+                }
+                decoded.write((high << 4) | low);
+            } else if (c <= 0x7f) {
+                decoded.write(c);
+            } else {
+                byte[] utf8 =
+                        String.valueOf(c).getBytes(StandardCharsets.UTF_8);
+                decoded.writeBytes(utf8);
+            }
+            if (decoded.size() > MAX_DATA_URI_ATTACHMENT_BYTES) {
+                throw oversizedDataUri();
+            }
+        }
+        return decoded.toByteArray();
+    }
+
+    private static DataUriDecodeException oversizedDataUri() {
+        return new DataUriDecodeException(
+                "iCalendar data URI attachment exceeded the "
+                        + MAX_DATA_URI_ATTACHMENT_BYTES
+                        + "-byte local decode limit");
+    }
+
+    private static final class DataUriDecodeException extends Exception {
+
+        private DataUriDecodeException(String message) {
+            super(message);
+        }
+    }
+
+    private static boolean hasBase64Encoding(String key) {
+        int paramsStart = key.indexOf('|');
+        if (paramsStart < 0) {
+            return false;
+        }
+        int paramsEnd = key.lastIndexOf("|tika-index=");
+        if (paramsEnd <= paramsStart) {
+            paramsEnd = key.length();
+        }
+        String encoding =
+                extractParam(key.substring(paramsStart + 1, paramsEnd), "encoding");
+        return "base64".equalsIgnoreCase(encoding)
+                || "b".equalsIgnoreCase(encoding);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static boolean startsWithHttpScheme(String value) {
-        return value.regionMatches(true, 0, "http://", 0, 7)
-                || value.regionMatches(true, 0, "https://", 0, 8);
+    private static boolean isAbsoluteUri(String value) {
+        try {
+            return new URI(value).isAbsolute();
+        } catch (URISyntaxException e) {
+            return false;
+        }
     }
 
     private static void emitField(Metadata meta, Map<String, String> props,
@@ -1009,11 +1151,26 @@ public class ICalParser implements Parser {
     }
 
     private static String extractParam(String params, String name) {
-        for (String p : params.split(";")) {
-            int eq = p.indexOf('=');
-            if (eq > 0 && p.substring(0, eq).trim().equalsIgnoreCase(name)) {
-                String v = p.substring(eq + 1).trim();
-                return v.replaceAll("^\"|\"$", ""); // strip optional surrounding quotes
+        int start = 0;
+        boolean inQuote = false;
+        for (int i = 0; i <= params.length(); i++) {
+            if (i < params.length() && params.charAt(i) == '"') {
+                inQuote = !inQuote;
+            }
+            if (i == params.length()
+                    || (params.charAt(i) == ';' && !inQuote)) {
+                String param = params.substring(start, i);
+                int eq = param.indexOf('=');
+                if (eq > 0 && param.substring(0, eq)
+                        .trim().equalsIgnoreCase(name)) {
+                    String value = param.substring(eq + 1).trim();
+                    if (value.length() >= 2 && value.charAt(0) == '"'
+                            && value.charAt(value.length() - 1) == '"') {
+                        value = value.substring(1, value.length() - 1);
+                    }
+                    return value;
+                }
+                start = i + 1;
             }
         }
         return null;

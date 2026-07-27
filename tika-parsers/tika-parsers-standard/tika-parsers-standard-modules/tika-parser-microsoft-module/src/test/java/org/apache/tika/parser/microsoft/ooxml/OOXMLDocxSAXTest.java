@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -28,8 +29,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import org.junit.jupiter.api.Test;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
@@ -794,6 +801,72 @@ public class OOXMLDocxSAXTest extends TikaTest {
     // Security feature tests
 
     @Test
+    public void testMainDocumentDownstreamSaxDenialPropagates()
+            throws Exception {
+        String rejectedText = "Sample Word Document";
+        SAXException denial =
+                new SAXException("simulated DOCX output policy denial");
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void characters(char[] ch, int start, int length)
+                    throws SAXException {
+                if (new String(ch, start, length).contains(rejectedText)) {
+                    throw denial;
+                }
+            }
+        };
+
+        SAXException thrown;
+        try (TikaInputStream stream =
+                     getResourceAsStream("/test-documents/testWORD.docx")) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testReferencedNoteDenialPropagates() throws Exception {
+        SAXException denial =
+                new SAXException("simulated referenced-note output denial");
+        FailStopTextHandler handler =
+                new FailStopTextHandler("snoska", denial);
+
+        SAXException thrown;
+        try (TikaInputStream stream =
+                     getResourceAsStream("/test-documents/footnotes.docx")) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testUnreferencedCommentDenialPropagates() throws Exception {
+        SAXException denial =
+                new SAXException("simulated unreferenced-comment output denial");
+        FailStopTextHandler handler =
+                new FailStopTextHandler("Here is a comment", denial);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testHoverAndVmlHyperlinks() throws Exception {
         List<Metadata> metadataList =
                 getRecursiveMetadata("testHoverAndVml.docx");
@@ -876,6 +949,98 @@ public class OOXMLDocxSAXTest extends TikaTest {
         String[] warnings = metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
         for (String w : warnings) {
             assertNotContained("not bound", w);
+        }
+    }
+
+    private byte[] removeCommentReferences(String resource) throws Exception {
+        byte[] source;
+        try (TikaInputStream stream = getResourceAsStream(resource)) {
+            source = stream.readAllBytes();
+        }
+        try (ZipInputStream input =
+                     new ZipInputStream(new java.io.ByteArrayInputStream(source));
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             ZipOutputStream output = new ZipOutputStream(bytes)) {
+            ZipEntry entry;
+            while ((entry = input.getNextEntry()) != null) {
+                byte[] content = input.readAllBytes();
+                if ("word/document.xml".equals(entry.getName())) {
+                    String xml = new String(content, UTF_8)
+                            .replaceAll(
+                                    "<w:commentReference\\b[^>]*/>", "");
+                    content = xml.getBytes(UTF_8);
+                }
+                output.putNextEntry(new ZipEntry(entry.getName()));
+                output.write(content);
+                output.closeEntry();
+            }
+            output.finish();
+            return bytes.toByteArray();
+        }
+    }
+
+    private static final class FailStopTextHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopTextHandler(
+                String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
+            }
         }
     }
 }

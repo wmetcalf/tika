@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft.rtf;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Set;
 
 import org.apache.commons.io.input.TaggedInputStream;
@@ -35,6 +36,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLBalancingHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
@@ -89,8 +91,9 @@ public class RTFParser implements Parser {
                       ParseContext context) throws IOException, SAXException, TikaException {
         metadata.set(Metadata.CONTENT_TYPE, "application/rtf");
         TaggedInputStream tagged = new TaggedInputStream(tis);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
+        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(taggedOutput, metadata, context);
         // Wrap xhtml in a balancing handler so the finally's endDocument
         // doesn't fire on an unbalanced stack if the RTF state machine
         // emits inconsistent SAX events (e.g., </b> while <p> is topmost
@@ -98,21 +101,131 @@ public class RTFParser implements Parser {
         // this, StrictXHTMLValidator's </body> vs <p>/<b> at endDocument
         // masks the real well-formedness error from inside extract().
         XHTMLBalancingHandler balancer = new XHTMLBalancingHandler(xhtml);
+        Throwable primaryFailure = null;
+        boolean shouldCleanupAfterFailure = true;
         try {
+            xhtml.startDocument();
             parseInline(tis, balancer, metadata, context);
         } catch (IOException e) {
-            tagged.throwIfCauseOf(e);
-            balancer.drainOpenElements();
-            throw new TikaException("Error parsing an RTF document", e);
-        } catch (SAXException | TikaException e) {
-            // Drain on any exception escaping parseInline. parseInline can
-            // throw TikaException too (memory limits, embedded extraction,
-            // etc.); without the drain, the finally's xhtml.endDocument()
-            // throws on the unbalanced stack and masks the real error.
-            balancer.drainOpenElements();
+            try {
+                tagged.throwIfCauseOf(e);
+            } catch (IOException inputFailure) {
+                primaryFailure = inputFailure;
+                throw inputFailure;
+            }
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = outputFailure;
+                throw outputFailure;
+            }
+            TikaException parseFailure =
+                    new TikaException("Error parsing an RTF document", e);
+            primaryFailure = parseFailure;
+            throw parseFailure;
+        } catch (SAXException e) {
+            primaryFailure = e;
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = outputFailure;
+                throw outputFailure;
+            }
+            throw e;
+        } catch (TikaException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = outputFailure;
+                throw outputFailure;
+            }
+            primaryFailure = e;
+            throw e;
+        } catch (RuntimeException e) {
+            primaryFailure = e;
+            shouldCleanupAfterFailure = false;
+            throw e;
+        } catch (Error e) {
+            primaryFailure = e;
+            shouldCleanupAfterFailure = false;
             throw e;
         } finally {
+            if (primaryFailure == null) {
+                try {
+                    xhtml.endDocument();
+                } catch (SAXException endDocumentFailure) {
+                    SAXException outputFailure =
+                            findTaggedOutputFailure(
+                                    taggedOutput, endDocumentFailure);
+                    if (outputFailure != null) {
+                        throw outputFailure;
+                    }
+                    throw endDocumentFailure;
+                }
+            } else if (shouldCleanupAfterFailure) {
+                cleanupAfterFailure(
+                        balancer, xhtml, taggedOutput, primaryFailure);
+            }
+        }
+    }
+
+    private static SAXException findTaggedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && seen.add(current)) {
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    return outputFailure;
+                }
+                return null;
+            }
+            Throwable cause = current.getCause();
+            current = cause != current ? cause : null;
+        }
+        return null;
+    }
+
+    private static void cleanupAfterFailure(
+            XHTMLBalancingHandler balancer,
+            XHTMLContentHandler xhtml,
+            TaggedContentHandler taggedOutput,
+            Throwable primaryFailure) throws SAXException {
+        try {
+            balancer.drainOpenElements();
+        } catch (Throwable cleanupFailure) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, cleanupFailure);
+            if (outputFailure != null) {
+                addSuppressed(outputFailure, primaryFailure);
+                throw outputFailure;
+            }
+            addSuppressed(primaryFailure, cleanupFailure);
+        }
+        try {
             xhtml.endDocument();
+        } catch (Throwable cleanupFailure) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, cleanupFailure);
+            if (outputFailure != null) {
+                addSuppressed(outputFailure, primaryFailure);
+                throw outputFailure;
+            }
+            addSuppressed(primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static void addSuppressed(
+            Throwable primaryFailure, Throwable cleanupFailure) {
+        if (cleanupFailure != primaryFailure) {
+            primaryFailure.addSuppressed(cleanupFailure);
         }
     }
 
@@ -129,11 +242,18 @@ public class RTFParser implements Parser {
      */
     public void parseInline(InputStream is, ContentHandler handler, Metadata metadata, ParseContext context)
             throws TikaException, IOException, SAXException {
+        TaggedContentHandler taggedHandler = new TaggedContentHandler(handler);
         RTFEmbObjHandler embObjHandler =
-                new RTFEmbObjHandler(handler, metadata, context, getMemoryLimitInKb());
-        final TextExtractor ert = new TextExtractor(handler, metadata, embObjHandler, context);
+                new RTFEmbObjHandler(taggedHandler, metadata, context, getMemoryLimitInKb());
+        final TextExtractor ert =
+                new TextExtractor(taggedHandler, metadata, embObjHandler, context);
         ert.setIgnoreListMarkup(ignoreListMarkup);
-        ert.extract(is);
+        try {
+            ert.extract(is);
+        } catch (SAXException e) {
+            taggedHandler.throwIfCauseOf(e);
+            throw e;
+        }
     }
 
     private int getMemoryLimitInKb() {

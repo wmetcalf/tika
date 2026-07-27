@@ -380,21 +380,35 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             if (emittedCommentIds.contains(entry.getKey())) {
                 continue;
             }
+            Object outputTag = new Object();
+            XHTMLContentHandler taggedXhtml =
+                    TaggedXWPFBodyContentsHandler.tagOutput(
+                            xhtml, metadata, context, outputTag);
             OOXMLTikaBodyPartHandler bodyHandler =
-                    new OOXMLTikaBodyPartHandler(xhtml, metadata);
+                    new OOXMLTikaBodyPartHandler(taggedXhtml, metadata);
+            TaggedXWPFBodyContentsHandler taggedBodyHandler =
+                    new TaggedXWPFBodyContentsHandler(
+                            bodyHandler, outputTag);
             bodyHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
             boolean divStarted = false;
+            boolean outputDenied = false;
             try {
-                xhtml.startElement("div", "class", "comment");
+                taggedXhtml.startElement("div", "class", "comment");
                 divStarted = true;
                 XMLReaderUtils.parseSAX(
                         new java.io.ByteArrayInputStream(entry.getValue().xml()),
                         new EmbeddedContentHandler(
                                 new OOXMLWordAndPowerPointTextHandler(
-                                        bodyHandler,
+                                        taggedBodyHandler,
                                         entry.getValue().linkedRelationships())),
                         context);
             } catch (SAXException e) {
+                try {
+                    taggedBodyHandler.throwIfCauseOf(e);
+                } catch (SAXException denial) {
+                    outputDenied = true;
+                    throw denial;
+                }
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
@@ -402,9 +416,11 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
             } finally {
-                bodyHandler.closeAnyPending();
-                if (divStarted) {
-                    xhtml.endElement("div");
+                if (!outputDenied) {
+                    bodyHandler.closeAnyPending();
+                    if (divStarted) {
+                        taggedXhtml.endElement("div");
+                    }
                 }
                 documentColorRows.addCollector(bodyHandler.getColorCollector());
             }
@@ -419,17 +435,25 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
 
         Map<String, String> linkedRelationships =
                 loadLinkedRelationships(packagePart, true, metadata);
+        Object outputTag = new Object();
         OOXMLTikaBodyPartHandler bodyHandler =
-                new OOXMLTikaBodyPartHandler(xhtml, styles, listManager, config, metadata);
+                new OOXMLTikaBodyPartHandler(
+                        TaggedXWPFBodyContentsHandler.tagOutput(
+                                xhtml, metadata, context, outputTag),
+                        styles, listManager, config, metadata);
+        TaggedXWPFBodyContentsHandler taggedBodyHandler =
+                new TaggedXWPFBodyContentsHandler(
+                        bodyHandler, outputTag);
         bodyHandler.setInlineBodyPartMap(inlinePartMap, context);
         try (InputStream stream = packagePart.getInputStream()) {
             XMLReaderUtils.parseSAX(stream,
                     new EmbeddedContentHandler(new OOXMLWordAndPowerPointTextHandler(
-                            bodyHandler,
+                            taggedBodyHandler,
                             linkedRelationships, config.isIncludeShapeBasedContent(),
                             config.isConcatenatePhoneticRuns(),
                             config.isPreferAlternateContentChoice())), context);
         } catch (SAXException e) {
+            taggedBodyHandler.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
@@ -523,12 +547,19 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     continue;
                 }
                 Map<String, String> partRels =
-                        loadLinkedRelationships(part, true, metadata);
+                        loadLinkedRelationships(
+                                part, true, metadata, collectionBudget);
                 OOXMLPartContentCollector collector =
                         new OOXMLPartContentCollector(
                                 wrapperElements, skipIds, collectionBudget);
                 try (InputStream stream = part.getInputStream()) {
-                    XMLReaderUtils.parseSAX(stream, collector, context);
+                    try {
+                        XMLReaderUtils.parseSAX(stream, collector, context);
+                    } catch (OOXMLPartContentCollector
+                            .CollectionLimitReachedException expected) {
+                        // The collector deliberately aborts optional precollection
+                        // once its document budget is exhausted.
+                    }
                 }
                 for (Map.Entry<String, byte[]> entry :
                         collector.getContentMap().entrySet()) {

@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -476,6 +477,77 @@ class XlmCaptureBoundsTest {
     }
 
     @Test
+    void testXlsbRuntimeSaxDenialPropagates() throws Exception {
+        SAXException denial =
+                new SAXException("simulated XLSB output policy denial");
+        XlsbFailStopSaxHandler handler =
+                new XlsbFailStopSaxHandler(denial);
+        ParseContext context = new ParseContext();
+        context.set(Locale.class, Locale.US);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE,
+                "application/vnd.ms-excel.sheet.binary.macroenabled.12");
+
+        SAXException thrown;
+        try (InputStream input = XlmCaptureBoundsTest.class.getResourceAsStream(
+                "/test-documents/testEXCEL.xlsb");
+             TikaInputStream stream = TikaInputStream.get(input)) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, metadata, context));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    void testXmlMacroPartCountIsBoundedAndSignaled() throws Exception {
+        String xml = """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData/>
+                </worksheet>
+                """;
+        Metadata metadata = new Metadata();
+        ParseContext parseContext = new ParseContext();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            for (int i = 0; i < 129; i++) {
+                PackagePart macroPart = opcPackage.createPart(
+                        PackagingURIHelper.createPartName(
+                                "/xl/macrosheets/sheet" + i + ".xml"),
+                        XSSFRelation.MACRO_SHEET_XML.getContentType());
+                try (OutputStream stream = macroPart.getOutputStream()) {
+                    stream.write(xml.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            XSSFExcelExtractorDecorator decorator =
+                    new XSSFExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmXmlMacroSheets", OPCPackage.class,
+                    XHTMLContentHandler.class, XSSFSharedStringsShim.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            process.invoke(decorator, opcPackage, xhtml, null);
+            xhtml.endDocument();
+        }
+
+        assertEquals("true",
+                metadata.get("msoffice:xlm-capture-limit-reached"));
+        assertEquals("true",
+                metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+        assertEquals(128,
+                output.toString().split("class=\"xlm-macrosheet\"", -1).length - 1,
+                "the parser must stop at the workbook-wide macro-part budget");
+    }
+
+    @Test
     void testXlsbMacroPartCountIsBoundedAndSignaled() throws Exception {
         Metadata metadata = new Metadata();
         ParseContext parseContext = new ParseContext();
@@ -677,6 +749,74 @@ class XlmCaptureBoundsTest {
             if (tableCell && length > 0) {
                 throw new SecurityException(
                         "simulated XLSB sheet policy denial");
+            }
+        }
+    }
+
+    private static final class XlsbFailStopSaxHandler
+            extends DefaultHandler {
+
+        private final SAXException denial;
+        private boolean tableCell;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private XlsbFailStopSaxHandler(SAXException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                Attributes attributes) throws SAXException {
+            rejectAfterDenial();
+            tableCell = "td".equals(localName) || "td".equals(qName);
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectAfterDenial();
+            if (tableCell && length > 0) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+            if ("td".equals(localName) || "td".equals(qName)) {
+                tableCell = false;
+            }
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
             }
         }
     }

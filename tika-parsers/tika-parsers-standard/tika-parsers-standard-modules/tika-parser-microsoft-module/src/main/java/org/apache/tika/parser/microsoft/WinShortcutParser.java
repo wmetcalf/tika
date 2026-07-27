@@ -53,6 +53,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -342,8 +343,15 @@ public class WinShortcutParser implements Parser {
                     "LNK input extraction incomplete; exploit indicators may be hidden");
         }
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
+        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(taggedOutput, metadata, context);
+        try {
+            xhtml.startDocument();
+        } catch (SAXException e) {
+            taggedOutput.throwIfCauseOf(e);
+            throw e;
+        }
 
         int pos = HEADER_SIZE;
         try {
@@ -359,6 +367,7 @@ public class WinShortcutParser implements Parser {
         } catch (SecurityException e) {
             throw e;
         } catch (SAXException e) {
+            taggedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
             markAnalysisIncomplete(fields, warnings,
@@ -421,7 +430,12 @@ public class WinShortcutParser implements Parser {
         if (alt != null && !alt.isEmpty() && !alt.equals(resolved)) {
             xhtml.element("p", alt);
         }
-        xhtml.endDocument();
+        try {
+            xhtml.endDocument();
+        } catch (SAXException e) {
+            taggedOutput.throwIfCauseOf(e);
+            throw e;
+        }
     }
 
     // ── ShellLinkHeader §2.1 ──────────────────────────────────────────────────
@@ -2497,13 +2511,17 @@ public class WinShortcutParser implements Parser {
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
         Metadata embeddedMeta = Metadata.newInstance(context);
         embeddedMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "lnk-appended-data");
+        TaggedContentHandler taggedEmbeddedOutput =
+                new TaggedContentHandler(xhtml);
         try (TikaInputStream embeddedTis = TikaInputStream.get(appendedBytes)) {
             if (extractor.shouldParseEmbedded(embeddedMeta)) {
-                extractor.parseEmbedded(embeddedTis, xhtml, embeddedMeta, context, true);
+                extractor.parseEmbedded(
+                        embeddedTis, taggedEmbeddedOutput, embeddedMeta, context, true);
             }
         } catch (SecurityException e) {
             throw e;
         } catch (SAXException e) {
+            taggedEmbeddedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             addWarning(warnings, "Appended data parse error: " + e.getMessage());
         } catch (Exception e) {

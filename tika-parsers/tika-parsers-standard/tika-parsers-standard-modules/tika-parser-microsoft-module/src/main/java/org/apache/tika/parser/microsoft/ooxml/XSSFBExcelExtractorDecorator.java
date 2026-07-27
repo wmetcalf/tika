@@ -38,6 +38,7 @@ import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.RuntimeSAXException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
@@ -47,8 +48,6 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
-
-    private static final int MAX_XLM_MACRO_PARTS = 128;
 
     public XSSFBExcelExtractorDecorator(ParseContext context, OPCPackage pkg,
                                         Locale locale) {
@@ -171,6 +170,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 extractHyperLinks(sheetPart, xhtml);
                 xhtml.endElement("div");
             } catch (SecurityException e) {
+                throw e;
+            } catch (RuntimeSAXException e) {
                 throw e;
             } catch (RuntimeException e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);

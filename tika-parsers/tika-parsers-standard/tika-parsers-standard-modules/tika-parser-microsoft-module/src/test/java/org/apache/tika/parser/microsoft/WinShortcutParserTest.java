@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,6 +39,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -123,6 +125,74 @@ public class WinShortcutParserTest {
         assertThrows(SecurityException.class,
                 () -> parseWithEmbeddedException(
                         new SecurityException("simulated security boundary")));
+    }
+
+    @Test
+    public void testAppendedDownstreamSaxDenialPropagates() throws Exception {
+        String rejectedText = "blocked LNK appended output";
+        SAXException denial =
+                new SAXException("simulated LNK output policy denial");
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = rejectedText.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream, new TextRejectingHandler(rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testStartDocumentDenialIsUnwrapped() throws Exception {
+        SAXException denial =
+                new SAXException("simulated LNK start-document denial");
+        LifecycleRejectingHandler handler =
+                new LifecycleRejectingHandler(denial, true);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testEndDocumentDenialIsUnwrapped() throws Exception {
+        SAXException denial =
+                new SAXException("simulated LNK end-document denial");
+        LifecycleRejectingHandler handler =
+                new LifecycleRejectingHandler(denial, false);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
     }
 
     @Test
@@ -840,5 +910,94 @@ public class WinShortcutParserTest {
     }
 
     private record ParseResult(Metadata metadata, List<byte[]> embedded) {
+    }
+
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+
+        private TextRejectingHandler(String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
+    }
+
+    private static final class LifecycleRejectingHandler
+            extends DefaultHandler {
+
+        private final SAXException denial;
+        private final boolean denyStart;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private LifecycleRejectingHandler(
+                SAXException denial, boolean denyStart) {
+            this.denial = denial;
+            this.denyStart = denyStart;
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            rejectAfterDenial();
+            if (denyStart) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+            if (!denyStart) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
+            }
+        }
     }
 }

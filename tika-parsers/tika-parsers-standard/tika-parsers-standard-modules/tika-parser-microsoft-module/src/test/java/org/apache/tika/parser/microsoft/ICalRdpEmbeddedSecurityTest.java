@@ -17,6 +17,7 @@
 package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -31,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -40,6 +42,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.writefilter.MetadataWriteLimiterFactory;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
@@ -130,6 +133,41 @@ public class ICalRdpEmbeddedSecurityTest {
     }
 
     @Test
+    public void testIcalAttachmentDownstreamSaxExceptionPropagates() {
+        SAXException denial =
+                new SAXException("simulated attachment output policy denial");
+        ParseContext context = embeddedOutputContext("blocked attachment output");
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(new ICalParser(), ICAL_ATTACHMENT, context,
+                        new TextRejectingHandler(
+                                "blocked attachment output", denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testIcalAltDescDownstreamSaxExceptionPropagates() {
+        SAXException denial =
+                new SAXException("simulated alternate-description output policy denial");
+        ParseContext context = embeddedOutputContext("blocked alternate description");
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(new ICalParser(), ICAL_ALT_DESC, context,
+                        new TextRejectingHandler(
+                                "blocked alternate description", denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testIcalAttachmentParserSaxFailureRemainsBestEffort() {
+        assertDoesNotThrow(
+                () -> parseWithFailure(new ICalParser(), ICAL_ATTACHMENT,
+                        new SAXException("simulated malformed attachment")));
+    }
+
+    @Test
     public void testIcalAttachmentMimeDetectionSecurityExceptionPropagates() {
         SecurityException denial =
                 new SecurityException("simulated attachment MIME policy denial");
@@ -198,6 +236,110 @@ public class ICalRdpEmbeddedSecurityTest {
     }
 
     @Test
+    public void testIcalAbsoluteAttachmentUriSchemesAreRetained()
+            throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-absolute-attachment-uri
+                ATTACH;VALUE=URI:ftp://example.invalid/attachment.bin
+                END:VEVENT
+                END:VCALENDAR
+                """;
+
+        Metadata metadata = parse(new ICalParser(), ical, noEmbeddedContext());
+
+        assertArrayEquals(
+                new String[]{"ftp://example.invalid/attachment.bin"},
+                metadata.getValues("ical:attach_url"));
+    }
+
+    @Test
+    public void testIcalExtensionParameterDoesNotForceUriIntoBase64()
+            throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-extension-attachment-parameter
+                ATTACH;VALUE=URI;X-ENCODING=BETA:ftp://example.invalid/payload.bin
+                END:VEVENT
+                END:VCALENDAR
+                """;
+
+        Metadata metadata = parse(new ICalParser(), ical, noEmbeddedContext());
+
+        assertArrayEquals(
+                new String[]{"ftp://example.invalid/payload.bin"},
+                metadata.getValues("ical:attach_url"));
+        assertEquals(0, metadata.getValues("ical:attach_sha256").length);
+    }
+
+    @Test
+    public void testIcalShortBase64EncodingRemainsSupported()
+            throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-short-base64-encoding
+                ATTACH;ENCODING=B;VALUE=BINARY:QUJD
+                END:VEVENT
+                END:VCALENDAR
+                """;
+
+        Metadata metadata = parse(new ICalParser(), ical, noEmbeddedContext());
+
+        assertArrayEquals(
+                new String[]{
+                        "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78"
+                },
+                metadata.getValues("ical:attach_sha256"));
+        assertEquals(0, metadata.getValues("ical:attach_url").length);
+    }
+
+    @Test
+    public void testIcalQuotedExtensionParameterCannotHideBase64Encoding()
+            throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-quoted-extension-parameter
+                ATTACH;X-NOTE=";encoding=none|tika-index=777";ENCODING=BASE64;VALUE=BINARY:QUJD
+                END:VEVENT
+                END:VCALENDAR
+                """;
+
+        Metadata metadata = parse(new ICalParser(), ical, noEmbeddedContext());
+
+        assertArrayEquals(
+                new String[]{
+                        "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78"
+                },
+                metadata.getValues("ical:attach_sha256"));
+    }
+
+    @Test
+    public void testIcalMalformedAttachmentValueIsNotReportedAsUri()
+            throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-malformed-attachment-uri
+                ATTACH;VALUE=URI:not a valid URI
+                END:VEVENT
+                END:VCALENDAR
+                """;
+
+        Metadata metadata = parse(new ICalParser(), ical, noEmbeddedContext());
+
+        assertEquals(0, metadata.getValues("ical:attach_url").length);
+    }
+
+    @Test
     public void testIcalAttachmentCountIsBoundedAndSignaled() throws Exception {
         StringBuilder ical = new StringBuilder("""
                 BEGIN:VCALENDAR
@@ -226,6 +368,59 @@ public class ICalRdpEmbeddedSecurityTest {
     }
 
     @Test
+    public void testDataUriAttachmentUsesLocalEmbeddedRoute() throws Exception {
+        String ical = """
+                BEGIN:VCALENDAR
+                VERSION:2.0
+                BEGIN:VEVENT
+                UID:test-data-uri-attachment
+                ATTACH;VALUE=URI:data:text/html;base64,PGh0bWw+PGJvZHk+ZGF0YSB1cmk8L2JvZHk+PC9odG1sPg==
+                END:VEVENT
+                END:VCALENDAR
+                """;
+        byte[] expected =
+                "<html><body>data uri</body></html>"
+                        .getBytes(StandardCharsets.UTF_8);
+        AtomicInteger embeddedParses = new AtomicInteger();
+        ParseContext context = new ParseContext();
+        context.set(Detector.class,
+                (stream, metadata, parseContext) -> MediaType.TEXT_HTML);
+        context.set(EmbeddedDocumentExtractor.class,
+                new EmbeddedDocumentExtractor() {
+                    @Override
+                    public boolean shouldParseEmbedded(Metadata metadata) {
+                        return true;
+                    }
+
+                    @Override
+                    public void parseEmbedded(
+                            TikaInputStream stream, ContentHandler handler,
+                            Metadata metadata, ParseContext parseContext,
+                            boolean outputHtml) throws IOException {
+                        embeddedParses.incrementAndGet();
+                        assertArrayEquals(expected, stream.readAllBytes());
+                    }
+                });
+
+        Metadata metadata = parse(new ICalParser(), ical, context);
+
+        assertArrayEquals(
+                new String[]{
+                        "9e7bea75842350d9e58a4d67d26a2e0c0f8986d17289655239684cfa5c4bd396"
+                },
+                metadata.getValues("ical:attach_sha256"));
+        assertArrayEquals(
+                new String[]{"text/html"},
+                metadata.getValues("ical:attach_mime"));
+        assertEquals("true", metadata.get("ical:attach_html"));
+        assertTrue(metadata.get("ExploitClass").contains(
+                "Inline ATTACH is an HTML file"));
+        assertEquals(0, metadata.getValues("ical:attach_url").length,
+                "data URIs must never enter the remote attachment route");
+        assertEquals(1, embeddedParses.get());
+    }
+
+    @Test
     public void testRdpCertificateWriteLimitPropagates() {
         assertThrows(WriteLimitReachedException.class,
                 () -> parseWithFailure(new RdpParser(), RDP_CERTIFICATE,
@@ -237,6 +432,20 @@ public class ICalRdpEmbeddedSecurityTest {
         assertThrows(SecurityException.class,
                 () -> parseWithFailure(new RdpParser(), RDP_CERTIFICATE,
                         new SecurityException("simulated certificate security boundary")));
+    }
+
+    @Test
+    public void testRdpCertificateDownstreamSaxDenialPropagates() {
+        String rejectedText = "blocked RDP certificate output";
+        SAXException denial =
+                new SAXException("simulated RDP output policy denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(new RdpParser(), RDP_CERTIFICATE, context,
+                        new TextRejectingHandler(rejectedText, denial)));
+
+        assertSame(denial, thrown);
     }
 
     private static void parseWithFailure(Parser parser, String input, Exception failure)
@@ -267,6 +476,25 @@ public class ICalRdpEmbeddedSecurityTest {
         parse(parser, input, context);
     }
 
+    private static ParseContext embeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        return context;
+    }
+
     private static ParseContext noEmbeddedContext() {
         ParseContext context = new ParseContext();
         context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
@@ -287,11 +515,36 @@ public class ICalRdpEmbeddedSecurityTest {
 
     private static Metadata parse(Parser parser, String input, ParseContext context)
             throws Exception {
+        return parse(parser, input, context, new BodyContentHandler(-1));
+    }
+
+    private static Metadata parse(Parser parser, String input, ParseContext context,
+                                  ContentHandler handler)
+            throws Exception {
         Metadata metadata = new Metadata();
         try (TikaInputStream stream = TikaInputStream.get(
                 input.getBytes(StandardCharsets.UTF_8))) {
-            parser.parse(stream, new BodyContentHandler(-1), metadata, context);
+            parser.parse(stream, handler, metadata, context);
         }
         return metadata;
+    }
+
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException failure;
+
+        private TextRejectingHandler(String rejectedText, SAXException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw failure;
+            }
+        }
     }
 }

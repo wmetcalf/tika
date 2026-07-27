@@ -17,27 +17,34 @@
 package org.apache.tika.parser.microsoft.rtf;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.poi.poifs.filesystem.Ole10Native;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.TikaMemoryLimitException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
@@ -134,6 +141,166 @@ public class RTFObjDataParserTest {
         assertSame(failure, thrown);
     }
 
+    @Test
+    public void testFinalObjDataDownstreamSaxExceptionPropagates()
+            throws Exception {
+        SAXException failure =
+                new SAXException("simulated RTF output policy denial");
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parseWithEmbeddedOutput(
+                        buildRtf(DISTINCT_COMMAND),
+                        "blocked RTF embedded output",
+                        new TextRejectingHandler(
+                                "blocked RTF embedded output", failure)));
+
+        assertSame(failure, thrown);
+    }
+
+    @Test
+    public void testFinalObjDataDownstreamSaxExceptionSurvivesCleanup()
+            throws Exception {
+        SAXException failure =
+                new SAXException("simulated RTF output policy denial");
+        FailStopTextRejectingHandler handler =
+                new FailStopTextRejectingHandler(
+                        "blocked RTF embedded output", failure);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parseWithEmbeddedOutput(
+                        buildRtf(DISTINCT_COMMAND),
+                        "blocked RTF embedded output", handler));
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testEndDocumentWriteLimitPropagatesByIdentity() throws Exception {
+        WriteLimitReachedException failure = new WriteLimitReachedException(7);
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void endDocument() throws SAXException {
+                throw failure;
+            }
+        };
+
+        WriteLimitReachedException thrown =
+                assertThrows(WriteLimitReachedException.class, () -> {
+                    try (TikaInputStream stream =
+                                 TikaInputStream.get("{\\rtf1 test}"
+                                         .getBytes(StandardCharsets.US_ASCII))) {
+                        new RTFParser().parse(
+                                stream, handler, new Metadata(), new ParseContext());
+                    }
+                });
+
+        assertSame(failure, thrown);
+    }
+
+    @Test
+    public void testStartDocumentWriteLimitPropagatesByIdentity() throws Exception {
+        WriteLimitReachedException failure = new WriteLimitReachedException(7);
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void startDocument() throws SAXException {
+                throw failure;
+            }
+        };
+
+        WriteLimitReachedException thrown =
+                assertThrows(WriteLimitReachedException.class, () -> {
+                    try (TikaInputStream stream =
+                                 TikaInputStream.get("{\\rtf1 test}"
+                                         .getBytes(StandardCharsets.US_ASCII))) {
+                        new RTFParser().parse(
+                                stream, handler, new Metadata(), new ParseContext());
+                    }
+                });
+
+        assertSame(failure, thrown);
+    }
+
+    @Test
+    public void testSecurityDenialStopsCleanupCallbacks() throws Exception {
+        SecurityException failure =
+                new SecurityException("simulated RTF output security denial");
+        FailStopSecurityHandler handler =
+                new FailStopSecurityHandler("blocked RTF text", failure);
+
+        SecurityException thrown =
+                assertThrows(SecurityException.class, () -> {
+                    try (TikaInputStream stream =
+                                 TikaInputStream.get(
+                                         "{\\rtf1 blocked RTF text}"
+                                                 .getBytes(StandardCharsets.US_ASCII))) {
+                        new RTFParser().parse(
+                                stream, handler, new Metadata(), new ParseContext());
+                    }
+                });
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testCleanupDenialSupersedesRtfParserFailure()
+            throws Exception {
+        SAXException denial =
+                new SAXException("simulated RTF cleanup output denial");
+        AtomicBoolean parserFailed = new AtomicBoolean();
+        DrainRejectingHandler handler =
+                new DrainRejectingHandler(parserFailed, denial);
+        byte[] rtf =
+                "{\\rtf1\\b parser failure"
+                        .getBytes(StandardCharsets.US_ASCII);
+
+        SAXException thrown = assertThrows(SAXException.class, () -> {
+            try (InputStream failing =
+                         new FailingInputStream(rtf, parserFailed);
+                 TikaInputStream stream = TikaInputStream.get(failing)) {
+                new RTFParser().parse(
+                        stream, handler, new Metadata(), new ParseContext());
+            }
+        });
+
+        assertSame(denial, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertTrue(thrown.getSuppressed()[0] instanceof TikaException);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testPictBinaryChunksShareOneMemoryLimit() throws Exception {
+        RTFEmbObjHandler handler =
+                new RTFEmbObjHandler(
+                        new DefaultHandler(), new Metadata(), new ParseContext(), 1);
+        handler.startPict();
+        handler.writeBytes(new ByteArrayInputStream(new byte[600]), 600);
+        ByteArrayInputStream rejectedChunk =
+                new ByteArrayInputStream(new byte[600]);
+
+        TikaMemoryLimitException thrown =
+                assertThrows(TikaMemoryLimitException.class,
+                        () -> handler.writeBytes(
+                                rejectedChunk, 600));
+
+        assertTrue(thrown.getMessage().contains("allocate 1200 bytes"));
+        assertTrue(thrown.getMessage().contains("1024 is the maximum"));
+        assertEquals(0, rejectedChunk.available(),
+                "rejected binary bytes must still be consumed as opaque RTF data");
+    }
+
+    @Test
+    public void testFinalObjDataParserSaxFailureRemainsBestEffort() {
+        assertDoesNotThrow(
+                () -> parseWithEmbeddedFailure(
+                        buildRtf(DISTINCT_COMMAND),
+                        new SAXException("simulated malformed embedded object")));
+    }
+
     private static void parseWithEmbeddedFailure(byte[] rtf, Exception failure)
             throws Exception {
         ParseContext context = new ParseContext();
@@ -163,6 +330,31 @@ public class RTFObjDataParserTest {
         try (TikaInputStream stream = TikaInputStream.get(rtf)) {
             new RTFParser().parse(
                     stream, new BodyContentHandler(-1), new Metadata(), context);
+        }
+    }
+
+    private static void parseWithEmbeddedOutput(
+            byte[] rtf, String output, ContentHandler outputHandler)
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+
+        try (TikaInputStream stream = TikaInputStream.get(rtf)) {
+            new RTFParser().parse(
+                    stream, outputHandler, new Metadata(), context);
         }
     }
 
@@ -309,5 +501,216 @@ public class RTFObjDataParserTest {
     }
 
     private record ExtractedDocument(byte[] bytes, Metadata metadata) {
+    }
+
+    private static final class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException failure;
+
+        private TextRejectingHandler(String rejectedText, SAXException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw failure;
+            }
+        }
+    }
+
+    private static final class FailStopTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException failure;
+        private final SAXException cleanupFailure =
+                new SAXException("SAX event delivered after policy denial");
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopTextRejectingHandler(
+                String rejectedText, SAXException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw failure;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static final class FailStopSecurityHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SecurityException failure;
+        private final SecurityException cleanupFailure =
+                new SecurityException("event delivered after security denial");
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopSecurityHandler(
+                String rejectedText, SecurityException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            rejectAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw failure;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static final class FailingInputStream extends InputStream {
+
+        private final byte[] data;
+        private final AtomicBoolean parserFailed;
+        private int position;
+
+        private FailingInputStream(
+                byte[] data, AtomicBoolean parserFailed) {
+            this.data = data;
+            this.parserFailed = parserFailed;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (position < data.length) {
+                return Byte.toUnsignedInt(data[position++]);
+            }
+            parserFailed.set(true);
+            throw new IOException("simulated RTF parser input failure");
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length)
+                throws IOException {
+            if (position >= data.length) {
+                parserFailed.set(true);
+                throw new IOException("simulated RTF parser input failure");
+            }
+            int count = Math.min(length, data.length - position);
+            System.arraycopy(data, position, bytes, offset, count);
+            position += count;
+            return count;
+        }
+    }
+
+    private static final class DrainRejectingHandler extends DefaultHandler {
+
+        private final AtomicBoolean parserFailed;
+        private final SAXException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private DrainRejectingHandler(
+                AtomicBoolean parserFailed, SAXException denial) {
+            this.parserFailed = parserFailed;
+            this.denial = denial;
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            rejectAfterDenial();
+            if (parserFailed.get()) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            rejectAfterDenial();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException("callback delivered after denial");
+            }
+        }
     }
 }
