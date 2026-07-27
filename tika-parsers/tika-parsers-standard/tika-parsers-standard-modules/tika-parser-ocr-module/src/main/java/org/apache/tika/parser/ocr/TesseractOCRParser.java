@@ -304,8 +304,9 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             OcrResultCache ocrCache = parseContext.get(OcrResultCache.class);
             String imageHash = (ocrCache != null)
                     ? sha256HexIfEligible(tikaPath, tikaLength, config) : null;
-            if (ocrCache != null && imageHash != null && ocrCache.contains(imageHash)) {
-                String cachedText = ocrCache.get(imageHash);
+            String cacheKey = ocrCacheKey(imageHash, config, defaultConfig);
+            if (ocrCache != null && cacheKey != null && ocrCache.contains(cacheKey)) {
+                String cachedText = ocrCache.get(cacheKey);
                 ContentHandler baseHandler = getContentHandler(
                     config.isInlineContent(), handler, metadata, parseContext);
                 XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, parseContext);
@@ -359,12 +360,9 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                     xhtml.endDocument();
 
                     // Populate cache before deleting Tesseract's output.
-                    if (ocrCache != null && imageHash != null
-                            && "txt".equals(config.getOutputType()
-                                    .toString().toLowerCase(Locale.US))
-                            && !config.getPageSegMode().equals("0")) {
+                    if (ocrCache != null && cacheKey != null) {
                         cacheAndDeleteOcrOutput(
-                                outputFile, ocrCache, imageHash);
+                                outputFile, ocrCache, cacheKey);
                     }
                 } finally {
                     if (outputFile.exists()) {
@@ -407,6 +405,66 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
+    static String ocrCacheKey(String imageHash, TesseractOCRConfig config,
+                              TesseractOCRConfig defaultConfig) {
+        if (imageHash == null || config == null || defaultConfig == null
+                || config.getOutputType() != TesseractOCRConfig.OUTPUT_TYPE.TXT
+                || "0".equals(config.getPageSegMode())) {
+            return null;
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateCacheIdentity(digest, config.getLanguage());
+            updateCacheIdentity(digest, config.getPageSegMode());
+            updateCacheIdentity(digest, config.getPageSeparator());
+            updateCacheIdentity(digest, Boolean.toString(config.isPreserveInterwordSpacing()));
+            updateCacheIdentity(digest, config.getOutputType().name());
+            updateCacheIdentity(digest, Boolean.toString(config.isEnableImagePreprocessing()));
+            updateCacheIdentity(digest, Boolean.toString(config.isApplyRotation()));
+            updateCacheIdentity(digest, Integer.toString(config.getDensity()));
+            updateCacheIdentity(digest, Integer.toString(config.getDepth()));
+            updateCacheIdentity(digest, config.getColorspace());
+            updateCacheIdentity(digest, config.getFilter());
+            updateCacheIdentity(digest, Integer.toString(config.getResize()));
+            for (Map.Entry<String, String> entry :
+                    new TreeMap<>(config.getOtherTesseractConfig()).entrySet()) {
+                updateCacheIdentity(digest, entry.getKey());
+                updateCacheIdentity(digest, entry.getValue());
+            }
+            updateCacheIdentity(digest, defaultConfig.getTesseractPath());
+            updateCacheIdentity(digest, defaultConfig.getTessdataPath());
+            updateCacheIdentity(digest, defaultConfig.getImageMagickPath());
+            return imageHash + ":" + hex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            return null;
+        }
+    }
+
+    private static void updateCacheIdentity(MessageDigest digest, String value) {
+        if (value == null) {
+            digest.update((byte) 0xff);
+            digest.update((byte) 0xff);
+            digest.update((byte) 0xff);
+            digest.update((byte) 0xff);
+            return;
+        }
+        byte[] bytes = value.getBytes(UTF_8);
+        digest.update((byte) (bytes.length >>> 24));
+        digest.update((byte) (bytes.length >>> 16));
+        digest.update((byte) (bytes.length >>> 8));
+        digest.update((byte) bytes.length);
+        digest.update(bytes);
+    }
+
+    private static String hex(byte[] digest) {
+        char[] out = new char[digest.length * 2];
+        for (int i = 0; i < digest.length; i++) {
+            out[i * 2] = HEX[(digest[i] >> 4) & 0xf];
+            out[i * 2 + 1] = HEX[digest[i] & 0xf];
+        }
+        return new String(out);
+    }
+
     static String sha256HexIfEligible(Path path, long length, TesseractOCRConfig config) {
         if (length < config.getMinFileSizeToOcr() || length > config.getMaxFileSizeToOcr()) {
             return null;
@@ -420,13 +478,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                     md.update(buffer, 0, read);
                 }
             }
-            byte[] digest = md.digest();
-            char[] out = new char[digest.length * 2];
-            for (int i = 0; i < digest.length; i++) {
-                out[i * 2]     = HEX[(digest[i] >> 4) & 0xf];
-                out[i * 2 + 1] = HEX[digest[i] & 0xf];
-            }
-            return new String(out);
+            return hex(md.digest());
         } catch (NoSuchAlgorithmException | IOException e) {
             return null;
         }

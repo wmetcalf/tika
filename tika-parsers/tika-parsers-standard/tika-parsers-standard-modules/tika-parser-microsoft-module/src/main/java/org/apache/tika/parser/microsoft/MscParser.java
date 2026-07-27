@@ -40,6 +40,7 @@ import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -509,10 +510,15 @@ public class MscParser implements Parser {
             embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY,
                     "msc-binary-" + (idx - 1) + (isImageList ? ".bmp" : ""));
             String mime = "application/octet-stream";
+            Detector detector = context.get(Detector.class);
+            if (detector == null) {
+                detector = new DefaultDetector();
+            }
             try (TikaInputStream tis = TikaInputStream.get(imageData)) {
-                mime = new DefaultDetector()
-                        .detect(tis, embMeta, context)
+                mime = detector.detect(tis, embMeta, context)
                         .getBaseType().toString();
+            } catch (SecurityException e) {
+                throw e;
             } catch (Exception e) {
                 warnings.add("MIME detect failed for binary "
                         + (idx - 1) + ": " + e.getMessage());

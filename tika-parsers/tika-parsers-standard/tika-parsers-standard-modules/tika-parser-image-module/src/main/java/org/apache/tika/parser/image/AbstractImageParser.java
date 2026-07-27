@@ -62,6 +62,8 @@ public abstract class AbstractImageParser implements Parser {
     private static final String IMAGE_HASH_RASTER_WARNING =
             "Image hashing skipped because the decoded raster exceeds the "
                     + MAX_IMAGE_HASH_RASTER_BYTES + " byte limit";
+    private static final String IMAGE_HASH_CLEANUP_WARNING =
+            "Image hashing skipped because image reader cleanup failed";
     private boolean imageHashingEnabled = false;
 
     /**
@@ -145,17 +147,24 @@ public abstract class AbstractImageParser implements Parser {
             if (!readers.hasNext()) {
                 return true;
             }
-            ImageReader reader = readers.next();
-            try {
-                reader.setInput(imageInput, true, true);
-                int width = reader.getWidth(0);
-                int height = reader.getHeight(0);
-                if (width <= 0 || height <= 0
-                        || (long) width * height > MAX_IMAGE_HASH_PIXELS) {
-                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                            IMAGE_HASH_DIMENSION_WARNING + ": " + width + "x" + height);
-                    return false;
-                }
+            return dimensionsSafeForHashing(readers.next(), imageInput, metadata);
+        }
+    }
+
+    static boolean dimensionsSafeForHashing(
+            ImageReader reader, ImageInputStream imageInput, Metadata metadata)
+            throws IOException {
+        boolean safe = false;
+        boolean cleanupFailed = false;
+        try {
+            reader.setInput(imageInput, true, true);
+            int width = reader.getWidth(0);
+            int height = reader.getHeight(0);
+            if (width <= 0 || height <= 0
+                    || (long) width * height > MAX_IMAGE_HASH_PIXELS) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        IMAGE_HASH_DIMENSION_WARNING + ": " + width + "x" + height);
+            } else {
                 ImageTypeSpecifier imageType = reader.getRawImageType(0);
                 if (imageType == null) {
                     Iterator<ImageTypeSpecifier> imageTypes = reader.getImageTypes(0);
@@ -164,29 +173,41 @@ public abstract class AbstractImageParser implements Parser {
                 if (imageType == null) {
                     metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                             IMAGE_HASH_RASTER_WARNING + ": unknown sample model");
-                    return false;
+                } else {
+                    SampleModel sampleModel = imageType.getSampleModel();
+                    long bitsPerPixel = 0;
+                    for (int sampleBits : sampleModel.getSampleSize()) {
+                        bitsPerPixel += sampleBits;
+                    }
+                    long storageBitsPerPixel =
+                            (long) DataBuffer.getDataTypeSize(sampleModel.getDataType())
+                                    * sampleModel.getNumDataElements();
+                    bitsPerPixel = Math.max(bitsPerPixel, storageBitsPerPixel);
+                    long decodedBytes =
+                            (((long) width * height * bitsPerPixel) + 7) / 8;
+                    if (bitsPerPixel <= 0
+                            || decodedBytes > MAX_IMAGE_HASH_RASTER_BYTES) {
+                        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                                IMAGE_HASH_RASTER_WARNING + ": "
+                                        + decodedBytes + " bytes");
+                    } else {
+                        safe = true;
+                    }
                 }
-                SampleModel sampleModel = imageType.getSampleModel();
-                long bitsPerPixel = 0;
-                for (int sampleBits : sampleModel.getSampleSize()) {
-                    bitsPerPixel += sampleBits;
-                }
-                long storageBitsPerPixel =
-                        (long) DataBuffer.getDataTypeSize(sampleModel.getDataType())
-                                * sampleModel.getNumDataElements();
-                bitsPerPixel = Math.max(bitsPerPixel, storageBitsPerPixel);
-                long decodedBytes =
-                        (((long) width * height * bitsPerPixel) + 7) / 8;
-                if (bitsPerPixel <= 0 || decodedBytes > MAX_IMAGE_HASH_RASTER_BYTES) {
-                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                            IMAGE_HASH_RASTER_WARNING + ": " + decodedBytes + " bytes");
-                    return false;
-                }
-                return true;
-            } finally {
+            }
+        } finally {
+            try {
                 reader.dispose();
+            } catch (SecurityException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        IMAGE_HASH_CLEANUP_WARNING + ": "
+                                + e.getClass().getSimpleName());
+                cleanupFailed = true;
             }
         }
+        return safe && !cleanupFailed;
     }
 
     void prepareBarcodePathLookup(TikaInputStream tis, ParseContext context) {

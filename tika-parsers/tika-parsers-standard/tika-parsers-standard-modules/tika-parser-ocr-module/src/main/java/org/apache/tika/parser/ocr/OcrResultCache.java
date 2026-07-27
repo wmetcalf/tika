@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Per-job OCR result cache and feature-flag carrier, placed in ParseContext
  * before calling RecursiveParserWrapper. TesseractOCRParser reads this to:
- * - Skip re-running Tesseract on duplicate image bytes (keyed by SHA-256).
+ * - Skip re-running Tesseract on duplicate image bytes under the same OCR configuration.
  * - Apply optional blank-image skip via phash/colorhash detection.
  * - Downscale images wider/taller than maxImageDim before OCR.
  */

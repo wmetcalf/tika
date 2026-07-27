@@ -20,6 +20,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -99,6 +100,37 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
+    public void testCacheIdentityIncludesOcrConfiguration() {
+        String imageHash = "image-hash";
+        TesseractOCRConfig parserConfig = new TesseractOCRConfig();
+        TesseractOCRConfig defaultConfig = new TesseractOCRConfig();
+        String englishKey =
+                TesseractOCRParser.ocrCacheKey(imageHash, parserConfig, defaultConfig);
+
+        parserConfig.setLanguage("fra");
+        String frenchKey =
+                TesseractOCRParser.ocrCacheKey(imageHash, parserConfig, defaultConfig);
+
+        assertNotEquals(englishKey, frenchKey,
+                "the same bytes OCR'd with different language models must not alias");
+    }
+
+    @Test
+    public void testCacheIdentityRejectsIncompatibleOutputModes() {
+        TesseractOCRConfig parserConfig = new TesseractOCRConfig();
+        TesseractOCRConfig defaultConfig = new TesseractOCRConfig();
+
+        parserConfig.setPageSegMode("0");
+        assertNull(TesseractOCRParser.ocrCacheKey(
+                "image-hash", parserConfig, defaultConfig));
+
+        parserConfig.setPageSegMode("1");
+        parserConfig.setOutputType(TesseractOCRConfig.OUTPUT_TYPE.HOCR);
+        assertNull(TesseractOCRParser.ocrCacheKey(
+                "image-hash", parserConfig, defaultConfig));
+    }
+
+    @Test
     public void testSuccessfulOutputIsCachedBeforeCleanup()
             throws Exception {
         Path output = tempDir.resolve("successful-output.txt");
@@ -118,10 +150,12 @@ public class TesseractOCRResourceSafetyTest {
         Path image = writeImage("cache-hit.png", 10, 10);
         TesseractOCRConfig config = new TesseractOCRConfig();
         OcrResultCache cache = new OcrResultCache(0, false);
-        String hash = TesseractOCRParser.sha256HexIfEligible(
+        String imageHash = TesseractOCRParser.sha256HexIfEligible(
                 image, Files.size(image), config);
+        String cacheKey = TesseractOCRParser.ocrCacheKey(
+                imageHash, config, new TesseractOCRConfig());
         String cachedText = "\n  cached OCR output  \n";
-        assertTrue(cache.putIfWithinBudget(hash, cachedText));
+        assertTrue(cache.putIfWithinBudget(cacheKey, cachedText));
 
         ParseContext context = new ParseContext();
         context.set(TesseractOCRConfig.class, config);

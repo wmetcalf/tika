@@ -42,7 +42,7 @@ import java.util.Map;
 class XlmMacroEmulator {
 
     static final class Limits {
-        private static final Limits DEFAULT = new Limits(
+        static final Limits DEFAULT = new Limits(
                 65_536, 16L * 1024 * 1024, 4_096, 1024 * 1024,
                 1_000_000, 1024 * 1024);
 
@@ -65,6 +65,67 @@ class XlmMacroEmulator {
         }
     }
 
+    static final class DocumentBudget {
+        private int remainingMacroCells;
+        private long remainingFormulaBytes;
+        private int remainingIocEntries;
+        private int remainingIocChars;
+        private long remainingOperations;
+        private int remainingFileContentChars;
+
+        DocumentBudget(Limits limits) {
+            remainingMacroCells = limits.maxMacroCells;
+            remainingFormulaBytes = limits.maxFormulaBytes;
+            remainingIocEntries = limits.maxIocEntries;
+            remainingIocChars = limits.maxIocChars;
+            remainingOperations = limits.maxOperations;
+            remainingFileContentChars = limits.maxFileContentChars;
+        }
+
+        synchronized boolean tryReserveMacroCell(int formulaBytes) {
+            if (remainingMacroCells <= 0 || formulaBytes > remainingFormulaBytes) {
+                return false;
+            }
+            remainingMacroCells--;
+            remainingFormulaBytes -= formulaBytes;
+            return true;
+        }
+
+        synchronized boolean tryConsumeOperation() {
+            if (remainingOperations <= 0) {
+                return false;
+            }
+            remainingOperations--;
+            return true;
+        }
+
+        synchronized int remainingIocEntries() {
+            return remainingIocEntries;
+        }
+
+        synchronized int remainingIocChars() {
+            return remainingIocChars;
+        }
+
+        synchronized boolean tryRetainIoc(int chars) {
+            if (remainingIocEntries <= 0 || chars > remainingIocChars) {
+                return false;
+            }
+            remainingIocEntries--;
+            remainingIocChars -= chars;
+            return true;
+        }
+
+        synchronized int remainingFileContentChars() {
+            return remainingFileContentChars;
+        }
+
+        synchronized void consumeFileContentChars(int chars) {
+            remainingFileContentChars =
+                    Math.max(0, remainingFileContentChars - Math.max(0, chars));
+        }
+    }
+
     /** A single macro cell: its row index and raw BIFF12 formula bytes. */
     static final class MacroCell {
         final int row;
@@ -82,6 +143,7 @@ class XlmMacroEmulator {
     private final Map<String, Double> cellValues;
     private final XlmWorkbookSheetMap sheetMap;
     private final Limits limits;
+    private final DocumentBudget documentBudget;
     private final List<MacroCell> cells = new ArrayList<>();
     private long retainedFormulaBytes;
     private long operations;
@@ -98,15 +160,23 @@ class XlmMacroEmulator {
 
     XlmMacroEmulator(Map<String, Double> cellValues, XlmWorkbookSheetMap sheetMap,
                      Limits limits) {
+        this(cellValues, sheetMap, limits, null);
+    }
+
+    XlmMacroEmulator(Map<String, Double> cellValues, XlmWorkbookSheetMap sheetMap,
+                     Limits limits, DocumentBudget documentBudget) {
         this.cellValues = cellValues;
         this.sheetMap = sheetMap;
         this.limits = limits;
+        this.documentBudget = documentBudget;
     }
 
     boolean addMacroCell(int row, byte[] formulaBytes) {
         if (formulaBytes == null
                 || cells.size() >= limits.maxMacroCells
-                || formulaBytes.length > limits.maxFormulaBytes - retainedFormulaBytes) {
+                || formulaBytes.length > limits.maxFormulaBytes - retainedFormulaBytes
+                || (documentBudget != null
+                        && !documentBudget.tryReserveMacroCell(formulaBytes.length))) {
             markLimit("XLSB XLM formula retention limit reached");
             return false;
         }
@@ -134,11 +204,19 @@ class XlmMacroEmulator {
         operations = 0;
         retainedIocChars = 0;
         emulationAborted = false;
+        int maxIocEntries = limits.maxIocEntries;
+        int maxIocChars = limits.maxIocChars;
+        int maxFileContentChars = limits.maxFileContentChars;
+        if (documentBudget != null) {
+            maxIocEntries = Math.min(maxIocEntries, documentBudget.remainingIocEntries());
+            maxIocChars = Math.min(maxIocChars, documentBudget.remainingIocChars());
+            maxFileContentChars = Math.min(
+                    maxFileContentChars, documentBudget.remainingFileContentChars());
+        }
         Biff12XlmFormulaDecoder.EvalContext ctx =
                 new Biff12XlmFormulaDecoder.EvalContext(
                         cellValues, new HashMap<>(),
-                        limits.maxIocEntries, limits.maxIocChars,
-                        limits.maxFileContentChars);
+                        maxIocEntries, maxIocChars, maxFileContentChars);
 
         int i = 0;
         while (i < cells.size() && !emulationAborted) {
@@ -181,6 +259,9 @@ class XlmMacroEmulator {
             if (!retainIoc(ioc)) {
                 break;
             }
+        }
+        if (documentBudget != null) {
+            documentBudget.consumeFileContentChars(ctx.getRetainedFileContentChars());
         }
     }
 
@@ -300,7 +381,8 @@ class XlmMacroEmulator {
     }
 
     private boolean consumeOperation() {
-        if (operations >= limits.maxOperations) {
+        if (operations >= limits.maxOperations
+                || (documentBudget != null && !documentBudget.tryConsumeOperation())) {
             markLimit("XLSB XLM emulation operation limit reached");
             emulationAborted = true;
             return false;
@@ -322,7 +404,9 @@ class XlmMacroEmulator {
             return true;
         }
         if (iocs.size() >= limits.maxIocEntries
-                || ioc.length() > limits.maxIocChars - retainedIocChars) {
+                || ioc.length() > limits.maxIocChars - retainedIocChars
+                || (documentBudget != null
+                        && !documentBudget.tryRetainIoc(ioc.length()))) {
             markLimit("XLSB XLM IOC retention limit reached");
             return false;
         }

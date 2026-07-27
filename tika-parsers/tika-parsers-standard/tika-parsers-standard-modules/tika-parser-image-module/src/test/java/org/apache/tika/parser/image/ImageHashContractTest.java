@@ -16,11 +16,23 @@
  */
 package org.apache.tika.parser.image;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.Set;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReadParam;
+import javax.imageio.ImageReader;
+import javax.imageio.ImageTypeSpecifier;
+import javax.imageio.metadata.IIOMetadata;
+import javax.imageio.stream.ImageInputStream;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -28,6 +40,7 @@ import org.xml.sax.ContentHandler;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
@@ -82,6 +95,77 @@ public class ImageHashContractTest {
                         + " from the non-OCR image-hashing branch (Tika contract "
                         + "requires TikaException): " + e);
             }
+        }
+    }
+
+    @Test
+    public void imageReaderCleanupFailureMakesHashPreflightUnsafe()
+            throws Exception {
+        Metadata metadata = new Metadata();
+        try (ImageInputStream imageInput = ImageIO.createImageInputStream(
+                new ByteArrayInputStream(new byte[]{0x7e}))) {
+            assertFalse(AbstractImageParser.dimensionsSafeForHashing(
+                    new CleanupThrowingImageReader(), imageInput, metadata));
+        }
+
+        assertNotNull(metadata.get(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    private static final class CleanupThrowingImageReader
+            extends ImageReader {
+
+        private CleanupThrowingImageReader() {
+            super(null);
+        }
+
+        @Override
+        public int getNumImages(boolean allowSearch) {
+            return 1;
+        }
+
+        @Override
+        public int getWidth(int imageIndex) {
+            return 1;
+        }
+
+        @Override
+        public int getHeight(int imageIndex) {
+            return 1;
+        }
+
+        @Override
+        public ImageTypeSpecifier getRawImageType(int imageIndex) {
+            return ImageTypeSpecifier.createFromBufferedImageType(
+                    BufferedImage.TYPE_INT_RGB);
+        }
+
+        @Override
+        public Iterator<ImageTypeSpecifier> getImageTypes(int imageIndex) {
+            return Collections.singleton(
+                    getRawImageType(imageIndex)).iterator();
+        }
+
+        @Override
+        public IIOMetadata getStreamMetadata() {
+            return null;
+        }
+
+        @Override
+        public IIOMetadata getImageMetadata(int imageIndex) {
+            return null;
+        }
+
+        @Override
+        public BufferedImage read(int imageIndex, ImageReadParam param) {
+            throw new AssertionError(
+                    "hash decode must be skipped after cleanup failure");
+        }
+
+        @Override
+        public void dispose() {
+            throw new IllegalStateException(
+                    "simulated image reader cleanup failure");
         }
     }
 }

@@ -48,6 +48,8 @@ import org.apache.tika.sax.XHTMLContentHandler;
 
 public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
 
+    private static final int MAX_XLM_MACRO_PARTS = 128;
+
     public XSSFBExcelExtractorDecorator(ParseContext context, OPCPackage pkg,
                                         Locale locale) {
         super(context, pkg, locale);
@@ -207,13 +209,22 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
 
         metadata.set("msoffice:xlsb:has-xlm-macros", "true");
+        XlmMacroEmulator.DocumentBudget documentBudget =
+                new XlmMacroEmulator.DocumentBudget(XlmMacroEmulator.Limits.DEFAULT);
 
+        int processedMacroParts = 0;
         for (PackagePart macroPart : macroParts) {
+            if (processedMacroParts >= MAX_XLM_MACRO_PARTS) {
+                markXlmCaptureLimit(metadata, "XLSB XLM macro-part limit reached");
+                break;
+            }
+            processedMacroParts++;
             String sheetName = sheetNameFromPart(macroPart);
             xhtml.startElement("div");
             xhtml.element("h1", sheetName);
 
-            XlmMacroEmulator emulator = new XlmMacroEmulator(cellValues, sheetMap);
+            XlmMacroEmulator emulator = new XlmMacroEmulator(
+                    cellValues, sheetMap, XlmMacroEmulator.Limits.DEFAULT, documentBudget);
 
             try (InputStream is = macroPart.getInputStream()) {
                 Biff12XlmMacrosheetParser parser =

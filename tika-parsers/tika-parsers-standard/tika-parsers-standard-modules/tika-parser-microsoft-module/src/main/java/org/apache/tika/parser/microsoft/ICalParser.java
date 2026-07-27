@@ -39,6 +39,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.DefaultDetector;
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -103,6 +104,9 @@ public class ICalParser implements Parser {
     // Hard input ceiling for raw bytes — real ICS files are <1 MB; the cap
     // prevents heap exhaustion (UTF-32 amplification, attendee spam, deep nesting).
     static final int MAX_INPUT_BYTES = 32 * 1024 * 1024;
+    private static final int MAX_ATTACHMENTS_PER_DOCUMENT = 1_000;
+    private static final String ATTACHMENT_LIMIT_WARNING =
+            "iCalendar attachment limit reached; additional ATTACH properties were skipped";
 
     // METHOD values that warrant a defender signal when seen on inbound mail.
     // PUBLISH = unsolicited "subscribe to this calendar" (calendar-spam vector),
@@ -230,6 +234,8 @@ public class ICalParser implements Parser {
 
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+        int retainedAttachmentCount = 0;
+        boolean attachmentLimitSignaled = false;
 
         for (Map<String, String> prop : props) {
             String name   = prop.get("name");
@@ -297,24 +303,46 @@ public class ICalParser implements Parser {
                     // Store with param suffix for ATTACH encoding detection
                     String storeKey = nameLower + (params != null && !params.isEmpty()
                             ? "|" + params : "");
-                    compProps.put(storeKey, value);
-                    // Multi-valued properties accumulate (capped at 1000 entries each);
-                    // single-valued properties use first-wins semantics.
-                    if ("attendee".equals(nameLower) || "exdate".equals(nameLower)
-                            || "rdate".equals(nameLower)) {
-                        compProps.merge(nameLower, value, (a, b) -> {
-                            // Limit accumulation to prevent unbounded string growth
-                            int count = 1;
-                            for (int ci = 0; ci < a.length(); ci++) {
-                                if (a.charAt(ci) == '\n') {
-                                    count++;
-                                }
+                    if ("attach".equals(nameLower)) {
+                        if (retainedAttachmentCount >= MAX_ATTACHMENTS_PER_DOCUMENT) {
+                            if (!attachmentLimitSignaled) {
+                                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                                        ATTACHMENT_LIMIT_WARNING);
+                                metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+                                exploitDesc.append(
+                                        "Calendar ATTACH analysis incomplete; "
+                                                + "attachment count limit reached; ");
+                                attachmentLimitSignaled = true;
                             }
-                            return count < 1000 ? a + "\n" + b : a;
-                        });
-                    } else {
-                        // Single-valued: put only if not already present (first wins)
+                            continue;
+                        }
+                        // Preserve every ATTACH, including repeated properties with identical
+                        // parameters. The bare key remains a first-value compatibility alias
+                        // for VALARM metadata and is skipped by processAttach().
+                        int attachmentIndex = retainedAttachmentCount++;
+                        String attachmentKey =
+                                storeKey + "|tika-index=" + attachmentIndex;
+                        compProps.put(attachmentKey, value);
                         compProps.putIfAbsent(nameLower, value);
+                    } else {
+                        compProps.put(storeKey, value);
+                        if ("attendee".equals(nameLower) || "exdate".equals(nameLower)
+                                || "rdate".equals(nameLower)) {
+                            // Multi-valued properties accumulate (capped at 1000 entries each).
+                            compProps.merge(nameLower, value, (a, b) -> {
+                                // Limit accumulation to prevent unbounded string growth
+                                int count = 1;
+                                for (int ci = 0; ci < a.length(); ci++) {
+                                    if (a.charAt(ci) == '\n') {
+                                        count++;
+                                    }
+                                }
+                                return count < 1000 ? a + "\n" + b : a;
+                            });
+                        } else {
+                            // Single-valued: put only if not already present (first wins)
+                            compProps.putIfAbsent(nameLower, value);
+                        }
                     }
                 }
             }
@@ -793,7 +821,8 @@ public class ICalParser implements Parser {
             String value = e.getValue();
             boolean isB64 = key.contains("encoding=base64")
                     || key.contains("encoding=b");
-            if (isB64 || (value.length() > 100 && !value.startsWith("http"))) {
+            boolean isHttpUrl = startsWithHttpScheme(value);
+            if (isB64 || (value.length() > 100 && !isHttpUrl)) {
                 // Likely inline base64
                 try {
                     byte[] data = Base64.getMimeDecoder().decode(
@@ -802,10 +831,18 @@ public class ICalParser implements Parser {
                         String sha256 = sha256Hex(data);
                         metadata.add("ical:attach_sha256", sha256);
                         String mime = "application/octet-stream";
+                        Metadata embMeta = Metadata.newInstance(context);
+                        embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "ical-attach");
+                        Detector detector = context.get(Detector.class);
+                        if (detector == null) {
+                            detector = new DefaultDetector();
+                        }
                         try (TikaInputStream tis = TikaInputStream.get(data)) {
-                            mime = new DefaultDetector()
-                                    .detect(tis, new Metadata(), context)
+                            mime = detector
+                                    .detect(tis, embMeta, context)
                                     .getBaseType().toString();
+                        } catch (SecurityException e1) {
+                            throw e1;
                         } catch (Exception ignored) {
                             // detection is best-effort
                         }
@@ -830,8 +867,6 @@ public class ICalParser implements Parser {
                                   + "almost always phishing kits; ");
                         }
                         // Feed through embedded pipeline
-                        Metadata embMeta = Metadata.newInstance(context);
-                        embMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, "ical-attach");
                         embMeta.set(Metadata.CONTENT_TYPE, mime);
                         try (TikaInputStream tis2 = TikaInputStream.get(data)) {
                             if (extractor.shouldParseEmbedded(embMeta)) {
@@ -849,7 +884,7 @@ public class ICalParser implements Parser {
                 } catch (IllegalArgumentException ignored) {
                     // Not valid base64; treat as URL below
                 }
-            } else if (value.startsWith("http")) {
+            } else if (isHttpUrl) {
                 // Remote URL attachment
                 metadata.add("ical:attach_url", value);
                 allUrls.add(value);
@@ -858,6 +893,11 @@ public class ICalParser implements Parser {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static boolean startsWithHttpScheme(String value) {
+        return value.regionMatches(true, 0, "http://", 0, 7)
+                || value.regionMatches(true, 0, "https://", 0, 8);
+    }
 
     private static void emitField(Metadata meta, Map<String, String> props,
                                    String propName, String metaKey) {

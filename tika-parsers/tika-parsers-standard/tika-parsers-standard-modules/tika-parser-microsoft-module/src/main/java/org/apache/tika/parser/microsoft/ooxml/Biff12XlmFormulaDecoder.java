@@ -938,6 +938,10 @@ final class Biff12XlmFormulaDecoder {
             return filePaths.getOrDefault(handle, "handle" + handle);
         }
 
+        int getRetainedFileContentChars() {
+            return retainedFileContentChars;
+        }
+
         boolean addIoc(String ioc) {
             if (ioc == null) {
                 return true;

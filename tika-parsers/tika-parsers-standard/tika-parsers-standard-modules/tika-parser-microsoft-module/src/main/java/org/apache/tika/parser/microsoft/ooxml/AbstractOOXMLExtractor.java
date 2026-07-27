@@ -115,6 +115,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     private final ParseContext context;
     protected OfficeParserConfig config;
     protected OPCPackage opcPackage;
+    private Exception vbaRelationshipDiscoveryFailure;
 
     public AbstractOOXMLExtractor(ParseContext context, OPCPackage opcPackage) {
         this.context = context;
@@ -143,6 +144,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      */
     public void getXHTML(ContentHandler handler, Metadata metadata, ParseContext context)
             throws SAXException, IOException, TikaException {
+        vbaRelationshipDiscoveryFailure = null;
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
@@ -167,6 +169,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         Set<String> handledRelationshipParts =
                 handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap(),
                         externalReferenceBudget);
+        reportIncompleteVbaRelationshipDiscovery(metadata);
 
         // Catch-all: walk package-root and every remaining part's relationships
         // for external Targets. Settings/footnotes/comments/header/footer/
@@ -298,14 +301,37 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     if (pp.getRelationshipsByType(XSSFRelation.VBA_MACROS.getRelation()).size() > 0) {
                         out.add(pp);
                     }
-                } catch (Exception ignore) {
-                    // skip parts with malformed relationships
+                } catch (SecurityException e) {
+                    throw e;
+                } catch (Exception e) {
+                    recordVbaRelationshipDiscoveryFailure(e);
                 }
             }
-        } catch (Exception ignore) {
-            // best-effort
+        } catch (SecurityException e) {
+            throw e;
+        } catch (Exception e) {
+            recordVbaRelationshipDiscoveryFailure(e);
         }
         return out;
+    }
+
+    private void recordVbaRelationshipDiscoveryFailure(Exception failure) {
+        if (vbaRelationshipDiscoveryFailure == null) {
+            vbaRelationshipDiscoveryFailure = failure;
+        }
+    }
+
+    private void reportIncompleteVbaRelationshipDiscovery(Metadata metadata) {
+        if (vbaRelationshipDiscoveryFailure == null) {
+            return;
+        }
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "VBA relationship discovery was incomplete; macro content may be hidden:\n"
+                        + ExceptionUtils.getStackTrace(vbaRelationshipDiscoveryFailure));
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "OOXML VBA relationship discovery incomplete; macros may be hidden");
+        }
     }
 
     // Canonical names of VBA macro parts attempted by handleMacrosEarly(), so the

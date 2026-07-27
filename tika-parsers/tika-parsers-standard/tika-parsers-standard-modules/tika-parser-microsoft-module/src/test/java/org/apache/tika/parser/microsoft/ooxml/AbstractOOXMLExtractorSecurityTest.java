@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -36,9 +38,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackageRelationship;
+import org.apache.poi.openxml4j.opc.PackageRelationshipCollection;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.openxml4j.opc.TargetMode;
 import org.apache.poi.poifs.filesystem.Ole10Native;
@@ -126,6 +131,43 @@ public class AbstractOOXMLExtractorSecurityTest {
                             "/word/second/vbaProject.bin"),
                     extractor.macroPartNames);
         }
+    }
+
+    @Test
+    public void testSecurityExceptionDuringVbaDiscoveryPropagates()
+            throws Exception {
+        ParseContext context = macroParseContext();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            addPackagePart(opcPackage, new FailingRelationshipPart(
+                    opcPackage, "/word/document.xml",
+                    new SecurityException("simulated VBA discovery security boundary")));
+
+            assertThrows(SecurityException.class,
+                    () -> new VbaDiscoveryExtractor(context, opcPackage).getXHTML(
+                            new BodyContentHandler(-1), new Metadata(), context));
+        }
+    }
+
+    @Test
+    public void testRecoverableVbaDiscoveryFailureIsReported()
+            throws Exception {
+        ParseContext context = macroParseContext();
+        Metadata metadata = new Metadata();
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            addPackagePart(opcPackage, new FailingRelationshipPart(
+                    opcPackage, "/word/document.xml",
+                    new InvalidFormatException("simulated malformed VBA relationship")));
+
+            new VbaDiscoveryExtractor(context, opcPackage).getXHTML(
+                    new BodyContentHandler(-1), metadata, context);
+        }
+
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING),
+                "recoverable VBA discovery failures must be visible");
+        assertNotNull(metadata.get("ExploitClass"),
+                "incomplete VBA discovery can hide executable macro content");
     }
 
     @Test
@@ -729,6 +771,14 @@ public class AbstractOOXMLExtractorSecurityTest {
                 "application/vnd.ms-office.vbaProject");
     }
 
+    private static void addPackagePart(
+            OPCPackage opcPackage, PackagePart packagePart) throws Exception {
+        Method addPackagePart =
+                OPCPackage.class.getDeclaredMethod("addPackagePart", PackagePart.class);
+        addPackagePart.setAccessible(true);
+        addPackagePart.invoke(opcPackage, packagePart);
+    }
+
     private static final class LinkWriteLimitHandler extends DefaultHandler {
         @Override
         public void startElement(String uri, String localName, String qName,
@@ -892,6 +942,76 @@ public class AbstractOOXMLExtractorSecurityTest {
         @Override
         protected List<PackagePart> getMainDocumentParts() {
             return mainParts;
+        }
+    }
+
+    private static final class VbaDiscoveryExtractor
+            extends AbstractOOXMLExtractor {
+
+        private VbaDiscoveryExtractor(
+                ParseContext context, OPCPackage opcPackage) {
+            super(context, opcPackage);
+        }
+
+        @Override
+        protected void buildXHTML(XHTMLContentHandler xhtml) {
+        }
+
+        @Override
+        protected List<PackagePart> getMainDocumentParts() {
+            return getPartsWithVbaRelationship();
+        }
+    }
+
+    private static final class FailingRelationshipPart extends PackagePart {
+
+        private final Exception failure;
+
+        private FailingRelationshipPart(
+                OPCPackage opcPackage, String partName, Exception failure)
+                throws InvalidFormatException {
+            super(opcPackage, PackagingURIHelper.createPartName(partName),
+                    "application/xml");
+            this.failure = failure;
+        }
+
+        @Override
+        public PackageRelationshipCollection getRelationshipsByType(
+                String relationshipType) throws InvalidFormatException {
+            if (failure instanceof SecurityException securityException) {
+                throw securityException;
+            }
+            throw (InvalidFormatException) failure;
+        }
+
+        @Override
+        protected InputStream getInputStreamImpl() {
+            return new ByteArrayInputStream(new byte[0]);
+        }
+
+        @Override
+        protected OutputStream getOutputStreamImpl() {
+            return new ByteArrayOutputStream();
+        }
+
+        @Override
+        public boolean save(OutputStream outputStream)
+                throws OpenXML4JException {
+            return true;
+        }
+
+        @Override
+        public boolean load(InputStream inputStream)
+                throws InvalidFormatException {
+            return true;
+        }
+
+        @Override
+        public void close() {
+        }
+
+        @Override
+        public void flush() {
         }
     }
 

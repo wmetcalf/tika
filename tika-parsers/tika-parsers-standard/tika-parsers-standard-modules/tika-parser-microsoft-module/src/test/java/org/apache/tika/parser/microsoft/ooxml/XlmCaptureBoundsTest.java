@@ -17,6 +17,7 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
+import org.apache.poi.xssf.binary.XSSFBStylesTable;
 import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.Attributes;
@@ -50,6 +52,7 @@ import org.apache.tika.exception.RuntimeSAXException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.sax.ToXMLContentHandler;
@@ -192,6 +195,93 @@ class XlmCaptureBoundsTest {
 
         assertEquals(1, emulator.iocs.size());
         assertTrue(emulator.isLimitReached());
+    }
+
+    @Test
+    void testXlsbMacroFormulaBudgetIsSharedAcrossSheets() {
+        byte[] formula = execFormula("payload");
+        XlmMacroEmulator.Limits limits = new XlmMacroEmulator.Limits(
+                1, formula.length, 10, 1_024, 100, 1_024);
+        XlmMacroEmulator.DocumentBudget documentBudget =
+                new XlmMacroEmulator.DocumentBudget(limits);
+        XlmMacroEmulator first = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        XlmMacroEmulator second = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+
+        assertTrue(first.addMacroCell(0, formula));
+        assertFalse(second.addMacroCell(0, formula),
+                "a second macro sheet must not reset the document formula budget");
+        assertTrue(second.isLimitReached(),
+                "rejected cross-sheet work must signal incomplete analysis");
+    }
+
+    @Test
+    void testXlsbMacroOperationBudgetIsSharedAcrossSheets() {
+        XlmMacroEmulator.Limits limits =
+                new XlmMacroEmulator.Limits(10, 4_096, 10, 1_024, 1, 1_024);
+        XlmMacroEmulator.DocumentBudget documentBudget =
+                new XlmMacroEmulator.DocumentBudget(limits);
+        XlmMacroEmulator first = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        XlmMacroEmulator second = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        first.addMacroCell(0, execFormula("first"));
+        second.addMacroCell(0, execFormula("second"));
+
+        first.emulate();
+        second.emulate();
+
+        assertEquals(1, first.iocs.size());
+        assertTrue(second.iocs.isEmpty(),
+                "a second macro sheet must not reset the document operation budget");
+        assertTrue(second.isLimitReached(),
+                "rejected cross-sheet work must signal incomplete analysis");
+    }
+
+    @Test
+    void testXlsbMacroIocBudgetIsSharedAcrossSheets() {
+        XlmMacroEmulator.Limits limits =
+                new XlmMacroEmulator.Limits(10, 4_096, 1, 1_024, 100, 1_024);
+        XlmMacroEmulator.DocumentBudget documentBudget =
+                new XlmMacroEmulator.DocumentBudget(limits);
+        XlmMacroEmulator first = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        XlmMacroEmulator second = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        first.addMacroCell(0, execFormula("first"));
+        second.addMacroCell(0, execFormula("second"));
+
+        first.emulate();
+        second.emulate();
+
+        assertEquals(1, first.iocs.size());
+        assertTrue(second.iocs.isEmpty(),
+                "a second macro sheet must not reset the document IOC budget");
+        assertTrue(second.isLimitReached(),
+                "rejected cross-sheet output must signal incomplete analysis");
+    }
+
+    @Test
+    void testXlsbMacroFileContentBudgetIsSharedAcrossSheets() {
+        XlmMacroEmulator.Limits limits =
+                new XlmMacroEmulator.Limits(10, 4_096, 10, 1_024, 100, 2);
+        XlmMacroEmulator.DocumentBudget documentBudget =
+                new XlmMacroEmulator.DocumentBudget(limits);
+        XlmMacroEmulator first = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        XlmMacroEmulator second = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), limits, documentBudget);
+        first.addMacroCell(0, fopenFormula("first.bin"));
+        first.addMacroCell(1, fwriteFormula(0, "AB"));
+        second.addMacroCell(0, fopenFormula("second.bin"));
+        second.addMacroCell(1, fwriteFormula(0, "CD"));
+
+        first.emulate();
+        second.emulate();
+
+        assertTrue(second.isLimitReached(),
+                "a second macro sheet must not reset reconstructed-content retention");
     }
 
     @Test
@@ -385,6 +475,46 @@ class XlmCaptureBoundsTest {
         }
     }
 
+    @Test
+    void testXlsbMacroPartCountIsBoundedAndSignaled() throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext parseContext = new ParseContext();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            for (int i = 0; i < 129; i++) {
+                opcPackage.createPart(
+                        PackagingURIHelper.createPartName(
+                                "/xl/macrosheets/sheet" + i + ".bin"),
+                        XSSFRelation.MACRO_SHEET_BIN.getContentType());
+            }
+            XSSFBExcelExtractorDecorator decorator =
+                    new XSSFBExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFBExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmBinaryMacroSheets", OPCPackage.class,
+                    XSSFBStylesTable.class, TikaXSSFBSharedStringsTable.class,
+                    XHTMLContentHandler.class, Map.class, XlmWorkbookSheetMap.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            process.invoke(decorator, opcPackage, null, null, xhtml,
+                    new HashMap<>(), XlmWorkbookSheetMap.empty());
+            xhtml.endDocument();
+
+            assertEquals("true",
+                    metadata.get("msoffice:xlm-capture-limit-reached"));
+            assertEquals("true",
+                    metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
+            assertTrue(output.toString().contains(">sheet0<"));
+            assertFalse(output.toString().contains(">sheet128<"),
+                    "the parser must stop before processing every attacker-controlled part");
+        }
+    }
+
     private static XlmMacroEmulator emulatorWithLimits(XlmMacroEmulator.Limits limits) {
         return new XlmMacroEmulator(new HashMap<>(), XlmWorkbookSheetMap.empty(), limits);
     }
@@ -436,6 +566,21 @@ class XlmCaptureBoundsTest {
                 .put((byte) 0x22)
                 .put((byte) 2)
                 .putShort((short) 0x0084)
+                .array();
+    }
+
+    private static byte[] fwriteFormula(int handle, String text) {
+        byte[] textBytes = text.getBytes(StandardCharsets.UTF_16LE);
+        return ByteBuffer.allocate(3 + 1 + 2 + textBytes.length + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e)
+                .putShort((short) handle)
+                .put((byte) 0x17)
+                .putShort((short) text.length())
+                .put(textBytes)
+                .put((byte) 0x22)
+                .put((byte) 2)
+                .putShort((short) 0x008a)
                 .array();
     }
 

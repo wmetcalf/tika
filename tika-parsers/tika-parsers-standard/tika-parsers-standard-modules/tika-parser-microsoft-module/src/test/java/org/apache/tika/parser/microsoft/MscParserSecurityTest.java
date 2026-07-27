@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,6 +47,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLFilterImpl;
 
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
@@ -319,6 +321,36 @@ public class MscParserSecurityTest {
         assertThrows(SecurityException.class,
                 () -> parseWithEmbeddedException(
                         new SecurityException("simulated binary security boundary")));
+    }
+
+    @Test
+    public void testBinaryMimeDetectionSecurityExceptionPropagates() {
+        SecurityException denial =
+                new SecurityException("simulated binary MIME policy denial");
+        ParseContext context = new ParseContext();
+        context.set(Detector.class, (stream, metadata, parseContext) -> {
+            throw denial;
+        });
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                throw new AssertionError("embedded parsing should be disabled");
+            }
+        });
+
+        SecurityException thrown = assertThrows(SecurityException.class,
+                () -> parse("<MMC_ConsoleFile><BinaryData>"
+                        + "QUJDREVGR0hJSktMTU5PUA=="
+                        + "</BinaryData></MMC_ConsoleFile>", context));
+
+        assertSame(denial, thrown);
     }
 
     @Test
