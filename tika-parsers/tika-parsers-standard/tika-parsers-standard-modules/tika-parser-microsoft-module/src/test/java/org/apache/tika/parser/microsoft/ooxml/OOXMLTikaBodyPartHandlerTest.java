@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -29,13 +30,16 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.helpers.AttributesImpl;
+import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.ToXMLContentHandler;
+import org.apache.tika.sax.WriteOutContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 class OOXMLTikaBodyPartHandlerTest {
@@ -265,6 +269,29 @@ class OOXMLTikaBodyPartHandlerTest {
 
         assertNotNull(metadata.get("ExploitClass"));
         assertTrue(countOccurrences(output.toString(), "bounded-note-content") <= 1_024);
+    }
+
+    @Test
+    void testInlineNoteWriteLimitPropagates() throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new WriteOutContentHandler(new DefaultHandler(), 8),
+                metadata, context);
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        Map<String, byte[]> footnotes = Map.of("1", """
+                <w:footnote xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:p><w:r><w:t>this note exceeds the configured output limit</w:t></w:r></w:p>
+                </w:footnote>
+                """.getBytes(StandardCharsets.UTF_8));
+        handler.setInlineBodyPartMap(new OOXMLInlineBodyPartMap(
+                footnotes, Collections.emptyMap(), Collections.emptyMap(),
+                Collections.emptyMap()), context);
+
+        xhtml.startDocument();
+        assertThrows(WriteLimitReachedException.class,
+                () -> handler.footnoteReference("1"));
     }
 
     private static int countOccurrences(String value, String needle) {

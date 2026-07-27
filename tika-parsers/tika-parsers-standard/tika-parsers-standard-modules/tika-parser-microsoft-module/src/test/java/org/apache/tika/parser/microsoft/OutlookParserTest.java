@@ -16,11 +16,14 @@
  */
 package org.apache.tika.parser.microsoft;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -38,9 +41,11 @@ import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.MAPI;
 import org.apache.tika.metadata.Message;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.RTFMetadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.rtf.RTFParser;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
@@ -371,6 +376,87 @@ public class OutlookParserTest extends TikaTest {
         String content = metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT);
         assertContains("annuaires", content);
         assertContains("Synchronisation", content);
+    }
+
+    @Test
+    public void testRawRtfBodyCannotOverwriteMessageEnvelopeMetadata()
+            throws Exception {
+        Metadata messageMetadata = new Metadata();
+        messageMetadata.set(TikaCoreProperties.CREATOR, "Alice");
+        messageMetadata.set(TikaCoreProperties.TITLE, "Quarterly report");
+        messageMetadata.set(TikaCoreProperties.CREATED, "2026-07-27T00:00:00Z");
+
+        Metadata rtfMetadata = new Metadata();
+        String rtf = "{\\rtf1\\ansi{\\info{\\author Mallory}"
+                + "{\\title Benign notice}{\\keywords body-keyword}"
+                + "{\\creatim\\yr1999\\mo1\\dy1}}Body}";
+        try (ByteArrayInputStream input = new ByteArrayInputStream(
+                rtf.getBytes(StandardCharsets.US_ASCII))) {
+            new RTFParser().parseInline(input, new BodyContentHandler(-1),
+                    rtfMetadata, new ParseContext());
+        }
+        OutlookExtractor.mergeRawRtfMetadata(rtfMetadata, messageMetadata);
+
+        assertArrayEquals(new String[]{"Alice"},
+                messageMetadata.getValues(TikaCoreProperties.CREATOR));
+        assertArrayEquals(new String[]{"Quarterly report"},
+                messageMetadata.getValues(TikaCoreProperties.TITLE));
+        assertEquals("2026-07-27T00:00:00Z",
+                messageMetadata.get(TikaCoreProperties.CREATED));
+        assertEquals("body-keyword", messageMetadata.get(Office.KEYWORDS));
+    }
+
+    @Test
+    public void testRawRtfMetadataPropagatesParseWarnings() {
+        Metadata messageMetadata = new Metadata();
+        Metadata rtfMetadata = new Metadata();
+        rtfMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "suspicious RTF object");
+
+        OutlookExtractor.mergeRawRtfMetadata(rtfMetadata, messageMetadata);
+
+        assertArrayEquals(new String[]{"suspicious RTF object"},
+                messageMetadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+    }
+
+    @Test
+    public void testRawRtfMetadataReplacesScalarSecurityFlag() {
+        Metadata messageMetadata = new Metadata();
+        messageMetadata.set(RTFMetadata.MALFORMED_RTF_HEADER, false);
+        Metadata rtfMetadata = new Metadata();
+        rtfMetadata.set(RTFMetadata.MALFORMED_RTF_HEADER, true);
+
+        OutlookExtractor.mergeRawRtfMetadata(rtfMetadata, messageMetadata);
+
+        assertArrayEquals(new String[]{"true"},
+                messageMetadata.getValues(RTFMetadata.MALFORMED_RTF_HEADER));
+    }
+
+    @Test
+    public void testRawRtfMetadataCannotDowngradeScalarSecurityFlag() {
+        Metadata messageMetadata = new Metadata();
+        messageMetadata.set(RTFMetadata.MALFORMED_RTF_HEADER, true);
+        Metadata rtfMetadata = new Metadata();
+        rtfMetadata.set(RTFMetadata.MALFORMED_RTF_HEADER, false);
+
+        OutlookExtractor.mergeRawRtfMetadata(rtfMetadata, messageMetadata);
+
+        assertArrayEquals(new String[]{"true"},
+                messageMetadata.getValues(RTFMetadata.MALFORMED_RTF_HEADER));
+    }
+
+    @Test
+    public void testRawRtfMetadataReplacesRegisteredTextScalar() {
+        Metadata messageMetadata = new Metadata();
+        messageMetadata.set(RTFMetadata.EMB_CLASS, "Package");
+        Metadata rtfMetadata = new Metadata();
+        rtfMetadata.set(RTFMetadata.EMB_CLASS, "OLE2Link");
+
+        OutlookExtractor.mergeRawRtfMetadata(rtfMetadata, messageMetadata);
+
+        assertArrayEquals(new String[]{"OLE2Link"},
+                messageMetadata.getValues(RTFMetadata.EMB_CLASS));
     }
 
     @Test

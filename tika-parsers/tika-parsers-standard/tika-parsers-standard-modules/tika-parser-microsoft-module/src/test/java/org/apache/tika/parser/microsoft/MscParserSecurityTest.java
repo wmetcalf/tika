@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -71,12 +72,12 @@ public class MscParserSecurityTest {
         String secret = "MSC_XXE_SECRET_SHOULD_NOT_LEAK";
         Path secretFile = temporaryDirectory.resolve("secret.txt");
         Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
-        String xml = """
+        String xml = String.format(Locale.ROOT, """
                 <!DOCTYPE MMC_ConsoleFile [
                   <!ENTITY xxe SYSTEM "%s">
                 ]>
                 <MMC_ConsoleFile><String>&xxe;</String></MMC_ConsoleFile>
-                """.formatted(secretFile.toUri());
+                """, secretFile.toUri());
 
         ParseResult result = parse(xml);
         assertFalse(result.body.contains(secret));

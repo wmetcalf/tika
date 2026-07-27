@@ -552,12 +552,12 @@ public class PpkgParserSecurityTest {
         String secret = "PPKG_XXE_SECRET_SHOULD_NOT_LEAK";
         Path secretFile = temporaryDirectory.resolve("secret.txt");
         Files.writeString(secretFile, secret, StandardCharsets.UTF_8);
-        String xml = """
+        String xml = String.format(Locale.ROOT, """
                 <!DOCTYPE provisioning [
                   <!ENTITY xxe SYSTEM "%s">
                 ]>
                 <provisioning><CommandLine>&xxe;</CommandLine></provisioning>
-                """.formatted(secretFile.toUri());
+                """, secretFile.toUri());
 
         ParseResult result = parseResult(buildWim(xml));
         assertFalse(result.body.contains(secret));

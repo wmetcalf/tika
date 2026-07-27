@@ -165,6 +165,78 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testOversizedRemoveDoesNotDeleteUnrelatedPrefixKey() {
+        Metadata metadata = filter(2, 1000, 10000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.set("a", "keep");
+
+        metadata.remove("aardvark");
+
+        assertEquals("keep", metadata.get("a"));
+    }
+
+    @Test
+    public void testOnlyCurrentTruncatedKeyOwnerCanRemoveCollision() {
+        Metadata metadata = filter(2, 1000, 10000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.set("aardvark", "first");
+
+        metadata.set("apple", "second");
+        metadata.remove("aardvark");
+
+        assertEquals("second", metadata.get("a"));
+        metadata.remove("apple");
+        assertNull(metadata.get("a"));
+    }
+
+    @Test
+    public void testExactAlwaysSetWriteClearsTruncatedKeyOwnership() {
+        String canonicalField = Metadata.CONTENT_TYPE;
+        String oversizedField = canonicalField + "-original";
+        Metadata metadata = filter(canonicalField.length() * 2, 1000, 10000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.set(oversizedField, "stale");
+
+        metadata.set(canonicalField, "application/new");
+        metadata.remove(oversizedField);
+
+        assertEquals("application/new", metadata.get(canonicalField));
+    }
+
+    @Test
+    public void testExactTikaContentWriteClearsTruncatedKeyOwnership() {
+        String canonicalField = TikaCoreProperties.TIKA_CONTENT.getName();
+        String oversizedField = canonicalField + "-original";
+        Metadata metadata = filter(canonicalField.length() * 2, 1000, 10000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.setTrusted(true);
+        metadata.set(oversizedField, "stale");
+        metadata.setTrusted(false);
+
+        metadata.set(TikaCoreProperties.TIKA_CONTENT, "new content");
+        metadata.remove(oversizedField);
+
+        assertEquals("new content", metadata.get(canonicalField));
+    }
+
+    @Test
+    public void testExactAlwaysAddWriteClearsTruncatedKeyOwnership() {
+        String canonicalField = TikaCoreProperties.TIKA_PARSED_BY.getName();
+        String oversizedField = canonicalField + "-original";
+        Metadata metadata = filter(canonicalField.length() * 2, 1000, 10000, 100,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.setTrusted(true);
+        metadata.set(oversizedField, "stale");
+        metadata.setTrusted(false);
+
+        metadata.add(TikaCoreProperties.TIKA_PARSED_BY, "new parser");
+        metadata.remove(oversizedField);
+
+        assertArrayEquals(new String[]{"stale", "new parser"},
+                metadata.getValues(canonicalField));
+    }
+
+    @Test
     public void testAtomicRecordKeyIsDroppedInsteadOfRenamed() throws Exception {
         Metadata metadata = filter(36, 100_000, 200_000, 100,
                 Collections.EMPTY_SET, Collections.EMPTY_SET, true);
@@ -702,10 +774,68 @@ public class StandardMetadataLimiterTest extends TikaTest {
                 metadata.get(Office.OFFICE_LINK_URL));
     }
 
+    @Test
+    public void testLegacyDeserializationRetainsTruncatedKeyRemoval() throws Exception {
+        StandardMetadataLimiter limiter = new StandardMetadataLimiter(
+                2, 1000, 10000, 10, Set.of(), Set.of(), true);
+        Metadata metadata = new Metadata(limiter);
+        metadata.set("aardvark", "legacy");
+        Field sources = StandardMetadataLimiter.class
+                .getDeclaredField("truncatedFieldSources");
+        sources.setAccessible(true);
+        // Simulate a stream written before truncated key ownership was serialized.
+        sources.set(limiter, null);
+
+        Metadata restored = roundTrip(metadata);
+        restored.remove("aardvark");
+
+        assertNull(restored.get("a"));
+    }
+
+    @Test
+    public void testLegacyRemovalFallbackIsTrackedPerStoredKey() throws Exception {
+        String canonicalField = Metadata.CONTENT_TYPE;
+        String oversizedField = canonicalField + "-original";
+        String otherCanonicalField = "Another-Type";
+        String otherOversizedField = otherCanonicalField + "-original";
+        StandardMetadataLimiter limiter = new StandardMetadataLimiter(
+                canonicalField.length() * 2, 1000, 10000, 10,
+                Set.of(), Set.of(), true);
+        Metadata metadata = new Metadata(limiter);
+        metadata.set(oversizedField, "legacy");
+        metadata.set(otherOversizedField, "other legacy");
+        Field sources = StandardMetadataLimiter.class
+                .getDeclaredField("truncatedFieldSources");
+        sources.setAccessible(true);
+        sources.set(limiter, null);
+
+        Metadata restored = roundTrip(metadata);
+        restored.set(canonicalField, "application/new");
+        restored.remove(oversizedField);
+        restored.remove(otherOversizedField);
+
+        assertEquals("application/new", restored.get(canonicalField));
+        assertNull(restored.get(otherCanonicalField));
+    }
+
 
     private void assertTruncated(Metadata metadata) {
         assertEquals("true", metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
     }
+
+    private Metadata roundTrip(Metadata metadata) throws Exception {
+        byte[] serialized;
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(metadata);
+            serialized = bytes.toByteArray();
+        }
+        try (ObjectInputStream input = new ObjectInputStream(
+                new ByteArrayInputStream(serialized))) {
+            return (Metadata) input.readObject();
+        }
+    }
+
     private Metadata filter(int maxKeySize, int maxFieldSize, int maxTotalBytes,
                             int maxValuesPerField,
                             Set<String> includeFields, Set<String> excludeFields, boolean includeEmpty) {

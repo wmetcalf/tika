@@ -18,10 +18,12 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.apache.tika.sax.XHTMLContentHandler.XHTML;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -32,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.commons.io.input.BoundedInputStream;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
@@ -525,11 +528,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     embeddedExtractor
                             .parseEmbedded(tis, xhtml, metadata, context, true);
                 }
+            } else if (hasNonCanonicalOle10Native(root)) {
+                // POI 5.5+ resolves Ole10Native names case-insensitively. Handle
+                // non-canonical names here first so the obfuscation remains
+                // visible and the payload is never materialized as one large
+                // attacker-sized byte array.
+                handleOle10NativeFallback(fs, xhtml, rel, embeddedPartMetadata,
+                        parentMetadata);
             } else if (POIFSDocumentType.OLE10_NATIVE == type) {
                 // TIKA-704: OLE 1.0 embedded document
-                // Note: Ole10Native.createFromEmbeddedOleObject is case-sensitive.
-                // Malware uses obfuscated stream names (e.g. \x01oLE10nAtiVe) to evade it;
-                // the Ole10NativeException catch below handles that case.
                 Ole10Native ole = Ole10Native.createFromEmbeddedOleObject(fs);
                 if (ole.getLabel() != null) {
                     metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, ole.getLabel());
@@ -558,11 +565,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     embeddedExtractor
                             .parseEmbedded(tis, xhtml, metadata, context, true);
                 }
-            } else if (hasOle10NativeLike(root)) {
-                // detectType() missed the Ole10Native stream because the stream name uses
-                // non-canonical casing (e.g. \x01oLE10nAtiVe). Surface an Ole10NativeException
-                // so the case-insensitive fallback catch below extracts the payload.
-                throw new Ole10NativeException("non-canonical Ole10Native stream name");
             } else {
                 handleEmbeddedFile(part, xhtml, rel, embeddedPartMetadata,
                         TikaCoreProperties.EmbeddedResourceType.ATTACHMENT);
@@ -570,35 +572,56 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         } catch (FileNotFoundException e) {
             // There was no CONTENTS entry, so skip this part
         } catch (Ole10NativeException e) {
-            // POI's Ole10Native lookup is case-sensitive.  Fall back to a case-insensitive
-            // stream scan — malware uses "\x01oLE10nAtiVe" to evade exact-match detection.
-            try {
-                byte[] data = readOle10NativeCaseInsensitive(fs.getRoot(), parentMetadata);
-                if (data != null && data.length > 0) {
-                    tis = TikaInputStream.get(data);
-                    Metadata m2 = Metadata.newInstance(context);
-                    m2.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
-                            TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
-                    m2.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, rel);
-                    m2.set(org.apache.tika.metadata.HttpHeaders.CONTENT_LENGTH,
-                            Integer.toString(data.length));
-                    // Synthetic name so the worker can save the file for hashing.
-                    m2.set(TikaCoreProperties.RESOURCE_NAME_KEY, rel + ".bin");
-                    updateParentMetadata(parentMetadata, embeddedPartMetadata);
-                    if (embeddedExtractor.shouldParseEmbedded(m2)) {
-                        embeddedExtractor.parseEmbedded(tis, xhtml, m2, context, true);
-                    }
-                }
-            } catch (Exception ignore) {
-                // non-fatal
-            }
+            handleOle10NativeFallback(fs, xhtml, rel, embeddedPartMetadata,
+                    parentMetadata);
         } catch (IOException e) {
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
         } finally {
-            fs.close();
-            if (tis != null) {
-                tis.close();
+            try {
+                if (tis != null) {
+                    tis.close();
+                }
+            } finally {
+                fs.close();
             }
+        }
+    }
+
+    private void handleOle10NativeFallback(POIFSFileSystem fs,
+                                           XHTMLContentHandler xhtml,
+                                           String rel,
+                                           EmbeddedPartMetadata embeddedPartMetadata,
+                                           Metadata parentMetadata)
+            throws SAXException {
+        try {
+            Ole10NativePayload payload =
+                    openOle10NativeCaseInsensitive(fs.getRoot(), parentMetadata);
+            if (payload == null) {
+                return;
+            }
+            try (TikaInputStream stream = TikaInputStream.get(payload.stream())) {
+                if (payload.length() <= 0) {
+                    return;
+                }
+                Metadata metadata = Metadata.newInstance(context);
+                metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
+                        TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
+                metadata.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, rel);
+                metadata.set(org.apache.tika.metadata.HttpHeaders.CONTENT_LENGTH,
+                        Long.toString(payload.length()));
+                // Synthetic name so the worker can save the file for hashing.
+                metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, rel + ".bin");
+                updateParentMetadata(parentMetadata, embeddedPartMetadata);
+                if (embeddedExtractor.shouldParseEmbedded(metadata)) {
+                    embeddedExtractor.parseEmbedded(
+                            stream, xhtml, metadata, context, true);
+                }
+            }
+        } catch (SAXException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            EmbeddedDocumentUtil.recordEmbeddedStreamException(
+                    exception, parentMetadata);
         }
     }
 
@@ -632,12 +655,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     }
 
     /**
-     * Case-insensitive fallback for Ole10Native stream lookup.
-     * Returns the OLE1 payload bytes (after the 4-byte length prefix) or null.
+     * Case-insensitive fallback for Ole10Native stream lookup. Returns a
+     * bounded stream over the actual embedded payload without allocating an
+     * array sized by an attacker-controlled directory entry. Malformed
+     * records retain the previous best-effort raw extraction behavior.
      */
-    private static byte[] readOle10NativeCaseInsensitive(
-            org.apache.poi.poifs.filesystem.DirectoryNode root, Metadata parentMetadata)
-            throws java.io.IOException {
+    private static Ole10NativePayload openOle10NativeCaseInsensitive(
+            org.apache.poi.poifs.filesystem.DirectoryNode root,
+            Metadata parentMetadata) throws IOException {
         for (org.apache.poi.poifs.filesystem.Entry e : root) {
             if (!(e instanceof org.apache.poi.poifs.filesystem.DocumentEntry)) {
                 continue;
@@ -656,40 +681,220 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             }
             org.apache.poi.poifs.filesystem.DocumentEntry de =
                     (org.apache.poi.poifs.filesystem.DocumentEntry) e;
-            byte[] raw = new byte[de.getSize()];
-            try (org.apache.poi.poifs.filesystem.DocumentInputStream dis =
-                         new org.apache.poi.poifs.filesystem.DocumentInputStream(de)) {
-                int read = 0;
-                while (read < raw.length) {
-                    int n = dis.read(raw, read, raw.length - read);
-                    if (n < 0) {
-                        break;
-                    }
-                    read += n;
-                }
+            int maxRecordLength = Ole10Native.getMaxRecordLength();
+            if (de.getSize() > maxRecordLength) {
+                throw new IOException(
+                        "Ole10Native record length " + de.getSize()
+                                + " exceeds configured maximum "
+                                + maxRecordLength);
             }
-            if (raw.length > 4) {
-                int len = (raw[0] & 0xFF) | ((raw[1] & 0xFF) << 8)
-                        | ((raw[2] & 0xFF) << 16) | ((raw[3] & 0xFF) << 24);
-                if (len > 0 && len <= raw.length - 4) {
-                    byte[] payload = new byte[len];
-                    System.arraycopy(raw, 4, payload, 0, len);
-                    return payload;
-                }
+            try {
+                return openValidOle10NativePayload(de, maxRecordLength);
+            } catch (Ole10NativeException malformed) {
+                return openMalformedOle10NativePayload(de);
             }
-            return raw;
         }
         return null;
     }
 
-    private static boolean hasOle10NativeLike(org.apache.poi.poifs.filesystem.DirectoryNode root) {
+    private static Ole10NativePayload openValidOle10NativePayload(
+            org.apache.poi.poifs.filesystem.DocumentEntry entry,
+            int maxRecordLength)
+            throws IOException, Ole10NativeException {
+        org.apache.poi.poifs.filesystem.DocumentInputStream stream =
+                new org.apache.poi.poifs.filesystem.DocumentInputStream(entry);
+        try {
+            int totalSize = readLittleEndianInt(stream);
+            if (totalSize < 2
+                    || totalSize > maxRecordLength
+                    || totalSize > entry.getSize() - Integer.BYTES) {
+                throw new Ole10NativeException("invalid Ole10Native total size");
+            }
+
+            byte[] flags = readBytes(stream, Short.BYTES);
+            int flags1 = (flags[0] & 0xFF) | ((flags[1] & 0xFF) << Byte.SIZE);
+            if (flags1 != 2) {
+                InputStream payload = new SequenceInputStream(
+                        new ByteArrayInputStream(flags), stream);
+                return new Ole10NativePayload(
+                        bounded(payload, totalSize), totalSize);
+            }
+
+            requireRemaining(totalSize - Short.BYTES, 1);
+            int firstLabelByte = readByte(stream);
+            if (Character.isISOControl(firstLabelByte)) {
+                long payloadLength = totalSize - Short.BYTES;
+                InputStream payload = new SequenceInputStream(
+                        new ByteArrayInputStream(new byte[]{(byte) firstLabelByte}),
+                        stream);
+                return new Ole10NativePayload(
+                        bounded(payload, payloadLength), payloadLength);
+            }
+
+            int remaining = totalSize - Short.BYTES;
+            int labelLength = skipAsciiZ(stream, firstLabelByte, remaining);
+            remaining -= labelLength;
+            requireRemaining(remaining, 1);
+            int fileNameLength = skipAsciiZ(stream, readByte(stream), remaining);
+            remaining -= fileNameLength;
+            skip(stream, 2 * Short.BYTES, remaining);
+            remaining -= 2 * Short.BYTES;
+
+            requireRemaining(remaining, Integer.BYTES);
+            int commandLength = readLittleEndianInt(stream);
+            remaining -= Integer.BYTES;
+            if (commandLength < 0
+                    || commandLength > Ole10Native.getMaxStringLength()) {
+                throw new Ole10NativeException("invalid Ole10Native command length");
+            }
+            skip(stream, commandLength, remaining);
+            remaining -= commandLength;
+
+            requireRemaining(remaining, Integer.BYTES);
+            int payloadLength = readLittleEndianInt(stream);
+            remaining -= Integer.BYTES;
+            if (payloadLength < 0 || payloadLength > remaining) {
+                throw new Ole10NativeException("invalid Ole10Native payload length");
+            }
+            return new Ole10NativePayload(
+                    bounded(stream, payloadLength), payloadLength);
+        } catch (IOException | Ole10NativeException | RuntimeException exception) {
+            stream.close();
+            throw exception;
+        }
+    }
+
+    private static Ole10NativePayload openMalformedOle10NativePayload(
+            org.apache.poi.poifs.filesystem.DocumentEntry entry)
+            throws IOException {
+        org.apache.poi.poifs.filesystem.DocumentInputStream stream =
+                new org.apache.poi.poifs.filesystem.DocumentInputStream(entry);
+        try {
+            byte[] prefix = new byte[Integer.BYTES];
+            int read = readUpTo(stream, prefix);
+            if (read == prefix.length) {
+                int length = littleEndianInt(prefix);
+                if (length > 0 && length <= entry.getSize() - prefix.length) {
+                    return new Ole10NativePayload(
+                            bounded(stream, length), length);
+                }
+            }
+            InputStream fullEntry = new SequenceInputStream(
+                    new ByteArrayInputStream(prefix, 0, read), stream);
+            return new Ole10NativePayload(fullEntry, entry.getSize());
+        } catch (IOException | RuntimeException exception) {
+            stream.close();
+            throw exception;
+        }
+    }
+
+    private static int skipAsciiZ(InputStream stream, int firstByte,
+                                  int remaining)
+            throws IOException, Ole10NativeException {
+        int length = 1;
+        if (firstByte == 0) {
+            return length;
+        }
+        int maximum = Math.min(remaining, Ole10Native.getMaxStringLength());
+        while (length < maximum) {
+            length++;
+            if (readByte(stream) == 0) {
+                return length;
+            }
+        }
+        throw new Ole10NativeException(
+                "Ole10Native string is not null terminated");
+    }
+
+    private static void skip(InputStream stream, int length, int remaining)
+            throws IOException, Ole10NativeException {
+        requireRemaining(remaining, length);
+        byte[] buffer = new byte[Math.min(length, 1024)];
+        int skipped = 0;
+        while (skipped < length) {
+            int read = stream.read(buffer, 0,
+                    Math.min(buffer.length, length - skipped));
+            if (read < 0) {
+                throw new Ole10NativeException(
+                        "unexpected end of Ole10Native record");
+            }
+            skipped += read;
+        }
+    }
+
+    private static void requireRemaining(int remaining, int required)
+            throws Ole10NativeException {
+        if (required < 0 || required > remaining) {
+            throw new Ole10NativeException("invalid Ole10Native field length");
+        }
+    }
+
+    private static byte[] readBytes(InputStream stream, int length)
+            throws IOException, Ole10NativeException {
+        byte[] bytes = new byte[length];
+        if (readUpTo(stream, bytes) != length) {
+            throw new Ole10NativeException(
+                    "unexpected end of Ole10Native record");
+        }
+        return bytes;
+    }
+
+    private static int readUpTo(InputStream stream, byte[] bytes)
+            throws IOException {
+        int read = 0;
+        while (read < bytes.length) {
+            int count = stream.read(bytes, read, bytes.length - read);
+            if (count < 0) {
+                break;
+            }
+            read += count;
+        }
+        return read;
+    }
+
+    private static int readByte(InputStream stream)
+            throws IOException, Ole10NativeException {
+        int value = stream.read();
+        if (value < 0) {
+            throw new Ole10NativeException(
+                    "unexpected end of Ole10Native record");
+        }
+        return value;
+    }
+
+    private static int readLittleEndianInt(InputStream stream)
+            throws IOException, Ole10NativeException {
+        return littleEndianInt(readBytes(stream, Integer.BYTES));
+    }
+
+    private static int littleEndianInt(byte[] bytes) {
+        return (bytes[0] & 0xFF) | ((bytes[1] & 0xFF) << Byte.SIZE)
+                | ((bytes[2] & 0xFF) << 2 * Byte.SIZE)
+                | ((bytes[3] & 0xFF) << 3 * Byte.SIZE);
+    }
+
+    private static InputStream bounded(InputStream stream, long length)
+            throws IOException {
+        return BoundedInputStream.builder()
+                .setInputStream(stream)
+                .setMaxCount(length)
+                .setPropagateClose(true)
+                .get();
+    }
+
+    private record Ole10NativePayload(InputStream stream, long length) {
+    }
+
+    private static boolean hasNonCanonicalOle10Native(
+            org.apache.poi.poifs.filesystem.DirectoryNode root) {
         for (org.apache.poi.poifs.filesystem.Entry e : root) {
             if (!(e instanceof org.apache.poi.poifs.filesystem.DocumentEntry)) {
                 continue;
             }
             String name = e.getName();
             String suffix = (name.length() > 1 && name.charAt(0) < 0x20) ? name.substring(1) : name;
-            if (suffix.equalsIgnoreCase("Ole10Native")) {
+            if (suffix.equalsIgnoreCase("Ole10Native")
+                    && !name.equals("\u0001Ole10Native")) {
                 return true;
             }
         }
@@ -858,12 +1063,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata)
             throws SAXException {
         if (opcPackage == null) return;
-        // Dedup ON URL ALONE so an attacker can't bloat by mentioning the same
-        // URL under N fabricated relationship types. Forensically this means we
-        // keep the FIRST relType we see for any given URL — typically the most
-        // specific one (frame/attachedTemplate beats hyperlink because the
-        // type-specific walks elsewhere often run first via the per-part
-        // iteration order POI returns).
+        // Preserve relationship semantics while suppressing only exact duplicate
+        // records. A benign root hyperlink must not hide a later executable
+        // relationship that happens to target the same URL.
         java.util.Set<String> seen = new java.util.HashSet<>();
         // Hard cap to bound total emissions. Counted across the package root
         // and every part. If exceeded, signal that the link index is incomplete.
@@ -922,14 +1124,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (rel.getTargetURI() == null) continue;
             String url = rel.getTargetURI().toString();
             if (url.isEmpty()) continue;
-            // Dedup on URL alone — see class-level comment in
-            // surfaceExternalRefsFromAllParts on attacker URL-bloat.
-            if (seen.contains(url)) continue;
+            String relationshipKey = partName + "\u0000" + rel.getId()
+                    + "\u0000" + rel.getRelationshipType() + "\u0000" + url;
+            if (seen.contains(relationshipKey)) continue;
             if (emitted[0] >= MAX_EXTERNAL_REFS_PER_DOC) {
                 OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
                 return true;
             }
-            seen.add(url);
+            seen.add(relationshipKey);
 
             String refType = shortRelType(rel.getRelationshipType());
             try {

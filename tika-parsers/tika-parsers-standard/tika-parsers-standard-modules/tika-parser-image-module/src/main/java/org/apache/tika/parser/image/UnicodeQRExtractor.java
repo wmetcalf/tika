@@ -148,6 +148,24 @@ public final class UnicodeQRExtractor {
         return isBlockQrGlyph(c) || isBrailleQrGlyph(c);
     }
 
+    /**
+     * True if {@code c} contributes at least one dark QR module. Light
+     * characters remain valid renderable cells, but must not make ordinary
+     * whitespace look like QR signal during the cheap probe or clustering.
+     */
+    private static boolean isQrSignal(char c) {
+        int[] blockModules = BLOCK_MAP.get(c);
+        if (blockModules != null) {
+            for (int module : blockModules) {
+                if (module != 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return isBrailleQrGlyph(c) && c != 0x2800;
+    }
+
     /** True if {@code cp} is a sextant glyph (U+1FB00..U+1FB3B). The four
      *  overlap glyphs (' ', '█', '▌', '▐') that fill out the 64-pattern
      *  table are NOT counted here — they're already in {@link #BLOCK_MAP}
@@ -193,7 +211,7 @@ public final class UnicodeQRExtractor {
         return -1;
     }
 
-    /** Cheap probe — total count of any QR-glyph chars in the text. */
+    /** Cheap probe — total count of QR glyphs containing a dark module. */
     public static int countQrGlyphs(String text) {
         if (text == null || text.isEmpty()) {
             return 0;
@@ -202,7 +220,7 @@ public final class UnicodeQRExtractor {
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
             i += Character.charCount(cp);
-            if (cp < 0x10000 && isQrGlyph((char) cp)) {
+            if (cp < 0x10000 && isQrSignal((char) cp)) {
                 count++;
             } else if (isSextantQrCodepoint(cp)) {
                 count++;
@@ -311,9 +329,11 @@ public final class UnicodeQRExtractor {
                 i += Character.charCount(cp);
                 if (isSextantQrCodepoint(cp)) {
                     sextantGlyphs++;
-                } else if (cp < 0x10000 && isBlockQrGlyph((char) cp)) {
+                } else if (cp < 0x10000 && isBlockQrGlyph((char) cp)
+                        && isQrSignal((char) cp)) {
                     blockGlyphs++;
-                } else if (cp < 0x10000 && isBrailleQrGlyph((char) cp)) {
+                } else if (cp < 0x10000 && isBrailleQrGlyph((char) cp)
+                        && isQrSignal((char) cp)) {
                     brailleGlyphs++;
                 }
             }
@@ -413,7 +433,7 @@ public final class UnicodeQRExtractor {
             for (int i = 0; i < line.length(); ) {
                 int cp = line.codePointAt(i);
                 i += Character.charCount(cp);
-                if ((cp < 0x10000 && isQrGlyph((char) cp))
+                if ((cp < 0x10000 && isQrSignal((char) cp))
                         || isSextantQrCodepoint(cp)) {
                     hasGlyph = true;
                     break;

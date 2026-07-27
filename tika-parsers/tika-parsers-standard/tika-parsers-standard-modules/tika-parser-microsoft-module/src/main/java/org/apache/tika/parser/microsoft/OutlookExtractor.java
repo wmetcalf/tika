@@ -130,6 +130,13 @@ public class OutlookExtractor extends AbstractPOIFSExtractor {
     private static final Pattern IMG_TAG_PATTERN = Pattern.compile("<img ([^>]{0,1000})>");
     private static final Pattern SRC_ATTR_PATTERN = Pattern.compile("src=\"cid:([^\"]{0,1000})\"");
     private static final Pattern TEXT_CID_PATTERN = Pattern.compile("\\[cid:([^]]{0,1000})]");
+    private static final Set<String> MESSAGE_ENVELOPE_FIELDS = Set.of(
+            TikaCoreProperties.CREATOR.getName(),
+            TikaCoreProperties.TITLE.getName(),
+            TikaCoreProperties.SUBJECT.getName(),
+            TikaCoreProperties.DESCRIPTION.getName(),
+            TikaCoreProperties.CREATED.getName(),
+            TikaCoreProperties.MODIFIED.getName());
 
     static {
         for (MAPIProperty property : LITERAL_TIME_MAPI_PROPERTIES) {
@@ -617,9 +624,11 @@ public class OutlookExtractor extends AbstractPOIFSExtractor {
                 if (rtfParser == null) {
                     rtfParser = new RTFParser();
                 }
+                Metadata rtfMetadata = Metadata.newInstance(context);
                 try (TikaInputStream tis = TikaInputStream.get(rtfData)) {
-                    rtfParser.parseInline(tis, xhtml, parentMetadata, parseContext);
+                    rtfParser.parseInline(tis, xhtml, rtfMetadata, parseContext);
                 }
+                mergeRawRtfMetadata(rtfMetadata, parentMetadata);
                 // Scan raw RTF bytes for cid: references
                 extractContentIdNames(rtfData, contentIdNames);
                 parentMetadata.add(MAPI.BODY_TYPES_PROCESSED, BODY_TYPES_PROCESSED.RTF.name());
@@ -632,6 +641,33 @@ public class OutlookExtractor extends AbstractPOIFSExtractor {
             xhtml.element("p", s);
             extractContentIdNamesFromText(s, contentIdNames);
             parentMetadata.add(MAPI.BODY_TYPES_PROCESSED, BODY_TYPES_PROCESSED.TEXT.name());
+        }
+    }
+
+    /**
+     * Merge forensic metadata recovered from an MSG's raw-RTF body without
+     * allowing body-controlled {@code \info} fields to replace authoritative
+     * MAPI envelope values.
+     */
+    static void mergeRawRtfMetadata(Metadata rtfMetadata,
+                                    Metadata messageMetadata) {
+        for (String name : rtfMetadata.names()) {
+            if (MESSAGE_ENVELOPE_FIELDS.contains(name)) {
+                continue;
+            }
+            Property property = Property.get(name);
+            boolean append = property == null || property.isMultiValuePermitted();
+            boolean monotonicBoolean = property != null && !append &&
+                    property.getValueType() == Property.ValueType.BOOLEAN;
+            for (String value : rtfMetadata.getValues(name)) {
+                if (monotonicBoolean) {
+                    boolean merged = Boolean.parseBoolean(messageMetadata.get(name)) ||
+                            Boolean.parseBoolean(value);
+                    messageMetadata.reconstruct(name, Boolean.toString(merged), false);
+                } else {
+                    messageMetadata.reconstruct(name, value, append);
+                }
+            }
         }
     }
 

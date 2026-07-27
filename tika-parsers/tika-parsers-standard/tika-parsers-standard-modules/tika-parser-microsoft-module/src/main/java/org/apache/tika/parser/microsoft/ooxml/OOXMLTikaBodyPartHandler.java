@@ -29,6 +29,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -503,7 +504,11 @@ public class OOXMLTikaBodyPartHandler
                                     innerHandler,
                                     noteRelationships)),
                     parseContext);
-        } catch (TikaException | IOException | SAXException e) {
+        } catch (SAXException e) {
+            innerHandler.closeAnyPending();
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            xhtml.characters("[" + cssClass + " parse error]");
+        } catch (TikaException | IOException e) {
             innerHandler.closeAnyPending();
             xhtml.characters("[" + cssClass + " parse error]");
         } finally {

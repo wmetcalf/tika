@@ -58,11 +58,11 @@ class XlmCaptureBoundsTest {
     void testXmlMacrosheetFormulaLengthIsBounded() throws Exception {
         String formula = "A".repeat(
                 XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN + 1);
-        String xml = """
+        String xml = String.format(Locale.ROOT, """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
                   <sheetData><row r="1"><c r="A1"><f>%s</f></c></row></sheetData>
                 </worksheet>
-                """.formatted(formula);
+                """, formula);
         Metadata metadata = new Metadata();
         XHTMLContentHandler xhtml = new XHTMLContentHandler(
                 new ToXMLContentHandler(), metadata, new ParseContext());

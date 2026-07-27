@@ -193,6 +193,8 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     private Map<String, Integer> fieldSizes = new HashMap<>();
     private Set<String> suppressedAlignedGroups = new HashSet<>();
     private Map<String, Integer> removedAlignedFieldCounts = new HashMap<>();
+    private Map<String, String> truncatedFieldSources = new HashMap<>();
+    private Set<String> legacyFieldsWithUnknownProvenance = new HashSet<>();
 
     //tracks the estimated size in utf16 bytes. Can be > maxEstimated size
     int estimatedSize = 0;
@@ -235,6 +237,13 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         if (removedAlignedFieldCounts == null) {
             removedAlignedFieldCounts = new HashMap<>();
         }
+        if (truncatedFieldSources == null) {
+            truncatedFieldSources = new HashMap<>();
+            legacyFieldsWithUnknownProvenance = new HashSet<>(fieldSizes.keySet());
+        }
+        if (legacyFieldsWithUnknownProvenance == null) {
+            legacyFieldsWithUnknownProvenance = new HashSet<>();
+        }
     }
 
     @Override
@@ -275,9 +284,17 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
                 && maxKeySize >= 0
                 && estimateSize(field) > maxKeySize) {
             storedField = truncateValue(field, maxKeySize);
+            String source = truncatedFieldSources.get(storedField);
+            if (source == null
+                    && !legacyFieldsWithUnknownProvenance.contains(storedField)
+                    || source != null && !field.equals(source)) {
+                return;
+            }
         }
         String[] removed = data.remove(storedField);
         Integer trackedValueSize = fieldSizes.remove(storedField);
+        truncatedFieldSources.remove(storedField);
+        legacyFieldsWithUnknownProvenance.remove(storedField);
         if (removed != null && ALIGNED_ADD_FIELDS.contains(storedField)) {
             removedAlignedFieldCounts.put(storedField, removed.length);
         }
@@ -322,6 +339,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     private void setAlwaysInclude(String field, String value, Map<String, String[]> data) {
         if (TIKA_CONTENT_KEY.equals(field)) {
             data.put(field, new String[]{ value });
+            clearFieldSource(field);
             return;
         }
         int sizeToAdd = estimateSize(value);
@@ -344,11 +362,13 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         }
         estimatedSize += totalAdded;
         data.put(field, new String[]{toSet});
+        clearFieldSource(field);
     }
 
     private void addAlwaysInclude(String field, String value, Map<String, String[]> data) {
         if (TIKA_CONTENT_KEY.equals(field)) {
             data.put(field, new String[]{ value });
+            clearFieldSource(field);
             return;
         }
         if (! data.containsKey(field)) {
@@ -371,6 +391,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         estimatedSize += totalAdded;
 
         data.put(field, appendValue(data.get(field), toAddValue));
+        clearFieldSource(field);
     }
 
 
@@ -459,6 +480,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         fieldSizes.put(filterKey.string, valueLength + fieldSize);
 
         data.put(filterKey.string, appendValue(data.get(filterKey.string), toAdd ));
+        recordFieldSource(filterKey);
     }
 
     @Override
@@ -702,6 +724,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         fieldSizes.put(filterKey.string, valueLength);
 
         data.put(filterKey.string, new String[]{ toSet });
+        recordFieldSource(filterKey);
 
     }
 
@@ -712,13 +735,28 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
     private StringSizePair filterKey(String field, String value, Map<String, String[]> data) {
         int size = estimateSize(field);
         if (maxKeySize < 0 || size <= maxKeySize) {
-            return new StringSizePair(field, size, false);
+            return new StringSizePair(field, size, false, field);
         }
 
         String toWrite = truncate(field, maxKeySize, data);
         return new StringSizePair(toWrite,
                 estimateSize(toWrite),
-                true);
+                true,
+                field);
+    }
+
+    private void recordFieldSource(StringSizePair filterKey) {
+        legacyFieldsWithUnknownProvenance.remove(filterKey.string);
+        if (filterKey.truncated) {
+            truncatedFieldSources.put(filterKey.string, filterKey.source);
+        } else {
+            truncatedFieldSources.remove(filterKey.string);
+        }
+    }
+
+    private void clearFieldSource(String field) {
+        truncatedFieldSources.remove(field);
+        legacyFieldsWithUnknownProvenance.remove(field);
     }
 
     private boolean isOversizedAtomicKey(String field) {
@@ -797,11 +835,14 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         final String string;
         final int size;//utf-16 bytes -- estimated
         final boolean truncated;
+        final String source;
 
-        public StringSizePair(String string, int size, boolean truncated) {
+        public StringSizePair(String string, int size, boolean truncated,
+                              String source) {
             this.string = string;
             this.size = size;
             this.truncated = truncated;
+            this.source = source;
         }
     }
 }
