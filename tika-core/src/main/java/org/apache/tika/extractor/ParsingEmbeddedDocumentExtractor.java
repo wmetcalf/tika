@@ -21,7 +21,9 @@ import static org.apache.tika.sax.XHTMLContentHandler.XHTML;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
@@ -191,24 +193,31 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             DELEGATING_PARSER.parse(tis,
                     new EmbeddedContentHandler(new BodyContentHandler(delegateHandler)),
                     metadata, context);
+            Throwable swallowedOutputFailure =
+                    taggedOutput.getUncheckedFailure();
+            if (swallowedOutputFailure != null) {
+                primaryFailure = swallowedOutputFailure;
+                downstreamOutputFailure = true;
+                throwOutputFailure(swallowedOutputFailure);
+            }
             parsedCleanly = true;
         } catch (EncryptedDocumentException ede) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, ede);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, ede);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = ede;
             recordException(ede, context);
         } catch (CorruptedFileException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             //necessary to stop the parse to avoid infinite loops
             //on corrupt sqlite3 files
@@ -216,63 +225,63 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             primaryFailure = ioFailure;
             throw ioFailure;
         } catch (TikaException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             recordException(e, context);
         } catch (SAXException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             throw e;
         } catch (IOException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             throw e;
         } catch (SecurityException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             downstreamOutputFailure = true;
             throw e;
         } catch (RuntimeException e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             throw e;
         } catch (Error e) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+            Throwable outputFailure =
+                    findOutputFailure(taggedOutput, e);
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 downstreamOutputFailure = true;
-                throw outputFailure;
+                throwOutputFailure(outputFailure);
             }
             primaryFailure = e;
             downstreamOutputFailure = true;
@@ -288,14 +297,14 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                 if (!parsedCleanly) {
                     try {
                         balancer.drainOpenElements();
-                    } catch (SAXException cleanupFailure) {
+                    } catch (Throwable cleanupFailure) {
                         handleCleanupFailure(
                                 taggedOutput, primaryFailure, cleanupFailure);
                     }
                 }
                 try {
                     taggedOutput.endElement(XHTML, "div", "div");
-                } catch (SAXException cleanupFailure) {
+                } catch (Throwable cleanupFailure) {
                     handleCleanupFailure(
                             taggedOutput, primaryFailure, cleanupFailure);
                 }
@@ -303,15 +312,35 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         }
     }
 
+    private static Throwable findOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        SAXException saxOutputFailure =
+                findTaggedOutputFailure(taggedOutput, failure);
+        if (saxOutputFailure != null) {
+            return saxOutputFailure;
+        }
+        Throwable uncheckedOutputFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedOutputFailure != null) {
+            return uncheckedOutputFailure;
+        }
+        return taggedOutput.getUncheckedFailure();
+    }
+
     private static SAXException findTaggedOutputFailure(
             TaggedContentHandler taggedOutput, Throwable failure) {
-        if (taggedOutput == null) {
+        if (taggedOutput == null || failure == null) {
             return null;
         }
         Set<Throwable> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
-        Throwable current = failure;
-        while (current != null && seen.add(current)) {
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
             if (current instanceof SAXException saxFailure
                     && taggedOutput.isCauseOf(saxFailure)) {
                 try {
@@ -322,24 +351,52 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                 return null;
             }
             Throwable cause = current.getCause();
-            current = cause != current ? cause : null;
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
         }
         return null;
     }
 
     private static void handleCleanupFailure(
             TaggedContentHandler taggedOutput, Throwable primaryFailure,
-            SAXException cleanupFailure) throws SAXException {
-        SAXException outputFailure =
-                findTaggedOutputFailure(taggedOutput, cleanupFailure);
+            Throwable cleanupFailure) throws SAXException {
+        Throwable outputFailure =
+                findOutputFailure(taggedOutput, cleanupFailure);
         if (outputFailure != null) {
             addSuppressed(outputFailure, primaryFailure);
-            throw outputFailure;
+            throwOutputFailure(outputFailure);
+        }
+        if (cleanupFailure instanceof Error) {
+            addSuppressed(cleanupFailure, primaryFailure);
+            throwOutputFailure(cleanupFailure);
         }
         if (primaryFailure == null) {
-            throw cleanupFailure;
+            throwOutputFailure(cleanupFailure);
         }
         addSuppressed(primaryFailure, cleanupFailure);
+    }
+
+    private static void throwOutputFailure(Throwable failure)
+            throws SAXException {
+        if (failure instanceof SAXException saxFailure) {
+            throw saxFailure;
+        }
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
+        throw new IllegalArgumentException(
+                "Unexpected output failure", failure);
     }
 
     private static void addSuppressed(

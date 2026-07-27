@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
@@ -53,5 +54,67 @@ public class TaggedContentHandlerTest {
                 () -> handler.throwIfCauseOf(outer));
 
         assertSame(boundary, thrown);
+    }
+
+    @Test
+    public void testUncheckedRuntimeIsRecordedByIdentity() {
+        RuntimeException denial =
+                new RuntimeException("unchecked downstream denial");
+        TaggedContentHandler handler =
+                new TaggedContentHandler(new DefaultHandler() {
+                    @Override
+                    public void characters(char[] ch, int start, int length) {
+                        throw denial;
+                    }
+                });
+
+        RuntimeException thrown = assertThrows(RuntimeException.class,
+                () -> handler.characters(new char[]{'x'}, 0, 1));
+
+        assertSame(denial, thrown);
+        assertSame(denial, handler.getUncheckedFailure());
+        assertSame(denial, handler.findUncheckedCause(
+                new RuntimeException("wrapped denial", denial)));
+    }
+
+    @Test
+    public void testFindUncheckedCauseTraversesSuppressedAndCycles() {
+        RuntimeException denial =
+                new RuntimeException("unchecked downstream denial");
+        TaggedContentHandler handler =
+                new TaggedContentHandler(new DefaultHandler() {
+                    @Override
+                    public void startDocument() {
+                        throw denial;
+                    }
+                });
+        assertThrows(RuntimeException.class, handler::startDocument);
+
+        Exception first = new Exception("first");
+        Exception second = new Exception("second");
+        first.initCause(second);
+        second.initCause(first);
+        second.addSuppressed(denial);
+
+        assertSame(denial, handler.findUncheckedCause(first));
+    }
+
+    @Test
+    public void testSetDocumentLocatorErrorIsRecordedByIdentity() {
+        AssertionError denial =
+                new AssertionError("locator output denial");
+        TaggedContentHandler handler =
+                new TaggedContentHandler(new DefaultHandler() {
+                    @Override
+                    public void setDocumentLocator(Locator locator) {
+                        throw denial;
+                    }
+                });
+
+        AssertionError thrown = assertThrows(AssertionError.class,
+                () -> handler.setDocumentLocator(null));
+
+        assertSame(denial, thrown);
+        assertSame(denial, handler.getUncheckedFailure());
     }
 }

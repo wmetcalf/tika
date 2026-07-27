@@ -75,6 +75,13 @@ public class ParsingEmbeddedDocumentExtractorTest {
     }
 
     @Test
+    public void testSuppressedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(
+                FailureWrapper.TIKA_SUPPRESSED);
+    }
+
+    @Test
     public void testRuntimeExceptionWrappedDownstreamSaxDenialPropagates()
             throws Exception {
         assertWrappedDownstreamDenialPropagates(FailureWrapper.RUNTIME);
@@ -156,6 +163,34 @@ public class ParsingEmbeddedDocumentExtractorTest {
     }
 
     @Test
+    public void testDownstreamRuntimeExceptionIsNotReplacedByCleanup()
+            throws Exception {
+        assertUncheckedRuntimeDenialPropagates(
+                UncheckedFailureMode.DIRECT);
+    }
+
+    @Test
+    public void testCauseWrappedDownstreamRuntimeExceptionPropagates()
+            throws Exception {
+        assertUncheckedRuntimeDenialPropagates(
+                UncheckedFailureMode.WRAPPED_CAUSE);
+    }
+
+    @Test
+    public void testSuppressedDownstreamRuntimeExceptionPropagates()
+            throws Exception {
+        assertUncheckedRuntimeDenialPropagates(
+                UncheckedFailureMode.WRAPPED_SUPPRESSED);
+    }
+
+    @Test
+    public void testSwallowedDownstreamRuntimeExceptionPropagates()
+            throws Exception {
+        assertUncheckedRuntimeDenialPropagates(
+                UncheckedFailureMode.SWALLOWED);
+    }
+
+    @Test
     public void testParserRuntimeBalancesOwnedMarkupBeforeRethrow()
             throws Exception {
         RuntimeException parserFailure =
@@ -205,6 +240,33 @@ public class ParsingEmbeddedDocumentExtractorTest {
     }
 
     @Test
+    public void testRuntimeCleanupDenialSupersedesParserFailureWithSuppression()
+            throws Exception {
+        RuntimeException parserFailure =
+                new RuntimeException("simulated parser runtime failure");
+        RuntimeException cleanupDenial =
+                new RuntimeException("simulated runtime cleanup output denial");
+        ParseContext context = new ParseContext();
+        context.set(Parser.class, new RuntimeFailureParser(parserFailure));
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        RuntimeCleanupDenyingHandler handler =
+                new RuntimeCleanupDenyingHandler(cleanupDenial);
+
+        RuntimeException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
+            thrown = assertThrows(RuntimeException.class,
+                    () -> extractor.parseEmbedded(
+                            stream, handler, new Metadata(), context, true));
+        }
+
+        assertSame(cleanupDenial, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(parserFailure, thrown.getSuppressed()[0]);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testCyclicParserCauseChainDoesNotHang() {
         ParseContext context = new ParseContext();
         context.set(Parser.class, new CyclicFailureParser());
@@ -233,6 +295,29 @@ public class ParsingEmbeddedDocumentExtractorTest {
         SAXException thrown;
         try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
             thrown = assertThrows(SAXException.class,
+                    () -> extractor.parseEmbedded(
+                            stream, handler, new Metadata(), context, true));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    private void assertUncheckedRuntimeDenialPropagates(
+            UncheckedFailureMode mode) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(Parser.class, new UncheckedAbortingParser(mode));
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        RuntimeException denial =
+                new RuntimeException("simulated unchecked output denial");
+        FailStopRuntimeHandler handler =
+                new FailStopRuntimeHandler("blocked output", denial);
+
+        RuntimeException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
+            thrown = assertThrows(RuntimeException.class,
                     () -> extractor.parseEmbedded(
                             stream, handler, new Metadata(), context, true));
         }
@@ -277,6 +362,12 @@ public class ParsingEmbeddedDocumentExtractorTest {
                 if (wrapper == FailureWrapper.TIKA) {
                     throw new TikaException("wrapped downstream failure", e);
                 }
+                if (wrapper == FailureWrapper.TIKA_SUPPRESSED) {
+                    TikaException failure =
+                            new TikaException("suppressed downstream failure");
+                    failure.addSuppressed(e);
+                    throw failure;
+                }
                 if (wrapper == FailureWrapper.IO) {
                     throw new IOException("wrapped downstream failure", e);
                 }
@@ -305,12 +396,69 @@ public class ParsingEmbeddedDocumentExtractorTest {
     private enum FailureWrapper {
         NONE,
         TIKA,
+        TIKA_SUPPRESSED,
         IO,
         RUNTIME,
         ENCRYPTED,
         CORRUPTED,
         SECURITY,
         ERROR
+    }
+
+    private static final class UncheckedAbortingParser implements Parser {
+
+        private static final long serialVersionUID = 1L;
+        private final UncheckedFailureMode mode;
+
+        private UncheckedAbortingParser(UncheckedFailureMode mode) {
+            this.mode = mode;
+        }
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.OCTET_STREAM);
+        }
+
+        @Override
+        public void parse(
+                TikaInputStream stream, ContentHandler handler,
+                Metadata metadata, ParseContext context)
+                throws SAXException, TikaException {
+            XHTMLContentHandler xhtml =
+                    new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            xhtml.startElement("p", new AttributesImpl());
+            char[] chars = "blocked output".toCharArray();
+            try {
+                xhtml.characters(chars, 0, chars.length);
+            } catch (RuntimeException outputFailure) {
+                if (mode == UncheckedFailureMode.DIRECT) {
+                    throw outputFailure;
+                }
+                if (mode == UncheckedFailureMode.WRAPPED_CAUSE) {
+                    throw new TikaException(
+                            "cause-wrapped unchecked output failure",
+                            outputFailure);
+                }
+                if (mode == UncheckedFailureMode.WRAPPED_SUPPRESSED) {
+                    TikaException wrapper = new TikaException(
+                            "suppressed unchecked output failure");
+                    wrapper.addSuppressed(outputFailure);
+                    throw wrapper;
+                }
+                if (mode == UncheckedFailureMode.SWALLOWED) {
+                    return;
+                }
+                throw new AssertionError("Unhandled mode " + mode);
+            }
+        }
+    }
+
+    private enum UncheckedFailureMode {
+        DIRECT,
+        WRAPPED_CAUSE,
+        WRAPPED_SUPPRESSED,
+        SWALLOWED
     }
 
     private static final class RuntimeFailureParser implements Parser {
@@ -384,6 +532,29 @@ public class ParsingEmbeddedDocumentExtractorTest {
 
         private int getCallbacksAfterDenial() {
             return callbacksAfterDenial;
+        }
+    }
+
+    private static final class RuntimeCleanupDenyingHandler
+            extends DefaultHandler {
+
+        private final RuntimeException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private RuntimeCleanupDenyingHandler(RuntimeException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            if (!denied) {
+                denied = true;
+                throw denial;
+            }
+            callbacksAfterDenial++;
+            throw new RuntimeException(
+                    "callback delivered after runtime cleanup denial");
         }
     }
 
@@ -469,6 +640,42 @@ public class ParsingEmbeddedDocumentExtractorTest {
             if (denied) {
                 callbacksAfterDenial++;
                 throw cleanupFailure;
+            }
+        }
+    }
+
+    private static final class FailStopRuntimeHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopRuntimeHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            rejectAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            rejectAfterDenial();
+        }
+
+        private void rejectAfterDenial() {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new RuntimeException(
+                        "callback delivered after unchecked policy denial");
             }
         }
     }

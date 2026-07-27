@@ -16,7 +16,15 @@
  */
 package org.apache.tika.sax;
 
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 
 /**
@@ -57,6 +65,10 @@ import org.xml.sax.SAXException;
  * @see TaggedSAXException
  */
 public class TaggedContentHandler extends ContentHandlerDecorator {
+
+    private final Set<Throwable> uncheckedFailures =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private Throwable firstUncheckedFailure;
 
     /**
      * Creates a tagging decorator for the given content handler.
@@ -103,6 +115,156 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
         if (original != null) {
             throw original;
         }
+    }
+
+    /**
+     * Returns the first unchecked exception or error thrown by the decorated
+     * content handler, preserving its exact identity.
+     *
+     * @return first unchecked output failure, or {@code null} if none occurred
+     */
+    public Throwable getUncheckedFailure() {
+        return firstUncheckedFailure;
+    }
+
+    /**
+     * Searches the cause and suppressed-exception graph for an unchecked
+     * failure previously thrown by the decorated content handler.
+     *
+     * @param failure failure graph to search
+     * @return matching unchecked output failure, or {@code null}
+     */
+    public Throwable findUncheckedCause(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (uncheckedFailures.contains(current)) {
+                return current;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public void setDocumentLocator(Locator locator) {
+        invokeUnchecked(() -> super.setDocumentLocator(locator));
+    }
+
+    @Override
+    public void startDocument() throws SAXException {
+        invoke(this::startDocumentDelegate);
+    }
+
+    private void startDocumentDelegate() throws SAXException {
+        super.startDocument();
+    }
+
+    @Override
+    public void endDocument() throws SAXException {
+        invoke(this::endDocumentDelegate);
+    }
+
+    private void endDocumentDelegate() throws SAXException {
+        super.endDocument();
+    }
+
+    @Override
+    public void startPrefixMapping(String prefix, String uri)
+            throws SAXException {
+        invoke(() -> super.startPrefixMapping(prefix, uri));
+    }
+
+    @Override
+    public void endPrefixMapping(String prefix) throws SAXException {
+        invoke(() -> super.endPrefixMapping(prefix));
+    }
+
+    @Override
+    public void startElement(
+            String uri, String localName, String qName, Attributes attributes)
+            throws SAXException {
+        invoke(() -> super.startElement(
+                uri, localName, qName, attributes));
+    }
+
+    @Override
+    public void endElement(
+            String uri, String localName, String qName)
+            throws SAXException {
+        invoke(() -> super.endElement(uri, localName, qName));
+    }
+
+    @Override
+    public void characters(char[] chars, int start, int length)
+            throws SAXException {
+        invoke(() -> super.characters(chars, start, length));
+    }
+
+    @Override
+    public void ignorableWhitespace(
+            char[] chars, int start, int length) throws SAXException {
+        invoke(() -> super.ignorableWhitespace(chars, start, length));
+    }
+
+    @Override
+    public void processingInstruction(String target, String data)
+            throws SAXException {
+        invoke(() -> super.processingInstruction(target, data));
+    }
+
+    @Override
+    public void skippedEntity(String name) throws SAXException {
+        invoke(() -> super.skippedEntity(name));
+    }
+
+    private void invoke(SaxCallback callback) throws SAXException {
+        try {
+            callback.run();
+        } catch (RuntimeException | Error failure) {
+            recordUncheckedFailure(failure);
+            throw failure;
+        }
+    }
+
+    private void invokeUnchecked(Runnable callback) {
+        try {
+            callback.run();
+        } catch (RuntimeException | Error failure) {
+            recordUncheckedFailure(failure);
+            throw failure;
+        }
+    }
+
+    private void recordUncheckedFailure(Throwable failure) {
+        if (firstUncheckedFailure == null) {
+            firstUncheckedFailure = failure;
+        }
+        uncheckedFailures.add(failure);
+    }
+
+    @FunctionalInterface
+    private interface SaxCallback {
+        void run() throws SAXException;
     }
 
     /**
