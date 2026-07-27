@@ -19,6 +19,7 @@ package org.apache.tika.parser.pdf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -54,9 +55,11 @@ import org.apache.pdfbox.pdmodel.interactive.action.PDPageAdditionalActions;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.AccessPermissionException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.PagedText;
@@ -64,6 +67,10 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.renderer.RenderRequest;
+import org.apache.tika.renderer.RenderResult;
+import org.apache.tika.renderer.RenderResults;
+import org.apache.tika.renderer.Renderer;
 import org.apache.tika.sax.BodyContentHandler;
 
 public class PDFParserSlicingSecurityTest {
@@ -105,6 +112,60 @@ public class PDFParserSlicingSecurityTest {
         assertTrue(result.text.contains("page-4"));
         assertTrue(result.text.contains(FINAL_PAGE_MARKER));
         assertEquals("5", result.metadata.get(PagedText.N_PAGES));
+    }
+
+    @Test
+    public void testRenderedPageDownstreamSaxDenialPropagates()
+            throws Exception {
+        String rejectedText = "blocked rendered page output";
+        SAXException denial =
+                new SAXException("simulated rendered-page output policy denial");
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                if (!"true".equals(metadata.get("test:rendered-page"))) {
+                    return;
+                }
+                char[] chars = rejectedText.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        PDFParserConfig config = new PDFParserConfig();
+        config.setImageStrategy(
+                PDFParserConfig.IMAGE_STRATEGY.RENDER_PAGES_AT_PAGE_END);
+        config.setCatchIntermediateIOExceptions(true);
+        config.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
+        PDFParser parser = new PDFParser(config);
+        parser.setRenderer(new SinglePageRenderer());
+        Metadata metadata = new Metadata();
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void characters(char[] ch, int start, int length)
+                    throws SAXException {
+                if (new String(ch, start, length).contains(rejectedText)) {
+                    throw denial;
+                }
+            }
+        };
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildPdf(1, false))) {
+            thrown = assertThrows(SAXException.class,
+                    () -> parser.parse(
+                            stream, handler, metadata, context));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length);
     }
 
     @Test
@@ -323,6 +384,29 @@ public class PDFParserSlicingSecurityTest {
         @Override
         public void parse(TikaInputStream stream, ContentHandler handler,
                           Metadata metadata, ParseContext context) {
+        }
+    }
+
+    private static class SinglePageRenderer implements Renderer {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.application("pdf"));
+        }
+
+        @Override
+        public RenderResults render(
+                TikaInputStream stream, Metadata metadata,
+                ParseContext context, RenderRequest... requests) {
+            RenderResults results = new RenderResults(new TemporaryResources());
+            Metadata renderedMetadata = Metadata.newInstance(context);
+            renderedMetadata.set("test:rendered-page", "true");
+            results.add(new RenderResult(
+                    RenderResult.STATUS.SUCCESS, 1, new byte[0],
+                    renderedMetadata));
+            return results;
         }
     }
 }

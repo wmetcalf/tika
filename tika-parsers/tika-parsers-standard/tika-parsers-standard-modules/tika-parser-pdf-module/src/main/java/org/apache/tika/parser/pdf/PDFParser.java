@@ -87,6 +87,7 @@ import org.apache.tika.renderer.RenderResults;
 import org.apache.tika.renderer.Renderer;
 import org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer;
 import org.apache.tika.renderer.pdf.pdfbox.PDFRenderingState;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -464,7 +465,7 @@ public class PDFParser implements Parser, RenderingParser {
                                         ContentHandler xhtml, Metadata parentMetadata,
                                         ParseContext context,
                                         PDFParserConfig config,
-                                        int originalPageCount) {
+                                        int originalPageCount) throws SAXException {
         if (config.getImageStrategy() != PDFParserConfig.IMAGE_STRATEGY.RENDER_PAGES_BEFORE_PARSE) {
             return;
         }
@@ -481,15 +482,20 @@ public class PDFParser implements Parser, RenderingParser {
         context.get(PDFRenderingState.class).setRenderResults(renderResults);
         EmbeddedDocumentExtractor embeddedDocumentExtractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+        TaggedContentHandler taggedEmbeddedOutput =
+                new TaggedContentHandler(xhtml);
 
         for (RenderResult result : renderResults.getResults()) {
             if (result.getStatus() == RenderResult.STATUS.SUCCESS) {
                 if (embeddedDocumentExtractor.shouldParseEmbedded(result.getMetadata())) {
                     try (TikaInputStream tis = result.getInputStream()) {
-                        embeddedDocumentExtractor.parseEmbedded(tis, xhtml, result.getMetadata(), context, false);
+                        embeddedDocumentExtractor.parseEmbedded(
+                                tis, taggedEmbeddedOutput, result.getMetadata(),
+                                context, false);
                     } catch (SecurityException e) {
                         throw e;
                     } catch (Exception e) {
+                        taggedEmbeddedOutput.throwIfCauseOf(e);
                         EmbeddedDocumentUtil.recordException(e, parentMetadata);
                     }
                 }

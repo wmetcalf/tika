@@ -130,6 +130,7 @@ import org.apache.tika.renderer.pdf.pdfbox.TextOnlyPDFRenderer;
 import org.apache.tika.renderer.pdf.pdfbox.VectorGraphicsOnlyPDFRenderer;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.ExceptionUtils;
 import org.apache.tika.utils.StringUtils;
@@ -158,6 +159,7 @@ class AbstractPDF2XHTML extends PDFTextStripper {
 
     final List<IOException> exceptions = new ArrayList<>();
     final PDDocument pdDocument;
+    private final TaggedContentHandler taggedOutput;
     final XHTMLContentHandler xhtml;
     final ParseContext context;
     final Metadata metadata;
@@ -203,7 +205,8 @@ class AbstractPDF2XHTML extends PDFTextStripper {
     AbstractPDF2XHTML(PDDocument pdDocument, ContentHandler handler, ParseContext context,
                       Metadata metadata, PDFParserConfig config, Renderer renderer) throws IOException {
         this.pdDocument = pdDocument;
-        this.xhtml = new XHTMLContentHandler(handler, metadata, context);
+        this.taggedOutput = new TaggedContentHandler(handler);
+        this.xhtml = new XHTMLContentHandler(taggedOutput, metadata, context);
         this.context = context;
         this.metadata = metadata;
         this.config = config;
@@ -529,8 +532,14 @@ class AbstractPDF2XHTML extends PDFTextStripper {
 
     void handleCatchableIOE(IOException e) throws IOException {
 
-        if (WriteLimitReachedException.isWriteLimitReached(e)) {
+        boolean writeLimitReached = WriteLimitReachedException.isWriteLimitReached(e);
+        if (writeLimitReached) {
             metadata.set(TikaCoreProperties.WRITE_LIMIT_REACHED, "true");
+        }
+
+        throwIfOutputHandlerCause(e);
+
+        if (writeLimitReached) {
             throw e;
         }
 
@@ -544,6 +553,36 @@ class AbstractPDF2XHTML extends PDFTextStripper {
             exceptions.add(e);
         } else {
             throw e;
+        }
+    }
+
+    private void throwIfOutputHandlerCause(IOException failure) throws IOException {
+        Throwable cause = failure;
+        while (cause != null) {
+            if (cause instanceof OutputHandlerIOException) {
+                throw (OutputHandlerIOException) cause;
+            }
+            if (cause instanceof SAXException) {
+                try {
+                    taggedOutput.throwIfCauseOf((SAXException) cause);
+                } catch (SAXException e) {
+                    throw new OutputHandlerIOException(e);
+                }
+            }
+            Throwable next = cause.getCause();
+            if (next == cause) {
+                return;
+            }
+            cause = next;
+        }
+    }
+
+    private static class OutputHandlerIOException extends IOException {
+
+        private static final long serialVersionUID = 1L;
+
+        private OutputHandlerIOException(SAXException cause) {
+            super(cause);
         }
     }
 
