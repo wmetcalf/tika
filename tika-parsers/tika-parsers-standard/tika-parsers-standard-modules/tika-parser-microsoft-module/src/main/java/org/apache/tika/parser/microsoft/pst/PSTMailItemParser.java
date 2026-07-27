@@ -32,6 +32,7 @@ import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
@@ -47,6 +48,7 @@ import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.parser.microsoft.OutlookExtractor;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.StringUtils;
 
@@ -77,14 +79,23 @@ public class PSTMailItemParser implements Parser {
         }
         PSTMessage pstMsg = (PSTMessage) openContainerObj;
         EmbeddedDocumentExtractor ex = EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-        parseMailAndAttachments(pstMsg, xhtml, metadata, context, ex);
-        xhtml.endDocument();
+        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(taggedOutput, metadata, context);
+        try {
+            xhtml.startDocument();
+            parseMailAndAttachments(
+                    pstMsg, xhtml, metadata, context, ex, taggedOutput);
+            xhtml.endDocument();
+        } catch (SAXException e) {
+            taggedOutput.throwIfCauseOf(e);
+            throw e;
+        }
     }
 
     private void parseMailAndAttachments(PSTMessage pstMsg, XHTMLContentHandler handler, Metadata metadata, ParseContext context,
-                                         EmbeddedDocumentExtractor embeddedExtractor)
+                                         EmbeddedDocumentExtractor embeddedExtractor,
+                                         TaggedContentHandler taggedOutput)
             throws SAXException, IOException, TikaException {
         extractMetadata(pstMsg, metadata);
         AttributesImpl attributes = new AttributesImpl();
@@ -93,7 +104,9 @@ public class PSTMailItemParser implements Parser {
         handler.startElement("div", attributes);
 
         parseMailItem(pstMsg, handler, metadata, context);
-        parseMailAttachments(pstMsg, handler, metadata, context, embeddedExtractor);
+        parseMailAttachments(
+                pstMsg, handler, metadata, context, embeddedExtractor,
+                taggedOutput);
         handler.endElement("div");
     }
 
@@ -204,13 +217,20 @@ public class PSTMailItemParser implements Parser {
 
     private void parseMailAttachments(PSTMessage email, XHTMLContentHandler xhtml,
                                       Metadata metadata, ParseContext context,
-                                      EmbeddedDocumentExtractor embeddedExtractor)
-            throws TikaException {
+                                      EmbeddedDocumentExtractor embeddedExtractor,
+                                      TaggedContentHandler taggedOutput)
+            throws TikaException, SAXException {
         int numberOfAttachments = email.getNumberOfAttachments();
         for (int i = 0; i < numberOfAttachments; i++) {
             try {
                 PSTAttachment attachment = email.getAttachment(i);
                 parseMailAttachment(xhtml, attachment, metadata, embeddedExtractor, context);
+            } catch (SecurityException e) {
+                throw e;
+            } catch (SAXException e) {
+                taggedOutput.throwIfCauseOf(e);
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
             } catch (Exception e) {
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
             }

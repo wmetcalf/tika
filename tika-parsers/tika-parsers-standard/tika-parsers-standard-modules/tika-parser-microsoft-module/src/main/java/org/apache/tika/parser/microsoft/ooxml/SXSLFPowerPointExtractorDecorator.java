@@ -47,6 +47,7 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.ExceptionUtils;
 import org.apache.tika.utils.XMLReaderUtils;
@@ -217,12 +218,16 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
         int hidden = 0;
         xhtml.startElement("div", "class", "slide-content");
         OOXMLTikaBodyPartHandler bodyHandler = new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        bodyHandler.setInlineBodyPartMap(null, context);
+        OOXMLWordAndPowerPointTextHandler wordAndPPTHandler =
+                new OOXMLWordAndPowerPointTextHandler(
+                        bodyHandler, linkedRelationships);
+        TaggedContentHandler taggedOutput =
+                new TaggedContentHandler(
+                        new EmbeddedContentHandler(wordAndPPTHandler));
         try (InputStream stream = slidePart.getInputStream()) {
-            bodyHandler.setInlineBodyPartMap(null, context);
-            OOXMLWordAndPowerPointTextHandler wordAndPPTHandler =
-                    new OOXMLWordAndPowerPointTextHandler(bodyHandler, linkedRelationships);
             XMLReaderUtils.parseSAX(stream,
-                    new EmbeddedContentHandler(wordAndPPTHandler), context);
+                    taggedOutput, context);
             if (wordAndPPTHandler.isHiddenSlide()) {
                 metadata.set(Office.HAS_HIDDEN_SLIDES, true);
                 hidden = 1;
@@ -235,6 +240,7 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
             // unclosed <p>, <td>, etc. on the wire. Close them before the
             // </div> below so subsequent slides -- and the outer </body> --
             // land in a balanced spot.
+            taggedOutput.throwIfCauseOf(e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
@@ -303,16 +309,23 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
                         new OOXMLWordAndPowerPointTextHandler(
                                 bodyHandler, childRelationships);
                 try (InputStream stream = child.getInputStream()) {
-                    XMLReaderUtils.parseSAX(stream,
-                            new EmbeddedContentHandler(skipPlaceholders
-                                    ? new PlaceHolderSkipper(textHandler) : textHandler),
-                            context);
+                    TaggedContentHandler taggedOutput =
+                            new TaggedContentHandler(
+                                    new EmbeddedContentHandler(skipPlaceholders
+                                            ? new PlaceHolderSkipper(textHandler)
+                                            : textHandler));
+                    try {
+                        XMLReaderUtils.parseSAX(
+                                stream, taggedOutput, context);
+                    } catch (SAXException e) {
+                        taggedOutput.throwIfCauseOf(e);
+                        WriteLimitReachedException.throwIfWriteLimitReached(e);
+                        metadata.add(
+                                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                                ExceptionUtils.getStackTrace(e));
+                        bodyHandler.closeAnyPending();
+                    }
                 }
-            } catch (SAXException e) {
-                bodyHandler.closeAnyPending();
-                WriteLimitReachedException.throwIfWriteLimitReached(e);
-                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                        ExceptionUtils.getStackTrace(e));
             } catch (InvalidFormatException | IOException | TikaException e) {
                 bodyHandler.closeAnyPending();
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,

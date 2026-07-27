@@ -16,21 +16,35 @@
  */
 package org.apache.tika.parser.microsoft.pst;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.IOException;
 import java.util.List;
 
+import com.pff.PSTFile;
+import com.pff.PSTFolder;
+import com.pff.PSTMessage;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.MAPI;
 import org.apache.tika.metadata.Message;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 
 public class OutlookPSTParserTest extends TikaTest {
@@ -123,5 +137,123 @@ public class OutlookPSTParserTest extends TikaTest {
         }
         //TODO: figure out why the bold markup isn't coming through if we do extract then parse
         // the bodyhtml
+    }
+
+    @Test
+    public void testAttachmentSecurityAndSaxDenialsPropagate()
+            throws Exception {
+        SecurityException securityDenial =
+                new SecurityException(
+                        "simulated PST attachment security denial");
+        String blockedOutput = "blocked PST attachment output";
+        SAXException saxDenial =
+                new SAXException("simulated PST attachment output denial");
+        assertAll(
+                () -> assertAttachmentDenialPropagates(
+                        securityDenial, new DefaultHandler()),
+                () -> assertAttachmentDenialPropagates(
+                        saxDenial,
+                        new TextRejectingHandler(
+                                blockedOutput, saxDenial)));
+    }
+
+    private void assertAttachmentDenialPropagates(
+            Throwable denial, ContentHandler handler) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class,
+                new AttachmentRejectingExtractor(denial));
+
+        Throwable thrown;
+        try (TikaInputStream pstStream =
+                getResourceAsStream("/test-documents/testPST.pst")) {
+            PSTFile pstFile = new PSTFile(pstStream.getFile());
+            try {
+                PSTMessage message =
+                        findMessageWithAttachment(pstFile.getRootFolder());
+                assertNotNull(message, "fixture must contain an attachment");
+                Metadata metadata = new Metadata();
+                long size = OutlookPSTParser.estimateSize(message);
+                try (TikaInputStream messageStream =
+                        TikaInputStream.getFromContainer(
+                                message, size, metadata)) {
+                    thrown = assertThrows(denial.getClass(),
+                            () -> new PSTMailItemParser().parse(
+                                    messageStream, handler, metadata,
+                                    context));
+                }
+            } finally {
+                pstFile.close();
+            }
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    private static PSTMessage findMessageWithAttachment(PSTFolder folder)
+            throws Exception {
+        PSTMessage message = (PSTMessage) folder.getNextChild();
+        while (message != null) {
+            if (message.getNumberOfAttachments() > 0) {
+                return message;
+            }
+            message = (PSTMessage) folder.getNextChild();
+        }
+        for (PSTFolder child : folder.getSubFolders()) {
+            message = findMessageWithAttachment(child);
+            if (message != null) {
+                return message;
+            }
+        }
+        return null;
+    }
+
+    private static final class AttachmentRejectingExtractor
+            implements EmbeddedDocumentExtractor {
+
+        private static final String BLOCKED_OUTPUT =
+                "blocked PST attachment output";
+        private final Throwable denial;
+
+        private AttachmentRejectingExtractor(Throwable denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public boolean shouldParseEmbedded(Metadata metadata) {
+            return true;
+        }
+
+        @Override
+        public void parseEmbedded(
+                TikaInputStream stream, ContentHandler handler,
+                Metadata metadata, ParseContext context,
+                boolean outputHtml) throws IOException, SAXException {
+            if (denial instanceof SecurityException securityException) {
+                throw securityException;
+            }
+            char[] output = BLOCKED_OUTPUT.toCharArray();
+            handler.characters(output, 0, output.length);
+        }
+    }
+
+    private static final class TextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+
+        private TextRejectingHandler(
+                String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
     }
 }

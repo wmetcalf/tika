@@ -17,16 +17,25 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
@@ -348,6 +357,99 @@ public class OOXMLPptxSAXTest extends TikaTest {
     // ---- SAX-specific tests ----
 
     @Test
+    public void testSlideOutputDenialPropagatesWithoutCleanupCallbacks()
+            throws Exception {
+        byte[] pptx = buildSyntheticPptx(
+                "blocked synthetic slide output");
+
+        SAXException denial =
+                new SAXException("simulated slide output policy denial");
+        FailStopTextRejectingHandler handler =
+                new FailStopTextRejectingHandler(
+                        "blocked synthetic slide output", denial);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(pptx)) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(),
+                            new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.getCallbacksAfterDenial());
+    }
+
+    private static byte[] buildSyntheticPptx(String slideText)
+            throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output)) {
+            addZipEntry(zip, "[Content_Types].xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Types xmlns=\"http://schemas.openxmlformats.org/"
+                    + "package/2006/content-types\">"
+                    + "<Default Extension=\"rels\" ContentType=\""
+                    + "application/vnd.openxmlformats-package.relationships+xml\"/>"
+                    + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                    + "<Override PartName=\"/ppt/presentation.xml\" ContentType=\""
+                    + "application/vnd.openxmlformats-officedocument."
+                    + "presentationml.presentation.main+xml\"/>"
+                    + "<Override PartName=\"/ppt/slides/slide1.xml\" ContentType=\""
+                    + "application/vnd.openxmlformats-officedocument."
+                    + "presentationml.slide+xml\"/>"
+                    + "</Types>");
+            addZipEntry(zip, "_rels/.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Relationships xmlns=\"http://schemas.openxmlformats.org/"
+                    + "package/2006/relationships\">"
+                    + "<Relationship Id=\"rId1\" Type=\"http://schemas."
+                    + "openxmlformats.org/officeDocument/2006/relationships/"
+                    + "officeDocument\" Target=\"ppt/presentation.xml\"/>"
+                    + "</Relationships>");
+            addZipEntry(zip, "ppt/presentation.xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/"
+                    + "presentationml/2006/main\" xmlns:r=\"http://schemas."
+                    + "openxmlformats.org/officeDocument/2006/relationships\">"
+                    + "<p:sldIdLst><p:sldId id=\"256\" r:id=\"rId1\"/>"
+                    + "</p:sldIdLst><p:sldSz cx=\"9144000\" cy=\"6858000\"/>"
+                    + "<p:notesSz cx=\"6858000\" cy=\"9144000\"/>"
+                    + "</p:presentation>");
+            addZipEntry(zip, "ppt/_rels/presentation.xml.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Relationships xmlns=\"http://schemas.openxmlformats.org/"
+                    + "package/2006/relationships\">"
+                    + "<Relationship Id=\"rId1\" Type=\"http://schemas."
+                    + "openxmlformats.org/officeDocument/2006/relationships/"
+                    + "slide\" Target=\"slides/slide1.xml\"/>"
+                    + "</Relationships>");
+            addZipEntry(zip, "ppt/slides/slide1.xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<p:sld xmlns:a=\"http://schemas.openxmlformats.org/"
+                    + "drawingml/2006/main\" xmlns:p=\"http://schemas."
+                    + "openxmlformats.org/presentationml/2006/main\">"
+                    + "<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" "
+                    + "name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                    + "<p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" "
+                    + "name=\"TextBox 1\"/><p:cNvSpPr txBox=\"1\"/>"
+                    + "<p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>"
+                    + "<a:lstStyle/><a:p><a:r><a:t>" + slideText
+                    + "</a:t></a:r></a:p></p:txBody></p:sp></p:spTree>"
+                    + "</p:cSld><p:clrMapOvr><a:masterClrMapping/>"
+                    + "</p:clrMapOvr></p:sld>");
+        }
+        return output.toByteArray();
+    }
+
+    private static void addZipEntry(
+            ZipOutputStream zip, String name, String contents)
+            throws Exception {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(contents.getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
+    }
+
+    @Test
     public void basicTest() throws Exception {
         List<Metadata> metadataList =
                 getRecursiveMetadata("testPPT_various2.pptx");
@@ -511,6 +613,57 @@ public class OOXMLPptxSAXTest extends TikaTest {
                 exc = true;
             }
             assertTrue(exc);
+        }
+    }
+
+    private static final class FailStopTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+        private int callbacksAfterDenial;
+        private boolean denied;
+
+        private FailStopTextRejectingHandler(
+                String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        private int getCallbacksAfterDenial() {
+            return callbacksAfterDenial;
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                Attributes attributes) throws SAXException {
+            rejectCallbackAfterDenial();
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName)
+                throws SAXException {
+            rejectCallbackAfterDenial();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            rejectCallbackAfterDenial();
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw denial;
+            }
+        }
+
+        private void rejectCallbackAfterDenial() throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                throw new SAXException(
+                        "callback delivered after slide output denial");
+            }
         }
     }
 }
