@@ -21,6 +21,9 @@ import static org.apache.tika.sax.XHTMLContentHandler.XHTML;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -40,6 +43,7 @@ import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.SAXOutputConfig;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLBalancingHandler;
 
 /**
@@ -150,57 +154,164 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             parseRecord.incrementEmbeddedCount();
         }
 
-        if (outputHtml) {
-            AttributesImpl attributes = new AttributesImpl();
-            attributes.addAttribute("", "class", "class", "CDATA", "package-entry");
-            handler.startElement(XHTML, "div", "div", attributes);
-        }
-
-        String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-        if (isWriteFileNameToContent() && name != null && name.length() > 0 && outputHtml) {
-            handler.startElement(XHTML, "h1", "h1", new AttributesImpl());
-            char[] chars = name.toCharArray();
-            handler.characters(chars, 0, chars.length);
-            handler.endElement(XHTML, "h1", "h1");
-        }
+        TaggedContentHandler taggedOutput =
+                new TaggedContentHandler(handler);
 
         // Wrap the delegate's handler so we can close anything it left open if
         // it throws mid-element. Without this, the </div> emitted in finally
         // could land on top of an open <p>/<table>/etc. from the failed
         // sub-parse and produce malformed XHTML.
         XHTMLBalancingHandler balancer =
-                outputHtml ? new XHTMLBalancingHandler(handler) : null;
-        ContentHandler delegateHandler = outputHtml ? balancer : handler;
+                outputHtml ? new XHTMLBalancingHandler(taggedOutput) : null;
+        ContentHandler delegateHandler = outputHtml ? balancer : taggedOutput;
 
         // Use the delegate parser to parse this entry
         boolean parsedCleanly = false;
+        Throwable primaryFailure = null;
+        boolean downstreamOutputFailure = false;
+        boolean packageEntryStarted = false;
         try {
             tis.setCloseShield();
+
+            if (outputHtml) {
+                AttributesImpl attributes = new AttributesImpl();
+                attributes.addAttribute("", "class", "class", "CDATA", "package-entry");
+                taggedOutput.startElement(XHTML, "div", "div", attributes);
+                packageEntryStarted = true;
+            }
+
+            String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            if (isWriteFileNameToContent() && name != null && name.length() > 0 && outputHtml) {
+                taggedOutput.startElement(XHTML, "h1", "h1", new AttributesImpl());
+                char[] chars = name.toCharArray();
+                taggedOutput.characters(chars, 0, chars.length);
+                taggedOutput.endElement(XHTML, "h1", "h1");
+            }
+
             DELEGATING_PARSER.parse(tis,
                     new EmbeddedContentHandler(new BodyContentHandler(delegateHandler)),
                     metadata, context);
             parsedCleanly = true;
         } catch (EncryptedDocumentException ede) {
+            primaryFailure = ede;
             recordException(ede, context);
         } catch (CorruptedFileException e) {
             //necessary to stop the parse to avoid infinite loops
             //on corrupt sqlite3 files
-            throw new IOException(e);
+            IOException ioFailure = new IOException(e);
+            primaryFailure = ioFailure;
+            throw ioFailure;
         } catch (TikaException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
+            primaryFailure = e;
             recordException(e, context);
+        } catch (SAXException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
+            primaryFailure = e;
+            throw e;
+        } catch (IOException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
+            primaryFailure = e;
+            throw e;
+        } catch (SecurityException e) {
+            primaryFailure = e;
+            downstreamOutputFailure = true;
+            throw e;
+        } catch (RuntimeException e) {
+            primaryFailure = e;
+            throw e;
+        } catch (Error e) {
+            primaryFailure = e;
+            downstreamOutputFailure = true;
+            throw e;
         } finally {
             tis.removeCloseShield();
-            if (outputHtml) {
+            if (outputHtml && packageEntryStarted && !downstreamOutputFailure) {
                 // Only an aborted parse can leave elements open; on a clean parse
                 // the balancer stack is empty. Draining only on abort keeps the
                 // package-entry div well-formed when the inner parse throws, while
                 // letting StrictXHTMLValidator still catch genuine imbalances on the
                 // happy path (TIKA-4728).
                 if (!parsedCleanly) {
-                    balancer.drainOpenElements();
+                    try {
+                        balancer.drainOpenElements();
+                    } catch (SAXException cleanupFailure) {
+                        handleCleanupFailure(
+                                taggedOutput, primaryFailure, cleanupFailure);
+                    }
                 }
-                handler.endElement(XHTML, "div", "div");
+                try {
+                    taggedOutput.endElement(XHTML, "div", "div");
+                } catch (SAXException cleanupFailure) {
+                    handleCleanupFailure(
+                            taggedOutput, primaryFailure, cleanupFailure);
+                }
             }
+        }
+    }
+
+    private static SAXException findTaggedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        if (taggedOutput == null) {
+            return null;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && seen.add(current)) {
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    return outputFailure;
+                }
+                return null;
+            }
+            Throwable cause = current.getCause();
+            current = cause != current ? cause : null;
+        }
+        return null;
+    }
+
+    private static void handleCleanupFailure(
+            TaggedContentHandler taggedOutput, Throwable primaryFailure,
+            SAXException cleanupFailure) throws SAXException {
+        SAXException outputFailure =
+                findTaggedOutputFailure(taggedOutput, cleanupFailure);
+        if (outputFailure != null) {
+            addSuppressed(outputFailure, primaryFailure);
+            throw outputFailure;
+        }
+        if (primaryFailure == null) {
+            throw cleanupFailure;
+        }
+        addSuppressed(primaryFailure, cleanupFailure);
+    }
+
+    private static void addSuppressed(
+            Throwable primaryFailure, Throwable suppressedFailure) {
+        if (suppressedFailure != null
+                && primaryFailure != suppressedFailure) {
+            primaryFailure.addSuppressed(suppressedFailure);
         }
     }
 

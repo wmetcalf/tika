@@ -94,11 +94,14 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
      * @throws SAXException original exception, if any, thrown by this handler
      */
     public void throwIfCauseOf(Exception exception) throws SAXException {
-        if (exception instanceof TaggedSAXException) {
-            TaggedSAXException tagged = (TaggedSAXException) exception;
-            if (this == tagged.getTag()) {
-                throw tagged.getCause();
-            }
+        SAXException original = null;
+        while (exception instanceof TaggedSAXException tagged
+                && this == tagged.getTag()) {
+            original = tagged.getCause();
+            exception = original;
+        }
+        if (original != null) {
+            throw original;
         }
     }
 
