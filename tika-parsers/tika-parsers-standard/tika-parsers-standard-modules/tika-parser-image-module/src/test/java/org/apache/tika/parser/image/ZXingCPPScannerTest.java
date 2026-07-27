@@ -25,9 +25,11 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
 
+import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
 public class ZXingCPPScannerTest {
@@ -123,6 +125,41 @@ public class ZXingCPPScannerTest {
 
         assertEquals(imagePath.toAbsolutePath().toString(),
                 scanner.lastCommand.get(scanner.lastCommand.size() - 1));
+    }
+
+    @Test
+    public void scanHonorsParseContextProcessTimeout() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ParseContext context = new ParseContext();
+        context.set(TimeoutLimits.class, new TimeoutLimits(10_000, 1_234));
+        StubScanner scanner = new StubScanner(successResult(""));
+
+        scanner.scan(Paths.get("target/test-data/code.png"), config, context);
+
+        assertEquals(1_134, scanner.lastTimeoutMillis);
+    }
+
+    @Test
+    public void sharedBudgetCapsAttemptsAndAggregateTimeWithoutSleeping() {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        AtomicLong now = new AtomicLong();
+        ZXingCPPScanner.ScanBudget budget =
+                new ZXingCPPScanner.ScanBudget(2, 1_000, now::get);
+        StubScanner scanner = new StubScanner(successResult(""));
+        Path image = Paths.get("target/test-data/code.png");
+
+        scanner.scan(image, config, new ParseContext(), budget);
+        assertEquals(1_000, scanner.lastTimeoutMillis);
+
+        now.set(400_000_000L);
+        scanner.scan(image, config, new ParseContext(), budget);
+        assertEquals(600, scanner.lastTimeoutMillis);
+
+        assertThrows(ZXingCPPScanner.ScanBudgetExceededException.class,
+                () -> scanner.scan(image, config, new ParseContext(), budget));
+        assertTrue(budget.hasRejectedScan());
     }
 
     @Test
@@ -466,6 +503,7 @@ public class ZXingCPPScannerTest {
         private final FileProcessResult result;
         private final IOException exception;
         private List<String> lastCommand;
+        private long lastTimeoutMillis;
 
         private StubScanner(FileProcessResult result) {
             this(result, false);
@@ -485,6 +523,7 @@ public class ZXingCPPScannerTest {
         FileProcessResult execute(ProcessBuilder processBuilder, long timeoutMillis)
                 throws IOException {
             this.lastCommand = processBuilder.command();
+            this.lastTimeoutMillis = timeoutMillis;
             if (exception != null) {
                 throw exception;
             }

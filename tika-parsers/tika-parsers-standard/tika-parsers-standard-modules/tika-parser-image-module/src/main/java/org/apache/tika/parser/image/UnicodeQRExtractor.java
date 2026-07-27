@@ -243,9 +243,22 @@ public final class UnicodeQRExtractor {
                                                 ZXingCPPScanner scanner,
                                                 ZXingCPPConfig config,
                                                 ParseContext context) {
+        return extractAndDecode(text, scanner, config, context, null);
+    }
+
+    /**
+     * Variant that shares an aggregate subprocess budget across several
+     * candidate blocks from the same document.
+     */
+    public static List<ZXingCPPScanner.Result> extractAndDecode(
+            String text, ZXingCPPScanner scanner, ZXingCPPConfig config,
+            ParseContext context, ZXingCPPScanner.ScanBudget budget) {
         List<ZXingCPPScanner.Result> decoded = new ArrayList<>();
         if (text == null || text.isEmpty()
-                || scanner == null || !scanner.hasZXingCPP(config)) {
+                || scanner == null
+                || (budget == null
+                    ? !scanner.hasZXingCPP(config)
+                    : !budget.isScannerAvailable(scanner, config))) {
             return decoded;
         }
         List<Cluster> clusters = findClusters(text);
@@ -265,7 +278,10 @@ public final class UnicodeQRExtractor {
                 }
                 tmp = Files.createTempFile("txtqr-", ".png");
                 ImageIO.write(img, "PNG", tmp.toFile());
-                List<ZXingCPPScanner.Result> results = scanner.scan(tmp, config, context);
+                List<ZXingCPPScanner.Result> results =
+                        budget == null
+                                ? scanner.scan(tmp, config, context)
+                                : scanner.scan(tmp, config, context, budget);
                 boolean hit = false;
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();

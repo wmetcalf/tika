@@ -211,6 +211,7 @@ public class PpkgParser implements Parser {
             try {
                 byte[] metaRes = decompressResource(raw, rh, chunkSize, warnings);
                 if (metaRes == null) {
+                    resourceState.releaseFailedExpansion(rh);
                     continue;
                 }
                 if (metaRes.length < 8) {
@@ -754,10 +755,14 @@ public class PpkgParser implements Parser {
                     if (xmlBytes != null) {
                         parseXmlContent(xmlBytes, name, commands, warnings,
                                 dataRefs, pkgMeta, sha1Hex, xhtml, context, rootMeta);
+                    } else {
+                        resourceState.releaseFailedExpansion(rh);
                     }
                 } else if (rh != null) {
-                    emitEmbedded(raw, rh, chunkSize, name, sha1Hex,
-                            xhtml, context, rootMeta, dataRefs, warnings);
+                    if (!emitEmbedded(raw, rh, chunkSize, name, sha1Hex,
+                            xhtml, context, rootMeta, dataRefs, warnings)) {
+                        resourceState.releaseFailedExpansion(rh);
+                    }
                 }
             }
 
@@ -801,6 +806,8 @@ public class PpkgParser implements Parser {
                 new PpkgXmlHandler(commands, dataRefs, warnings, pkgMeta);
         try (ByteArrayInputStream xmlStream = new ByteArrayInputStream(xmlBytes)) {
             XMLReaderUtils.parseSAX(xmlStream, xmlHandler, context);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             warnings.add("XML field extraction error in " + name + ": " + e.getMessage());
             rootMeta.set("ExploitClass",
@@ -839,15 +846,15 @@ public class PpkgParser implements Parser {
         }
     }
 
-    private void emitEmbedded(byte[] raw, ResHdr rh, int chunkSize,
-                              String name, String sha1Hex,
-                              XHTMLContentHandler xhtml, ParseContext context,
-                              Metadata rootMeta, List<String> dataRefs,
-                              List<String> warnings)
+    private boolean emitEmbedded(byte[] raw, ResHdr rh, int chunkSize,
+                                 String name, String sha1Hex,
+                                 XHTMLContentHandler xhtml, ParseContext context,
+                                 Metadata rootMeta, List<String> dataRefs,
+                                 List<String> warnings)
             throws IOException, SAXException, TikaException {
         byte[] data = decompressResource(raw, rh, chunkSize, warnings);
         if (data == null) {
-            return;
+            return false;
         }
         String sha256 = sha256Hex(data);
         String md5 = md5Hex(data);
@@ -885,6 +892,7 @@ public class PpkgParser implements Parser {
 
         // ppkg:data_asset metadata is canonical; don't duplicate as
         // "DataAsset: ..." body text.
+        return true;
     }
 
     private static void emitDataAssetMetadata(
@@ -1391,6 +1399,11 @@ public class PpkgParser implements Parser {
             resourceCount++;
             expandedBytes += resource.uncompressed;
             return true;
+        }
+
+        private void releaseFailedExpansion(ResHdr resource) {
+            expandedBytes = Math.max(0,
+                    expandedBytes - resource.uncompressed);
         }
     }
 

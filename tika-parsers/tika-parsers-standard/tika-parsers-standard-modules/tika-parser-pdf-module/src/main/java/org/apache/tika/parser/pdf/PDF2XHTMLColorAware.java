@@ -211,6 +211,8 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
                       + "invisible to image-based scanners and to standard "
                       + "PDF text extraction");
             }
+        } catch (SecurityException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
             metadata.add("pdf_color_qr:stage", "exception:" + ex.getClass().getSimpleName() + ":" + ex.getMessage());
             BarcodeMetadataUtil.markAnalysisIncomplete(

@@ -34,11 +34,16 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Locale;
+import javax.xml.parsers.SAXParser;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.Parser;
 import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.XMLFilterImpl;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -199,6 +204,16 @@ public class PpkgParserSecurityTest {
                 "structurally invalid compressed metadata must be signaled");
         assertNotNull(metadata.get("ExploitClass"),
                 "skipping structurally invalid command-bearing metadata must fail closed");
+    }
+
+    @Test
+    public void rejectedResourceDoesNotConsumeCumulativeExpandedByteBudget()
+            throws Exception {
+        Metadata metadata = parseMetadata(buildQuotaStarvationWim());
+
+        assertEquals(COMMAND, metadata.get("ppkg:command"),
+                "a rejected oversized resource must not starve a later valid "
+                        + "metadata resource of the expanded-byte budget");
     }
 
     @Test
@@ -486,6 +501,42 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void xmlFieldExtractionSecurityExceptionPropagates() {
+        SecurityException denial =
+                new SecurityException("simulated XML policy denial");
+        ParseContext context = new ParseContext();
+        context.set(SAXParser.class, new SecurityDenyingSaxParser(denial));
+        context.set(EmbeddedDocumentExtractor.class,
+                new EmbeddedDocumentExtractor() {
+                    @Override
+                    public boolean shouldParseEmbedded(Metadata metadata) {
+                        return false;
+                    }
+
+                    @Override
+                    public void parseEmbedded(
+                            TikaInputStream stream, ContentHandler handler,
+                            Metadata metadata, ParseContext parseContext,
+                            boolean outputHtml) {
+                        throw new AssertionError(
+                                "embedded parsing should be disabled");
+                    }
+                });
+
+        SecurityException thrown = assertThrows(SecurityException.class,
+                () -> {
+                    try (TikaInputStream stream = TikaInputStream.get(
+                            buildWim("<wap-provisioningdoc/>"))) {
+                        new PpkgParser().parse(
+                                stream, new BodyContentHandler(-1),
+                                new Metadata(), context);
+                    }
+                });
+
+        assertEquals(denial, thrown);
+    }
+
+    @Test
     public void oversizedCommandFailsClosedForSecurityClassification() throws Exception {
         Metadata metadata = parseMetadata(buildWim(
                 "<wap-provisioningdoc><CommandLine>"
@@ -728,6 +779,53 @@ public class PpkgParserSecurityTest {
         return wim;
     }
 
+    private static byte[] buildQuotaStarvationWim() {
+        byte[] resourceBytes = ("<provisioning><CommandLine>" + COMMAND
+                + "</CommandLine></provisioning>")
+                .getBytes(StandardCharsets.UTF_8);
+        int lookupOffset = 208;
+        int lookupLength = 150;
+        int rejectedOffset = lookupOffset + lookupLength;
+        int rejectedSize = 10;
+        int metadataOffset = rejectedOffset + rejectedSize;
+        int metadataLength = 256;
+        int resourceOffset = metadataOffset + metadataLength;
+        byte[] wim = header(resourceOffset + resourceBytes.length, 32768);
+        ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(44, 1);
+        putResourceHeader(wim, buffer, 48, lookupLength, 0,
+                lookupOffset, lookupLength);
+
+        // HashMap iteration visits these crafted string-hash buckets in the
+        // order 0x42 (bucket 3), 0x11 (bucket 4), 0x55 (bucket 8).
+        // The first metadata descriptor therefore reserves the full 16 MiB
+        // cumulative budget before its 16 MiB declaration is rejected by the
+        // 8 MiB per-resource limit.
+        putLookupEntry(wim, buffer, lookupOffset, rejectedSize, 0x06,
+                rejectedOffset, 16L * 1024 * 1024, repeated((byte) 0x42));
+        putLookupEntry(wim, buffer, lookupOffset + 50,
+                metadataLength, 0x04, metadataOffset, metadataLength,
+                repeated((byte) 0x11));
+        putLookupEntry(wim, buffer, lookupOffset + 100,
+                resourceBytes.length, 0, resourceOffset,
+                resourceBytes.length, repeated((byte) 0x55));
+
+        buffer.putInt(metadataOffset, 8);
+        buffer.putLong(metadataOffset + 8 + 16, 32);
+        byte[] nameBytes =
+                "payload.provxml".getBytes(StandardCharsets.UTF_16LE);
+        int dentry = metadataOffset + 32;
+        buffer.putLong(dentry, 102L + nameBytes.length);
+        System.arraycopy(repeated((byte) 0x55), 0,
+                wim, dentry + 64, 20);
+        buffer.putShort(dentry + 100, (short) nameBytes.length);
+        System.arraycopy(nameBytes, 0, wim,
+                dentry + 102, nameBytes.length);
+        System.arraycopy(resourceBytes, 0, wim,
+                resourceOffset, resourceBytes.length);
+        return wim;
+    }
+
     private static byte[] buildOversizedMetadataResource(long size, int flags,
                                                          long uncompressed) {
         byte[] wim = header(300, 32768);
@@ -839,6 +937,56 @@ public class PpkgParserSecurityTest {
         byte[] bytes = new byte[20];
         Arrays.fill(bytes, value);
         return bytes;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static final class SecurityDenyingSaxParser extends SAXParser {
+
+        private final SecurityException denial;
+
+        private SecurityDenyingSaxParser(SecurityException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public Parser getParser() {
+            throw new UnsupportedOperationException("SAX1 parser not used");
+        }
+
+        @Override
+        public XMLReader getXMLReader() {
+            return new XMLFilterImpl() {
+                @Override
+                public void parse(InputSource input) {
+                    throw denial;
+                }
+
+                @Override
+                public void parse(String systemId) {
+                    throw denial;
+                }
+            };
+        }
+
+        @Override
+        public boolean isNamespaceAware() {
+            return true;
+        }
+
+        @Override
+        public boolean isValidating() {
+            return false;
+        }
+
+        @Override
+        public void setProperty(String name, Object value) {
+            // no-op
+        }
+
+        @Override
+        public Object getProperty(String name) {
+            return null;
+        }
     }
 
     private record ParseResult(String body, Metadata metadata) {

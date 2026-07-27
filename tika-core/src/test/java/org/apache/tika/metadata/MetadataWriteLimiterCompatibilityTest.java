@@ -32,6 +32,7 @@ import java.util.Properties;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.metadata.writefilter.MetadataWriteLimiter;
+import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 
 public class MetadataWriteLimiterCompatibilityTest {
 
@@ -134,5 +135,26 @@ public class MetadataWriteLimiterCompatibilityTest {
         assertEquals("retained", metadata.get("allowed"));
         assertNull(metadata.get("blocked"));
         assertNull(metadata.get(TikaCoreProperties.TIKA_META_PREFIX + "forged"));
+    }
+
+    @Test
+    public void testAlignedGroupReservationDoesNotDependOnFieldOrder() {
+        StandardMetadataLimiterFactory factory =
+                new StandardMetadataLimiterFactory();
+        factory.setMaxKeySize(100);
+        factory.setMaxFieldSize(100);
+        factory.setMaxTotalBytes(100);
+        factory.setMaxValuesPerField(10);
+        Metadata metadata = new Metadata(factory.newInstance());
+
+        // Metadata merge paths iterate HashMap-backed fields in no guaranteed
+        // order. A non-boundary member must not consume budget before the
+        // limiter has reserved every key in the compatibility record.
+        metadata.add(Office.OFFICE_LINK_TYPE, "ole");
+        metadata.add(Office.OFFICE_LINK_URL,
+                "https://example.invalid/payload");
+
+        assertEquals(0, metadata.getValues(Office.OFFICE_LINK_TYPE).length);
+        assertEquals(0, metadata.getValues(Office.OFFICE_LINK_URL).length);
     }
 }

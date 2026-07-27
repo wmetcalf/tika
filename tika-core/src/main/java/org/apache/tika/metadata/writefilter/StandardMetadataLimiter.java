@@ -527,22 +527,8 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             // callers may have removed metadata and released total budget.
             suppressedAlignedGroups.remove(groupId);
         }
-        if (boundaryField == null || !field.equals(boundaryField)) {
+        if (boundaryField == null) {
             return true;
-        }
-
-        String[] boundaryValues = data.get(boundaryField);
-        int priorRecordCount = boundaryValues == null ? 0 : boundaryValues.length;
-        boolean groupHasReplacementCount = false;
-        for (String member : group) {
-            if (!includeField(member)) {
-                continue;
-            }
-            Integer replacementCount = removedAlignedFieldCounts.get(member);
-            if (replacementCount != null) {
-                groupHasReplacementCount = true;
-                priorRecordCount = Math.max(priorRecordCount, replacementCount);
-            }
         }
 
         int requiredKeyBytes = 0;
@@ -567,6 +553,35 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             if (!fieldSizes.containsKey(member)) {
                 fieldSizes.put(member, 0);
             }
+        }
+        estimatedSize += requiredKeyBytes;
+
+        // HashMap-backed metadata merge paths do not guarantee that the record
+        // boundary field arrives first. Reserving every member key above must
+        // therefore happen for any member; replacement alignment remains tied
+        // to the boundary that starts the logical record.
+        if (!field.equals(boundaryField)) {
+            return true;
+        }
+
+        String[] boundaryValues = data.get(boundaryField);
+        int priorRecordCount = boundaryValues == null ? 0 : boundaryValues.length;
+        boolean groupHasReplacementCount = false;
+        for (String member : group) {
+            if (!includeField(member)) {
+                continue;
+            }
+            Integer replacementCount = removedAlignedFieldCounts.get(member);
+            if (replacementCount != null) {
+                groupHasReplacementCount = true;
+                priorRecordCount = Math.max(priorRecordCount, replacementCount);
+            }
+        }
+
+        for (String member : group) {
+            if (!includeField(member)) {
+                continue;
+            }
             String[] values = data.get(member);
             int valueCount = values == null ? 0 : values.length;
             if (groupHasReplacementCount && valueCount < priorRecordCount) {
@@ -578,7 +593,6 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             }
             removedAlignedFieldCounts.remove(member);
         }
-        estimatedSize += requiredKeyBytes;
         return true;
     }
 

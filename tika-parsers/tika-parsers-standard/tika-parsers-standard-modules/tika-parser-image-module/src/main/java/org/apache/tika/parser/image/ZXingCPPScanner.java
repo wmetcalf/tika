@@ -24,7 +24,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
+import org.apache.tika.config.TimeoutLimits;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.utils.FileProcessResult;
 import org.apache.tika.utils.ProcessUtils;
@@ -53,6 +56,16 @@ public class ZXingCPPScanner {
     }
 
     public List<Result> scan(Path imagePath, ZXingCPPConfig config, ParseContext context) {
+        return scanInternal(imagePath, config, context, null);
+    }
+
+    public List<Result> scan(Path imagePath, ZXingCPPConfig config, ParseContext context,
+                             ScanBudget budget) {
+        return scanInternal(imagePath, config, context, budget);
+    }
+
+    private List<Result> scanInternal(Path imagePath, ZXingCPPConfig config,
+                                      ParseContext context, ScanBudget budget) {
         ZXingCPPConfig activeConfig = config == null ? defaultConfig : config;
         if (!activeConfig.isEnabled() || imagePath == null) {
             return Collections.emptyList();
@@ -60,8 +73,15 @@ public class ZXingCPPScanner {
 
         ProcessBuilder processBuilder = new ProcessBuilder(buildCommand(imagePath, activeConfig));
         try {
-            FileProcessResult processResult = execute(processBuilder,
-                    activeConfig.getTimeoutSeconds() * 1000L);
+            long timeoutMillis = TimeoutLimits.getProcessTimeoutMillis(
+                    context, activeConfig.getTimeoutSeconds() * 1000L);
+            if (budget != null) {
+                timeoutMillis = budget.acquireTimeoutMillis(timeoutMillis);
+            } else if (timeoutMillis <= 0) {
+                throw new ScanBudgetExceededException(
+                        "No time remains for zxing-cpp scan");
+            }
+            FileProcessResult processResult = execute(processBuilder, timeoutMillis);
             if (processResult.isTimeout()) {
                 throw new ScanException("Timed out running zxing-cpp against " + imagePath);
             }
@@ -76,6 +96,86 @@ public class ZXingCPPScanner {
             }
         } catch (IOException e) {
             throw new ScanException("Unable to execute zxing-cpp scan for " + imagePath, e);
+        }
+    }
+
+    /**
+     * Shared subprocess budget for callers that may render and scan several
+     * barcode candidates from one document.
+     */
+    public static final class ScanBudget {
+
+        private static final long NANOS_PER_MILLISECOND = 1_000_000L;
+
+        private final int maxScans;
+        private final long deadlineNanos;
+        private final LongSupplier nanoTime;
+        private int scans;
+        private boolean rejectedScan;
+        private ZXingCPPScanner availabilityScanner;
+        private ZXingCPPConfig availabilityConfig;
+        private Boolean scannerAvailable;
+
+        public ScanBudget(int maxScans, long maxDurationMillis) {
+            this(maxScans, maxDurationMillis, System::nanoTime);
+        }
+
+        ScanBudget(int maxScans, long maxDurationMillis, LongSupplier nanoTime) {
+            if (maxScans <= 0) {
+                throw new IllegalArgumentException("maxScans must be > 0");
+            }
+            if (maxDurationMillis < 0) {
+                throw new IllegalArgumentException("maxDurationMillis must be >= 0");
+            }
+            this.maxScans = maxScans;
+            this.nanoTime = nanoTime;
+            long now = nanoTime.getAsLong();
+            long durationNanos;
+            try {
+                durationNanos = Math.multiplyExact(
+                        maxDurationMillis, NANOS_PER_MILLISECOND);
+            } catch (ArithmeticException e) {
+                durationNanos = Long.MAX_VALUE;
+            }
+            long deadline;
+            try {
+                deadline = Math.addExact(now, durationNanos);
+            } catch (ArithmeticException e) {
+                deadline = Long.MAX_VALUE;
+            }
+            this.deadlineNanos = deadline;
+        }
+
+        synchronized boolean isScannerAvailable(
+                ZXingCPPScanner scanner, ZXingCPPConfig config) {
+            if (scannerAvailable == null) {
+                availabilityScanner = scanner;
+                availabilityConfig = config;
+                scannerAvailable = scanner.hasZXingCPP(config);
+            } else if (availabilityScanner != scanner || availabilityConfig != config) {
+                throw new IllegalArgumentException(
+                        "ScanBudget cannot be shared across scanner configurations");
+            }
+            return scannerAvailable;
+        }
+
+        synchronized long acquireTimeoutMillis(long requestedTimeoutMillis) {
+            long remainingNanos = deadlineNanos - nanoTime.getAsLong();
+            if (scans >= maxScans || requestedTimeoutMillis <= 0 || remainingNanos <= 0) {
+                rejectedScan = true;
+                throw new ScanBudgetExceededException(
+                        "Aggregate zxing-cpp scan budget exhausted");
+            }
+            scans++;
+            long remainingMillis = TimeUnit.NANOSECONDS.toMillis(remainingNanos);
+            if (remainingNanos % NANOS_PER_MILLISECOND != 0) {
+                remainingMillis++;
+            }
+            return Math.min(requestedTimeoutMillis, remainingMillis);
+        }
+
+        public synchronized boolean hasRejectedScan() {
+            return rejectedScan;
         }
     }
 
@@ -421,6 +521,15 @@ public class ZXingCPPScanner {
 
         ScanException(String message, Throwable cause) {
             super(message, cause);
+        }
+    }
+
+    public static class ScanBudgetExceededException extends ScanException {
+
+        private static final long serialVersionUID = -2543313384952479514L;
+
+        ScanBudgetExceededException(String message) {
+            super(message);
         }
     }
 

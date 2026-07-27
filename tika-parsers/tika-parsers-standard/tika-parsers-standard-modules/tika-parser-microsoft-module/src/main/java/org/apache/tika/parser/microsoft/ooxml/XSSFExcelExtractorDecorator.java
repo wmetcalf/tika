@@ -350,6 +350,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // Failures here never fail the whole parse.
         try {
             processXlmXmlMacroSheets(container, xhtml, stringsShim);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             //swallow — macro extraction is opportunistic
@@ -415,6 +417,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // entry (embeddedResourceType=MACRO) carrying its formula text.
                 emitMacroText(sheetName, "text/x-excel-macro",
                         boundedMacroText(parser.getFormulas().values()), xhtml);
+            } catch (SecurityException e) {
+                throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());

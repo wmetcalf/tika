@@ -97,6 +97,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
 
     private static final TagSet SELF_CLOSEABLE_TAGS = TagSet.Html();
     private static final int MAX_UNICODE_QR_CANDIDATES = 16;
+    private static final int MAX_UNICODE_QR_SCANS = 4;
     private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_CHARS = 64 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_INSPECTION_CHARS = 2 * 1024 * 1024;
@@ -288,6 +289,14 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             boolean incomplete = stylesheets.truncated;
             int inspected = 0;
             CssRuleBudget ruleBudget = new CssRuleBudget();
+            org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+            long aggregateTimeoutMillis =
+                    org.apache.tika.config.TimeoutLimits.getProcessTimeoutMillis(
+                            context, zCfg.getTimeoutSeconds() * 1000L);
+            org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget scanBudget =
+                    new org.apache.tika.parser.image.ZXingCPPScanner.ScanBudget(
+                            MAX_UNICODE_QR_SCANS, aggregateTimeoutMillis);
             Set<Element> seen =
                     Collections.newSetFromMap(new IdentityHashMap<>());
             // Stream the tree instead of materializing getAllElements(). A
@@ -344,12 +353,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                     }
                     metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
                     try {
-                        org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                                new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
                         java.util.List<
                                 org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
                                 org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
-                                        candidate.text, scanner, zCfg, context);
+                                        candidate.text, scanner, zCfg, context, scanBudget);
                         org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(
                                 decoded, metadata);
                         if (!decoded.isEmpty()) {
@@ -362,6 +369,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                         throw e;
                     } catch (RuntimeException e) {
                         incomplete = true;
+                        if (scanBudget.hasRejectedScan()) {
+                            break;
+                        }
                     }
                 }
             }

@@ -168,7 +168,10 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 processDrawings(sheetPart, xhtml);
                 extractHyperLinks(sheetPart, xhtml);
                 xhtml.endElement("div");
+            } catch (SecurityException e) {
+                throw e;
             } catch (RuntimeException e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         "XLSB sheet " + sheetIdx + " aborted at " +
                                 e.getClass().getSimpleName() + ": " +
@@ -216,6 +219,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 Biff12XlmMacrosheetParser parser =
                         new Biff12XlmMacrosheetParser(is, xhtml, emulator);
                 parser.parse();
+            } catch (SecurityException e) {
+                throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
@@ -238,6 +243,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                     }
                     xhtml.endElement("div");
                 }
+            } catch (SecurityException e) {
+                throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 // Non-fatal — static text output already emitted above

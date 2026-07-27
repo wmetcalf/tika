@@ -91,6 +91,22 @@ public class TestMetadata extends TikaTest {
         }
     }
 
+    @Test
+    public void testGetValuesDoesNotExposeMutableMetadataStorage() {
+        Metadata metadata = new Metadata();
+        metadata.add(Office.OFFICE_LINK_URL, "https://example.invalid/original");
+
+        String[] valuesByName =
+                metadata.getValues(Office.OFFICE_LINK_URL.getName());
+        String[] valuesByProperty =
+                metadata.getValues(Office.OFFICE_LINK_URL);
+        valuesByName[0] = "https://example.invalid/name-mutation";
+        valuesByProperty[0] = "https://example.invalid/property-mutation";
+
+        assertEquals("https://example.invalid/original",
+                metadata.get(Office.OFFICE_LINK_URL));
+    }
+
     /**
      * Test for the <code>set(String, String)</code> method.
      */

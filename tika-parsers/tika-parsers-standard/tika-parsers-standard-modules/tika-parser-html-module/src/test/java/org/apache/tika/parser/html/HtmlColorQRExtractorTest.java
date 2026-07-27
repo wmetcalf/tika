@@ -1143,6 +1143,31 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void unicodeQrCandidatesShareOneSubprocessBudget() throws Exception {
+        Path invocationLog = temporaryDirectory.resolve("zxing-invocations.log");
+        Path fakeScanner = createCountingEmptyScanner(invocationLog);
+        Document document = Jsoup.parse("<html><body></body></html>");
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        for (int i = 0; i < 6; i++) {
+            document.body().appendElement("pre").text(unicodeGrid);
+        }
+        Metadata metadata = new Metadata();
+        Method scan = JSoupParser.class.getDeclaredMethod(
+                "scanForUnicodeArtQR", Document.class, Metadata.class, ParseContext.class);
+        scan.setAccessible(true);
+
+        scan.invoke(null, document, metadata, contextFor(fakeScanner));
+
+        assertEquals(4, Files.readAllLines(invocationLog).size());
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "skipped Unicode-QR candidates must not look like a clean negative");
+    }
+
+    @Test
     public void colorQrScannerFailureIsSecurityVisible() {
         Document document = Jsoup.parse("<html><body>" + VALID_GRID + "</body></html>");
         Metadata metadata = new Metadata();
@@ -1275,6 +1300,24 @@ public class HtmlColorQRExtractorTest {
                 fi
                 exit 2
                 """, StandardCharsets.UTF_8);
+        Files.setPosixFilePermissions(script,
+                PosixFilePermissions.fromString("rwx------"));
+        return script;
+    }
+
+    private Path createCountingEmptyScanner(Path invocationLog) throws IOException {
+        Path script = temporaryDirectory.resolve("counting-zxing-reader");
+        Files.writeString(script, """
+                #!/bin/sh
+                if [ "$1" = "-version" ]; then
+                    exit 0
+                fi
+                if [ "$1" = "-json" ]; then
+                    printf '%%s\\n' scan >> '%s'
+                    exit 0
+                fi
+                exit 2
+                """.formatted(invocationLog), StandardCharsets.UTF_8);
         Files.setPosixFilePermissions(script,
                 PosixFilePermissions.fromString("rwx------"));
         return script;

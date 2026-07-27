@@ -24,6 +24,7 @@ import java.awt.Image;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -310,9 +311,8 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, parseContext);
                 xhtml.startDocument();
                 if (cachedText != null && !cachedText.isEmpty()) {
-                    xhtml.startElement("p");
-                    xhtml.characters(cachedText.toCharArray(), 0, cachedText.length());
-                    xhtml.endElement("p");
+                    extractOutput(
+                            new ByteArrayInputStream(cachedText.getBytes(UTF_8)), xhtml);
                 }
                 xhtml.endDocument();
                 metadata.set("X-Tika-OCR-Duration-Ms", "0");
@@ -417,7 +417,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                         remaining >= buffer.length ? buffer.length : remaining + 1;
                 int read = input.read(buffer, 0, requested);
                 if (read == -1) {
-                    return output.toString(UTF_8).trim();
+                    return output.toString(UTF_8);
                 }
                 if (read > remaining) {
                     return null;
@@ -499,11 +499,11 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         try (ImageInputStream imageInput =
                      ImageIO.createImageInputStream(tis.getPath().toFile())) {
             if (imageInput == null) {
-                return PreparedOcrInput.borrowed(tis);
+                return rejectUnsafeImage(metadata, -1, -1, "image format inspection");
             }
             Iterator<ImageReader> readers = ImageIO.getImageReaders(imageInput);
             if (!readers.hasNext()) {
-                return PreparedOcrInput.borrowed(tis);
+                return rejectUnsafeImage(metadata, -1, -1, "image format inspection");
             }
             reader = readers.next();
             reader.setInput(imageInput, true, true);
@@ -553,7 +553,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             readParam.setSourceSubsampling(subsampling, subsampling, 0, 0);
             BufferedImage decoded = reader.read(0, readParam);
             if (decoded == null) {
-                return PreparedOcrInput.borrowed(tis);
+                return rejectUnsafeImage(metadata, width, height, "image decode");
             }
 
             long decodedPixels = checkedPixels(decoded.getWidth(), decoded.getHeight());
@@ -577,7 +577,7 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                 }
                 File dest = tmp.createTemporaryFile();
                 if (!ImageIO.write(scaled, "png", dest)) {
-                    return PreparedOcrInput.borrowed(tis);
+                    return rejectUnsafeImage(metadata, width, height, "safe image encoding");
                 }
                 return PreparedOcrInput.owned(TikaInputStream.get(dest.toPath()));
             } finally {
@@ -586,8 +586,12 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             }
         } catch (ArithmeticException e) {
             return rejectUnsafeImage(metadata, -1, -1, "numeric overflow");
+        } catch (SecurityException e) {
+            throw e;
         } catch (IOException e) {
-            return PreparedOcrInput.borrowed(tis);
+            return rejectUnsafeImage(metadata, -1, -1, "image format inspection");
+        } catch (RuntimeException e) {
+            return rejectUnsafeImage(metadata, -1, -1, "image decoder failure");
         } finally {
             if (reader != null) {
                 reader.dispose();

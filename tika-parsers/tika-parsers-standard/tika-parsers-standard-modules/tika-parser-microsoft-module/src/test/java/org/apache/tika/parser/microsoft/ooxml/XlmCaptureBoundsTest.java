@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -41,11 +42,13 @@ import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.RuntimeSAXException;
 import org.apache.tika.exception.WriteLimitReachedException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
@@ -281,6 +284,64 @@ class XlmCaptureBoundsTest {
         }
     }
 
+    @Test
+    void testXmlMacrosheetSecurityExceptionEscapesOpportunisticCatch()
+            throws Exception {
+        String xml = """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1"><c r="A1"><f>EXEC("payload")</f></c></row></sheetData>
+                </worksheet>
+                """;
+        Metadata metadata = new Metadata();
+        ParseContext parseContext = new ParseContext();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new FormulaSecurityExceptionHandler(), metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart macroPart = opcPackage.createPart(
+                    PackagingURIHelper.createPartName(
+                            "/xl/macrosheets/sheet1.xml"),
+                    XSSFRelation.MACRO_SHEET_XML.getContentType());
+            try (OutputStream stream = macroPart.getOutputStream()) {
+                stream.write(xml.getBytes(StandardCharsets.UTF_8));
+            }
+            XSSFExcelExtractorDecorator decorator =
+                    new XSSFExcelExtractorDecorator(
+                            parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmXmlMacroSheets", OPCPackage.class,
+                    XHTMLContentHandler.class, XSSFSharedStringsShim.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            InvocationTargetException thrown =
+                    assertThrows(InvocationTargetException.class,
+                            () -> process.invoke(
+                                    decorator, opcPackage, xhtml, null));
+
+            assertTrue(thrown.getCause() instanceof SecurityException);
+        }
+    }
+
+    @Test
+    void testXlsbSheetSecurityExceptionEscapesRecoveryCatch()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(Locale.class, Locale.US);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE,
+                "application/vnd.ms-excel.sheet.binary.macroenabled.12");
+        try (InputStream input = XlmCaptureBoundsTest.class.getResourceAsStream(
+                "/test-documents/testEXCEL.xlsb");
+             TikaInputStream stream = TikaInputStream.get(input)) {
+            assertThrows(SecurityException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, new TableCellSecurityExceptionHandler(),
+                            metadata, context));
+        }
+    }
+
     private static XlmMacroEmulator emulatorWithLimits(XlmMacroEmulator.Limits limits) {
         return new XlmMacroEmulator(new HashMap<>(), XlmWorkbookSheetMap.empty(), limits);
     }
@@ -368,6 +429,45 @@ class XlmCaptureBoundsTest {
             String text = new String(ch, start, length);
             if (text.contains("EXEC")) {
                 throw new WriteLimitReachedException(0);
+            }
+        }
+    }
+
+    private static final class FormulaSecurityExceptionHandler
+            extends DefaultHandler {
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (new String(ch, start, length).contains("EXEC")) {
+                throw new SecurityException(
+                        "simulated XLM formula policy denial");
+            }
+        }
+    }
+
+    private static final class TableCellSecurityExceptionHandler
+            extends DefaultHandler {
+
+        private boolean tableCell;
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) {
+            tableCell = "td".equals(localName) || "td".equals(qName);
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            if ("td".equals(localName) || "td".equals(qName)) {
+                tableCell = false;
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (tableCell && length > 0) {
+                throw new SecurityException(
+                        "simulated XLSB sheet policy denial");
             }
         }
     }

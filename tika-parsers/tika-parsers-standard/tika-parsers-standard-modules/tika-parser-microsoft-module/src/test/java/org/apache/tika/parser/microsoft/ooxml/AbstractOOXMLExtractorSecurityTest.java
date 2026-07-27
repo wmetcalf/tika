@@ -17,7 +17,6 @@
 package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -26,15 +25,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
+import org.apache.poi.openxml4j.opc.PackageRelationship;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.openxml4j.opc.TargetMode;
 import org.apache.poi.poifs.filesystem.Ole10Native;
@@ -199,7 +203,7 @@ public class AbstractOOXMLExtractorSecurityTest {
     }
 
     @Test
-    public void testOrdinarySaxFailureWhileSurfacingRelationshipIsBestEffort()
+    public void testOrdinarySaxFailureWhileSurfacingRelationshipPropagates()
             throws Exception {
         ParseContext context = new ParseContext();
         context.set(OfficeParserConfig.class, new OfficeParserConfig());
@@ -210,9 +214,43 @@ public class AbstractOOXMLExtractorSecurityTest {
                     "http://schemas.openxmlformats.org/officeDocument/"
                             + "2006/relationships/hyperlink");
 
-            assertDoesNotThrow(() -> new EmptyExtractor(context, opcPackage).getXHTML(
-                    new LinkRejectingHandler(), new Metadata(), context));
+            assertThrows(SAXException.class,
+                    () -> new EmptyExtractor(context, opcPackage).getXHTML(
+                            new LinkRejectingHandler(), new Metadata(), context));
         }
+    }
+
+    @Test
+    public void testRejectedExternalRelationshipsDoNotGrowAdmissionState()
+            throws Exception {
+        Class<?> budgetClass = Class.forName(
+                AbstractOOXMLExtractor.class.getName()
+                        + "$ExternalReferenceBudget");
+        Constructor<?> constructor = budgetClass.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        Object budget = constructor.newInstance();
+        Method tryAcquire = budgetClass.getDeclaredMethod(
+                "tryAcquire", String.class, PackageRelationship.class);
+        tryAcquire.setAccessible(true);
+        Field admittedKeys =
+                budgetClass.getDeclaredField("admittedRelationshipKeys");
+        admittedKeys.setAccessible(true);
+
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            for (int i = 0; i < 1_124; i++) {
+                PackageRelationship relationship =
+                        opcPackage.addExternalRelationship(
+                                "https://example.invalid/external-" + i,
+                                "http://schemas.openxmlformats.org/"
+                                        + "officeDocument/2006/relationships/hyperlink");
+                assertEquals(i < 1_024,
+                        tryAcquire.invoke(budget, "_rels/.rels", relationship));
+            }
+        }
+
+        assertEquals(1_024, ((Set<?>) admittedKeys.get(budget)).size(),
+                "relationships rejected after the hard cap must not be retained");
     }
 
     @Test

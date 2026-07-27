@@ -306,9 +306,9 @@ public class Metadata
     private String[] _getValues(final String name) {
         String[] values = metadata.get(name);
         if (values == null) {
-            values = new String[0];
+            return new String[0];
         }
-        return values;
+        return Arrays.copyOf(values, values.length);
     }
 
     /**

@@ -1100,6 +1100,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
+            throw e;
         } catch (SecurityException e) {
             throw e;
         } catch (Exception ignored) {
@@ -1125,6 +1126,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
+            throw e;
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
@@ -1162,6 +1164,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                                 sourceName, rel));
             } catch (SAXException e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
+                throw e;
             }
             // Light HAS_* flag heuristics so downstream filters know which
             // categories appeared. Types without a HAS_* constant still get
@@ -1285,7 +1288,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         private boolean tryAcquire(
                 String source, PackageRelationship relationship) {
             String key = relationshipKey(source, relationship);
-            if (!admittedRelationshipKeys.add(key)) {
+            if (admittedRelationshipKeys.contains(key)) {
                 return false;
             }
             boolean highPriority = isHighPriorityExternalRelationship(
@@ -1295,14 +1298,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 truncated = true;
                 return false;
             }
-            if (highPriority) {
-                remainingHighPriority--;
-            }
             int remaining = MAX_EXTERNAL_REFS_PER_DOC - emitted;
             if (remaining <= 0
                     || !highPriority && remaining <= remainingHighPriority) {
                 truncated = true;
                 return false;
+            }
+            admittedRelationshipKeys.add(key);
+            if (highPriority) {
+                remainingHighPriority--;
             }
             emitted++;
             return true;
