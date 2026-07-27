@@ -60,6 +60,8 @@ public class WARCParserTest extends TikaTest {
         fieldsToIgnore.add("X-TIKA:parse_time_millis");
         fieldsToIgnore.add("Content-Type");
         fieldsToIgnore.add("Content-Type-Magic-Detected");
+        fieldsToIgnore.add("img:File Name");
+        fieldsToIgnore.add("img:File Modified Date");
         assertMetadataListEquals(metadataList, gzMetadataList, fieldsToIgnore);
 
         assertEquals("application/warc", metadataList.get(0).get(Metadata.CONTENT_TYPE));
