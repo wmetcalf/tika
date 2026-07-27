@@ -300,6 +300,25 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         estimatedSize = Math.max(0, estimatedSize - removedSize);
     }
 
+    @Override
+    public void replace(String field, String[] values, Map<String, String[]> data) {
+        remove(field, data);
+        Integer removedAlignedCount = removedAlignedFieldCounts.remove(field);
+        if (values != null) {
+            for (String value : values) {
+                if (value != null) {
+                    add(field, value, data);
+                }
+            }
+        }
+        String[] retainedValues = data.get(field);
+        int retainedCount = retainedValues == null ? 0 : retainedValues.length;
+        if (removedAlignedCount != null && retainedCount != removedAlignedCount) {
+            removedAlignedFieldCounts.put(field,
+                    Math.max(removedAlignedCount, retainedCount));
+        }
+    }
+
     private void setAlwaysInclude(String field, String value, Map<String, String[]> data) {
         if (TIKA_CONTENT_KEY.equals(field)) {
             data.put(field, new String[]{ value });
@@ -442,6 +461,15 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         data.put(filterKey.string, appendValue(data.get(filterKey.string), toAdd ));
     }
 
+    @Override
+    public void addFirst(String field, String value, Map<String, String[]> data) {
+        if (removedAlignedFieldCounts.containsKey(field)) {
+            add(field, value, data);
+        } else {
+            set(field, value, data);
+        }
+    }
+
     /**
      * The first member emitted by each compatibility helper is the record boundary.
      * Reserve every included member key at that boundary, or suppress the whole
@@ -483,8 +511,17 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
 
         String[] boundaryValues = data.get(boundaryField);
         int priorRecordCount = boundaryValues == null ? 0 : boundaryValues.length;
-        priorRecordCount = Math.max(priorRecordCount,
-                removedAlignedFieldCounts.getOrDefault(boundaryField, 0));
+        boolean groupHasReplacementCount = false;
+        for (String member : group) {
+            if (!includeField(member)) {
+                continue;
+            }
+            Integer replacementCount = removedAlignedFieldCounts.get(member);
+            if (replacementCount != null) {
+                groupHasReplacementCount = true;
+                priorRecordCount = Math.max(priorRecordCount, replacementCount);
+            }
+        }
 
         int requiredKeyBytes = 0;
         for (String member : group) {
@@ -508,18 +545,13 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             if (!fieldSizes.containsKey(member)) {
                 fieldSizes.put(member, 0);
             }
-            Integer removedCount = removedAlignedFieldCounts.get(member);
-            if (removedCount == null) {
-                continue;
-            }
             String[] values = data.get(member);
             int valueCount = values == null ? 0 : values.length;
-            int alignedRecordCount = Math.max(priorRecordCount, removedCount);
-            if (valueCount < alignedRecordCount) {
+            if (groupHasReplacementCount && valueCount < priorRecordCount) {
                 String[] aligned = values == null
-                        ? new String[alignedRecordCount]
-                        : Arrays.copyOf(values, alignedRecordCount);
-                Arrays.fill(aligned, valueCount, alignedRecordCount, "");
+                        ? new String[priorRecordCount]
+                        : Arrays.copyOf(values, priorRecordCount);
+                Arrays.fill(aligned, valueCount, priorRecordCount, "");
                 data.put(member, aligned);
             }
             removedAlignedFieldCounts.remove(member);

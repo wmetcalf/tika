@@ -31,6 +31,7 @@ import org.xml.sax.helpers.AttributesImpl;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
@@ -89,8 +90,14 @@ public class OOXMLTikaBodyPartHandler
     private String activeHyperlinkType = null;
     private String activeRunHyperlinkUrl = null;
     private static final int MAX_LINK_TEXT_CHARS = 64 * 1_024;
+    private static final int MAX_INLINE_NOTE_EXPANSIONS = 1_024;
+    private static final long MAX_INLINE_NOTE_XML_BYTES = 8L * 1_024 * 1_024;
     private final StringBuilder activeHyperlinkText = new StringBuilder();
     private boolean activeHyperlinkTextTruncated;
+    private int inlineNoteExpansions;
+    private long inlineNoteXmlBytes;
+    private boolean inlineNoteLimitReached;
+    private boolean inlineNoteLimitSignaled;
 
     // Color-aware QR collector: optionally records (per-glyph color) for
     // every character emitted in run(), binned by paragraph row. Populated
@@ -457,12 +464,29 @@ public class OOXMLTikaBodyPartHandler
     @Override
     public void commentReference(String id) throws SAXException {
         if (id != null) {
+            if (pendingCommentIds.size() >= MAX_INLINE_NOTE_EXPANSIONS) {
+                signalInlineNoteLimitReached();
+                return;
+            }
             pendingCommentIds.add(id);
         }
     }
 
     private void inlineNoteContent(OOXMLInlineBodyPartMap.InlineBodyPart part,
             String cssClass) throws SAXException {
+        if (inlineNoteLimitReached) {
+            return;
+        }
+        int xmlBytes = part.xml().length;
+        if (inlineNoteExpansions >= MAX_INLINE_NOTE_EXPANSIONS
+                || xmlBytes > MAX_INLINE_NOTE_XML_BYTES - inlineNoteXmlBytes) {
+            inlineNoteLimitReached = true;
+            signalInlineNoteLimitReached();
+            xhtml.characters("[additional inline notes omitted]");
+            return;
+        }
+        inlineNoteExpansions++;
+        inlineNoteXmlBytes += xmlBytes;
         Map<String, String> noteRelationships = part.linkedRelationships();
         xhtml.startElement("div", "class", cssClass);
         // Track the inner handler so we can call its closeAnyPending() if
@@ -486,6 +510,22 @@ public class OOXMLTikaBodyPartHandler
             colorCollector.addCollector(innerHandler.getColorCollector());
         }
         xhtml.endElement("div");
+    }
+
+    private void signalInlineNoteLimitReached() {
+        if (inlineNoteLimitSignaled || metadata == null) {
+            return;
+        }
+        inlineNoteLimitSignaled = true;
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "OOXML inline note expansion limit reached; additional "
+                        + "footnotes, endnotes, or comments were skipped");
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "OOXML inline-note analysis incomplete; referenced content "
+                            + "may not have been analyzed");
+        }
     }
 
     @Override

@@ -58,6 +58,33 @@ public class MetadataWriteLimiterCompatibilityTest {
     }
 
     @Test
+    public void testFirstMultiValuePropertyAddUsesLegacySetDispatch() {
+        MetadataWriteLimiter dispatchTrackingLimiter = new MetadataWriteLimiter() {
+            @Override
+            public void add(String field, String value, Map<String, String[]> data) {
+                String[] existing = data.get(field);
+                String[] updated = new String[existing.length + 1];
+                System.arraycopy(existing, 0, updated, 0, existing.length);
+                updated[existing.length] = "add:" + value;
+                data.put(field, updated);
+            }
+
+            @Override
+            public void set(String field, String value, Map<String, String[]> data) {
+                data.put(field, new String[]{"set:" + value});
+            }
+        };
+        Metadata metadata = new Metadata(dispatchTrackingLimiter);
+
+        metadata.add(Office.OFFICE_LINK_URL, "first");
+        metadata.add(Office.OFFICE_LINK_URL, "second");
+
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new String[]{"set:first", "add:second"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+    }
+
+    @Test
     public void testLegacySerializedMetadataRestoresAcceptAllLimiter() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set("before", "value");

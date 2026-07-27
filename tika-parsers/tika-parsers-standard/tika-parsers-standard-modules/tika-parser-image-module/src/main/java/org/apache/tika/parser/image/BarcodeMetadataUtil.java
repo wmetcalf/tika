@@ -28,6 +28,10 @@ import org.apache.tika.metadata.TikaCoreProperties;
  */
 public final class BarcodeMetadataUtil {
 
+    private static final int MAX_RESULTS = 256;
+    private static final int MAX_RESULT_CHARS = 64 * 1024;
+    private static final int MAX_TOTAL_RECORD_CHARS = 1024 * 1024;
+
     private BarcodeMetadataUtil() {
     }
 
@@ -36,12 +40,43 @@ public final class BarcodeMetadataUtil {
         if (metadata == null || result == null) {
             return;
         }
+        if (Boolean.parseBoolean(metadata.get(Barcode.BARCODE_LIMIT_REACHED))) {
+            return;
+        }
         String value = safe(result.getText());
         String format = normalizeFormat(result.getFormat(), defaultFormat);
         String rawBytes = safe(result.getRawBytes());
         String position = safe(result.getPosition());
         String errorCorrectionLevel = safe(result.getErrorCorrectionLevel());
         String mirrored = Boolean.toString(result.isMirrored());
+        String record = MetadataRecord.encode(
+                "value", value,
+                "format", format,
+                "rawBytes", rawBytes,
+                "position", position,
+                "errorCorrectionLevel", errorCorrectionLevel,
+                "mirrored", mirrored);
+
+        String[] existingRecords = metadata.getValues(Barcode.BARCODE_RECORD);
+        int retainedChars = 0;
+        for (String existing : existingRecords) {
+            retainedChars += existing.length();
+        }
+        if (existingRecords.length >= MAX_RESULTS
+                || record.length() > MAX_RESULT_CHARS
+                || retainedChars > MAX_TOTAL_RECORD_CHARS - record.length()) {
+            metadata.set(Barcode.BARCODE_LIMIT_REACHED, true);
+            metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "Barcode metadata retention limit reached; additional "
+                            + "barcode results were skipped");
+            if (metadata.get("ExploitClass") == null) {
+                metadata.set("ExploitClass",
+                        "Barcode metadata retention limit incomplete; encoded "
+                                + "content may not have been analyzed");
+            }
+            return;
+        }
 
         metadata.add(Barcode.BARCODE_VALUE, value);
         metadata.add(Barcode.BARCODE_FORMAT, format);
@@ -49,13 +84,7 @@ public final class BarcodeMetadataUtil {
         metadata.add(Barcode.BARCODE_POSITION, position);
         metadata.add(Barcode.BARCODE_ERROR_CORRECTION_LEVEL, errorCorrectionLevel);
         metadata.add(Barcode.BARCODE_IS_MIRRORED, mirrored);
-        metadata.add(Barcode.BARCODE_RECORD, MetadataRecord.encode(
-                "value", value,
-                "format", format,
-                "rawBytes", rawBytes,
-                "position", position,
-                "errorCorrectionLevel", errorCorrectionLevel,
-                "mirrored", mirrored));
+        metadata.add(Barcode.BARCODE_RECORD, record);
     }
 
     public static void markAnalysisIncomplete(Metadata metadata, String analysis,

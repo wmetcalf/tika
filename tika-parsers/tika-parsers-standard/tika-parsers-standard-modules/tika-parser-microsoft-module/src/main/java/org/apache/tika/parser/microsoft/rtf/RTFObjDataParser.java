@@ -54,6 +54,7 @@ import org.apache.tika.parser.microsoft.OfficeParser.POIFSDocumentType;
 class RTFObjDataParser {
 
     private final static String WIN_ASCII = "WINDOWS-1252";
+    private static final int MAX_LINKED_NETWORK_NAME_BYTES = 4096;
     private final int memoryLimitInKb;
     private boolean linkedObject;
 
@@ -112,6 +113,11 @@ class RTFObjDataParser {
             metadata.add(RTFMetadata.EMB_ITEM, itemName);
         }
         if (linkedObject) {
+            String networkName = readBoundedLinkedNetworkName(is)
+                    .trim().replace("\u0000", "");
+            if (!networkName.isEmpty()) {
+                metadata.add(RTFMetadata.EMB_NETWORK_NAME, networkName);
+            }
             return null;
         }
 
@@ -159,6 +165,21 @@ class RTFObjDataParser {
 
     boolean isLinkedObject() {
         return linkedObject;
+    }
+
+    private String readBoundedLinkedNetworkName(InputStream is)
+            throws IOException, TikaException {
+        long len = readUInt(is);
+        if (len > MAX_LINKED_NETWORK_NAME_BYTES) {
+            throw new TikaMemoryLimitException(
+                    len, MAX_LINKED_NETWORK_NAME_BYTES);
+        }
+        byte[] bytes = readBytes(is, len);
+        try {
+            return new String(bytes, WIN_ASCII);
+        } catch (UnsupportedEncodingException e) {
+            throw new IOException("Unsupported encoding", e);
+        }
     }
 
     //will throw IOException if not actually POIFS

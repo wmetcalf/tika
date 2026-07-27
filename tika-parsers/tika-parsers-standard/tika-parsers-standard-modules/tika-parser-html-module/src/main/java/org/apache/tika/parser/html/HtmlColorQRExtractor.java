@@ -29,8 +29,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -81,18 +83,13 @@ public final class HtmlColorQRExtractor {
     private static final int MAX_STYLE_RESOLUTION_CHARS = 2 * 1024 * 1024;
     private static final int MAX_STYLE_RULE_LOOKUPS = 64 * 1024;
     private static final int MAX_DATA_URI_HEADER_CHARS = 1_024;
-    private static final String STYLESHEET_LIMIT_WARNING =
-            "HTML color-QR stylesheet limit reached; color-QR extraction is incomplete";
+    private static final String STYLESHEET_INCOMPLETE_WARNING =
+            "HTML color-QR stylesheet analysis is incomplete; "
+                    + "unsupported or bounded CSS was omitted";
     private static final String COLOR_QR_LIMIT_WARNING =
             "HTML color-QR analysis limit reached; color-QR extraction is incomplete";
     private static final Pattern SIMPLE_CSS_SELECTOR = Pattern.compile(
-            "^(?:[a-z][a-z0-9-]*|\\.[a-z0-9_-]+|#[a-z0-9_-]+)$");
-    private static final Pattern COLOR_DECLARATION = Pattern.compile(
-            "(?i)(?:^|;|\\s)color\\s*:\\s*([^;]+)");
-    private static final Pattern BACKGROUND_COLOR_DECLARATION = Pattern.compile(
-            "(?i)(?:^|;|\\s)background-color\\s*:\\s*([^;]+)");
-    private static final Pattern BACKGROUND_DECLARATION = Pattern.compile(
-            "(?i)(?:^|;|\\s)background\\s*:\\s*([^;]+)");
+            "^(?:[a-z][a-z0-9-]*|\\.[A-Za-z0-9_-]+|#[A-Za-z0-9_-]+)$");
     private static final Pattern BACKGROUND_HEX_COLOR = Pattern.compile(
             "#[0-9a-fA-F]{3,8}");
     private static final Pattern BACKGROUND_RGB_COLOR = Pattern.compile(
@@ -110,7 +107,13 @@ public final class HtmlColorQRExtractor {
             "#(?:[0-9a-f]{4}|[0-9a-f]{8})");
     private static final Pattern CSS_IDENTIFIER_COLOR = Pattern.compile(
             "[a-z][a-z0-9-]*");
-
+    private static final Pattern BACKGROUND_POSITION_ONLY = Pattern.compile(
+            "(?i)\\s*[+-]?(?:0+(?:\\.0*)?|\\.0+"
+                    + "|(?:\\d+(?:\\.\\d*)?|\\.\\d+)"
+                    + "(?:%|px|em|rem|ex|ch|vw|vh|vmin|vmax|cm|mm|q|in|pt|pc))"
+                    + "(?:\\s+[+-]?(?:0+(?:\\.0*)?|\\.0+"
+                    + "|(?:\\d+(?:\\.\\d*)?|\\.\\d+)"
+                    + "(?:%|px|em|rem|ex|ch|vw|vh|vmin|vmax|cm|mm|q|in|pt|pc)))?\\s*");
     /** Luminance threshold below which a colour counts as "dark". 0..255. */
     private static final int DARK_LUMA_THRESHOLD = 128;
 
@@ -136,10 +139,11 @@ public final class HtmlColorQRExtractor {
         if (doc == null || scanner == null || !scanner.hasZXingCPP()) {
             return decoded;
         }
-        StylesheetParseResult stylesheetResult = parseStylesheetsBounded(doc);
+        StylesheetParseResult stylesheetResult = parseStylesheetsBounded(
+                doc, JSoupParser.usesXmlSelectorCaseSensitivity(metadata));
         if (stylesheetResult.truncated && metadata != null) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                    STYLESHEET_LIMIT_WARNING);
+                    STYLESHEET_INCOMPLETE_WARNING);
             if (metadata.get("ExploitClass") == null) {
                 metadata.set("ExploitClass",
                         "HTML color-QR extraction incomplete; encoded link content may be hidden");
@@ -549,16 +553,43 @@ public final class HtmlColorQRExtractor {
     }
 
     private static final class StyleResolutionContext {
-        private final Map<String, String> rules;
+        private final Map<String, List<CssRule>> rulesBySelector = new HashMap<>();
         private final StyleBudget budget;
         private final Map<Element, String> combinedStyles = new IdentityHashMap<>();
         private final Map<Element, EffectiveStyle> effectiveStyles = new IdentityHashMap<>();
         private final Map<Element, ForegroundStyle> foregroundStyles =
                 new IdentityHashMap<>();
+        private final boolean quirksModeIdentifiers;
 
         private StyleResolutionContext(Map<String, String> rules, StyleBudget budget) {
-            this.rules = rules;
             this.budget = budget;
+            this.quirksModeIdentifiers =
+                    rules instanceof StylesheetRuleMap
+                            && ((StylesheetRuleMap) rules).quirksModeIdentifiers;
+            int indexed = 0;
+            if (rules instanceof StylesheetRuleMap) {
+                StylesheetRuleMap stylesheetRules = (StylesheetRuleMap) rules;
+                for (CssRule rule : stylesheetRules.orderedRules) {
+                    if (indexed++ >= MAX_STYLESHEET_SELECTORS) {
+                        budget.incomplete = true;
+                        break;
+                    }
+                    rulesBySelector
+                            .computeIfAbsent(rule.selector, ignored -> new ArrayList<>())
+                            .add(rule);
+                }
+            } else {
+                for (Map.Entry<String, String> entry : rules.entrySet()) {
+                    if (indexed >= MAX_STYLESHEET_SELECTORS) {
+                        budget.incomplete = true;
+                        break;
+                    }
+                    CssRule rule = new CssRule(entry.getKey(), entry.getValue(), indexed++);
+                    rulesBySelector
+                            .computeIfAbsent(rule.selector, ignored -> new ArrayList<>())
+                            .add(rule);
+                }
+            }
         }
 
         private EffectiveStyle resolve(Element start) {
@@ -573,11 +604,7 @@ public final class HtmlColorQRExtractor {
             boolean bgFound = false;
 
             String startStyle = combinedStyle(start);
-            ColorReadResult bgResult =
-                    readColorResult(startStyle, "background-color");
-            if (!bgResult.declared) {
-                bgResult = readBackgroundShorthandResult(startStyle);
-            }
+            ColorReadResult bgResult = readBackgroundResult(startStyle);
             if (bgResult.unresolved) {
                 budget.incomplete = true;
             }
@@ -650,7 +677,7 @@ public final class HtmlColorQRExtractor {
                 return cached;
             }
             StringBuilder style = new StringBuilder();
-            appendRule(style, element.tagName().toLowerCase(Locale.ROOT));
+            appendRules(style, element.tagName().toLowerCase(Locale.ROOT));
 
             String classes = element.attr("class");
             int classLimit = Math.min(classes.length(), MAX_COMBINED_STYLE_CHARS);
@@ -658,39 +685,73 @@ public final class HtmlColorQRExtractor {
                 budget.incomplete = true;
             }
             int cursor = 0;
+            List<CssRule> matchingClassRules = new ArrayList<>();
+            HashSet<String> seenClassSelectors = new HashSet<>();
             while (cursor < classLimit) {
-                while (cursor < classLimit && Character.isWhitespace(classes.charAt(cursor))) {
+                while (cursor < classLimit && JSoupParser.isHtmlSpace(classes.charAt(cursor))) {
                     cursor++;
                 }
                 int start = cursor;
-                while (cursor < classLimit && !Character.isWhitespace(classes.charAt(cursor))) {
+                while (cursor < classLimit && !JSoupParser.isHtmlSpace(classes.charAt(cursor))) {
                     cursor++;
                 }
                 if (start < cursor) {
-                    appendRule(style, "."
-                            + classes.substring(start, cursor).toLowerCase(Locale.ROOT));
+                    String selector = "."
+                            + classes.substring(start, cursor);
+                    if (seenClassSelectors.add(selector)) {
+                        collectRules(matchingClassRules, selector);
+                    }
                 }
+            }
+            matchingClassRules.sort(
+                    (left, right) -> Integer.compare(left.sourceOrder, right.sourceOrder));
+            for (CssRule rule : matchingClassRules) {
+                appendDeclaration(style, rule.declaration);
             }
 
             String id = element.id();
             if (!id.isEmpty()) {
                 if (id.length() <= MAX_COMBINED_STYLE_CHARS) {
-                    appendRule(style, "#" + id.toLowerCase(Locale.ROOT));
+                    appendRules(style, "#" + id);
                 } else {
                     budget.incomplete = true;
                 }
             }
-            appendDeclaration(style, element.attr("style"));
+            appendInlineDeclaration(style, element.attr("style"));
             String result = style.toString();
             combinedStyles.put(element, result);
             return result;
         }
 
-        private void appendRule(StringBuilder style, String selector) {
+        private void appendRules(StringBuilder style, String selector) {
+            List<CssRule> matchingRules = getRules(selector);
+            for (CssRule rule : matchingRules) {
+                appendDeclaration(style, rule.declaration);
+            }
+        }
+
+        private void collectRules(List<CssRule> matchingRules, String selector) {
+            matchingRules.addAll(getRules(selector));
+        }
+
+        private List<CssRule> getRules(String selector) {
             if (!budget.consumeLookup()) {
+                return List.of();
+            }
+            return rulesBySelector.getOrDefault(
+                    selectorKey(selector, quirksModeIdentifiers), List.of());
+        }
+
+        private void appendInlineDeclaration(StringBuilder style, String declaration) {
+            if (declaration == null || declaration.isEmpty()) {
                 return;
             }
-            appendDeclaration(style, rules.get(selector));
+            int retained = Math.min(declaration.length(), MAX_COMBINED_STYLE_CHARS);
+            if (retained < declaration.length()) {
+                budget.incomplete = true;
+            }
+            appendDeclaration(
+                    style, stripCssComments(declaration.subSequence(0, retained)).toString());
         }
 
         private void appendDeclaration(StringBuilder style, String declaration) {
@@ -758,20 +819,36 @@ public final class HtmlColorQRExtractor {
     }
 
     static StylesheetParseResult parseStylesheetsBounded(Document doc) {
-        StylesheetAccumulator accumulator = new StylesheetAccumulator();
+        return parseStylesheetsBounded(doc, false);
+    }
+
+    static StylesheetParseResult parseStylesheetsBounded(
+            Document doc, boolean xmlCaseSensitiveSelectors) {
+        StylesheetAccumulator accumulator = new StylesheetAccumulator(
+                !xmlCaseSensitiveSelectors
+                        && doc.quirksMode() == Document.QuirksMode.quirks,
+                xmlCaseSensitiveSelectors);
         try {
             doc.traverse(accumulator);
         } catch (StylesheetLimitException e) {
             accumulator.truncated = true;
         }
-        return new StylesheetParseResult(accumulator.rules, accumulator.truncated);
+        return new StylesheetParseResult(
+                accumulator.rules,
+                accumulator.truncated || xmlCaseSensitiveSelectors);
     }
 
     private static final class StylesheetAccumulator implements NodeVisitor {
-        private final Map<String, String> rules = new HashMap<>();
+        private final StylesheetRuleMap rules;
         private int consumedChars;
         private int selectors;
         private boolean truncated;
+
+        private StylesheetAccumulator(
+                boolean quirksModeIdentifiers, boolean xmlCaseSensitiveSelectors) {
+            rules = new StylesheetRuleMap(
+                    quirksModeIdentifiers, xmlCaseSensitiveSelectors);
+        }
 
         @Override
         public void head(Node node, int depth) {
@@ -826,7 +903,15 @@ public final class HtmlColorQRExtractor {
         }
 
         private void parseBoundedCss(CharSequence css) {
-            parseCssRules(stripCssComments(css), this);
+            CharSequence stripped = stripCssComments(css);
+            int rulesStart = safeLeadingCharsetEnd(stripped);
+            CharSequence rulesCss = stripped.subSequence(rulesStart, stripped.length());
+            if (containsCssAtRule(rulesCss)) {
+                // At-rules can import or conditionally apply color declarations,
+                // neither of which this deliberately small CSS parser resolves.
+                truncated = true;
+            }
+            parseCssRules(rulesCss, this);
             if (truncated) {
                 throw StylesheetLimitException.INSTANCE;
             }
@@ -977,7 +1062,7 @@ public final class HtmlColorQRExtractor {
             if (open < 0) {
                 return;
             }
-            int close = indexOf(css, '}', open + 1);
+            int close = findMatchingRuleBrace(css, open);
             if (close < 0) {
                 return;
             }
@@ -991,16 +1076,29 @@ public final class HtmlColorQRExtractor {
                     throw StylesheetLimitException.INSTANCE;
                 }
                 String rawSelector = css.subSequence(selectorStart, i)
-                        .toString().trim().toLowerCase(Locale.ROOT);
+                        .toString().trim();
                 JSoupParser.CssNormalization normalization =
                         JSoupParser.normalizeCss(rawSelector);
                 String selector = normalization.css().trim();
+                boolean xmlTypeSelector = accumulator.rules.xmlCaseSensitiveSelectors
+                        && !selector.startsWith(".") && !selector.startsWith("#");
+                if (xmlTypeSelector) {
+                    // JSoup's HTML parser normalizes source element names to
+                    // lowercase even for XHTML input, so matching an
+                    // XML-case-sensitive type selector would be ambiguous.
+                    // The result is globally marked incomplete for XML media
+                    // types, while class/id rules remain useful best effort.
+                    selectorStart = i + 1;
+                    continue;
+                }
+                selector = selectorKey(
+                        selector, accumulator.rules.quirksModeIdentifiers);
                 if (normalization.incomplete()) {
                     accumulator.truncated = true;
                 }
                 if (!selector.isEmpty()
                         && SIMPLE_CSS_SELECTOR.matcher(selector).matches()) {
-                    accumulator.rules.put(selector, declaration);
+                    accumulator.rules.add(selector, declaration);
                 } else if (!selector.isEmpty()
                         && isSecurityRelevantDeclaration(declaration)) {
                     accumulator.truncated = true;
@@ -1009,6 +1107,60 @@ public final class HtmlColorQRExtractor {
             }
             cursor = close + 1;
         }
+    }
+
+    private static int findMatchingRuleBrace(CharSequence css, int open) {
+        char quote = 0;
+        boolean escaped = false;
+        int braceDepth = 1;
+        int parenthesisDepth = 0;
+        int bracketDepth = 0;
+        for (int i = open + 1; i < css.length(); i++) {
+            char current = css.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (quote != 0) {
+                if (current == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+                continue;
+            }
+            if (current == '(') {
+                parenthesisDepth++;
+                continue;
+            }
+            if (current == ')' && parenthesisDepth > 0) {
+                parenthesisDepth--;
+                continue;
+            }
+            if (current == '[') {
+                bracketDepth++;
+                continue;
+            }
+            if (current == ']' && bracketDepth > 0) {
+                bracketDepth--;
+                continue;
+            }
+            if (parenthesisDepth != 0 || bracketDepth != 0) {
+                continue;
+            }
+            if (current == '{') {
+                braceDepth++;
+            } else if (current == '}' && --braceDepth == 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static boolean isSecurityRelevantDeclaration(String declaration) {
@@ -1025,9 +1177,39 @@ public final class HtmlColorQRExtractor {
 
     private static StringBuilder stripCssComments(CharSequence css) {
         StringBuilder stripped = new StringBuilder(css.length());
+        char quote = 0;
+        boolean escaped = false;
         for (int i = 0; i < css.length();) {
+            char current = css.charAt(i);
+            if (escaped) {
+                stripped.append(current);
+                escaped = false;
+                i++;
+                continue;
+            }
+            if (current == '\\') {
+                stripped.append(current);
+                escaped = true;
+                i++;
+                continue;
+            }
+            if (quote != 0) {
+                stripped.append(current);
+                if (current == quote) {
+                    quote = 0;
+                }
+                i++;
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+                stripped.append(current);
+                i++;
+                continue;
+            }
             if (i + 1 < css.length()
                     && css.charAt(i) == '/' && css.charAt(i + 1) == '*') {
+                stripped.append(' ');
                 i += 2;
                 while (i + 1 < css.length()
                         && !(css.charAt(i) == '*' && css.charAt(i + 1) == '/')) {
@@ -1039,9 +1221,185 @@ public final class HtmlColorQRExtractor {
                 i += 2;
                 continue;
             }
-            stripped.append(css.charAt(i++));
+            stripped.append(current);
+            i++;
         }
         return stripped;
+    }
+
+    private static int safeLeadingCharsetEnd(CharSequence css) {
+        int cursor = 0;
+        if (cursor < css.length() && css.charAt(cursor) == '\ufeff') {
+            cursor++;
+        }
+        while (cursor < css.length() && Character.isWhitespace(css.charAt(cursor))) {
+            cursor++;
+        }
+        if (!startsWithIgnoreCase(css, cursor, "@charset")) {
+            return 0;
+        }
+        cursor += "@charset".length();
+        if (cursor >= css.length() || !Character.isWhitespace(css.charAt(cursor))) {
+            return 0;
+        }
+        while (cursor < css.length() && Character.isWhitespace(css.charAt(cursor))) {
+            cursor++;
+        }
+        if (cursor >= css.length()
+                || (css.charAt(cursor) != '\'' && css.charAt(cursor) != '"')) {
+            return 0;
+        }
+        char quote = css.charAt(cursor++);
+        int encodingChars = 0;
+        while (cursor < css.length() && css.charAt(cursor) != quote) {
+            char current = css.charAt(cursor++);
+            if (current == '\\' || current < 0x20 || current > 0x7e) {
+                return 0;
+            }
+            encodingChars++;
+        }
+        if (encodingChars == 0 || cursor >= css.length()) {
+            return 0;
+        }
+        cursor++;
+        while (cursor < css.length() && Character.isWhitespace(css.charAt(cursor))) {
+            cursor++;
+        }
+        return cursor < css.length() && css.charAt(cursor) == ';'
+                ? cursor + 1 : 0;
+    }
+
+    private static boolean containsCssAtRule(CharSequence css) {
+        char quote = 0;
+        boolean escaped = false;
+        boolean customPropertyValue = false;
+        int customPropertyBraceDepth = 0;
+        int declarationStart = 0;
+        boolean declarationColonSeen = false;
+        char previousSignificant = 0;
+        int parenthesisDepth = 0;
+        int bracketDepth = 0;
+        for (int i = 0; i < css.length(); i++) {
+            char current = css.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (quote != 0) {
+                if (current == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+                continue;
+            }
+            if (startsWith(css, i, "<!--")) {
+                i += 3;
+                continue;
+            }
+            if (startsWith(css, i, "-->")) {
+                i += 2;
+                continue;
+            }
+            if (current == '(') {
+                parenthesisDepth++;
+            } else if (current == ')' && parenthesisDepth > 0) {
+                parenthesisDepth--;
+            } else if (current == '[') {
+                bracketDepth++;
+            } else if (current == ']' && bracketDepth > 0) {
+                bracketDepth--;
+            }
+            if (parenthesisDepth == 0 && bracketDepth == 0) {
+                if (!customPropertyValue && current == ':'
+                        && !declarationColonSeen) {
+                    declarationColonSeen = true;
+                    if (startsCustomPropertyValue(css, declarationStart, i)) {
+                        customPropertyValue = true;
+                        customPropertyBraceDepth = 0;
+                    }
+                } else if (customPropertyValue && current == '{') {
+                    customPropertyBraceDepth++;
+                } else if (customPropertyValue && current == '}') {
+                    if (customPropertyBraceDepth > 0) {
+                        customPropertyBraceDepth--;
+                    } else {
+                        customPropertyValue = false;
+                        declarationStart = i + 1;
+                        declarationColonSeen = false;
+                    }
+                } else if (customPropertyValue && current == ';'
+                        && customPropertyBraceDepth == 0) {
+                    customPropertyValue = false;
+                    declarationStart = i + 1;
+                    declarationColonSeen = false;
+                } else if (!customPropertyValue
+                        && (current == '{' || current == '}' || current == ';')) {
+                    declarationStart = i + 1;
+                    declarationColonSeen = false;
+                }
+            }
+            if (!customPropertyValue && current == '@'
+                    && parenthesisDepth == 0 && bracketDepth == 0
+                    && (previousSignificant == 0
+                    || previousSignificant == ';'
+                    || previousSignificant == '{'
+                    || previousSignificant == '}')) {
+                return true;
+            }
+            if (!Character.isWhitespace(current)) {
+                previousSignificant = current;
+            }
+        }
+        return false;
+    }
+
+    private static boolean startsCustomPropertyValue(
+            CharSequence css, int declarationStart, int colon) {
+        int nameEnd = colon;
+        while (nameEnd > declarationStart
+                && Character.isWhitespace(css.charAt(nameEnd - 1))) {
+            nameEnd--;
+        }
+        int nameStart = declarationStart;
+        while (nameStart < nameEnd && Character.isWhitespace(css.charAt(nameStart))) {
+            nameStart++;
+        }
+        return nameEnd - nameStart > 2
+                && css.charAt(nameStart) == '-'
+                && css.charAt(nameStart + 1) == '-';
+    }
+
+    private static boolean startsWith(CharSequence value, int offset, String wanted) {
+        if (offset + wanted.length() > value.length()) {
+            return false;
+        }
+        for (int i = 0; i < wanted.length(); i++) {
+            if (value.charAt(offset + i) != wanted.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean startsWithIgnoreCase(
+            CharSequence value, int offset, String wanted) {
+        if (offset + wanted.length() > value.length()) {
+            return false;
+        }
+        for (int i = 0; i < wanted.length(); i++) {
+            if (Character.toLowerCase(value.charAt(offset + i))
+                    != Character.toLowerCase(wanted.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int indexOf(CharSequence value, char wanted, int start) {
@@ -1063,6 +1421,75 @@ public final class HtmlColorQRExtractor {
         }
     }
 
+    static List<CssRule> stylesheetRulesFor(
+            Map<String, String> rules, String selector) {
+        if (rules instanceof StylesheetRuleMap) {
+            StylesheetRuleMap stylesheetRules = (StylesheetRuleMap) rules;
+            return stylesheetRules.rulesBySelector.getOrDefault(
+                    selectorKey(selector, stylesheetRules.quirksModeIdentifiers),
+                    List.of());
+        }
+        String declaration = rules.get(selector);
+        return declaration == null
+                ? List.of() : List.of(new CssRule(selector, declaration, 0));
+    }
+
+    static final class StylesheetRuleMap extends LinkedHashMap<String, String> {
+        private final List<CssRule> orderedRules = new ArrayList<>();
+        private final Map<String, List<CssRule>> rulesBySelector = new HashMap<>();
+        private final boolean quirksModeIdentifiers;
+        private final boolean xmlCaseSensitiveSelectors;
+
+        private StylesheetRuleMap(
+                boolean quirksModeIdentifiers, boolean xmlCaseSensitiveSelectors) {
+            this.quirksModeIdentifiers = quirksModeIdentifiers;
+            this.xmlCaseSensitiveSelectors = xmlCaseSensitiveSelectors;
+        }
+
+        private void add(String selector, String declaration) {
+            put(selector, declaration);
+            CssRule rule = new CssRule(selector, declaration, orderedRules.size());
+            orderedRules.add(rule);
+            rulesBySelector
+                    .computeIfAbsent(selector, ignored -> new ArrayList<>())
+                    .add(rule);
+        }
+    }
+
+    private static String selectorKey(
+            String selector, boolean quirksModeIdentifiers) {
+        if (!selector.startsWith(".") && !selector.startsWith("#")) {
+            return asciiLowercase(selector);
+        }
+        return quirksModeIdentifiers ? asciiLowercase(selector) : selector;
+    }
+
+    private static String asciiLowercase(String value) {
+        StringBuilder lower = null;
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (current >= 'A' && current <= 'Z') {
+                if (lower == null) {
+                    lower = new StringBuilder(value);
+                }
+                lower.setCharAt(i, (char) (current + ('a' - 'A')));
+            }
+        }
+        return lower == null ? value : lower.toString();
+    }
+
+    static final class CssRule {
+        final String selector;
+        final String declaration;
+        final int sourceOrder;
+
+        private CssRule(String selector, String declaration, int sourceOrder) {
+            this.selector = selector;
+            this.declaration = declaration;
+            this.sourceOrder = sourceOrder;
+        }
+    }
+
     private static final class StylesheetLimitException extends RuntimeException {
         private static final StylesheetLimitException INSTANCE =
                 new StylesheetLimitException();
@@ -1080,26 +1507,39 @@ public final class HtmlColorQRExtractor {
         if (style == null || style.isEmpty()) {
             return ColorReadResult.NONE;
         }
-        Matcher m = ("background-color".equalsIgnoreCase(property)
-                ? BACKGROUND_COLOR_DECLARATION : COLOR_DECLARATION).matcher(style);
         Integer luma = null;
         boolean declared = false;
         boolean unresolved = false;
-        while (m.find()) {
-            String value = m.group(1).trim();
-            Integer parsed = parseColor(value);
+        boolean important = false;
+        for (JSoupParser.CssDeclaration candidate :
+                JSoupParser.parseCssDeclarations(style)) {
+            if (!property.equalsIgnoreCase(candidate.name())
+                    || important && !candidate.important()) {
+                continue;
+            }
+            if (candidate.incomplete()) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+                important = candidate.important();
+                continue;
+            }
+            Integer parsed = parseColor(candidate.value());
             if (parsed != null) {
                 luma = parsed;
                 declared = true;
                 unresolved = false;
-            } else if ("transparent".equalsIgnoreCase(value)) {
+                important = candidate.important();
+            } else if ("transparent".equalsIgnoreCase(candidate.value())) {
                 luma = null;
                 declared = true;
                 unresolved = true;
-            } else if (isUnsupportedBrowserColor(value)) {
+                important = candidate.important();
+            } else if (isUnsupportedBrowserColor(candidate.value())) {
                 luma = null;
                 declared = true;
                 unresolved = true;
+                important = candidate.important();
             }
         }
         return new ColorReadResult(luma, declared, unresolved);
@@ -1109,29 +1549,91 @@ public final class HtmlColorQRExtractor {
         return readBackgroundShorthandResult(style).luma;
     }
 
-    private static ColorReadResult readBackgroundShorthandResult(String style) {
+    private static ColorReadResult readBackgroundResult(String style) {
         if (style == null || style.isEmpty()) {
             return ColorReadResult.NONE;
         }
-        Matcher m = BACKGROUND_DECLARATION.matcher(style);
         Integer luma = null;
         boolean declared = false;
         boolean unresolved = false;
-        while (m.find()) {
-            String value = m.group(1).trim();
-            Integer parsed = parseBackgroundColor(value);
+        boolean important = false;
+        for (JSoupParser.CssDeclaration candidate :
+                JSoupParser.parseCssDeclarations(style)) {
+            boolean colorProperty =
+                    "background-color".equalsIgnoreCase(candidate.name());
+            boolean shorthand = "background".equalsIgnoreCase(candidate.name());
+            if ((!colorProperty && !shorthand)
+                    || important && !candidate.important()) {
+                continue;
+            }
+            if (candidate.incomplete()) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+                important = candidate.important();
+                continue;
+            }
+            Integer parsed = colorProperty
+                    ? parseColor(candidate.value())
+                    : parseBackgroundColor(candidate.value());
+            boolean transparent = colorProperty
+                    ? "transparent".equalsIgnoreCase(candidate.value())
+                    : containsTransparentToken(candidate.value());
             if (parsed != null) {
                 luma = parsed;
                 declared = true;
                 unresolved = false;
-            } else if (containsTransparentToken(value)) {
+                important = candidate.important();
+            } else if (transparent
+                    || isUnsupportedBrowserColor(candidate.value())
+                    || shorthand && isBackgroundResetShorthand(candidate.value())) {
                 luma = null;
                 declared = true;
                 unresolved = true;
-            } else if (isUnsupportedBrowserColor(value)) {
+                important = candidate.important();
+            }
+        }
+        return new ColorReadResult(luma, declared, unresolved);
+    }
+
+    private static ColorReadResult readBackgroundShorthandResult(String style) {
+        if (style == null || style.isEmpty()) {
+            return ColorReadResult.NONE;
+        }
+        Integer luma = null;
+        boolean declared = false;
+        boolean unresolved = false;
+        boolean important = false;
+        for (JSoupParser.CssDeclaration candidate :
+                JSoupParser.parseCssDeclarations(style)) {
+            if (!"background".equalsIgnoreCase(candidate.name())
+                    || important && !candidate.important()) {
+                continue;
+            }
+            if (candidate.incomplete()) {
                 luma = null;
                 declared = true;
                 unresolved = true;
+                important = candidate.important();
+                continue;
+            }
+            Integer parsed = parseBackgroundColor(candidate.value());
+            if (parsed != null) {
+                luma = parsed;
+                declared = true;
+                unresolved = false;
+                important = candidate.important();
+            } else if (containsTransparentToken(candidate.value())
+                    || isBackgroundResetShorthand(candidate.value())) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+                important = candidate.important();
+            } else if (isUnsupportedBrowserColor(candidate.value())) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+                important = candidate.important();
             }
         }
         return new ColorReadResult(luma, declared, unresolved);
@@ -1170,6 +1672,19 @@ public final class HtmlColorQRExtractor {
 
     private static boolean containsTransparentToken(String value) {
         return TRANSPARENT_TOKEN.matcher(value).find();
+    }
+
+    private static boolean isBackgroundResetShorthand(String value) {
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return normalized.contains("url(")
+                || normalized.contains("gradient(")
+                || normalized.contains("image(")
+                || BACKGROUND_POSITION_ONLY.matcher(normalized).matches()
+                || normalized.contains("/")
+                || normalized.matches(
+                ".*(?:^|\\s)(?:none|repeat|no-repeat|space|round|scroll|fixed|local"
+                        + "|border-box|padding-box|content-box|left|right|top|bottom"
+                        + "|center|cover|contain)(?:$|\\s).*");
     }
 
     private static boolean isUnsupportedBrowserColor(String value) {

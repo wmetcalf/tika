@@ -855,7 +855,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      *  this cap a single doc could produce unbounded link-metadata entries. */
     private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
 
-    private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata) {
+    private void surfaceExternalRefsFromAllParts(XHTMLContentHandler xhtml, Metadata metadata)
+            throws SAXException {
         if (opcPackage == null) return;
         // Dedup ON URL ALONE so an attacker can't bloat by mentioning the same
         // URL under N fabricated relationship types. Forensically this means we
@@ -879,6 +880,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     return;
                 }
             }
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
         } catch (Exception ignored) {
             // best-effort
         }
@@ -898,6 +901,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     return;
                 }
             }
+        } catch (SAXException e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
         } catch (Exception e) {
             // never fail the parse over a relationship walk
         }
@@ -910,7 +915,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      */
     private boolean surfaceExternalRels(XHTMLContentHandler xhtml, Metadata metadata,
                                         PackageRelationshipCollection rels, String partName,
-                                        java.util.Set<String> seen, int[] emitted) {
+                                        java.util.Set<String> seen, int[] emitted)
+            throws SAXException {
         for (PackageRelationship rel : rels) {
             if (rel.getTargetMode() != TargetMode.EXTERNAL) continue;
             if (rel.getTargetURI() == null) continue;
@@ -932,7 +938,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                         rel.getRelationshipType(), rel.getId());
                 emitted[0]++;
             } catch (SAXException e) {
-                // best-effort — never fail the parse over a link surface
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
             }
             // Light HAS_* flag heuristics so downstream filters know which
             // categories appeared. Types without a HAS_* constant still get

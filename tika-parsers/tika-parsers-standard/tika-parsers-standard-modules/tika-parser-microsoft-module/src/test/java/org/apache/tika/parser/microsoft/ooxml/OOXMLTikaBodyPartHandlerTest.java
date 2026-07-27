@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -237,6 +238,43 @@ class OOXMLTikaBodyPartHandlerTest {
         xhtml.endDocument();
 
         assertEquals(1, handler.getColorCollector().getCellCount());
+    }
+
+    @Test
+    void testRepeatedInlineNoteExpansionIsBounded() throws Exception {
+        Metadata metadata = new Metadata();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, new ParseContext());
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        Map<String, byte[]> footnotes = Map.of("1", """
+                <w:footnote xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:p><w:r><w:t>bounded-note-content</w:t></w:r></w:p>
+                </w:footnote>
+                """.getBytes(StandardCharsets.UTF_8));
+        handler.setInlineBodyPartMap(new OOXMLInlineBodyPartMap(
+                footnotes, Collections.emptyMap(), Collections.emptyMap(),
+                Collections.emptyMap()), new ParseContext());
+
+        xhtml.startDocument();
+        for (int i = 0; i < 1_100; i++) {
+            handler.footnoteReference("1");
+        }
+        xhtml.endDocument();
+
+        assertNotNull(metadata.get("ExploitClass"));
+        assertTrue(countOccurrences(output.toString(), "bounded-note-content") <= 1_024);
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     @Test

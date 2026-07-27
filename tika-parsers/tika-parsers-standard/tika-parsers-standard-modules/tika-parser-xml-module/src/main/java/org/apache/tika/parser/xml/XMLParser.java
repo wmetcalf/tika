@@ -455,16 +455,55 @@ public class XMLParser implements Parser {
         private static final String SECURITY_REFERENCE_LIMIT_WARNING =
                 "SVG security-reference limit reached; additional external "
                         + "references were skipped";
+        private static final String SVG_NS = "http://www.w3.org/2000/svg";
+        private static final String XHTML_NS = "http://www.w3.org/1999/xhtml";
 
-        private static final Set<String> EVENT_ATTRS;
-        static {
-            EVENT_ATTRS = new HashSet<>(Arrays.asList(
-                "onclick", "onload", "onerror", "onmouseover", "onmouseenter",
-                "onmouseleave", "onmouseout", "onmousedown", "onmouseup", "ondblclick",
-                "onfocus", "onblur", "onsubmit", "oninput", "onkeydown", "onkeyup",
-                "onkeypress", "onbegin", "onend", "onunload", "onabort"
-            ));
-        }
+        private static final Set<String> EVENT_ATTRS =
+                Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+                        "onabort", "onactivate", "onanimationcancel",
+                        "onanimationend", "onanimationiteration", "onanimationstart",
+                        "onauxclick", "onbeforeinput", "onbeforematch",
+                        "onbeforetoggle", "onbegin", "onblur", "oncancel", "oncanplay",
+                        "oncanplaythrough", "onchange", "onclick", "onclose", "oncommand",
+                        "oncontentvisibilityautostatechange",
+                        "oncontextlost", "oncontextmenu", "oncontextrestored", "oncopy",
+                        "oncuechange", "oncut", "ondblclick", "ondrag", "ondragend",
+                        "ondragenter", "ondragexit", "ondragleave", "ondragover",
+                        "ondragstart", "ondrop",
+                        "ondurationchange", "onemptied", "onend", "onended", "onerror",
+                        "onfocus", "onfocusin", "onfocusout", "onformdata",
+                        "onfullscreenchange", "onfullscreenerror", "ongotpointercapture",
+                        "oninput", "oninvalid", "onkeydown", "onkeypress",
+                        "onkeyup", "onload", "onloadeddata",
+                        "onloadedmetadata", "onloadstart", "onlostpointercapture",
+                        "onmousedown", "onmouseenter",
+                        "onmouseleave", "onmousemove", "onmouseout", "onmouseover",
+                        "onmouseup", "onmousewheel", "onpaste", "onpause", "onplay",
+                        "onplaying",
+                        "onpointercancel", "onpointerdown", "onpointerenter",
+                        "onpointerleave", "onpointermove", "onpointerout", "onpointerover",
+                        "onpointerrawupdate", "onpointerup", "onprogress",
+                        "onratechange", "onrepeat", "onreset", "onresize", "onscroll",
+                        "onscrollend", "onscrollsnapchange", "onscrollsnapchanging",
+                        "onsecuritypolicyviolation", "onshow",
+                        "onseeked", "onseeking", "onselect", "onselectionchange",
+                        "onselectstart", "onslotchange", "onstalled",
+                        "onsubmit", "onsuspend", "ontimeupdate", "ontoggle", "ontouchcancel",
+                        "ontouchend", "ontouchmove", "ontouchstart", "ontransitioncancel",
+                        "ontransitionend", "ontransitionrun", "ontransitionstart",
+                        "onunload", "onvolumechange", "onwaiting",
+                        "onwebkitanimationend", "onwebkitanimationiteration",
+                        "onwebkitanimationstart", "onwebkittransitionend",
+                        "onwheel", "onzoom")));
+        private static final Set<String> WINDOW_EVENT_ATTRS =
+                Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+                        "onafterprint", "onbeforeprint", "onbeforeunload", "onhashchange",
+                        "onlanguagechange", "onmessage", "onmessageerror", "onoffline",
+                        "ononline", "onpagehide", "onpageshow", "onpopstate",
+                        "onrejectionhandled", "onstorage", "onunhandledrejection")));
+        private static final Set<String> SVG_ONLY_EVENT_ATTRS =
+                Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+                        "onactivate", "onbegin", "onend", "onrepeat", "onzoom")));
 
         // Zero-width / invisible characters to detect
         private static final String ZERO_WIDTH_CHARS = "​‌‍⁠﻿­";
@@ -523,7 +562,10 @@ public class XMLParser implements Parser {
                 if (attrName == null || attrName.isEmpty()) {
                     attrName = atts.getQName(i);
                 }
-                if (EVENT_ATTRS.contains(attrName)) {
+                String normalizedAttr =
+                        attrName.toLowerCase(java.util.Locale.ROOT);
+                if (isEventAttribute(
+                        uri, local, atts.getURI(i), normalizedAttr)) {
                     metadata.set("svg:hasEventHandlers", "true");
                     String val = atts.getValue(i);
                     if (val != null && !val.isEmpty()) {
@@ -555,6 +597,26 @@ public class XMLParser implements Parser {
             }
 
             delegate.startElement(uri, localName, qName, atts);
+        }
+
+        private static boolean isEventAttribute(
+                String uri, String localName, String attrUri, String attrName) {
+            if (attrUri != null && !attrUri.isEmpty()) {
+                return false;
+            }
+            if (SVG_NS.equals(uri)) {
+                return EVENT_ATTRS.contains(attrName);
+            }
+            if (!XHTML_NS.equals(uri)) {
+                return false;
+            }
+            if (EVENT_ATTRS.contains(attrName)
+                    && !SVG_ONLY_EVENT_ATTRS.contains(attrName)) {
+                return true;
+            }
+            return WINDOW_EVENT_ATTRS.contains(attrName)
+                    && ("body".equalsIgnoreCase(localName)
+                    || "frameset".equalsIgnoreCase(localName));
         }
 
         private boolean isRasterElementLimitExceeded() {

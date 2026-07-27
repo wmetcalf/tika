@@ -46,6 +46,7 @@ class XlmWorksheetCellCapture extends XSSFBParser {
     private final String sheetName;
     private final Map<String, Double> cellValues;
     private int currentRow;
+    private boolean limitReached;
 
     XlmWorksheetCellCapture(InputStream stream, String sheetName, Map<String, Double> cellValues) {
         super(stream);
@@ -114,7 +115,18 @@ class XlmWorksheetCellCapture extends XSSFBParser {
     }
 
     private void store(int col, double value) {
-        cellValues.put(sheetName + ":" + currentRow + ":" + col, value);
+        String key = sheetName + ":" + currentRow + ":" + col;
+        if (cellValues.size()
+                >= XSSFExcelExtractorDecorator.WORKBOOK_VALUES_MAX_ENTRIES
+                && !cellValues.containsKey(key)) {
+            limitReached = true;
+            return;
+        }
+        cellValues.put(key, value);
+    }
+
+    boolean isLimitReached() {
+        return limitReached;
     }
 
     // ── RK number decoding (MS-XLSB §2.5.122) ───────────────────────────────

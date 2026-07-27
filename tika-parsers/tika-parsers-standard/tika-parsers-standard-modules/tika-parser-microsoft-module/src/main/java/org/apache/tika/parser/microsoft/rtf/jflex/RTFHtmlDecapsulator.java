@@ -105,6 +105,8 @@ public class RTFHtmlDecapsulator {
                     embHandler.processToken(tok, state, closingGroup);
                 } catch (TikaException | IOException e) {
                     // don't let a bad embedded object kill decapsulation
+                    embHandler.recordAnalysisFailure(e);
+                    embHandler.abortCurrentEmbeddedData();
                 }
             }
 

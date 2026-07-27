@@ -39,6 +39,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -108,7 +109,13 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         // This runs a lightweight second pass on each sheet binary; the main
         // XHTML pass below is unaffected.
         XlmWorkbookSheetMap xlmSheetMap = XlmWorkbookSheetMap.build(container);
-        Map<String, Double> xlmCellValues = captureWorksheetValues(container, xlmSheetMap);
+        boolean hasXlmMacroParts = !container.getPartsByContentType(
+                XSSFRelation.MACRO_SHEET_BIN.getContentType()).isEmpty()
+                || !container.getPartsByContentType(
+                        XSSFRelation.INTL_MACRO_SHEET_BIN.getContentType()).isEmpty();
+        Map<String, Double> xlmCellValues = hasXlmMacroParts
+                ? captureWorksheetValues(container, metadata)
+                : java.util.Collections.emptyMap();
 
         int sheetIdx = 0;
         while (iter.hasNext()) {
@@ -210,12 +217,19 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                         new Biff12XlmMacrosheetParser(is, xhtml, emulator);
                 parser.parse();
             } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+            }
+            if (emulator.isLimitReached()) {
+                markXlmCaptureLimit(metadata, emulator.getLimitWarning());
             }
 
             // Run emulation and emit resolved IOCs
             try {
                 emulator.emulate();
+                if (emulator.isLimitReached()) {
+                    markXlmCaptureLimit(metadata, emulator.getLimitWarning());
+                }
                 if (!emulator.iocs.isEmpty()) {
                     xhtml.startElement("div");
                     xhtml.element("h2", "XLM Emulation");
@@ -225,6 +239,7 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                     xhtml.endElement("div");
                 }
             } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
                 // Non-fatal — static text output already emitted above
             }
 
@@ -232,8 +247,8 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
     }
 
-    private static Map<String, Double> captureWorksheetValues(OPCPackage container,
-                                                               XlmWorkbookSheetMap sheetMap) {
+    private static Map<String, Double> captureWorksheetValues(
+            OPCPackage container, Metadata metadata) {
         Map<String, Double> values = new java.util.HashMap<>();
         // Capture numeric cell values keyed by "{sheetName}:{row}:{col}".
         // Using the sheet name (from the iterator) matches the xtiIndex→name resolution
@@ -248,6 +263,11 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                     XlmWorksheetCellCapture capture =
                             new XlmWorksheetCellCapture(stream, sheetName, values);
                     capture.parse();
+                    if (capture.isLimitReached()) {
+                        markXlmCaptureLimit(metadata,
+                                "XLSB worksheet-value capture limit reached");
+                        break;
+                    }
                 } catch (Exception ignored) {
                     // Skip unreadable sheets; other sheets still captured
                 }
@@ -256,6 +276,21 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             // If the workbook can't be re-read, emulation proceeds with empty map
         }
         return values;
+    }
+
+    private static void markXlmCaptureLimit(Metadata metadata, String warning) {
+        if (metadata == null
+                || Boolean.parseBoolean(
+                        metadata.get("msoffice:xlm-capture-limit-reached"))) {
+            return;
+        }
+        metadata.set("msoffice:xlm-capture-limit-reached", "true");
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "XLM analysis incomplete; workbook values may not have been analyzed");
+        }
     }
 
     private static String sheetNameFromPart(PackagePart part) {

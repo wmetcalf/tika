@@ -865,11 +865,26 @@ final class Biff12XlmFormulaDecoder {
         final Map<Integer, String> filePaths = new LinkedHashMap<>();
         /** Collected IOC strings (FOPEN paths, EXEC commands, CALL args). */
         final List<String> iocs = new ArrayList<>();
+        private final int maxIocEntries;
+        private final int maxIocChars;
+        private final int maxFileContentChars;
+        private int retainedIocChars;
+        private int retainedFileContentChars;
         private int nextHandle;
+        private String limitWarning;
 
         EvalContext(Map<String, Double> cellValues, Map<String, Object> variables) {
+            this(cellValues, variables, Integer.MAX_VALUE, Integer.MAX_VALUE,
+                    Integer.MAX_VALUE);
+        }
+
+        EvalContext(Map<String, Double> cellValues, Map<String, Object> variables,
+                    int maxIocEntries, int maxIocChars, int maxFileContentChars) {
             this.cellValues = cellValues;
             this.variables = variables;
+            this.maxIocEntries = Math.max(0, maxIocEntries);
+            this.maxIocChars = Math.max(0, maxIocChars);
+            this.maxFileContentChars = Math.max(0, maxFileContentChars);
         }
 
         /**
@@ -889,6 +904,9 @@ final class Biff12XlmFormulaDecoder {
         }
 
         int newFileHandle(String path) {
+            if (isLimitReached()) {
+                return -1;
+            }
             int h = nextHandle++;
             filePaths.put(h, path);
             fileContents.put(h, new StringBuilder());
@@ -896,7 +914,19 @@ final class Biff12XlmFormulaDecoder {
         }
 
         void writeToFile(int handle, String text) {
-            fileContents.computeIfAbsent(handle, k -> new StringBuilder()).append(text);
+            if (text == null) {
+                return;
+            }
+            int remaining = maxFileContentChars - retainedFileContentChars;
+            int retained = Math.min(text.length(), Math.max(0, remaining));
+            if (retained > 0) {
+                fileContents.computeIfAbsent(handle, k -> new StringBuilder())
+                        .append(text, 0, retained);
+                retainedFileContentChars += retained;
+            }
+            if (retained < text.length()) {
+                markLimit("XLSB XLM reconstructed file-content retention limit reached");
+            }
         }
 
         String getFileContent(int handle) {
@@ -906,6 +936,34 @@ final class Biff12XlmFormulaDecoder {
 
         String getFilePath(int handle) {
             return filePaths.getOrDefault(handle, "handle" + handle);
+        }
+
+        boolean addIoc(String ioc) {
+            if (ioc == null) {
+                return true;
+            }
+            if (iocs.size() >= maxIocEntries
+                    || ioc.length() > maxIocChars - retainedIocChars) {
+                markLimit("XLSB XLM IOC retention limit reached");
+                return false;
+            }
+            iocs.add(ioc);
+            retainedIocChars += ioc.length();
+            return true;
+        }
+
+        boolean isLimitReached() {
+            return limitWarning != null;
+        }
+
+        String getLimitWarning() {
+            return limitWarning;
+        }
+
+        private void markLimit(String warning) {
+            if (limitWarning == null) {
+                limitWarning = warning;
+            }
         }
     }
 
@@ -1003,8 +1061,10 @@ final class Biff12XlmFormulaDecoder {
                 String path = args.isEmpty() ? "" : toStr(args.get(0));
                 int mode = args.size() > 1 ? (int) toNum(args.get(1)) : 3;
                 if (ctx != null) {
+                    if (!ctx.addIoc("FOPEN: " + path + " (mode " + mode + ")")) {
+                        return -1.0;
+                    }
                     int h = ctx.newFileHandle(path);
-                    ctx.iocs.add("FOPEN: " + path + " (mode " + mode + ")");
                     return (double) h;
                 }
                 return 0.0;
@@ -1028,7 +1088,7 @@ final class Biff12XlmFormulaDecoder {
                     if (content != null && !content.isEmpty()) {
                         String path = ctx.getFilePath(handle);
                         int preview = Math.min(300, content.length());
-                        ctx.iocs.add("FILE_CONTENT[" + path + "]: "
+                        ctx.addIoc("FILE_CONTENT[" + path + "]: "
                                 + content.substring(0, preview)
                                 + (content.length() > preview ? "…" : ""));
                     }
@@ -1038,7 +1098,7 @@ final class Biff12XlmFormulaDecoder {
             case "EXEC": {
                 String cmd = args.isEmpty() ? "" : toStr(args.get(0));
                 if (ctx != null) {
-                    ctx.iocs.add("EXEC: " + cmd);
+                    ctx.addIoc("EXEC: " + cmd);
                 }
                 return Boolean.FALSE;
             }
@@ -1046,14 +1106,14 @@ final class Biff12XlmFormulaDecoder {
                 if (ctx != null) {
                     String desc = args.stream().map(Biff12XlmFormulaDecoder::toStr)
                             .collect(Collectors.joining(", "));
-                    ctx.iocs.add("CALL: " + desc);
+                    ctx.addIoc("CALL: " + desc);
                 }
                 return 0.0;
             }
             case "ALERT": {
                 String msg = args.isEmpty() ? "" : toStr(args.get(0));
                 if (ctx != null) {
-                    ctx.iocs.add("ALERT: " + msg);
+                    ctx.addIoc("ALERT: " + msg);
                 }
                 return Boolean.FALSE;
             }
@@ -1078,7 +1138,7 @@ final class Biff12XlmFormulaDecoder {
             }
             case "REGISTER": {
                 if (ctx != null && !args.isEmpty()) {
-                    ctx.iocs.add("REGISTER: " + toStr(args.get(0)));
+                    ctx.addIoc("REGISTER: " + toStr(args.get(0)));
                 }
                 return 0.0;
             }
@@ -1116,10 +1176,10 @@ final class Biff12XlmFormulaDecoder {
                 //
                 // UTC because forbiddenapis blocks the default-timezone form;
                 // Excel's display timezone is irrelevant when comparing serials.
-                if (ctx != null) ctx.iocs.add("TIME_GATE: NOW()");
+                if (ctx != null) ctx.addIoc("TIME_GATE: NOW()");
                 return excelSerialDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
             case "TODAY":
-                if (ctx != null) ctx.iocs.add("TIME_GATE: TODAY()");
+                if (ctx != null) ctx.addIoc("TIME_GATE: TODAY()");
                 return (double) excelSerialDay(java.time.LocalDate.now(java.time.ZoneOffset.UTC));
             case "DATE": {
                 // DATE(year, month, day) → Excel serial. Pure constructor, no

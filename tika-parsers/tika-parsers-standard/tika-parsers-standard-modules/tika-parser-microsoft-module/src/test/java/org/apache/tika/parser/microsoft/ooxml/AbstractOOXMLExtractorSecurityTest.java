@@ -16,9 +16,11 @@
  */
 package org.apache.tika.parser.microsoft.ooxml;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,8 +31,11 @@ import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -96,6 +101,60 @@ public class AbstractOOXMLExtractorSecurityTest {
         assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA));
         assertNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING),
                 "reaching the exact cap without dropping a link is complete");
+    }
+
+    @Test
+    public void testExternalRelationshipWriteLimitPropagates() throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            opcPackage.addExternalRelationship(
+                    "https://example.invalid/external",
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/hyperlink");
+
+            assertThrows(WriteLimitReachedException.class,
+                    () -> new EmptyExtractor(context, opcPackage).getXHTML(
+                            new LinkWriteLimitHandler(), new Metadata(), context));
+        }
+    }
+
+    @Test
+    public void testOrdinarySaxFailureWhileSurfacingRelationshipIsBestEffort()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            opcPackage.addExternalRelationship(
+                    "https://example.invalid/external",
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/hyperlink");
+
+            assertDoesNotThrow(() -> new EmptyExtractor(context, opcPackage).getXHTML(
+                    new LinkRejectingHandler(), new Metadata(), context));
+        }
+    }
+
+    private static final class LinkWriteLimitHandler extends DefaultHandler {
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) throws SAXException {
+            if ("a".equals(localName) || "a".equals(qName)) {
+                throw new WriteLimitReachedException(0);
+            }
+        }
+    }
+
+    private static final class LinkRejectingHandler extends DefaultHandler {
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) throws SAXException {
+            if ("a".equals(localName) || "a".equals(qName)) {
+                throw new SAXException("simulated strict content handler");
+            }
+        }
     }
 
     private static final class EmptyExtractor extends AbstractOOXMLExtractor {

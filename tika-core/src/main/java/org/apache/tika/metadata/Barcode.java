@@ -32,4 +32,6 @@ public interface Barcode {
      * one limiter-atomic record.
      */
     Property BARCODE_RECORD = Property.internalTextBag("barcode:record");
+    Property BARCODE_LIMIT_REACHED =
+            Property.internalBoolean("barcode:limit-reached");
 }

@@ -59,6 +59,7 @@ import org.apache.tika.parser.microsoft.OfficeParser.POIFSDocumentType;
  *   [4 bytes classNameLen][classNameLen bytes className]
  *   [4 bytes topicNameLen][topicNameLen bytes topicName]
  *   [4 bytes itemNameLen][itemNameLen bytes itemName]
+ *   linked: [4 bytes networkNameLen][networkNameLen bytes networkName]
  *   [4 bytes dataSz][dataSz bytes payload]
  * </pre>
  * The small header fields are parsed byte-by-byte via a state machine.
@@ -89,7 +90,9 @@ public class RTFObjDataStreamParser implements Closeable {
     private String className;
     private String topicName;
     private String itemName;
+    private String networkName;
     private long dataSz;
+    private TikaException analysisFailure;
 
     // String accumulator for length-prefixed ANSI strings
     private byte[] stringBuf;
@@ -135,7 +138,7 @@ public class RTFObjDataStreamParser implements Closeable {
             case CLASS_LEN:
                 fieldBuf[fieldPos++] = (byte) b;
                 if (fieldPos >= fieldTarget) {
-                    int len = (int) readLE32(fieldBuf);
+                    long len = readLE32(fieldBuf);
                     initStringField(Field.CLASS_NAME, len);
                 }
                 break;
@@ -151,7 +154,7 @@ public class RTFObjDataStreamParser implements Closeable {
             case TOPIC_LEN:
                 fieldBuf[fieldPos++] = (byte) b;
                 if (fieldPos >= fieldTarget) {
-                    int len = (int) readLE32(fieldBuf);
+                    long len = readLE32(fieldBuf);
                     initStringField(Field.TOPIC_NAME, len);
                 }
                 break;
@@ -167,7 +170,7 @@ public class RTFObjDataStreamParser implements Closeable {
             case ITEM_LEN:
                 fieldBuf[fieldPos++] = (byte) b;
                 if (fieldPos >= fieldTarget) {
-                    int len = (int) readLE32(fieldBuf);
+                    long len = readLE32(fieldBuf);
                     initStringField(Field.ITEM_NAME, len);
                 }
                 break;
@@ -176,11 +179,23 @@ public class RTFObjDataStreamParser implements Closeable {
                 stringBuf[stringPos++] = (byte) b;
                 if (stringPos >= fieldTarget) {
                     itemName = decodeString(stringBuf, fieldTarget);
-                    if (formatId == 1L) {
-                        currentField = Field.DONE;
-                    } else {
-                        initUint32Field(Field.DATA_SIZE);
-                    }
+                    finishItemName();
+                }
+                break;
+
+            case NETWORK_LEN:
+                fieldBuf[fieldPos++] = (byte) b;
+                if (fieldPos >= fieldTarget) {
+                    long len = readLE32(fieldBuf);
+                    initStringField(Field.NETWORK_NAME, len);
+                }
+                break;
+
+            case NETWORK_NAME:
+                stringBuf[stringPos++] = (byte) b;
+                if (stringPos >= fieldTarget) {
+                    networkName = decodeString(stringBuf, fieldTarget);
+                    currentField = Field.DONE;
                 }
                 break;
 
@@ -227,10 +242,11 @@ public class RTFObjDataStreamParser implements Closeable {
      */
     public TikaInputStream onComplete(Metadata metadata, AtomicInteger unknownFilenameCount)
             throws IOException, TikaException {
-        if (currentField == Field.SKIP) {
-            return null;
+        if (analysisFailure == null
+                && currentField != Field.DONE && currentField != Field.SKIP) {
+            analysisFailure = new TikaException(
+                    "Truncated OLE1 object data while reading " + currentField);
         }
-
         metadata.add(RTFMetadata.EMB_APP_VERSION, Long.toString(version));
         if (className != null && !className.isEmpty()) {
             metadata.add(RTFMetadata.EMB_CLASS, className);
@@ -240,6 +256,12 @@ public class RTFObjDataStreamParser implements Closeable {
         }
         if (itemName != null && !itemName.isEmpty()) {
             metadata.add(RTFMetadata.EMB_ITEM, itemName);
+        }
+        if (networkName != null && !networkName.isEmpty()) {
+            metadata.add(RTFMetadata.EMB_NETWORK_NAME, networkName);
+        }
+        if (currentField != Field.DONE) {
+            return null;
         }
         if (isLinkedObject() || tempFile == null) {
             return null;
@@ -258,6 +280,10 @@ public class RTFObjDataStreamParser implements Closeable {
 
     boolean isLinkedObject() {
         return formatId == 1L;
+    }
+
+    TikaException getAnalysisFailure() {
+        return analysisFailure;
     }
 
     @Override
@@ -410,10 +436,11 @@ public class RTFObjDataStreamParser implements Closeable {
 
     private static final int MAX_HEADER_STRING_LENGTH = 4096;
 
-    private void initStringField(Field next, int len) {
+    private void initStringField(Field next, long len) {
         currentField = next;
         if (len > MAX_HEADER_STRING_LENGTH) {
-            // Corrupt or crafted header — bail out
+            analysisFailure = new TikaMemoryLimitException(
+                    len, MAX_HEADER_STRING_LENGTH);
             currentField = Field.SKIP;
             return;
         }
@@ -429,16 +456,29 @@ public class RTFObjDataStreamParser implements Closeable {
                     break;
                 case ITEM_NAME:
                     itemName = "";
-                    initUint32Field(Field.DATA_SIZE);
+                    finishItemName();
+                    break;
+                case NETWORK_NAME:
+                    networkName = "";
+                    currentField = Field.DONE;
                     break;
                 default:
                     break;
             }
             return;
         }
-        stringBuf = new byte[len];
+        int boundedLength = (int) len;
+        stringBuf = new byte[boundedLength];
         stringPos = 0;
-        fieldTarget = len;
+        fieldTarget = boundedLength;
+    }
+
+    private void finishItemName() {
+        if (formatId == 1L) {
+            initUint32Field(Field.NETWORK_LEN);
+        } else {
+            initUint32Field(Field.DATA_SIZE);
+        }
     }
 
     private static long readLE32(byte[] buf) {
@@ -514,6 +554,7 @@ public class RTFObjDataStreamParser implements Closeable {
         CLASS_LEN, CLASS_NAME,
         TOPIC_LEN, TOPIC_NAME,
         ITEM_LEN, ITEM_NAME,
+        NETWORK_LEN, NETWORK_NAME,
         DATA_SIZE, DATA,
         DONE, SKIP
     }

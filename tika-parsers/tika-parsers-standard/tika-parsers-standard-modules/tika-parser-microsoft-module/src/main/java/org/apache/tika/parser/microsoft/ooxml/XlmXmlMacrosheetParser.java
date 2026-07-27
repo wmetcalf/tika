@@ -16,12 +16,13 @@
  */
 package org.apache.tika.parser.microsoft.ooxml;
 
-import org.apache.tika.sax.XHTMLContentHandler;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
+
+import org.apache.tika.sax.XHTMLContentHandler;
 
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
@@ -73,6 +74,8 @@ final class XlmXmlMacrosheetParser {
     private final InputStream stream;
     private final XHTMLContentHandler xhtml;
     private final String sheetName;
+    private final int maxFormulaEntries;
+    private final int maxValueEntries;
     /** Workbook shared-strings table; null when the macrosheet's parent workbook
      *  has no sharedStrings.xml part. Cells with {@code t="s"} fall back to the
      *  literal index string when null. */
@@ -82,13 +85,24 @@ final class XlmXmlMacrosheetParser {
     private final Map<String, String> formulas = new LinkedHashMap<>();
     /** Constant value per cell, keyed identically. */
     private final Map<String, String> values = new LinkedHashMap<>();
+    private boolean truncated;
 
     XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
                            String sheetName, XSSFSharedStringsShim sharedStrings) {
+        this(stream, xhtml, sheetName, sharedStrings,
+                XSSFExcelExtractorDecorator.WORKBOOK_VALUES_MAX_ENTRIES,
+                XSSFExcelExtractorDecorator.WORKBOOK_VALUES_MAX_ENTRIES);
+    }
+
+    XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                           String sheetName, XSSFSharedStringsShim sharedStrings,
+                           int maxFormulaEntries, int maxValueEntries) {
         this.stream = stream;
         this.xhtml = xhtml;
         this.sheetName = sheetName;
         this.sharedStrings = sharedStrings;
+        this.maxFormulaEntries = Math.max(0, maxFormulaEntries);
+        this.maxValueEntries = Math.max(0, maxValueEntries);
     }
 
     /**
@@ -130,6 +144,10 @@ final class XlmXmlMacrosheetParser {
     /** Ordered list of formula strings — convenience for callers that don't need cell coords. */
     List<String> getFormulaList() {
         return new ArrayList<>(formulas.values());
+    }
+
+    boolean isTruncated() {
+        return truncated;
     }
 
     private final class Handler extends DefaultHandler {
@@ -223,7 +241,15 @@ final class XlmXmlMacrosheetParser {
         @Override
         public void characters(char[] ch, int start, int length) {
             if (inFormula || inValue || inText) {
-                buf.append(ch, start, length);
+                int remaining = XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN
+                        - buf.length();
+                int retained = Math.min(length, Math.max(0, remaining));
+                if (retained > 0) {
+                    buf.append(ch, start, retained);
+                }
+                if (retained < length) {
+                    truncated = true;
+                }
             }
         }
 
@@ -249,7 +275,16 @@ final class XlmXmlMacrosheetParser {
                         // Append this run's text to the inline-string accumulator
                         // rather than overwriting currentValueText. Rich-text
                         // inline strings with multiple <r><t> runs concatenate.
-                        inlineAcc.append(buf);
+                        int remaining =
+                                XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN
+                                        - inlineAcc.length();
+                        int retained = Math.min(buf.length(), Math.max(0, remaining));
+                        if (retained > 0) {
+                            inlineAcc.append(buf, 0, retained);
+                        }
+                        if (retained < buf.length()) {
+                            truncated = true;
+                        }
                         inText = false;
                     }
                     break;
@@ -276,15 +311,29 @@ final class XlmXmlMacrosheetParser {
             if (currentCellRef == null) return;
             String key = sheetName + ":" + currentRow + ":" + currentCellRef;
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
-                formulas.put(key, currentFormulaText);
-                xhtml.element("p", currentCellRef + ": " + currentFormulaText);
+                if (formulas.size() < maxFormulaEntries || formulas.containsKey(key)) {
+                    formulas.put(key, currentFormulaText);
+                    xhtml.element("p", currentCellRef + ": " + currentFormulaText);
+                } else {
+                    truncated = true;
+                }
             }
             // Resolve shared-string-indexed cells (<c t="s"><v>N</v></c>) before
             // recording. Without this, droppers stashing payload fragments via
             // sharedStrings.xml in the macrosheet itself bypass the IOC scanner.
             String resolved = resolveValue(currentCellType, currentValueText);
             if (resolved != null && !resolved.isEmpty()) {
-                values.put(key, resolved);
+                if (resolved.length()
+                        > XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN) {
+                    resolved = resolved.substring(
+                            0, XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN);
+                    truncated = true;
+                }
+                if (values.size() < maxValueEntries || values.containsKey(key)) {
+                    values.put(key, resolved);
+                } else {
+                    truncated = true;
+                }
             }
             currentCellRef = null;
             currentCellType = null;

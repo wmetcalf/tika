@@ -37,6 +37,20 @@ public interface MetadataWriteLimiter extends Serializable {
     void add(String field, String value, Map<String, String[]> data);
 
     /**
+     * Handles the first value passed through a Metadata {@code add} operation
+     * when the field is not currently stored. The default delegates to
+     * {@link #set(String, String, Map)} to preserve the historical dispatch
+     * contract for existing limiter implementations.
+     *
+     * @param field the metadata field name
+     * @param value the first value to add
+     * @param data the metadata map to modify
+     */
+    default void addFirst(String field, String value, Map<String, String[]> data) {
+        set(field, value, data);
+    }
+
+    /**
      * Based on the field and the value, this limiter modifies
      * the field and/or the value to something that should be set in the
      * Metadata object.
@@ -46,6 +60,24 @@ public interface MetadataWriteLimiter extends Serializable {
      * @param data the metadata map to modify
      */
     void set(String field, String value, Map<String, String[]> data);
+
+    /**
+     * Replaces all values for a field. Stateful limiters may override this method
+     * when replacement needs different bookkeeping from an explicit remove
+     * followed by later additions.
+     *
+     * @param field the metadata field name
+     * @param values the replacement values, or {@code null} to remove the field
+     * @param data the metadata map to modify
+     */
+    default void replace(String field, String[] values, Map<String, String[]> data) {
+        remove(field, data);
+        if (values != null) {
+            for (String value : values) {
+                add(field, value, data);
+            }
+        }
+    }
 
     /**
      * Removes a field. Stateful limiters should override this method to release

@@ -17,6 +17,9 @@
 package org.apache.tika.parser.image;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.file.Path;
@@ -27,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import org.apache.tika.metadata.Barcode;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.writefilter.StandardMetadataLimiterFactory;
 import org.apache.tika.parser.ParseContext;
 
@@ -89,6 +93,46 @@ public class ColorGridQRDecoderMetadataTest {
 
         assertThrows(RuntimeException.class, () -> ColorGridQRDecoder.decode(
                 List.of(grid), new ThrowingScanner(), config, new ParseContext()));
+    }
+
+    @Test
+    public void testBarcodeMetadataResultCountIsBounded() {
+        List<ZXingCPPScanner.Result> results = new ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            results.add(new ZXingCPPScanner.Result(
+                    "/tmp/code.png", "value-" + i, "QR Code",
+                    "", "", "", false));
+        }
+        Metadata metadata = new Metadata();
+
+        ColorGridQRDecoder.emitBarcodes(results, metadata);
+
+        assertEquals(256, metadata.getValues(Barcode.BARCODE_RECORD).length);
+        assertEquals(256, metadata.getValues(Barcode.BARCODE_VALUE).length);
+        assertEquals("Barcode metadata retention limit reached; additional "
+                        + "barcode results were skipped",
+                metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testStoppedBarcodeMetadataDoesNotInspectLaterResults() {
+        Metadata metadata = new Metadata();
+        metadata.set(Barcode.BARCODE_LIMIT_REACHED, true);
+
+        assertDoesNotThrow(() -> BarcodeMetadataUtil.addResult(
+                metadata, new GetterTrapResult(), "qrcode"));
+    }
+
+    private static final class GetterTrapResult extends ZXingCPPScanner.Result {
+        private GetterTrapResult() {
+            super("/tmp/trap.png", "unused", "QR Code", "", "", "", false);
+        }
+
+        @Override
+        public String getText() {
+            throw new AssertionError("result fields must not be read after the cap");
+        }
     }
 
     private static final class ThrowingScanner extends ZXingCPPScanner {

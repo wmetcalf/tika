@@ -88,6 +88,9 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate";
     private static final String SUBDOCUMENT_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/subDocument";
+    private static final String INLINE_PART_COLLECTION_WARNING =
+            "OOXML inline note collection limit reached; additional "
+                    + "footnotes, endnotes, or comments were skipped";
 
     //a docx file should have one of these "main story" parts
     private final static String[] MAIN_STORY_PART_RELATIONS =
@@ -101,6 +104,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
     private final ParseContext context;
     private final Metadata metadata;
     private final Map<String, EmbeddedPartMetadata> embeddedPartMetadataMap = new HashMap<>();
+    private final OOXMLPartContentCollector.CollectionBudget inlinePartCollectionBudget =
+            OOXMLPartContentCollector.newDefaultCollectionBudget();
 
 
     public SXWPFWordExtractorDecorator(Metadata metadata, ParseContext context,
@@ -479,29 +484,28 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
     private OOXMLInlineBodyPartMap collectInlineParts(PackagePart documentPart) {
         Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> footnoteMap =
                 collectPartContent(documentPart,
-                        XWPFRelation.FOOTNOTE.getRelation(), Set.of("footnote"));
+                        XWPFRelation.FOOTNOTE.getRelation(), Set.of("footnote"),
+                        Set.of("0", "-1"), inlinePartCollectionBudget);
         String endnoteRel =
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
         Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> endnoteMap =
-                collectPartContent(documentPart, endnoteRel, Set.of("endnote"));
+                collectPartContent(documentPart, endnoteRel, Set.of("endnote"),
+                        Set.of("0", "-1"), inlinePartCollectionBudget);
         String commentsRel =
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
         Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> commentMap =
                 collectPartContent(documentPart, commentsRel, Set.of("comment"),
-                        Collections.emptySet());
+                        Collections.emptySet(), inlinePartCollectionBudget);
+        if (inlinePartCollectionBudget.isLimitReached()) {
+            signalInlinePartCollectionLimit();
+        }
         return new OOXMLInlineBodyPartMap(footnoteMap, endnoteMap, commentMap);
     }
 
     private Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> collectPartContent(
             PackagePart documentPart, String relationshipType,
-            Set<String> wrapperElements) {
-        return collectPartContent(documentPart, relationshipType, wrapperElements,
-                Set.of("0", "-1"));
-    }
-
-    private Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> collectPartContent(
-            PackagePart documentPart, String relationshipType,
-            Set<String> wrapperElements, Set<String> skipIds) {
+            Set<String> wrapperElements, Set<String> skipIds,
+            OOXMLPartContentCollector.CollectionBudget collectionBudget) {
         try {
             PackageRelationshipCollection prc =
                     documentPart.getRelationshipsByType(relationshipType);
@@ -511,6 +515,9 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             Map<String, OOXMLInlineBodyPartMap.InlineBodyPart> content =
                     new HashMap<>();
             for (int i = 0; i < prc.size(); i++) {
+                if (collectionBudget.isLimitReached()) {
+                    break;
+                }
                 PackagePart part = safeGetRelatedPart(documentPart, prc.getRelationship(i));
                 if (part == null) {
                     continue;
@@ -518,7 +525,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 Map<String, String> partRels =
                         loadLinkedRelationships(part, true, metadata);
                 OOXMLPartContentCollector collector =
-                        new OOXMLPartContentCollector(wrapperElements, skipIds);
+                        new OOXMLPartContentCollector(
+                                wrapperElements, skipIds, collectionBudget);
                 try (InputStream stream = part.getInputStream()) {
                     XMLReaderUtils.parseSAX(stream, collector, context);
                 }
@@ -533,6 +541,27 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
             return Collections.emptyMap();
+        }
+    }
+
+    private void signalInlinePartCollectionLimit() {
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        boolean warningAlreadyPresent = false;
+        for (String warning : metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (INLINE_PART_COLLECTION_WARNING.equals(warning)) {
+                warningAlreadyPresent = true;
+                break;
+            }
+        }
+        if (!warningAlreadyPresent) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    INLINE_PART_COLLECTION_WARNING);
+        }
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "OOXML inline-note collection incomplete; referenced content "
+                            + "may not have been analyzed");
         }
     }
 

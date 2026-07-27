@@ -17,6 +17,7 @@
 package org.apache.tika.parser.html;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -117,6 +118,251 @@ public class HtmlColorQRExtractorTest {
     public void finalCssDeclarationWins() {
         assertEquals(0, HtmlColorQRExtractor.readColor(
                 "color:white;color:black", "color"));
+    }
+
+    @Test
+    public void importantSuffixDoesNotHideCssColor() {
+        assertEquals(0, HtmlColorQRExtractor.readColor(
+                "background-color:black!important", "background-color"));
+    }
+
+    @Test
+    public void importantColorIsNotOverriddenByLaterNormalDeclaration() {
+        assertEquals(0, HtmlColorQRExtractor.readColor(
+                "color:black!important;color:white", "color"));
+        assertEquals(0, HtmlColorQRExtractor.readColor(
+                "color:white!important;color:black!important", "color"));
+        assertEquals(0, HtmlColorQRExtractor.readBackgroundShorthand(
+                "background:black!important;background:white"));
+    }
+
+    @Test
+    public void importantBackgroundShorthandOutranksNormalLonghand() {
+        Document document = Jsoup.parse("""
+                <pre style="background:black!important;background-color:white">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        List<List<List<HtmlColorQRExtractor.Cell>>> clusters =
+                HtmlColorQRExtractor.findClusters(document, Map.of());
+
+        assertTrue(clusters.get(0).get(0).get(0).dark,
+                "important shorthand must win over a normal background-color");
+    }
+
+    @Test
+    public void stylesheetSourceOrderOutranksHtmlClassTokenOrder() {
+        Document document = Jsoup.parse("""
+                <style>
+                  .light { color: white; }
+                  .dark { color: black; }
+                </style>
+                <pre class="dark light">######
+                ######
+                ######
+                ######
+                ######
+                ######</pre>
+                """);
+
+        List<List<List<HtmlColorQRExtractor.Cell>>> clusters =
+                HtmlColorQRExtractor.findClusters(
+                        document, HtmlColorQRExtractor.parseStylesheets(document));
+
+        assertTrue(clusters.get(0).get(0).get(0).dark,
+                "equal-specificity rules follow stylesheet order, not class token order");
+    }
+
+    @Test
+    public void commentsCannotHideInlineImportantPriority() {
+        Document document = Jsoup.parse("""
+                <pre style="color:black!/**/important;color:white">######
+                ######
+                ######
+                ######
+                ######
+                ######</pre>
+                """);
+
+        List<List<List<HtmlColorQRExtractor.Cell>>> clusters =
+                HtmlColorQRExtractor.findClusters(document, Map.of());
+
+        assertTrue(clusters.get(0).get(0).get(0).dark,
+                "CSS comments are removed before !important priority is resolved");
+    }
+
+    @Test
+    public void escapedImportantPriorityMatchesBrowserCascade() {
+        assertEquals(0, HtmlColorQRExtractor.readColor(
+                "color:black!\\69mportant;color:white", "color"));
+    }
+
+    @Test
+    public void commentsPreserveCssTokenBoundaries() {
+        Document splitProperty = Jsoup.parse("""
+                <pre style="background-co/**/lor:black">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+        Document splitImportant = Jsoup.parse("""
+                <pre style="color:black!im/**/portant;color:white">######
+                ######
+                ######
+                ######
+                ######
+                ######</pre>
+                """);
+
+        assertFalse(HtmlColorQRExtractor.findClusters(
+                splitProperty, Map.of()).get(0).get(0).get(0).dark,
+                "a comment cannot join two identifier tokens into a valid property");
+        assertFalse(HtmlColorQRExtractor.findClusters(
+                splitImportant, Map.of()).get(0).get(0).get(0).dark,
+                "a comment cannot join two identifier tokens into !important");
+    }
+
+    @Test
+    public void backgroundShorthandWithoutColorResetsEarlierLonghand() {
+        Document document = Jsoup.parse("""
+                <pre style="background-color:black;background:url(x)">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertFalse(HtmlColorQRExtractor.findClusters(
+                document, Map.of()).get(0).get(0).get(0).dark,
+                "a valid background shorthand resets background-color to transparent");
+    }
+
+    @Test
+    public void customPropertyContentsAreNotColorDeclarations() {
+        Document document = Jsoup.parse("""
+                <pre style="background:black;--decoy: background:white">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                document, Map.of()).get(0).get(0).get(0).dark,
+                "declaration-like text inside a custom property is not applied CSS");
+    }
+
+    @Test
+    public void escapedBangDoesNotCreateImportantPriority() {
+        assertEquals(0, HtmlColorQRExtractor.readBackgroundShorthand(
+                "background:white \\21 important;background:black"),
+                "an escaped bang is part of a CSS value token, not the !important delimiter");
+    }
+
+    @Test
+    public void positionOnlyBackgroundShorthandResetsEarlierColor() {
+        Document document = Jsoup.parse("""
+                <pre style="background-color:black;background:0 0">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertFalse(HtmlColorQRExtractor.findClusters(
+                document, Map.of()).get(0).get(0).get(0).dark,
+                "a valid shorthand with only a position resets background-color");
+    }
+
+    @Test
+    public void invalidThreeValueNumericBackgroundDoesNotResetEarlierColor() {
+        Document document = Jsoup.parse("""
+                <pre style="background-color:black;background:0 0 0">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                document, Map.of()).get(0).get(0).get(0).dark,
+                "three numeric components are not a valid background-position shorthand");
+    }
+
+    @Test
+    public void standardsModeClassAndIdSelectorsRemainCaseSensitive() {
+        Document classDocument = Jsoup.parse("""
+                <!doctype html>
+                <style>
+                  .Dark { background: black; }
+                  .dark { background: white; }
+                </style>
+                <pre class="Dark">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+        Document idDocument = Jsoup.parse("""
+                <!doctype html>
+                <style>
+                  #Grid { background: black; }
+                  #grid { background: white; }
+                </style>
+                <pre id="Grid">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                classDocument, HtmlColorQRExtractor.parseStylesheets(classDocument))
+                .get(0).get(0).get(0).dark);
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                idDocument, HtmlColorQRExtractor.parseStylesheets(idDocument))
+                .get(0).get(0).get(0).dark);
+    }
+
+    @Test
+    public void quirksModeClassAndIdSelectorsRemainCaseInsensitive() {
+        Document classDocument = Jsoup.parse("""
+                <style>.Dark { background: black; }</style>
+                <pre class="dark">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+        Document idDocument = Jsoup.parse("""
+                <style>#Grid { background: black; }</style>
+                <pre id="grid">xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx
+                xxxxxx</pre>
+                """);
+
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                classDocument, HtmlColorQRExtractor.parseStylesheets(classDocument))
+                .get(0).get(0).get(0).dark);
+        assertTrue(HtmlColorQRExtractor.findClusters(
+                idDocument, HtmlColorQRExtractor.parseStylesheets(idDocument))
+                .get(0).get(0).get(0).dark);
     }
 
     @Test
@@ -267,6 +513,148 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void importedStylesheetIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><head><style>"
+                        + "@import url('data:text/css,.qr%7Bcolor%3Ablack%7D');"
+                        + "</style></head><body><div class=\"qr\">████████</div></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "unprocessed CSS imports make color analysis incomplete");
+        assertNotNull(metadata.get("ExploitClass"),
+                "imported CSS must not look like a clean negative");
+        assertEquals(
+                "HTML color-QR stylesheet analysis is incomplete; "
+                        + "unsupported or bounded CSS was omitted",
+                metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)[0],
+                "unsupported CSS must not be mislabeled as a resource-limit failure");
+    }
+
+    @Test
+    public void leadingCharsetDirectiveIsHarmlessButCannotHideImports() {
+        Document harmless = Jsoup.parse("""
+                <style>
+                  @charset "UTF-8";
+                  .dark { color: black; }
+                </style>
+                """);
+        Document followedByImport = Jsoup.parse("""
+                <style>
+                  @charset "UTF-8";
+                  @import url("hidden.css");
+                  .dark { color: black; }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult harmlessResult =
+                HtmlColorQRExtractor.parseStylesheetsBounded(harmless);
+        HtmlColorQRExtractor.StylesheetParseResult importResult =
+                HtmlColorQRExtractor.parseStylesheetsBounded(followedByImport);
+
+        assertFalse(harmlessResult.truncated);
+        assertTrue(harmlessResult.rules.containsKey(".dark"));
+        assertTrue(importResult.truncated,
+                "a safe charset prefix must not blind later security-relevant at-rules");
+    }
+
+    @Test
+    public void legacyCdoWrappedImportIsSecurityVisible() {
+        Document document = Jsoup.parse("""
+                <style>
+                  <!-- @import url("hidden.css"); -->
+                  .qr { color: black; }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult result =
+                HtmlColorQRExtractor.parseStylesheetsBounded(document);
+
+        assertTrue(result.truncated,
+                "CSS CDO and CDC wrappers must not hide an at-rule");
+    }
+
+    @Test
+    public void quotedCommentMarkerCannotHideLaterAtRule() {
+        Document document = Jsoup.parse("""
+                <style>
+                  .label { content: "/*"; }
+                  @media screen { .qr { color: black; } }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult result =
+                HtmlColorQRExtractor.parseStylesheetsBounded(document);
+
+        assertTrue(result.truncated,
+                "comment markers inside strings must not blind at-rule detection");
+    }
+
+    @Test
+    public void atCharactersInsideCssValuesAreNotAtRules() {
+        Document document = Jsoup.parse("""
+                <style>
+                  .contact {
+                    content: "user@example.com";
+                    background-image: url(https://user@example.invalid/pixel.png);
+                    color: black;
+                  }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult result =
+                HtmlColorQRExtractor.parseStylesheetsBounded(document);
+
+        assertTrue(result.rules.containsKey(".contact"));
+        assertTrue(!result.truncated,
+                "ordinary at characters in strings and URLs are not CSS at-rules");
+    }
+
+    @Test
+    public void atCharacterAfterSemicolonInsideUrlIsNotAnAtRule() {
+        Document document = Jsoup.parse("""
+                <style>
+                  .contact {
+                    background-image: url(https://example.invalid/a;@b.png);
+                    color: black;
+                  }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult result =
+                HtmlColorQRExtractor.parseStylesheetsBounded(document);
+
+        assertTrue(result.rules.containsKey(".contact"));
+        assertTrue(!result.truncated,
+                "a semicolon inside a URL must not create an at-rule boundary");
+    }
+
+    @Test
+    public void atCharacterInsideCustomPropertyBlockIsNotAnAtRule() {
+        Document document = Jsoup.parse("""
+                <style>
+                  .contact {
+                    --token: {@benign};
+                    color: black;
+                  }
+                </style>
+                """);
+
+        HtmlColorQRExtractor.StylesheetParseResult result =
+                HtmlColorQRExtractor.parseStylesheetsBounded(document);
+
+        assertTrue(result.rules.containsKey(".contact"));
+        assertTrue(result.rules.get(".contact").contains("color: black"),
+                "a nested custom-property value must not truncate later declarations");
+        assertTrue(!result.truncated,
+                "custom-property block values may contain ordinary at characters");
+    }
+
+    @Test
     public void oversizedInlineStyleIsBoundedAndSecurityVisible() throws Exception {
         Path fakeScanner = createFakeScanner();
         Metadata metadata = new Metadata();
@@ -283,6 +671,24 @@ public class HtmlColorQRExtractorTest {
                 "truncated inline-style analysis must be reported");
         assertNotNull(metadata.get("ExploitClass"),
                 "an oversized inline style can hide a later color-QR declaration");
+    }
+
+    @Test
+    public void oversizedInlineCommentIsBoundedAndSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String html = "<html><body><pre style=\"/*"
+                + "x".repeat(100_000)
+                + "*/color:black\">######\n######\n######\n######\n######\n######"
+                + "</pre></body></html>";
+
+        parse(html, new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "comment stripping must not bypass the inline-style scan budget");
+        assertNotNull(metadata.get("ExploitClass"),
+                "bounded inline comments can hide later declarations and must fail closed");
     }
 
     @Test
@@ -370,6 +776,160 @@ public class HtmlColorQRExtractorTest {
                     "browser-equivalent whitespace-preserving CSS must be inspected: "
                             + carrier);
         }
+    }
+
+    @Test
+    public void importantWhitespaceRuleSurvivesLaterNormalRule() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>"
+                        + ".qr{white-space:pre!important}"
+                        + ".qr{white-space:normal}"
+                        + "</style><div class=\"qr\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "a later normal declaration cannot override an earlier important one");
+    }
+
+    @Test
+    public void quirksModeClassAndIdWhitespaceSelectorsRemainCaseInsensitive()
+            throws Exception {
+        Path fakeScanner = createFakeScanner();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        Metadata classMetadata = new Metadata();
+        Metadata idMetadata = new Metadata();
+
+        parse("<html><style>.Qr{white-space:pre}</style>"
+                        + "<div class=\"qr\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), classMetadata, contextFor(fakeScanner));
+        parse("<html><style>#Grid{white-space:pre}</style>"
+                        + "<div id=\"grid\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), idMetadata, contextFor(fakeScanner));
+
+        assertEquals("64", classMetadata.get("html_unicode_qr:glyph_count"));
+        assertEquals("64", idMetadata.get("html_unicode_qr:glyph_count"));
+    }
+
+    @Test
+    public void parserPreservesStandardsModeForWhitespaceSelectorMatching()
+            throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<!doctype html><html><style>"
+                        + ".Dark{white-space:pre!important}"
+                        + ".dark{white-space:normal!important}"
+                        + "</style><div class=\"Dark\">" + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "the parser must scan using the doctype-derived standards mode");
+    }
+
+    @Test
+    public void parserPreservesXhtmlSelectorCaseWithoutDoctype() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>"
+                        + ".Dark{white-space:pre!important}"
+                        + ".dark{white-space:normal!important}"
+                        + "</style><div class=\"Dark\">" + unicodeGrid + "</div></html>",
+                "application/xhtml+xml; charset=UTF-8",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "XHTML class and ID values remain case-sensitive without a doctype");
+    }
+
+    @Test
+    public void xhtmlTypeSelectorCaseAmbiguityFailsClosed() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<html><style>"
+                        + "DIV{white-space:pre!important}"
+                        + "div{white-space:normal!important}"
+                        + "</style><DIV>" + unicodeGrid + "</DIV></html>",
+                "application/xhtml+xml; charset=UTF-8",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "HTML-mode parsing loses XHTML element-name case and must fail closed");
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void xhtmlAnalysisFailsClosedWhenMarkupCaseIsLost()
+            throws Exception {
+        Path fakeScanner = createFakeScanner();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        Metadata styleElementMetadata = new Metadata();
+        Metadata styleAttributeMetadata = new Metadata();
+
+        parse("<html><STYLE>.qr{white-space:normal!important}</STYLE>"
+                        + "<div class=\"qr\" style=\"white-space:pre\">"
+                        + unicodeGrid + "</div></html>",
+                "application/xhtml+xml; charset=UTF-8",
+                new BodyContentHandler(-1), styleElementMetadata,
+                contextFor(fakeScanner));
+        parse("<html><div STYLE=\"white-space:normal!important\" "
+                        + "style=\"white-space:pre\">"
+                        + unicodeGrid + "</div></html>",
+                "application/xhtml+xml; charset=UTF-8",
+                new BodyContentHandler(-1), styleAttributeMetadata,
+                contextFor(fakeScanner));
+
+        assertTrue(styleElementMetadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertTrue(styleAttributeMetadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+    }
+
+    @Test
+    public void nonAsciiWhitespaceDoesNotSplitHtmlClassTokens() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+
+        parse("<!doctype html><html><style>"
+                        + ".qr{white-space:normal!important}"
+                        + "</style><div class=\"x\u2003qr\" style=\"white-space:pre\">"
+                        + unicodeGrid + "</div></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "HTML class tokens are separated only by ASCII whitespace");
+    }
+
+    @Test
+    public void importantNormalWhitespaceOverridesLaterPre() {
+        JSoupParser.WhitespaceInspection inspection = JSoupParser.inspectWhitespace(
+                "white-space:normal!important;white-space:pre");
+
+        assertFalse(inspection.preserves());
+        assertFalse(inspection.incomplete());
     }
 
     @Test
@@ -520,6 +1080,37 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void uniqueInlineStylesStopAtCumulativeInspectionBudget() throws Exception {
+        Document document = Jsoup.parse("<html><body></body></html>");
+        for (int i = 0; i < 40; i++) {
+            String prefix = "white-space:normal;--unique:" + i + ";";
+            document.body().appendElement("div")
+                    .attr("style", prefix + "x".repeat(64 * 1024 - prefix.length()))
+                    .text("ordinary text");
+        }
+        Metadata metadata = new Metadata();
+        Method scan = JSoupParser.class.getDeclaredMethod(
+                "scanForUnicodeArtQR", Document.class, Metadata.class, ParseContext.class);
+        scan.setAccessible(true);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(3), () ->
+                scan.invoke(null, document, metadata, contextForUncheckedScanner()));
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "distinct inline styles must stop at the cumulative character budget");
+    }
+
+    @Test
+    public void atRuleInspectionIsLinearAcrossColonDenseDeclaration() {
+        Document document = Jsoup.parse("<style>.x{a"
+                + ":".repeat(200_000) + "x}</style>");
+
+        assertTimeoutPreemptively(Duration.ofSeconds(1), () ->
+                assertFalse(HtmlColorQRExtractor
+                        .parseStylesheetsBounded(document).truncated));
+    }
+
+    @Test
     public void inheritedColorResolutionIsLinearAcrossDeepCandidates() {
         assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
             StringBuilder html = new StringBuilder("<pre>");
@@ -570,7 +1161,13 @@ public class HtmlColorQRExtractorTest {
 
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,
                               ParseContext context) throws Exception {
-        metadata.set(Metadata.CONTENT_TYPE, "text/html; charset=UTF-8");
+        parse(html, "text/html; charset=UTF-8", handler, metadata, context);
+    }
+
+    private static void parse(String html, String contentType,
+                              BodyContentHandler handler, Metadata metadata,
+                              ParseContext context) throws Exception {
+        metadata.set(Metadata.CONTENT_TYPE, contentType);
         try (TikaInputStream stream = TikaInputStream.get(
                 html.getBytes(StandardCharsets.UTF_8))) {
             new JSoupParser().parse(stream, handler, metadata, context);

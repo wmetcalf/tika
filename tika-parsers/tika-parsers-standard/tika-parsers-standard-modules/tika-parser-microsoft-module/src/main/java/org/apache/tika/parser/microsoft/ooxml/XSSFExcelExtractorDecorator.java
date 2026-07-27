@@ -95,6 +95,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     // ~20% of a typical worker JVM heap from a single optional capture map.
     // Drop to 1 KB → ~200 MB worst case.
     static final int WORKBOOK_VALUE_MAX_LEN = 1024;
+    private static final int MAX_XLM_MACRO_TEXT_CHARS = 1024 * 1024;
     private final java.util.Map<String, String> workbookCellValues =
             new java.util.HashMap<>();
     private static final String QUERY_TABLE_RELATION =
@@ -243,7 +244,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // has run — POI's SheetIterator throws if getSheetName() is
                 // called before next(), so this MUST come after the try-with
                 // takes ownership of nextStream.
-                sheetExtractor.setCellValueCapture(workbookCellValues, iter.getSheetName());
+                sheetExtractor.setCellValueCapture(
+                        workbookCellValues, iter.getSheetName(),
+                        () -> markXlmCaptureLimit(
+                                "XLM worksheet-value capture limit reached"));
 
                 sheetParts.add(sheetPart);
 
@@ -347,6 +351,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         try {
             processXlmXmlMacroSheets(container, xhtml, stringsShim);
         } catch (Exception e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
             //swallow — macro extraction is opportunistic
         }
     }
@@ -395,15 +400,23 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
             try (InputStream is = macroPart.getInputStream()) {
                 XlmXmlMacrosheetParser parser =
-                        new XlmXmlMacrosheetParser(is, xhtml, sheetName, sharedStrings);
+                        new XlmXmlMacrosheetParser(
+                                is, xhtml, sheetName, sharedStrings,
+                                WORKBOOK_VALUES_MAX_ENTRIES - allFormulas.size(),
+                                WORKBOOK_VALUES_MAX_ENTRIES - allValues.size());
                 parser.parse();
                 allFormulas.putAll(parser.getFormulas());
                 allValues.putAll(parser.getValues());
+                if (parser.isTruncated()) {
+                    markXlmCaptureLimit(
+                            "XLM macrosheet formula or value capture limit reached");
+                }
                 // Parity with VBA: surface this macro sheet as a first-class MACRO
                 // entry (embeddedResourceType=MACRO) carrying its formula text.
                 emitMacroText(sheetName, "text/x-excel-macro",
-                        String.join("\n", parser.getFormulas().values()), xhtml);
+                        boundedMacroText(parser.getFormulas().values()), xhtml);
             } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
             }
 
@@ -420,6 +433,43 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 xhtml.element("p", ioc);
             }
             xhtml.endElement("div");
+        }
+    }
+
+    private String boundedMacroText(Iterable<String> formulas) {
+        StringBuilder text = new StringBuilder();
+        for (String formula : formulas) {
+            int separator = text.length() == 0 ? 0 : 1;
+            int remaining = MAX_XLM_MACRO_TEXT_CHARS - text.length() - separator;
+            if (remaining <= 0) {
+                markXlmCaptureLimit("XLM macro text retention limit reached");
+                break;
+            }
+            if (separator != 0) {
+                text.append('\n');
+            }
+            int retained = Math.min(remaining, formula.length());
+            text.append(formula, 0, retained);
+            if (retained < formula.length()) {
+                markXlmCaptureLimit("XLM macro text retention limit reached");
+                break;
+            }
+        }
+        return text.toString();
+    }
+
+    private void markXlmCaptureLimit(String warning) {
+        if (metadata == null
+                || Boolean.parseBoolean(
+                        metadata.get("msoffice:xlm-capture-limit-reached"))) {
+            return;
+        }
+        metadata.set("msoffice:xlm-capture-limit-reached", "true");
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "XLM analysis incomplete; macro content may not have been analyzed");
         }
     }
 
@@ -1217,6 +1267,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // because capture is unconditional).
         private java.util.Map<String, String> cellValueSink;
         private String captureSheetName;
+        private Runnable cellValueCaptureLimitHandler;
+        private boolean cellValueCaptureLimitSignaled;
         private int currentRowForCapture = -1;
         // Track open <tr>/<td> so the outer catch can emit balanced closes
         // when processSheet throws part-way through a row (e.g., a malformed
@@ -1238,9 +1290,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
          * Used by the XLM IOC scanner to resolve cross-sheet cell references
          * (e.g. {@code EXEC(Sheet1!A1)}) without re-parsing each sheet.
          */
-        protected void setCellValueCapture(java.util.Map<String, String> sink, String sheetName) {
+        protected void setCellValueCapture(java.util.Map<String, String> sink, String sheetName,
+                                           Runnable limitHandler) {
             this.cellValueSink = sink;
             this.captureSheetName = sheetName;
+            this.cellValueCaptureLimitHandler = limitHandler;
         }
 
         public void startRow(int rowNum) {
@@ -1319,13 +1373,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // per-value past WORKBOOK_VALUE_MAX_LEN. See javadoc on
                 // workbookCellValues for the threat model.
                 if (cellValueSink != null && captureSheetName != null
-                        && cellRef != null && formattedValue != null && !formattedValue.isEmpty()
-                        && cellValueSink.size() < WORKBOOK_VALUES_MAX_ENTRIES) {
-                    String v = formattedValue.length() > WORKBOOK_VALUE_MAX_LEN
-                            ? formattedValue.substring(0, WORKBOOK_VALUE_MAX_LEN)
-                            : formattedValue;
-                    cellValueSink.put(
-                            captureSheetName + ":" + currentRowForCapture + ":" + cellRef, v);
+                        && cellRef != null && formattedValue != null && !formattedValue.isEmpty()) {
+                    String key =
+                            captureSheetName + ":" + currentRowForCapture + ":" + cellRef;
+                    if (cellValueSink.size() >= WORKBOOK_VALUES_MAX_ENTRIES
+                            && !cellValueSink.containsKey(key)) {
+                        signalCellValueCaptureLimit();
+                    } else {
+                        if (formattedValue.length() > WORKBOOK_VALUE_MAX_LEN) {
+                            signalCellValueCaptureLimit();
+                        }
+                        String v = formattedValue.length() > WORKBOOK_VALUE_MAX_LEN
+                                ? formattedValue.substring(0, WORKBOOK_VALUE_MAX_LEN)
+                                : formattedValue;
+                        cellValueSink.put(key, v);
+                    }
                 }
 
                 // Handle any missing cells
@@ -1367,6 +1429,16 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 cellOpen = false;
             } catch (SAXException e) {
                 throw new RuntimeSAXException(e);
+            }
+        }
+
+        private void signalCellValueCaptureLimit() {
+            if (cellValueCaptureLimitSignaled) {
+                return;
+            }
+            cellValueCaptureLimitSignaled = true;
+            if (cellValueCaptureLimitHandler != null) {
+                cellValueCaptureLimitHandler.run();
             }
         }
 

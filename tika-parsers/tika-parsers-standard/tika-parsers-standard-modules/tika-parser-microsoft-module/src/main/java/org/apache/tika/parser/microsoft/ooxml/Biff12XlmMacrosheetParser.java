@@ -23,6 +23,8 @@ import org.apache.poi.xssf.binary.XSSFBParseException;
 import org.apache.poi.xssf.binary.XSSFBParser;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.RuntimeSAXException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -114,8 +116,8 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
 
         // Feed raw bytes to emulator before decoding (emulator needs bytes, not text)
         int row = currentRow < 0 ? 0 : currentRow;
-        if (emulator != null) {
-            emulator.addMacroCell(row, formulaBytes);
+        if (emulator != null && !emulator.addMacroCell(row, formulaBytes)) {
+            return;
         }
 
         String formula = Biff12XlmFormulaDecoder.decode(formulaBytes);
@@ -127,6 +129,9 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
         try {
             xhtml.element("p", cellRef + ": =" + formula);
         } catch (SAXException e) {
+            if (WriteLimitReachedException.isWriteLimitReached(e)) {
+                throw new RuntimeSAXException(e);
+            }
             // Non-fatal — continue with remaining cells
         }
     }

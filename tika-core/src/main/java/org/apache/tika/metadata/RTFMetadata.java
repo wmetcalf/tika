@@ -87,6 +87,14 @@ public interface RTFMetadata {
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_command");
 
     /**
+     * NetworkName from an OLE1 linked object. This commonly contains the
+     * authoritative UNC target when {@link #EMB_TOPIC} uses a mapped drive.
+     */
+    Property EMB_NETWORK_NAME = Property.internalText(
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER
+                    + "emb_network_name");
+
+    /**
      * Number of decoy {@code \objdata} blocks that were discarded before the surviving
      * (last-occurrence) block for this embedded object.  A non-zero value indicates that the
      * document deliberately hid the real OLE payload behind dummy data to defeat parsers

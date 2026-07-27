@@ -45,14 +45,20 @@ class OOXMLPartContentCollector extends DefaultHandler {
 
     private static final String W_NS =
             "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    private static final int DEFAULT_MAX_PARTS = 1_024;
+    private static final long DEFAULT_MAX_SERIALIZED_BYTES = 8L * 1_024 * 1_024;
+    private static final int ESCAPE_CHUNK_CHARS = 4_096;
 
     private final Set<String> wrapperElementNames;
     private final Set<String> skipIds;
+    private final CollectionBudget collectionBudget;
     private final Map<String, byte[]> contentMap = new HashMap<>();
     private final Map<String, String> namespaceMappings = new HashMap<>();
 
     private String currentId = null;
     private ByteArrayOutputStream buffer = null;
+    private boolean currentPartDropped = false;
+    private char pendingHighSurrogate = 0;
     private int depth = 0;
 
     /**
@@ -60,7 +66,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
      *                            (e.g., "footnote", "endnote", "comment")
      */
     OOXMLPartContentCollector(Set<String> wrapperElementNames) {
-        this(wrapperElementNames, Set.of("0", "-1"));
+        this(wrapperElementNames, Set.of("0", "-1"), newDefaultCollectionBudget());
     }
 
     /**
@@ -69,8 +75,18 @@ class OOXMLPartContentCollector extends DefaultHandler {
      *                            separator/continuation elements)
      */
     OOXMLPartContentCollector(Set<String> wrapperElementNames, Set<String> skipIds) {
+        this(wrapperElementNames, skipIds, newDefaultCollectionBudget());
+    }
+
+    OOXMLPartContentCollector(Set<String> wrapperElementNames, Set<String> skipIds,
+            CollectionBudget collectionBudget) {
         this.wrapperElementNames = wrapperElementNames;
         this.skipIds = skipIds;
+        this.collectionBudget = collectionBudget;
+    }
+
+    static CollectionBudget newDefaultCollectionBudget() {
+        return new CollectionBudget(DEFAULT_MAX_PARTS, DEFAULT_MAX_SERIALIZED_BYTES);
     }
 
     @Override
@@ -86,6 +102,7 @@ class OOXMLPartContentCollector extends DefaultHandler {
     public void startElement(String uri, String localName, String qName,
             Attributes atts) throws SAXException {
         if (currentId != null) {
+            flushPendingHighSurrogate();
             depth++;
             appendStartTag(localName, qName, atts);
             return;
@@ -95,7 +112,8 @@ class OOXMLPartContentCollector extends DefaultHandler {
             String id = atts.getValue(W_NS, "id");
             if (id != null && !skipIds.contains(id)) {
                 currentId = id;
-                buffer = new ByteArrayOutputStream();
+                currentPartDropped = !collectionBudget.tryStartPart();
+                buffer = currentPartDropped ? null : new ByteArrayOutputStream();
                 // Don't write wrapper open tag yet — inline xmlns declarations
                 // (e.g., xmlns:a on nested elements) haven't been captured via
                 // startPrefixMapping. Defer to endElement when all are known.
@@ -110,20 +128,17 @@ class OOXMLPartContentCollector extends DefaultHandler {
         if (currentId == null) {
             return;
         }
+        flushPendingHighSurrogate();
 
         if (depth == 0) {
-            // Build the wrapper now — all startPrefixMapping calls from nested
-            // elements have been captured, so inline xmlns declarations are included.
-            byte[] wrapperOpen = buildWrapperOpenTag().getBytes(StandardCharsets.UTF_8);
-            byte[] content = buffer.toByteArray();
-            ByteArrayOutputStream combined =
-                    new ByteArrayOutputStream(wrapperOpen.length + content.length + 16);
-            combined.write(wrapperOpen, 0, wrapperOpen.length);
-            combined.write(content, 0, content.length);
-            writeString(combined, "</w:body>");
-            contentMap.put(currentId, combined.toByteArray());
-            currentId = null;
-            buffer = null;
+            if (!currentPartDropped) {
+                byte[] serialized = finishCurrentPart();
+                if (serialized != null &&
+                        collectionBudget.tryRetain(serialized.length)) {
+                    contentMap.put(currentId, serialized);
+                }
+            }
+            resetCurrentPart();
             return;
         }
 
@@ -137,56 +152,254 @@ class OOXMLPartContentCollector extends DefaultHandler {
 
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
-        if (currentId != null) {
-            writeString(escape(new String(ch, start, length)));
+        if (currentId == null || length == 0) {
+            return;
+        }
+        int end = start + length;
+        if (pendingHighSurrogate != 0) {
+            if (Character.isLowSurrogate(ch[start])) {
+                writeEscaped(new String(
+                        new char[]{pendingHighSurrogate, ch[start]}));
+                start++;
+            } else {
+                writeEscaped(Character.toString(pendingHighSurrogate));
+            }
+            pendingHighSurrogate = 0;
+        }
+        if (start < end && Character.isHighSurrogate(ch[end - 1])) {
+            pendingHighSurrogate = ch[end - 1];
+            end--;
+        }
+        if (start < end) {
+            writeEscaped(new String(ch, start, end - start));
         }
     }
 
-    private String buildWrapperOpenTag() {
-        StringBuilder sb = new StringBuilder("<w:body");
+    private byte[] finishCurrentPart() {
+        long maxBytes = collectionBudget.getRemainingBytes();
+        int initialCapacity = (int) Math.min(Integer.MAX_VALUE,
+                Math.min(maxBytes, (long) buffer.size() + 256));
+        ByteArrayOutputStream combined = new ByteArrayOutputStream(initialCapacity);
+        if (!writeString(combined, "<w:body", maxBytes)) {
+            return dropFinishedPart();
+        }
         // include all namespace declarations from the source document
         for (Map.Entry<String, String> entry : namespaceMappings.entrySet()) {
             String prefix = entry.getKey();
             String nsUri = entry.getValue();
             if (prefix == null || prefix.isEmpty()) {
-                sb.append(" xmlns=\"").append(escape(nsUri)).append("\"");
+                if (!writeString(combined, " xmlns=\"", maxBytes) ||
+                        !writeEscaped(combined, nsUri, maxBytes) ||
+                        !writeString(combined, "\"", maxBytes)) {
+                    return dropFinishedPart();
+                }
             } else {
-                sb.append(" xmlns:").append(prefix).append("=\"")
-                        .append(escape(nsUri)).append("\"");
+                if (!writeString(combined, " xmlns:", maxBytes) ||
+                        !writeString(combined, prefix, maxBytes) ||
+                        !writeString(combined, "=\"", maxBytes) ||
+                        !writeEscaped(combined, nsUri, maxBytes) ||
+                        !writeString(combined, "\"", maxBytes)) {
+                    return dropFinishedPart();
+                }
             }
         }
         // ensure w namespace is present
         if (!namespaceMappings.containsKey("w")) {
-            sb.append(" xmlns:w=\"").append(W_NS).append("\"");
+            if (!writeString(combined, " xmlns:w=\"", maxBytes) ||
+                    !writeString(combined, W_NS, maxBytes) ||
+                    !writeString(combined, "\"", maxBytes)) {
+                return dropFinishedPart();
+            }
         }
-        sb.append(">");
-        return sb.toString();
+        if (!writeString(combined, ">", maxBytes) ||
+                buffer.size() > maxBytes - combined.size()) {
+            return dropFinishedPart();
+        }
+        try {
+            buffer.writeTo(combined);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Unexpected in-memory write failure", e);
+        }
+        if (!writeString(combined, "</w:body>", maxBytes)) {
+            return dropFinishedPart();
+        }
+        return combined.toByteArray();
+    }
+
+    private byte[] dropFinishedPart() {
+        collectionBudget.markLimitReached();
+        return null;
     }
 
     private void appendStartTag(String localName, String qName, Attributes atts) {
         String tagName = (qName != null && !qName.isEmpty()) ? qName : localName;
-        StringBuilder sb = new StringBuilder();
-        sb.append('<').append(tagName);
+        writeString("<");
+        writeString(tagName);
         for (int i = 0; i < atts.getLength(); i++) {
             String attName = atts.getQName(i);
             if (attName == null || attName.isEmpty()) {
                 attName = atts.getLocalName(i);
             }
-            sb.append(' ').append(attName).append("=\"");
-            sb.append(escape(atts.getValue(i)));
-            sb.append('"');
+            writeString(" ");
+            writeString(attName);
+            writeString("=\"");
+            writeEscaped(atts.getValue(i));
+            writeString("\"");
         }
-        sb.append('>');
-        writeString(sb.toString());
+        writeString(">");
     }
 
     private void writeString(String s) {
-        writeString(buffer, s);
+        if (currentPartDropped) {
+            return;
+        }
+        if (!writeString(buffer, s, collectionBudget.getRemainingBytes())) {
+            dropCurrentPart();
+        }
     }
 
-    private static void writeString(ByteArrayOutputStream target, String s) {
+    private void writeEscaped(String s) {
+        if (currentPartDropped) {
+            return;
+        }
+        if (!writeEscaped(buffer, s, collectionBudget.getRemainingBytes())) {
+            dropCurrentPart();
+        }
+    }
+
+    private static boolean writeString(
+            ByteArrayOutputStream target, String s, long maxBytes) {
+        long remaining = maxBytes - target.size();
+        if (s.length() > remaining) {
+            return false;
+        }
         byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > remaining) {
+            return false;
+        }
         target.write(bytes, 0, bytes.length);
+        return true;
+    }
+
+    private static boolean writeEscaped(
+            ByteArrayOutputStream target, String s, long maxBytes) {
+        if (s == null) {
+            return true;
+        }
+        StringBuilder chunk = new StringBuilder(
+                Math.min(ESCAPE_CHUNK_CHARS, s.length()));
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isHighSurrogate(c) && i + 1 < s.length() &&
+                    Character.isLowSurrogate(s.charAt(i + 1))) {
+                if (chunk.length() >= ESCAPE_CHUNK_CHARS - 1 &&
+                        !writeString(target, chunk.toString(), maxBytes)) {
+                    return false;
+                }
+                if (chunk.length() >= ESCAPE_CHUNK_CHARS - 1) {
+                    chunk.setLength(0);
+                }
+                chunk.append(c).append(s.charAt(++i));
+            } else {
+                switch (c) {
+                    case '&':
+                        chunk.append("&amp;");
+                        break;
+                    case '<':
+                        chunk.append("&lt;");
+                        break;
+                    case '>':
+                        chunk.append("&gt;");
+                        break;
+                    case '"':
+                        chunk.append("&quot;");
+                        break;
+                    default:
+                        chunk.append(c);
+                        break;
+                }
+            }
+            if (chunk.length() >= ESCAPE_CHUNK_CHARS) {
+                if (!writeString(target, chunk.toString(), maxBytes)) {
+                    return false;
+                }
+                chunk.setLength(0);
+            }
+        }
+        return chunk.length() == 0 ||
+                writeString(target, chunk.toString(), maxBytes);
+    }
+
+    private void dropCurrentPart() {
+        currentPartDropped = true;
+        buffer = null;
+        collectionBudget.markLimitReached();
+    }
+
+    private void resetCurrentPart() {
+        currentId = null;
+        buffer = null;
+        currentPartDropped = false;
+        pendingHighSurrogate = 0;
+    }
+
+    private void flushPendingHighSurrogate() {
+        if (pendingHighSurrogate != 0) {
+            writeEscaped(Character.toString(pendingHighSurrogate));
+            pendingHighSurrogate = 0;
+        }
+    }
+
+    static final class CollectionBudget {
+
+        private final int maxParts;
+        private final long maxSerializedBytes;
+        private int retainedParts;
+        private long retainedBytes;
+        private boolean limitReached;
+
+        CollectionBudget(int maxParts, long maxSerializedBytes) {
+            if (maxParts < 0 || maxSerializedBytes < 0) {
+                throw new IllegalArgumentException("Collection limits must be non-negative");
+            }
+            this.maxParts = maxParts;
+            this.maxSerializedBytes = maxSerializedBytes;
+        }
+
+        private boolean tryStartPart() {
+            if (limitReached) {
+                return false;
+            }
+            if (retainedParts >= maxParts ||
+                    retainedBytes >= maxSerializedBytes) {
+                limitReached = true;
+                return false;
+            }
+            return true;
+        }
+
+        private boolean tryRetain(long serializedBytes) {
+            if (limitReached || retainedParts >= maxParts ||
+                    serializedBytes > maxSerializedBytes - retainedBytes) {
+                limitReached = true;
+                return false;
+            }
+            retainedParts++;
+            retainedBytes += serializedBytes;
+            return true;
+        }
+
+        private long getRemainingBytes() {
+            return maxSerializedBytes - retainedBytes;
+        }
+
+        private void markLimitReached() {
+            limitReached = true;
+        }
+
+        boolean isLimitReached() {
+            return limitReached;
+        }
     }
 
     static String escape(String s) {

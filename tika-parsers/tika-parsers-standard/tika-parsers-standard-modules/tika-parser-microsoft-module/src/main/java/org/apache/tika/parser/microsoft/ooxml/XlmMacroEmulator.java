@@ -41,6 +41,30 @@ import java.util.Map;
  */
 class XlmMacroEmulator {
 
+    static final class Limits {
+        private static final Limits DEFAULT = new Limits(
+                65_536, 16L * 1024 * 1024, 4_096, 1024 * 1024,
+                1_000_000, 1024 * 1024);
+
+        final int maxMacroCells;
+        final long maxFormulaBytes;
+        final int maxIocEntries;
+        final int maxIocChars;
+        final long maxOperations;
+        final int maxFileContentChars;
+
+        Limits(int maxMacroCells, long maxFormulaBytes,
+               int maxIocEntries, int maxIocChars,
+               long maxOperations, int maxFileContentChars) {
+            this.maxMacroCells = Math.max(0, maxMacroCells);
+            this.maxFormulaBytes = Math.max(0, maxFormulaBytes);
+            this.maxIocEntries = Math.max(0, maxIocEntries);
+            this.maxIocChars = Math.max(0, maxIocChars);
+            this.maxOperations = Math.max(0, maxOperations);
+            this.maxFileContentChars = Math.max(0, maxFileContentChars);
+        }
+    }
+
     /** A single macro cell: its row index and raw BIFF12 formula bytes. */
     static final class MacroCell {
         final int row;
@@ -57,18 +81,46 @@ class XlmMacroEmulator {
 
     private final Map<String, Double> cellValues;
     private final XlmWorkbookSheetMap sheetMap;
+    private final Limits limits;
     private final List<MacroCell> cells = new ArrayList<>();
+    private long retainedFormulaBytes;
+    private long operations;
+    private int retainedIocChars;
+    private boolean emulationAborted;
+    private String limitWarning;
 
     /** Collected IOC strings — populated by {@link #emulate()}. */
     final List<String> iocs = new ArrayList<>();
 
     XlmMacroEmulator(Map<String, Double> cellValues, XlmWorkbookSheetMap sheetMap) {
-        this.cellValues = cellValues;
-        this.sheetMap = sheetMap;
+        this(cellValues, sheetMap, Limits.DEFAULT);
     }
 
-    void addMacroCell(int row, byte[] formulaBytes) {
+    XlmMacroEmulator(Map<String, Double> cellValues, XlmWorkbookSheetMap sheetMap,
+                     Limits limits) {
+        this.cellValues = cellValues;
+        this.sheetMap = sheetMap;
+        this.limits = limits;
+    }
+
+    boolean addMacroCell(int row, byte[] formulaBytes) {
+        if (formulaBytes == null
+                || cells.size() >= limits.maxMacroCells
+                || formulaBytes.length > limits.maxFormulaBytes - retainedFormulaBytes) {
+            markLimit("XLSB XLM formula retention limit reached");
+            return false;
+        }
         cells.add(new MacroCell(row, formulaBytes));
+        retainedFormulaBytes += formulaBytes.length;
+        return true;
+    }
+
+    boolean isLimitReached() {
+        return limitWarning != null;
+    }
+
+    String getLimitWarning() {
+        return limitWarning;
     }
 
     // ── Main entry point ────────────────────────────────────────────────────
@@ -79,19 +131,31 @@ class XlmMacroEmulator {
      */
     void emulate() {
         iocs.clear();
+        operations = 0;
+        retainedIocChars = 0;
+        emulationAborted = false;
         Biff12XlmFormulaDecoder.EvalContext ctx =
-                new Biff12XlmFormulaDecoder.EvalContext(cellValues, new HashMap<>());
+                new Biff12XlmFormulaDecoder.EvalContext(
+                        cellValues, new HashMap<>(),
+                        limits.maxIocEntries, limits.maxIocChars,
+                        limits.maxFileContentChars);
 
         int i = 0;
-        while (i < cells.size()) {
+        while (i < cells.size() && !emulationAborted) {
+            if (!consumeOperation()) {
+                break;
+            }
             MacroCell cell = cells.get(i);
             Object result = evalCell(cell, ctx);
+            stopOnContextLimit(ctx);
 
             if (result instanceof Biff12XlmFormulaDecoder.ForCellSignal) {
                 Biff12XlmFormulaDecoder.ForCellSignal signal =
                         (Biff12XlmFormulaDecoder.ForCellSignal) result;
                 int nextIdx = findNext(i + 1);
-                if (nextIdx >= 0) {
+                if (emulationAborted) {
+                    break;
+                } else if (nextIdx >= 0) {
                     executeForCellLoop(signal, i + 1, nextIdx, ctx);
                     i = nextIdx + 1;
                 } else {
@@ -107,13 +171,17 @@ class XlmMacroEmulator {
             String content = entry.getValue().toString();
             if (!content.isEmpty()) {
                 String path = ctx.getFilePath(entry.getKey());
-                iocs.add("FILE_CONTENT[" + path + "]: "
+                retainIoc("FILE_CONTENT[" + path + "]: "
                         + content.substring(0, Math.min(MAX_FILE_CONTENT, content.length()))
                         + (content.length() > MAX_FILE_CONTENT ? "…" : ""));
             }
         }
 
-        iocs.addAll(ctx.iocs);
+        for (String ioc : ctx.iocs) {
+            if (!retainIoc(ioc)) {
+                break;
+            }
+        }
     }
 
     // ── Loop execution ───────────────────────────────────────────────────────
@@ -122,15 +190,22 @@ class XlmMacroEmulator {
                                     int bodyStart, int nextIdx,
                                     Biff12XlmFormulaDecoder.EvalContext ctx) {
         List<Double> rangeValues = getRangeValues(signal.rangeRef, signal.sheetIdx);
-        if (rangeValues.isEmpty()) {
+        if (rangeValues.isEmpty() || emulationAborted) {
             return;
         }
 
         int iterations = Math.min(rangeValues.size(), MAX_LOOP_ITERATIONS);
-        for (int vi = 0; vi < iterations; vi++) {
+        for (int vi = 0; vi < iterations && !emulationAborted; vi++) {
             ctx.variables.put(signal.varName, rangeValues.get(vi));
             for (int ci = bodyStart; ci < nextIdx; ci++) {
+                if (!consumeOperation()) {
+                    break;
+                }
                 evalCell(cells.get(ci), ctx);
+                stopOnContextLimit(ctx);
+                if (emulationAborted) {
+                    break;
+                }
             }
         }
         ctx.variables.remove(signal.varName);
@@ -151,6 +226,9 @@ class XlmMacroEmulator {
 
     private int findNext(int startIdx) {
         for (int i = startIdx; i < cells.size(); i++) {
+            if (!consumeOperation()) {
+                return -1;
+            }
             String formula = Biff12XlmFormulaDecoder.decode(cells.get(i).formulaBytes);
             if ("NEXT()".equals(formula)) {
                 return i;
@@ -190,6 +268,9 @@ class XlmMacroEmulator {
         String prefix = sheetName + ":";
         List<double[]> matched = new ArrayList<>();
         for (Map.Entry<String, Double> e : cellValues.entrySet()) {
+            if (!consumeOperation()) {
+                return Collections.emptyList();
+            }
             String key = e.getKey();
             if (key == null || !key.startsWith(prefix)) {
                 continue;
@@ -216,6 +297,44 @@ class XlmMacroEmulator {
             values.add(t[2]);
         }
         return values;
+    }
+
+    private boolean consumeOperation() {
+        if (operations >= limits.maxOperations) {
+            markLimit("XLSB XLM emulation operation limit reached");
+            emulationAborted = true;
+            return false;
+        }
+        operations++;
+        return true;
+    }
+
+    private void stopOnContextLimit(Biff12XlmFormulaDecoder.EvalContext ctx) {
+        if (!ctx.isLimitReached()) {
+            return;
+        }
+        markLimit(ctx.getLimitWarning());
+        emulationAborted = true;
+    }
+
+    private boolean retainIoc(String ioc) {
+        if (ioc == null) {
+            return true;
+        }
+        if (iocs.size() >= limits.maxIocEntries
+                || ioc.length() > limits.maxIocChars - retainedIocChars) {
+            markLimit("XLSB XLM IOC retention limit reached");
+            return false;
+        }
+        iocs.add(ioc);
+        retainedIocChars += ioc.length();
+        return true;
+    }
+
+    private void markLimit(String warning) {
+        if (limitWarning == null) {
+            limitWarning = warning;
+        }
     }
 
     /**

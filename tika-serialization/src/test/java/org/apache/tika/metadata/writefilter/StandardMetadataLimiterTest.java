@@ -358,6 +358,118 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testAlignedArrayReplacementDoesNotRestoreRemovedSlots() {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
+        metadata.set(Office.OFFICE_LINK_URL,
+                new String[]{"https://replacement.invalid"});
+
+        assertArrayEquals(new String[]{"https://replacement.invalid"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+    }
+
+    @Test
+    public void testShortAlignedArrayReplacementPreservesRecordBoundary() {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "first-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "first-text");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "second-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "second-text");
+
+        metadata.set(Office.OFFICE_LINK_URL,
+                new String[]{"https://replacement.invalid"});
+        metadata.add(Office.OFFICE_LINK_URL, "https://third.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "third-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "third-text");
+
+        assertArrayEquals(new String[]{
+                        "https://replacement.invalid", "", "https://third.invalid"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"first-type", "second-type", "third-type"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+        assertArrayEquals(new String[]{"first-text", "second-text", "third-text"},
+                metadata.getValues(Office.OFFICE_LINK_TEXT));
+    }
+
+    @Test
+    public void testLongBoundaryReplacementPreservesRecordAlignment() {
+        assertAlignedAfterLongReplacement(Office.OFFICE_LINK_URL,
+                new String[]{
+                        "https://replacement-1.invalid",
+                        "https://replacement-2.invalid",
+                        "https://replacement-3.invalid"});
+    }
+
+    @Test
+    public void testLongSiblingReplacementPreservesRecordAlignment() {
+        assertAlignedAfterLongReplacement(Office.OFFICE_LINK_TYPE,
+                new String[]{"replacement-1", "replacement-2", "replacement-3"});
+    }
+
+    private void assertAlignedAfterLongReplacement(
+            org.apache.tika.metadata.Property property, String[] replacement) {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "first-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "first-text");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "second-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "second-text");
+
+        metadata.set(property, replacement);
+        metadata.add(Office.OFFICE_LINK_URL, "https://fourth.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "fourth-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "fourth-text");
+
+        assertEquals(4, metadata.getValues(Office.OFFICE_LINK_URL).length);
+        assertEquals(4, metadata.getValues(Office.OFFICE_LINK_TYPE).length);
+        assertEquals(4, metadata.getValues(Office.OFFICE_LINK_TEXT).length);
+        assertEquals("https://fourth.invalid",
+                metadata.getValues(Office.OFFICE_LINK_URL)[3]);
+        assertEquals("fourth-type",
+                metadata.getValues(Office.OFFICE_LINK_TYPE)[3]);
+        assertEquals("fourth-text",
+                metadata.getValues(Office.OFFICE_LINK_TEXT)[3]);
+    }
+
+    @Test
+    public void testEmptyAlignedArrayReplacementPreservesRecordBoundary() {
+        assertAlignedAfterEmptyReplacement(null);
+        assertAlignedAfterEmptyReplacement(new String[0]);
+        assertAlignedAfterEmptyReplacement(new String[]{null});
+    }
+
+    private void assertAlignedAfterEmptyReplacement(String[] replacement) {
+        Metadata metadata = filter(100, 1000, 10000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+        metadata.add(Office.OFFICE_LINK_URL, "https://first.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "first-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "first-text");
+        metadata.add(Office.OFFICE_LINK_URL, "https://second.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "second-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "second-text");
+
+        metadata.set(Office.OFFICE_LINK_URL, replacement);
+        metadata.add(Office.OFFICE_LINK_URL, "https://third.invalid");
+        metadata.add(Office.OFFICE_LINK_TYPE, "third-type");
+        metadata.add(Office.OFFICE_LINK_TEXT, "third-text");
+
+        assertArrayEquals(new String[]{"", "", "https://third.invalid"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
+        assertArrayEquals(new String[]{"first-type", "second-type", "third-type"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
+        assertArrayEquals(new String[]{"first-text", "second-text", "third-text"},
+                metadata.getValues(Office.OFFICE_LINK_TEXT));
+    }
+
+    @Test
     public void testCompositeRecordHonorsExcludedMemberFields() {
         Metadata office = filter(100, 1000, 10000, 10,
                 Collections.EMPTY_SET, Set.of(Office.OFFICE_LINK_URL.getName()), false);

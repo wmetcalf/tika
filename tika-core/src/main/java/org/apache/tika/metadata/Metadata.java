@@ -420,14 +420,12 @@ public class Metadata
             String[] values = metadata.get(property.getName());
 
             if (values == null) {
-                set(property, value);
+                writeLimiter.addFirst(property.getName(), value, metadata);
+            } else if (property.isMultiValuePermitted()) {
+                addUnchecked(property.getName(), value);
             } else {
-                if (property.isMultiValuePermitted()) {
-                    addUnchecked(property.getName(), value);
-                } else {
-                    throw new PropertyTypeException(
-                            property.getName() + " : " + property.getPropertyType());
-                }
+                throw new PropertyTypeException(
+                        property.getName() + " : " + property.getPropertyType());
             }
         }
     }
@@ -468,14 +466,7 @@ public class Metadata
     }
 
     protected void set(String name, String[] values) {
-        //TODO: optimize this to not copy if all
-        //values are to be included "as is"
-        writeLimiter.remove(name, metadata);
-        if (values != null) {
-            for (String v : values) {
-                addUnchecked(name, v);
-            }
-        }
+        writeLimiter.replace(name, values, metadata);
     }
 
     /**

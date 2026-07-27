@@ -92,9 +92,17 @@ public class RTFEmbeddedHandler {
         switch (tok.getType()) {
             case GROUP_CLOSE:
                 if (closingGroup.objdata) {
-                    handleCompletedObjData();
+                    if (objParser != null) {
+                        handleCompletedObjData();
+                    } else {
+                        reset();
+                    }
                 } else if (closingGroup.pictDepth == 1) {
-                    handleCompletedPict();
+                    if (pictParser != null) {
+                        handleCompletedPict();
+                    } else {
+                        reset();
+                    }
                 } else if (closingGroup.sn) {
                     sn = metadataBuffer.toString();
                 } else if (closingGroup.sv) {
@@ -142,7 +150,13 @@ public class RTFEmbeddedHandler {
                 break;
 
             case HEX_ESCAPE:
-                if (group.sn || group.sv) {
+                if (group.objdata || group.pictDepth == 1) {
+                    hi = -1;
+                    if (group.objdata) {
+                        metadata.set(RTFMetadata.EMB_HEX_ESCAPE_IN_OBJDATA, true);
+                    }
+                    writeDecodedByte(tok.getHexValue());
+                } else if (group.sn || group.sv) {
                     metadataBuffer.append((char) tok.getHexValue());
                 }
                 break;
@@ -157,11 +171,15 @@ public class RTFEmbeddedHandler {
             if (objParser.isLinkedObject()) {
                 surfaceLinkedObject(metadata);
             }
+            if (objParser.getAnalysisFailure() != null) {
+                recordAnalysisFailure(objParser.getAnalysisFailure());
+            }
             if (tis != null) {
                 extractObj(tis, metadata);
             }
         } catch (IOException e) {
             EmbeddedDocumentUtil.recordException(e, metadata);
+            recordAnalysisFailure(e);
         } finally {
             objParser.close();
             objParser = null;
@@ -171,11 +189,23 @@ public class RTFEmbeddedHandler {
 
     private void surfaceLinkedObject(Metadata linkedMetadata) {
         String topic = linkedMetadata.get(RTFMetadata.EMB_TOPIC);
-        if (topic == null || topic.isBlank()) {
+        String networkName = linkedMetadata.get(RTFMetadata.EMB_NETWORK_NAME);
+        if ((topic == null || topic.isBlank())
+                && (networkName == null || networkName.isBlank())) {
             return;
         }
         parentMetadata.set(Office.HAS_LINKED_OLE_OBJECTS, true);
-        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", topic,
+        addLinkedObject(networkName, linkedMetadata);
+        if (topic != null && !topic.isBlank() && !topic.equals(networkName)) {
+            addLinkedObject(topic, linkedMetadata);
+        }
+    }
+
+    private void addLinkedObject(String target, Metadata linkedMetadata) {
+        if (target == null || target.isBlank()) {
+            return;
+        }
+        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", target,
                 linkedMetadata.get(RTFMetadata.EMB_ITEM), null, "rtf", "ole1",
                 linkedMetadata.get(RTFMetadata.EMB_CLASS), "", "", "external_url");
     }
@@ -202,6 +232,7 @@ public class RTFEmbeddedHandler {
             }
         } catch (IOException e) {
             EmbeddedDocumentUtil.recordException(e, metadata);
+            recordAnalysisFailure(e);
         } finally {
             pictParser = null;
             reset();
@@ -221,6 +252,56 @@ public class RTFEmbeddedHandler {
                     pictParser.onByte(decoded);
                 }
             }
+        }
+    }
+
+    private void writeDecodedByte(int value) throws IOException, TikaException {
+        if (objParser != null) {
+            objParser.onByte(value);
+        } else if (pictParser != null) {
+            pictParser.onByte(value);
+        }
+    }
+
+    void recordAnalysisFailure(Throwable failure) {
+        String failureType = failure == null
+                ? "unknown failure" : failure.getClass().getSimpleName();
+        String warning = "RTF embedded-object analysis failed: " + failureType;
+        boolean alreadyRecorded = false;
+        for (String existing : parentMetadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (warning.equals(existing)) {
+                alreadyRecorded = true;
+                break;
+            }
+        }
+        if (!alreadyRecorded) {
+            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        }
+        if (parentMetadata.get("ExploitClass") == null) {
+            parentMetadata.set("ExploitClass",
+                    "RTF embedded-object analysis incomplete; executable content "
+                            + "may not have been analyzed");
+        }
+    }
+
+    void abortCurrentEmbeddedData() {
+        hi = -1;
+        if (objParser != null) {
+            try {
+                objParser.close();
+            } catch (IOException ignored) {
+                // best-effort cleanup after the original parse failure
+            }
+            objParser = null;
+        }
+        if (pictParser != null) {
+            try {
+                pictParser.close();
+            } catch (IOException ignored) {
+                // best-effort cleanup after the original parse failure
+            }
+            pictParser = null;
         }
     }
 

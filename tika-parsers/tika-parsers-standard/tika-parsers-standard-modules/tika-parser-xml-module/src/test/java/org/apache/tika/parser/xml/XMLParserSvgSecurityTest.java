@@ -360,6 +360,89 @@ class XMLParserSvgSecurityTest {
     }
 
     @Test
+    void testAllSvgEventAttributesAreSurfaced() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     onpointerdown="pointer-handler()"
+                     oncontentvisibilityautostatechange="visibility-handler()"
+                     onscrollsnapchange="snap-handler()"
+                     onwebkitanimationend="webkit-handler()">
+                  <animate onrepeat="animation-handler()" ondragexit="drag-handler()"/>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg);
+
+        assertTrue(result.body.contains("pointer-handler()"));
+        assertTrue(result.body.contains("visibility-handler()"));
+        assertTrue(result.body.contains("snap-handler()"));
+        assertTrue(result.body.contains("webkit-handler()"));
+        assertTrue(result.body.contains("animation-handler()"));
+        assertTrue(result.body.contains("drag-handler()"));
+        assertTrue(Boolean.parseBoolean(result.metadata.get("svg:hasEventHandlers")));
+    }
+
+    @Test
+    void testBenignOnPrefixedAttributesAreNotEventHandlers() throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     only="benign-root-value">
+                  <g once="benign-child-value"/>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg);
+
+        assertNull(result.metadata.get("svg:hasEventHandlers"));
+        assertFalse(result.body.contains("benign-root-value"));
+        assertFalse(result.body.contains("benign-child-value"));
+    }
+
+    @Test
+    void testWindowOnlyHandlerIsScopedToXhtmlBody() throws Exception {
+        ParseResult svgResult = parse("""
+                <svg xmlns="http://www.w3.org/2000/svg" onafterprint="not-executable()"/>
+                """);
+        ParseResult xhtmlResult = parse("""
+                <svg xmlns="http://www.w3.org/2000/svg">
+                  <foreignObject>
+                    <body xmlns="http://www.w3.org/1999/xhtml"
+                          onafterprint="xhtml-handler()"/>
+                  </foreignObject>
+                </svg>
+                """);
+
+        assertNull(svgResult.metadata.get("svg:hasEventHandlers"));
+        assertFalse(svgResult.body.contains("not-executable()"));
+        assertTrue(Boolean.parseBoolean(
+                xhtmlResult.metadata.get("svg:hasEventHandlers")));
+        assertTrue(xhtmlResult.body.contains("xhtml-handler()"));
+    }
+
+    @Test
+    void testEventHandlersRequireApplicableNamespaces() throws Exception {
+        ParseResult result = parse("""
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     xmlns:x="urn:benign-events"
+                     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                     xmlns:h="http://www.w3.org/1999/xhtml"
+                     x:onclick="namespaced-attribute()">
+                  <metadata>
+                    <rdf:Description onrepeat="foreign-element()"/>
+                  </metadata>
+                  <foreignObject>
+                    <h:div onrepeat="svg-only-handler-on-html()"/>
+                  </foreignObject>
+                </svg>
+                """);
+
+        assertNull(result.metadata.get("svg:hasEventHandlers"));
+        assertFalse(result.body.contains("namespaced-attribute()"));
+        assertFalse(result.body.contains("foreign-element()"));
+        assertFalse(result.body.contains("svg-only-handler-on-html()"));
+    }
+
+    @Test
     void testMalformedSvgDoesNotEnterQuadraticRasterNormalization() {
         String svg = "<svg xmlns=\"http://www.w3.org/2000/svg\">"
                 + "<image ".repeat(20_000);

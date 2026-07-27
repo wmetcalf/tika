@@ -316,20 +316,58 @@ class RTFEmbObjHandler {
                 surfaceLinkedObject(savedMeta);
             }
             extractObj(objBytes, handler, savedMeta);
-        } catch (IOException e) {
+        } catch (IOException | TikaException e) {
             EmbeddedDocumentUtil.recordException(e, savedMeta);
+            if (objParser.isLinkedObject()) {
+                surfaceLinkedObject(savedMeta);
+            }
+            recordAnalysisFailure(e);
         }
     }
 
     private void surfaceLinkedObject(Metadata linkedMetadata) {
         String topic = linkedMetadata.get(RTFMetadata.EMB_TOPIC);
-        if (topic == null || topic.isBlank()) {
+        String networkName = linkedMetadata.get(RTFMetadata.EMB_NETWORK_NAME);
+        if ((topic == null || topic.isBlank())
+                && (networkName == null || networkName.isBlank())) {
             return;
         }
         parentMetadata.set(Office.HAS_LINKED_OLE_OBJECTS, true);
-        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", topic,
+        addLinkedObject(networkName, linkedMetadata);
+        if (topic != null && !topic.isBlank() && !topic.equals(networkName)) {
+            addLinkedObject(topic, linkedMetadata);
+        }
+    }
+
+    private void addLinkedObject(String target, Metadata linkedMetadata) {
+        if (target == null || target.isBlank()) {
+            return;
+        }
+        OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", target,
                 linkedMetadata.get(RTFMetadata.EMB_ITEM), null, "rtf", "ole1",
                 linkedMetadata.get(RTFMetadata.EMB_CLASS), "", "", "external_url");
+    }
+
+    private void recordAnalysisFailure(Throwable failure) {
+        String failureType = failure == null
+                ? "unknown failure" : failure.getClass().getSimpleName();
+        String warning = "RTF embedded-object analysis failed: " + failureType;
+        boolean alreadyRecorded = false;
+        for (String existing : parentMetadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (warning.equals(existing)) {
+                alreadyRecorded = true;
+                break;
+            }
+        }
+        if (!alreadyRecorded) {
+            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        }
+        if (parentMetadata.get("ExploitClass") == null) {
+            parentMetadata.set("ExploitClass",
+                    "RTF embedded-object analysis incomplete; executable content "
+                            + "may not have been analyzed");
+        }
     }
 
     private void extractObj(byte[] bytes, ContentHandler handler, Metadata metadata)

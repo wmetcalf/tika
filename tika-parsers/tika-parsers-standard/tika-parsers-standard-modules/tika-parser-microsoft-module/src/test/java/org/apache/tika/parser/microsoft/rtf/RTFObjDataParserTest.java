@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft.rtf;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -39,6 +40,7 @@ import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.RTFMetadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
 
@@ -63,15 +65,46 @@ public class RTFObjDataParserTest {
 
     @Test
     public void testLinkedOle1ObjectIsSurfacedOnParentMetadata() throws Exception {
+        String networkName = "\\\\server\\share\\linked-document.doc";
         Metadata metadata = parseMetadata(buildLinkedRtf(
-                "C:\\Users\\Public\\linked-document.doc", "Sheet1!R1C1"));
+                "Z:\\linked-document.doc", "Sheet1!R1C1", networkName));
 
-        assertEquals("C:\\Users\\Public\\linked-document.doc",
-                metadata.get(Office.OFFICE_LINK_URL));
+        assertArrayEquals(
+                new String[]{networkName, "Z:\\linked-document.doc"},
+                metadata.getValues(Office.OFFICE_LINK_URL));
         assertEquals("linked_ole_object",
                 metadata.get(Office.OFFICE_LINK_TYPE));
         assertEquals("Sheet1!R1C1",
                 metadata.get(Office.OFFICE_LINK_TEXT));
+    }
+
+    @Test
+    public void testOversizedLinkedNetworkNamePreservesTopicAndSignals()
+            throws Exception {
+        String topic = "\\\\server\\share\\topic-document.doc";
+
+        Metadata metadata = parseMetadata(
+                buildLinkedRtfWithNetworkLength(topic, "Sheet1!R1C1", 4_097));
+
+        assertEquals(topic, metadata.get(Office.OFFICE_LINK_URL));
+        assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+        assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testTruncatedLinkedNetworkNameLengthPreservesTopicAndSignals()
+            throws Exception {
+        String topic = "\\\\server\\share\\topic-document.doc";
+
+        for (int trailingBytes = 0; trailingBytes < Integer.BYTES; trailingBytes++) {
+            Metadata metadata = parseMetadata(
+                    buildLinkedRtfWithTruncatedNetworkLength(
+                            topic, "Sheet1!R1C1", trailingBytes));
+
+            assertEquals(topic, metadata.get(Office.OFFICE_LINK_URL));
+            assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+            assertNotNull(metadata.get("ExploitClass"));
+        }
     }
 
     private static List<ExtractedDocument> parse(byte[] rtf) throws Exception {
@@ -126,13 +159,55 @@ public class RTFObjDataParserTest {
         return rtf.getBytes(StandardCharsets.US_ASCII);
     }
 
-    private static byte[] buildLinkedRtf(String topic, String item) throws IOException {
+    private static byte[] buildLinkedRtf(
+            String topic, String item, String networkName) throws IOException {
         ByteArrayOutputStream objData = new ByteArrayOutputStream();
         writeUInt32LE(objData, 0x00000501);
         writeUInt32LE(objData, 1);
         writeLengthPrefixedAnsi(objData, "Excel.Sheet.12");
         writeLengthPrefixedAnsi(objData, topic);
         writeLengthPrefixedAnsi(objData, item);
+        writeLengthPrefixedAnsi(objData, networkName);
+
+        String rtf = "{\\rtf1\\ansi"
+                + "{\\object\\objlink"
+                + "{\\*\\objclass Excel.Sheet.12}"
+                + "{\\*\\objdata " + HexFormat.of().formatHex(objData.toByteArray()) + "}"
+                + "}"
+                + "}";
+        return rtf.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] buildLinkedRtfWithNetworkLength(
+            String topic, String item, int networkLength) throws IOException {
+        ByteArrayOutputStream objData = new ByteArrayOutputStream();
+        writeUInt32LE(objData, 0x00000501);
+        writeUInt32LE(objData, 1);
+        writeLengthPrefixedAnsi(objData, "Excel.Sheet.12");
+        writeLengthPrefixedAnsi(objData, topic);
+        writeLengthPrefixedAnsi(objData, item);
+        writeUInt32LE(objData, networkLength);
+
+        String rtf = "{\\rtf1\\ansi"
+                + "{\\object\\objlink"
+                + "{\\*\\objclass Excel.Sheet.12}"
+                + "{\\*\\objdata " + HexFormat.of().formatHex(objData.toByteArray()) + "}"
+                + "}"
+                + "}";
+        return rtf.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] buildLinkedRtfWithTruncatedNetworkLength(
+            String topic, String item, int trailingBytes) throws IOException {
+        ByteArrayOutputStream objData = new ByteArrayOutputStream();
+        writeUInt32LE(objData, 0x00000501);
+        writeUInt32LE(objData, 1);
+        writeLengthPrefixedAnsi(objData, "Excel.Sheet.12");
+        writeLengthPrefixedAnsi(objData, topic);
+        writeLengthPrefixedAnsi(objData, item);
+        for (int i = 0; i < trailingBytes; i++) {
+            objData.write(0x41);
+        }
 
         String rtf = "{\\rtf1\\ansi"
                 + "{\\object\\objlink"

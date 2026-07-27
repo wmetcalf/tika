@@ -22,6 +22,7 @@ import java.io.InputStreamReader;
 import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -98,6 +99,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
     private static final int MAX_UNICODE_QR_CANDIDATES = 16;
     private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_CHARS = 64 * 1024;
+    private static final int MAX_UNICODE_QR_STYLE_INSPECTION_CHARS = 2 * 1024 * 1024;
     private static final int MAX_UNICODE_QR_STYLE_RULE_LOOKUPS = 64 * 1024;
     private static final String UNICODE_QR_LIMIT_WARNING =
             "HTML Unicode-QR analysis limit reached; Unicode-QR extraction is incomplete";
@@ -218,11 +220,11 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         } finally {
             tis.removeCloseShield();
         }
-        document.quirksMode(Document.QuirksMode.quirks);
         // CSS-colored QR detection: only invoked when the user has set a
         // ZXingCPPConfig (i.e. they care about barcode scanning at all).
         // Failures are non-fatal — the QR scan is best-effort.
         scanForColorQR(document, metadata, context);
+        document.quirksMode(Document.QuirksMode.quirks);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
                 new HtmlHandler(mapper, handler, metadata, context, extractScripts));
         xhtml.startDocument();
@@ -278,7 +280,8 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         }
         try {
             HtmlColorQRExtractor.StylesheetParseResult stylesheets =
-                    HtmlColorQRExtractor.parseStylesheetsBounded(document);
+                    HtmlColorQRExtractor.parseStylesheetsBounded(
+                            document, usesXmlSelectorCaseSensitivity(metadata));
             Map<String, String> stylesheetRules = stylesheets.rules;
             boolean incomplete = stylesheets.truncated;
             int inspected = 0;
@@ -300,19 +303,16 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                     }
                     boolean preformatted = "pre".equalsIgnoreCase(element.tagName())
                             || "code".equalsIgnoreCase(element.tagName());
-                    if (!preformatted && element.hasAttr("style")) {
-                        String style = element.attr("style");
-                        if (style.length() > MAX_UNICODE_QR_STYLE_CHARS) {
+                    if (!preformatted
+                            && (element.hasAttr("style") || !stylesheetRules.isEmpty())) {
+                        String inlineStyle = element.attr("style");
+                        if (inlineStyle.length() > MAX_UNICODE_QR_STYLE_CHARS) {
                             incomplete = true;
-                            style = style.substring(0, MAX_UNICODE_QR_STYLE_CHARS);
+                            inlineStyle = inlineStyle.substring(
+                                    0, MAX_UNICODE_QR_STYLE_CHARS);
                         }
-                        WhitespaceInspection inspection = inspectWhitespace(style);
-                        incomplete |= inspection.incomplete;
-                        preformatted = inspection.preserves;
-                    }
-                    if (!preformatted && !stylesheetRules.isEmpty()) {
                         WhitespaceInspection inspection = stylesheetPreservesWhitespace(
-                                element, stylesheetRules, ruleBudget);
+                                element, stylesheetRules, inlineStyle, ruleBudget);
                         incomplete |= inspection.incomplete;
                         preformatted = inspection.preserves;
                     }
@@ -369,115 +369,22 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         }
     }
 
-    private static boolean preservesWhitespace(String style) {
-        return inspectWhitespace(style).preserves;
-    }
-
     static WhitespaceInspection inspectWhitespace(String style) {
-        CssNormalization normalization = normalizeCss(style);
+        WhitespaceCascade cascade = whitespaceCascade(style);
         return new WhitespaceInspection(
-                preservesWhitespaceCanonical(normalization.css),
-                normalization.incomplete
-                        || hasUnresolvedWhitespaceValue(normalization.css));
-    }
-
-    private static boolean hasUnresolvedWhitespaceValue(String style) {
-        int declarationStart = 0;
-        while (declarationStart < style.length()) {
-            int declarationEnd = style.indexOf(';', declarationStart);
-            if (declarationEnd < 0) {
-                declarationEnd = style.length();
-            }
-            int colon = style.indexOf(':', declarationStart);
-            if (colon >= declarationStart && colon < declarationEnd) {
-                String name = style.substring(declarationStart, colon).trim();
-                if ("white-space".equalsIgnoreCase(name)) {
-                    String value = style.substring(colon + 1, declarationEnd)
-                            .trim().toLowerCase(java.util.Locale.ROOT);
-                    int important = value.indexOf("!important");
-                    if (important >= 0
-                            && value.substring(important).trim().equals("!important")) {
-                        value = value.substring(0, important).trim();
-                    }
-                    if (!value.equals("normal")
-                            && !value.equals("nowrap")
-                            && !value.equals("pre")
-                            && !value.equals("pre-wrap")
-                            && !value.equals("pre-line")
-                            && !value.equals("break-spaces")) {
-                        return true;
-                    }
-                }
-            }
-            declarationStart = declarationEnd + 1;
-        }
-        return false;
-    }
-
-    private static boolean preservesWhitespaceCanonical(String style) {
-        int declarationStart = 0;
-        while (declarationStart < style.length()) {
-            int declarationEnd = style.indexOf(';', declarationStart);
-            if (declarationEnd < 0) {
-                declarationEnd = style.length();
-            }
-            int colon = style.indexOf(':', declarationStart);
-            if (colon >= declarationStart && colon < declarationEnd) {
-                int nameStart = declarationStart;
-                while (nameStart < colon && Character.isWhitespace(style.charAt(nameStart))) {
-                    nameStart++;
-                }
-                int nameEnd = colon;
-                while (nameEnd > nameStart
-                        && Character.isWhitespace(style.charAt(nameEnd - 1))) {
-                    nameEnd--;
-                }
-                if (nameEnd - nameStart == "white-space".length()
-                        && style.regionMatches(true, nameStart, "white-space", 0,
-                        "white-space".length())) {
-                    int valueStart = colon + 1;
-                    while (valueStart < declarationEnd
-                            && Character.isWhitespace(style.charAt(valueStart))) {
-                        valueStart++;
-                    }
-                    if (cssValueStartsWithKeyword(
-                            style, valueStart, declarationEnd, "pre", true)
-                            || cssValueStartsWithKeyword(
-                            style, valueStart, declarationEnd,
-                            "break-spaces", false)) {
-                        return true;
-                    }
-                }
-            }
-            declarationStart = declarationEnd + 1;
-        }
-        return false;
-    }
-
-    private static boolean cssValueStartsWithKeyword(
-            String style, int valueStart, int declarationEnd,
-            String keyword, boolean allowHyphenatedSuffix) {
-        int afterKeyword = valueStart + keyword.length();
-        if (afterKeyword > declarationEnd
-                || !style.regionMatches(
-                true, valueStart, keyword, 0, keyword.length())) {
-            return false;
-        }
-        return afterKeyword == declarationEnd
-                || Character.isWhitespace(style.charAt(afterKeyword))
-                || style.charAt(afterKeyword) == '!'
-                || allowHyphenatedSuffix && style.charAt(afterKeyword) == '-';
+                cascade.preserves, cascade.incomplete);
     }
 
     private static WhitespaceInspection stylesheetPreservesWhitespace(
-            Element element, Map<String, String> rules, CssRuleBudget budget) {
+            Element element, Map<String, String> rules,
+            String inlineStyle, CssRuleBudget budget) {
+        WhitespaceCascade cascade = new WhitespaceCascade(
+                false, false, false, false);
         boolean incomplete = false;
-        WhitespaceInspection inspection = inspectRule(
-                rules, element.tagName().toLowerCase(java.util.Locale.ROOT), budget);
-        incomplete |= inspection.incomplete;
-        if (inspection.preserves) {
-            return new WhitespaceInspection(true, incomplete);
-        }
+        cascade = applyRules(cascade, lookupRules(
+                rules, element.tagName().toLowerCase(java.util.Locale.ROOT), budget),
+                budget);
+        incomplete |= budget.exhausted;
 
         String classes = element.attr("class");
         int classLimit = Math.min(classes.length(), MAX_UNICODE_QR_STYLE_CHARS);
@@ -485,60 +392,117 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             incomplete = true;
         }
         int cursor = 0;
+        List<HtmlColorQRExtractor.CssRule> classRules = new ArrayList<>();
+        Set<String> seenClasses = new HashSet<>();
         while (cursor < classLimit) {
-            while (cursor < classLimit && Character.isWhitespace(classes.charAt(cursor))) {
+            while (cursor < classLimit && isHtmlSpace(classes.charAt(cursor))) {
                 cursor++;
             }
             int start = cursor;
-            while (cursor < classLimit && !Character.isWhitespace(classes.charAt(cursor))) {
+            while (cursor < classLimit && !isHtmlSpace(classes.charAt(cursor))) {
                 cursor++;
             }
             if (start < cursor) {
-                inspection = inspectRule(rules, "."
-                        + classes.substring(start, cursor)
-                        .toLowerCase(java.util.Locale.ROOT), budget);
-                incomplete |= inspection.incomplete;
-                if (inspection.preserves) {
-                    return new WhitespaceInspection(true, incomplete);
+                String selector = "." + classes.substring(start, cursor);
+                if (seenClasses.add(selector)) {
+                    classRules.addAll(lookupRules(rules, selector, budget));
                 }
             }
         }
+        classRules.sort((left, right) ->
+                Integer.compare(left.sourceOrder, right.sourceOrder));
+        cascade = applyRules(cascade, classRules, budget);
+        incomplete |= budget.exhausted;
 
         String id = element.id();
         if (id.length() > MAX_UNICODE_QR_STYLE_CHARS) {
             return new WhitespaceInspection(false, true);
         }
         if (!id.isEmpty()) {
-            inspection = inspectRule(rules,
-                    "#" + id.toLowerCase(java.util.Locale.ROOT), budget);
-            incomplete |= inspection.incomplete;
-            if (inspection.preserves) {
-                return new WhitespaceInspection(true, incomplete);
-            }
+            cascade = applyRules(cascade,
+                    lookupRules(rules, "#" + id, budget), budget);
+            incomplete |= budget.exhausted;
         }
-        return new WhitespaceInspection(false, incomplete);
+        if (!inlineStyle.isEmpty()) {
+            cascade = mergeWhitespaceCascade(
+                    cascade, budget.inspectInline(inlineStyle));
+        }
+        return new WhitespaceInspection(
+                cascade.preserves, incomplete || cascade.incomplete);
     }
 
-    private static WhitespaceInspection inspectRule(
+    private static List<HtmlColorQRExtractor.CssRule> lookupRules(
             Map<String, String> rules, String selector, CssRuleBudget budget) {
         if (!budget.consume()) {
-            return new WhitespaceInspection(false, true);
+            return List.of();
         }
-        String declaration = rules.get(selector);
-        return declaration == null
-                ? new WhitespaceInspection(false, false)
-                : budget.inspect(selector, declaration);
+        return HtmlColorQRExtractor.stylesheetRulesFor(rules, selector);
     }
 
-    static CssNormalization normalizeCss(String css) {
-        StringBuilder normalized = new StringBuilder(css.length());
+    private static WhitespaceCascade applyRules(
+            WhitespaceCascade cascade,
+            List<HtmlColorQRExtractor.CssRule> rules,
+            CssRuleBudget budget) {
+        WhitespaceCascade result = cascade;
+        for (HtmlColorQRExtractor.CssRule rule : rules) {
+            result = mergeWhitespaceCascade(
+                    result, budget.inspect(rule.declaration));
+        }
+        return result;
+    }
+
+    private static WhitespaceCascade mergeWhitespaceCascade(
+            WhitespaceCascade current, WhitespaceCascade candidate) {
+        boolean incomplete = current.incomplete || candidate.incomplete;
+        if (!candidate.declared
+                || current.important && !candidate.important) {
+            return new WhitespaceCascade(
+                    current.preserves, current.important,
+                    incomplete, current.declared);
+        }
+        return new WhitespaceCascade(
+                candidate.preserves, candidate.important,
+                incomplete, true);
+    }
+
+    static List<CssDeclaration> parseCssDeclarations(String style) {
+        List<CssDeclaration> declarations = new ArrayList<>();
+        int declarationStart = 0;
+        int colon = -1;
+        int parenthesisDepth = 0;
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        char quote = 0;
+        boolean escaped = false;
         boolean incomplete = false;
         int cursor = 0;
-        while (cursor < css.length()) {
-            char current = css.charAt(cursor);
-            if (current == '/' && cursor + 1 < css.length()
-                    && css.charAt(cursor + 1) == '*') {
-                int close = css.indexOf("*/", cursor + 2);
+        while (cursor < style.length()) {
+            char current = style.charAt(cursor);
+            if (escaped) {
+                escaped = false;
+                cursor++;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                cursor++;
+                continue;
+            }
+            if (quote != 0) {
+                if (current == quote) {
+                    quote = 0;
+                }
+                cursor++;
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+                cursor++;
+                continue;
+            }
+            if (current == '/' && cursor + 1 < style.length()
+                    && style.charAt(cursor + 1) == '*') {
+                int close = style.indexOf("*/", cursor + 2);
                 if (close < 0) {
                     incomplete = true;
                     break;
@@ -546,8 +510,254 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                 cursor = close + 2;
                 continue;
             }
+            if (current == '(') {
+                parenthesisDepth++;
+            } else if (current == ')' && parenthesisDepth > 0) {
+                parenthesisDepth--;
+            } else if (current == '[') {
+                bracketDepth++;
+            } else if (current == ']' && bracketDepth > 0) {
+                bracketDepth--;
+            } else if (current == '{') {
+                braceDepth++;
+            } else if (current == '}' && braceDepth > 0) {
+                braceDepth--;
+            } else if (current == ':' && colon < 0
+                    && parenthesisDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
+                colon = cursor;
+            } else if (current == ';'
+                    && parenthesisDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
+                addCssDeclaration(
+                        declarations, style, declarationStart, colon, cursor, incomplete);
+                declarationStart = cursor + 1;
+                colon = -1;
+                incomplete = false;
+            }
+            cursor++;
+        }
+        if (escaped || quote != 0 || parenthesisDepth != 0
+                || bracketDepth != 0 || braceDepth != 0) {
+            incomplete = true;
+        }
+        addCssDeclaration(
+                declarations, style, declarationStart, colon, style.length(), incomplete);
+        return declarations;
+    }
+
+    private static void addCssDeclaration(
+            List<CssDeclaration> declarations, String style,
+            int declarationStart, int colon, int declarationEnd, boolean scanIncomplete) {
+        if (colon < declarationStart || colon >= declarationEnd) {
+            return;
+        }
+        CssNormalization name =
+                normalizeCss(style.substring(declarationStart, colon));
+        CssPriority priority =
+                normalizeCssPriority(style.substring(colon + 1, declarationEnd));
+        String normalizedName = name.css.trim();
+        if (normalizedName.isEmpty()) {
+            return;
+        }
+        declarations.add(new CssDeclaration(
+                normalizedName, priority.value, priority.important,
+                scanIncomplete || name.incomplete || priority.incomplete));
+    }
+
+    private static CssPriority normalizeCssPriority(String rawValue) {
+        int importantBang = findImportantBang(rawValue);
+        if (importantBang >= 0
+                && isImportantIdentifier(rawValue, importantBang + 1)) {
+            CssNormalization value =
+                    normalizeCss(rawValue.substring(0, importantBang));
+            return new CssPriority(value.css.trim(), true, value.incomplete);
+        }
+        CssNormalization value = normalizeCss(rawValue);
+        return new CssPriority(value.css.trim(), false, value.incomplete);
+    }
+
+    private static int findImportantBang(String value) {
+        int candidate = -1;
+        int parenthesisDepth = 0;
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        char quote = 0;
+        boolean escaped = false;
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (quote != 0) {
+                if (current == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quote = current;
+                continue;
+            }
+            if (current == '/' && i + 1 < value.length()
+                    && value.charAt(i + 1) == '*') {
+                int close = value.indexOf("*/", i + 2);
+                if (close < 0) {
+                    return -1;
+                }
+                i = close + 1;
+                continue;
+            }
+            if (current == '(') {
+                parenthesisDepth++;
+            } else if (current == ')' && parenthesisDepth > 0) {
+                parenthesisDepth--;
+            } else if (current == '[') {
+                bracketDepth++;
+            } else if (current == ']' && bracketDepth > 0) {
+                bracketDepth--;
+            } else if (current == '{') {
+                braceDepth++;
+            } else if (current == '}' && braceDepth > 0) {
+                braceDepth--;
+            } else if (current == '!' && parenthesisDepth == 0
+                    && bracketDepth == 0 && braceDepth == 0) {
+                candidate = i;
+            }
+        }
+        return candidate;
+    }
+
+    private static boolean isImportantIdentifier(String value, int start) {
+        int cursor = skipCssWhitespaceAndComments(value, start);
+        int identifierStart = cursor;
+        while (cursor < value.length()) {
+            char current = value.charAt(cursor);
+            if (isCssNameCharacter(current)) {
+                cursor++;
+                continue;
+            }
+            if (current == '\\' && cursor + 1 < value.length()
+                    && !isCssNewline(value.charAt(cursor + 1))) {
+                cursor = cssEscapeEnd(value, cursor + 1);
+                continue;
+            }
+            break;
+        }
+        if (cursor == identifierStart) {
+            return false;
+        }
+        CssNormalization identifier =
+                normalizeCss(value.substring(identifierStart, cursor));
+        if (identifier.incomplete
+                || !"important".equalsIgnoreCase(identifier.css)) {
+            return false;
+        }
+        return skipCssWhitespaceAndComments(value, cursor) == value.length();
+    }
+
+    private static int skipCssWhitespaceAndComments(String value, int start) {
+        int cursor = start;
+        while (cursor < value.length()) {
+            if (isCssWhitespace(value.charAt(cursor))) {
+                cursor++;
+                continue;
+            }
+            if (cursor + 1 < value.length()
+                    && value.charAt(cursor) == '/' && value.charAt(cursor + 1) == '*') {
+                int close = value.indexOf("*/", cursor + 2);
+                if (close < 0) {
+                    return cursor;
+                }
+                cursor = close + 2;
+                continue;
+            }
+            break;
+        }
+        return cursor;
+    }
+
+    private static int cssEscapeEnd(String value, int escapedStart) {
+        int cursor = escapedStart;
+        int digits = 0;
+        while (cursor < value.length() && digits < 6
+                && Character.digit(value.charAt(cursor), 16) >= 0) {
+            cursor++;
+            digits++;
+        }
+        if (digits == 0) {
+            return Math.min(value.length(), cursor + 1);
+        }
+        if (cursor < value.length() && isCssWhitespace(value.charAt(cursor))) {
+            if (value.charAt(cursor) == '\r'
+                    && cursor + 1 < value.length() && value.charAt(cursor + 1) == '\n') {
+                cursor++;
+            }
+            cursor++;
+        }
+        return cursor;
+    }
+
+    private static boolean isCssNameCharacter(char value) {
+        return value >= 0x80 || Character.isLetterOrDigit(value)
+                || value == '-' || value == '_';
+    }
+
+    private static boolean isCssNewline(char value) {
+        return value == '\r' || value == '\n' || value == '\f';
+    }
+
+    private static boolean isCssWhitespace(char value) {
+        return value == ' ' || value == '\t'
+                || value == '\r' || value == '\n' || value == '\f';
+    }
+
+    static boolean isHtmlSpace(char value) {
+        return value == ' ' || value == '\t'
+                || value == '\r' || value == '\n' || value == '\f';
+    }
+
+    static boolean usesXmlSelectorCaseSensitivity(Metadata metadata) {
+        if (metadata == null) {
+            return false;
+        }
+        String contentType = metadata.get(Metadata.CONTENT_TYPE);
+        if (contentType == null) {
+            return false;
+        }
+        String normalized = contentType.toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("application/xhtml+xml")
+                || normalized.startsWith("application/vnd.wap.xhtml+xml");
+    }
+
+    static CssNormalization normalizeCss(String css) {
+        StringBuilder normalized = new StringBuilder(css.length());
+        boolean incomplete = false;
+        char quote = 0;
+        int cursor = 0;
+        while (cursor < css.length()) {
+            char current = css.charAt(cursor);
+            if (quote == 0 && current == '/' && cursor + 1 < css.length()
+                    && css.charAt(cursor + 1) == '*') {
+                int close = css.indexOf("*/", cursor + 2);
+                if (close < 0) {
+                    incomplete = true;
+                    break;
+                }
+                normalized.append(' ');
+                cursor = close + 2;
+                continue;
+            }
             if (current != '\\') {
                 normalized.append(current);
+                if (quote != 0 && current == quote) {
+                    quote = 0;
+                } else if (quote == 0 && (current == '\'' || current == '"')) {
+                    quote = current;
+                }
                 cursor++;
                 continue;
             }
@@ -580,7 +790,11 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                 cursor++;
                 continue;
             }
-            if (cursor < css.length() && Character.isWhitespace(css.charAt(cursor))) {
+            if (cursor < css.length() && isCssWhitespace(css.charAt(cursor))) {
+                if (css.charAt(cursor) == '\r' && cursor + 1 < css.length()
+                        && css.charAt(cursor + 1) == '\n') {
+                    cursor++;
+                }
                 cursor++;
             }
             if (codePoint <= 0 || !Character.isValidCodePoint(codePoint)) {
@@ -592,13 +806,53 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         return new CssNormalization(normalized.toString(), incomplete);
     }
 
+    private static WhitespaceCascade whitespaceCascade(String style) {
+        boolean preserves = false;
+        boolean important = false;
+        boolean incomplete = false;
+        boolean declared = false;
+        for (CssDeclaration declaration : parseCssDeclarations(style)) {
+            incomplete |= declaration.incomplete;
+            if (!"white-space".equalsIgnoreCase(declaration.name)
+                    || important && !declaration.important) {
+                continue;
+            }
+            String value = declaration.value.toLowerCase(java.util.Locale.ROOT);
+            switch (value) {
+                case "normal":
+                case "nowrap":
+                    preserves = false;
+                    important = declaration.important;
+                    declared = true;
+                    break;
+                case "pre":
+                case "pre-wrap":
+                case "pre-line":
+                case "break-spaces":
+                    preserves = true;
+                    important = declaration.important;
+                    declared = true;
+                    break;
+                default:
+                    preserves = false;
+                    incomplete = true;
+                    important = declaration.important;
+                    declared = true;
+                    break;
+            }
+        }
+        return new WhitespaceCascade(
+                preserves, important, incomplete, declared);
+    }
+
     private static final class CssRuleBudget {
         private int lookups;
+        private int inlineChars;
         private boolean exhausted;
-        private final Map<String, WhitespaceInspection> inspections = new HashMap<>();
+        private final Map<String, WhitespaceCascade> inspections = new HashMap<>();
 
         private boolean consume() {
-            if (lookups >= MAX_UNICODE_QR_STYLE_RULE_LOOKUPS) {
+            if (exhausted || lookups >= MAX_UNICODE_QR_STYLE_RULE_LOOKUPS) {
                 exhausted = true;
                 return false;
             }
@@ -606,21 +860,42 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             return true;
         }
 
-        private WhitespaceInspection inspect(String selector, String declaration) {
-            WhitespaceInspection cached = inspections.get(selector);
+        private WhitespaceCascade inspect(String declaration) {
+            WhitespaceCascade cached = inspections.get(declaration);
             if (cached != null) {
                 return cached;
             }
-            WhitespaceInspection inspection = inspectWhitespace(declaration);
-            inspections.put(selector, inspection);
+            WhitespaceCascade inspection = whitespaceCascade(declaration);
+            inspections.put(declaration, inspection);
             return inspection;
+        }
+
+        private WhitespaceCascade inspectInline(String declaration) {
+            if (declaration.length()
+                    > MAX_UNICODE_QR_STYLE_INSPECTION_CHARS - inlineChars) {
+                exhausted = true;
+                return new WhitespaceCascade(
+                        false, false, true, false);
+            }
+            inlineChars += declaration.length();
+            return whitespaceCascade(declaration);
         }
     }
 
     record CssNormalization(String css, boolean incomplete) {
     }
 
+    record CssDeclaration(String name, String value, boolean important, boolean incomplete) {
+    }
+
     record WhitespaceInspection(boolean preserves, boolean incomplete) {
+    }
+
+    private record CssPriority(String value, boolean important, boolean incomplete) {
+    }
+
+    private record WhitespaceCascade(
+            boolean preserves, boolean important, boolean incomplete, boolean declared) {
     }
 
     private static BoundedMonospaceText collectMonospaceText(Element element) {
@@ -703,8 +978,8 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
 
         //do better with baseUri?
         Document document = Jsoup.parse(html, Parser.htmlParser().tagSet(SELF_CLOSEABLE_TAGS));
-        document.quirksMode(Document.QuirksMode.quirks);
         scanForColorQR(document, metadata, context);
+        document.quirksMode(Document.QuirksMode.quirks);
         ContentHandler xhtml = new XHTMLDowngradeHandler(
                 new HtmlHandler(mapper, handler, metadata, context, extractScripts));
         xhtml.startDocument();
