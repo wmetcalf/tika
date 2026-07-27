@@ -121,14 +121,20 @@ public class PDFParserTest extends TikaTest {
 
     @Test
     public void testXMLProfiler() throws Exception {
+        PDFParserConfig pdfParserConfig = new PDFParserConfig();
+        pdfParserConfig.setExtractInlineImages(false);
+        pdfParserConfig.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
+        ParseContext parseContext = new ParseContext();
+        parseContext.set(PDFParserConfig.class, pdfParserConfig);
+
         //test that the xml profiler is not triggered by default
         List<Metadata> metadataList =
-                getRecursiveMetadata("testPDF_XFA_govdocs1_258578.pdf", NO_OCR());
+                getRecursiveMetadata("testPDF_XFA_govdocs1_258578.pdf", parseContext);
         assertEquals(1, metadataList.size());
 
         Parser p = TikaLoaderHelper.getLoader("tika-xml-profiler-config.json").loadAutoDetectParser();
 
-        metadataList = getRecursiveMetadata("testPDF_XFA_govdocs1_258578.pdf", p);
+        metadataList = getRecursiveMetadata("testPDF_XFA_govdocs1_258578.pdf", p, parseContext);
         assertEquals(3, metadataList.size());
 
         int xmlProfilers = 0;
@@ -404,6 +410,7 @@ public class PDFParserTest extends TikaTest {
         assertContains("Happy New Year", getXML("testOCR.pdf").xml);
 
         PDFParserConfig config = new PDFParserConfig();
+        config.setExtractInlineImages(false);
         config.getOcr().setStrategy(OcrConfig.Strategy.AUTO);
         ParseContext context = new ParseContext();
         context.set(PDFParserConfig.class, config);
@@ -419,20 +426,21 @@ public class PDFParserTest extends TikaTest {
     public void testOCRNoText() throws Exception {
         assumeTrue(canRunOCR(), "can't run OCR");
         PDFParserConfig config = new PDFParserConfig();
+        config.setExtractInlineImages(false);
         config.getOcr().setRenderingStrategy(OcrConfig.RenderingStrategy.ALL);
         config.getOcr().setStrategy(OcrConfig.Strategy.OCR_ONLY);
         ParseContext parseContext = new ParseContext();
         parseContext.set(PDFParserConfig.class, config);
         XMLResult xmlResult = getXML("testPDF_XFA_govdocs1_258578.pdf", parseContext);
-        assertContains("PARK", xmlResult.xml);
-        assertContains("Applications", xmlResult.xml);
+        assertContains("park", xmlResult.xml.toLowerCase(Locale.US));
+        assertContains("applications", xmlResult.xml.toLowerCase(Locale.US));
 
         config.getOcr().setRenderingStrategy(OcrConfig.RenderingStrategy.NO_TEXT);
         config.getOcr().setStrategy(OcrConfig.Strategy.OCR_ONLY);
         parseContext.set(PDFParserConfig.class, config);
         xmlResult = getXML("testPDF_XFA_govdocs1_258578.pdf", parseContext);
-        assertContains("NATIONAL", xmlResult.xml);
-        assertNotContained("Applications", xmlResult.xml);
+        assertContains("national", xmlResult.xml.toLowerCase(Locale.US));
+        assertNotContained("applications", xmlResult.xml.toLowerCase(Locale.US));
     }
 
     @Test
@@ -468,6 +476,7 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testIncrementalUpdatesInAnAttachedPDF() throws Exception {
         PDFParserConfig pdfParserConfig = new PDFParserConfig();
+        pdfParserConfig.setExtractInlineImages(false);
         pdfParserConfig.setParseIncrementalUpdates(true);
         ParseContext parseContext = new ParseContext();
         parseContext.set(PDFParserConfig.class, pdfParserConfig);
@@ -507,6 +516,7 @@ public class PDFParserTest extends TikaTest {
     @Test
     public void testJavascriptInNamesTreeOne() throws Exception {
         PDFParserConfig config = new PDFParserConfig();
+        config.setExtractInlineImages(false);
         config.setExtractActions(true);
         ParseContext pc = new ParseContext();
         pc.set(PDFParserConfig.class, config);

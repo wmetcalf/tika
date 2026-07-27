@@ -18,7 +18,6 @@ package org.apache.tika.parser.microsoft.rtf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
@@ -45,58 +44,58 @@ public class RTFParserTest extends TikaTest {
     @Test
     public void testEmbeddedMonster() throws Exception {
 
-        Map<Integer, Pair> expected = new HashMap<>();
-        expected.put(3, new Pair("Hw.txt", "text/plain; charset=windows-1252"));
-        expected.put(4, new Pair("embedded-0.doc", "application/msword"));
-        expected.put(7, new Pair("embedded-1.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-        expected.put(10, new Pair("text.html", "text/html; charset=windows-1252"));
-        expected.put(11, new Pair("html-within-zip.zip", "application/zip"));
-        expected.put(12,
-                new Pair("test-zip-of-zip_\u666E\u6797\u65AF\u987F.zip", "application/zip"));
-        // entry 15 (embedded testHTML_utf8, body "\u00F6\u00E4\u00E5") dropped: those 6 bytes
-        // are valid as both UTF-8 and EUC-JP, and the 4.x chain reads EUC-JP --
+        // Entry 15 (embedded testHTML_utf8, body "\u00F6\u00E4\u00E5") is dropped: those 6
+        // bytes are valid as both UTF-8 and EUC-JP, and the 4.x chain reads EUC-JP --
         // too short to pin a charset reliably.
-        expected.put(18, new Pair("testJPEG_\u666E\u6797\u65AF\u987F.jpg", "image/jpeg"));
-        expected.put(21, new Pair("embedded-2.xls", "application/vnd.ms-excel"));
-        expected.put(24,
-                new Pair("testMSG_\u666E\u6797\u65AF\u987F.msg", "application/vnd.ms-outlook"));
-        expected.put(27, new Pair("embedded-3.pdf", "application/pdf"));
-        expected.put(30, new Pair("embedded-4.ppt", "application/vnd.ms-powerpoint"));
-        expected.put(34, new Pair("embedded-5.pptx",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation"));
-        expected.put(33, new Pair("thumbnail.jpeg", "image/jpeg"));
-        expected.put(37, new Pair("embedded-6.doc", "application/msword"));
-        expected.put(40, new Pair("embedded-7.doc", "application/msword"));
-        expected.put(43, new Pair("embedded-8.docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
-        expected.put(46, new Pair("testJPEG_\u666E\u6797\u65AF\u987F.jpg", "image/jpeg"));
-
+        List<Pair> expected = List.of(
+                new Pair("Hw.txt", "text/plain; charset=windows-1252"),
+                new Pair("embedded-0.doc", "application/msword"),
+                new Pair("embedded-1.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                new Pair("text.html", "text/html; charset=windows-1252"),
+                new Pair("html-within-zip.zip", "application/zip"),
+                new Pair("test-zip-of-zip_\u666E\u6797\u65AF\u987F.zip", "application/zip"),
+                new Pair("testJPEG_\u666E\u6797\u65AF\u987F.jpg", "image/jpeg"),
+                new Pair("embedded-2.xls", "application/vnd.ms-excel"),
+                new Pair("testMSG_\u666E\u6797\u65AF\u987F.msg", "application/vnd.ms-outlook"),
+                new Pair("embedded-3.pdf", "application/pdf"),
+                new Pair("embedded-4.ppt", "application/vnd.ms-powerpoint"),
+                new Pair("embedded-5.pptx",
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+                new Pair("thumbnail.jpeg", "image/jpeg"),
+                new Pair("embedded-6.doc", "application/msword"),
+                new Pair("embedded-7.doc", "application/msword"),
+                new Pair("embedded-8.docx",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                new Pair("testJPEG_\u666E\u6797\u65AF\u987F.jpg", "image/jpeg"));
 
         List<Metadata> metadataList = getRecursiveMetadata("testRTFEmbeddedFiles.rtf");
         assertEquals(49, metadataList.size());
-        for (Map.Entry<Integer, Pair> e : expected.entrySet()) {
-            Metadata metadata = metadataList.get(e.getKey());
-            Pair p = e.getValue();
-            assertNotNull(metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
-            //necessary to getName() because MSOffice extractor includes
-            //directory: _1457338524/HW.txt
-            assertEquals(p.fileName,
-                    FilenameUtils.getName(metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH)));
 
-            // When tesseract is available, image types may get an "ocr-" prefix
-            String actualType = metadata.get(Metadata.CONTENT_TYPE);
-            if (p.mimeType.startsWith("image/")) {
-                String ocrVariant = p.mimeType.replace("image/", "image/ocr-");
-                assertTrue(p.mimeType.equals(actualType) || ocrVariant.equals(actualType),
-                        "Expected " + p.mimeType + " or " + ocrVariant +
-                                " but got: " + actualType);
-            } else {
-                assertEquals(p.mimeType, actualType);
+        Map<Pair, Integer> expectedCounts = new HashMap<>();
+        for (Pair pair : expected) {
+            expectedCounts.merge(pair, 1, Integer::sum);
+        }
+        Map<Pair, Integer> actualCounts = new HashMap<>();
+        for (Metadata metadata : metadataList) {
+            String path = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            if (path != null) {
+                String fileName = FilenameUtils.getName(path);
+                String contentType = normalizeOcrContentType(metadata.get(Metadata.CONTENT_TYPE));
+                actualCounts.merge(new Pair(fileName, contentType), 1, Integer::sum);
             }
         }
-        assertEquals("C:\\Users\\tallison\\AppData\\Local\\Temp\\testJPEG_普林斯顿.jpg",
-                metadataList.get(46).get(TikaCoreProperties.ORIGINAL_RESOURCE_NAME));
+        for (Map.Entry<Pair, Integer> entry : expectedCounts.entrySet()) {
+            assertEquals(entry.getValue(), actualCounts.getOrDefault(entry.getKey(), 0),
+                    "Unexpected count for " + entry.getKey());
+        }
+
+        String expectedOriginalName =
+                "C:\\Users\\tallison\\AppData\\Local\\Temp\\testJPEG_普林斯顿.jpg";
+        assertEquals(2, metadataList.stream()
+                .filter(metadata -> expectedOriginalName.equals(
+                        metadata.get(TikaCoreProperties.ORIGINAL_RESOURCE_NAME)))
+                .count());
         List<String> parsedByFullSet =
                 Arrays.asList(metadataList.get(0).getValues(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET));
 
@@ -148,14 +147,14 @@ public class RTFParserTest extends TikaTest {
         assertTrue(meta_jpg_exif.names().length >= 100 && meta_jpg_exif.names().length <= 130);
     }
 
-    private static class Pair {
-        final String fileName;
-        final String mimeType;
-
-        Pair(String fileName, String mimeType) {
-            this.fileName = fileName;
-            this.mimeType = mimeType;
+    private static String normalizeOcrContentType(String contentType) {
+        if (contentType != null && contentType.startsWith("image/ocr-")) {
+            return contentType.replace("image/ocr-", "image/");
         }
+        return contentType;
+    }
+
+    private record Pair(String fileName, String mimeType) {
     }
 
 }

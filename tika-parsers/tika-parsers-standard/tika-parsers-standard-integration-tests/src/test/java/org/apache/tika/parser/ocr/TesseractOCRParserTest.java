@@ -84,7 +84,11 @@ public class TesseractOCRParserTest extends TikaTest {
 
     @Test
     public void testDefaultPDFOCR() throws Exception {
-        List<Metadata> metadataList = getRecursiveMetadata("testOCR.pdf");
+        PDFParserConfig pdfParserConfig = new PDFParserConfig();
+        pdfParserConfig.setExtractInlineImages(false);
+        ParseContext parseContext = new ParseContext();
+        parseContext.set(PDFParserConfig.class, pdfParserConfig);
+        List<Metadata> metadataList = getRecursiveMetadata("testOCR.pdf", parseContext);
         assertEquals(1, metadataList.size());
         assertEquals(1, metadataList.get(0).getInt(PDF.OCR_PAGE_COUNT));
     }

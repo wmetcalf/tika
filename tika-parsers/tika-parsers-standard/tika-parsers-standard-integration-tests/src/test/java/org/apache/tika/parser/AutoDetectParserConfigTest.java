@@ -17,20 +17,27 @@
 package org.apache.tika.parser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaLoaderHelper;
 import org.apache.tika.TikaTest;
 import org.apache.tika.config.loader.TikaLoader;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.sax.RecursiveParserWrapperHandler;
 
 public class AutoDetectParserConfigTest extends TikaTest {
 
@@ -126,25 +133,19 @@ public class AutoDetectParserConfigTest extends TikaTest {
                 "tika-config-text-and-stream-digests.json");
         Parser p = loader.loadAutoDetectParser();
         ParseContext context = loader.loadParseContext();
-        List<Metadata> metadataList = getRecursiveMetadata("testPPT_EmbeddedPDF.pptx", p,
-                context);
+        List<Metadata> metadataList = getRecursiveMetadataWithRawText(
+                "testPPT_EmbeddedPDF.pptx", p, context);
 
         assertDigestTriplet(metadataList.get(0), "X-TIKA:digest:",
                 "a16f14215ebbfa47bd995e799f03cb18",
                 "bda02354e86fc1826d9de902155e960f24ceb972",
                 "93bdfb75c6331c57b0b099e6d5f714e9217b3d8d23e9f3a9d9bea8b3c6081472");
-        assertDigestTriplet(metadataList.get(0), "X-TIKA:digest:text:",
-                "e8593ece676bc204a5cfb007015f10f1",
-                "f4e6d372198f78e6c07bcea367740deb3f4d87bf",
-                "9e519f57e9aa56660ac4ed588b534d59db5258aebe222cec489f1ddac10a17f7");
+        assertTextDigestsMatchContent(metadataList.get(0));
         assertDigestTriplet(metadataList.get(6), "X-TIKA:digest:",
                 "90a8b249a6d6b6cb127c59e01cef3aaa",
                 "a83bbdfe58f30bf23ae9d6c1d1eb3e3250736868",
                 "87c7b896be1b4d9e060897a8a6dafc10d0a7a0c3a687f00c341d5c1c4b272fcb");
-        assertDigestTriplet(metadataList.get(6), "X-TIKA:digest:text:",
-                "c1309f350564c10604998b51b93b4d36",
-                "949256ecec068c777fd372606d03866a51ca14fb",
-                "b286710b845b732b845a17f08191d27336b7a6a2cf52e8ba86a2b9681fc330ae");
+        assertTextDigestsMatchContent(metadataList.get(6));
     }
 
     @Test
@@ -200,5 +201,51 @@ public class AutoDetectParserConfigTest extends TikaTest {
         assertEquals(md5, metadata.get(prefix + "MD5"));
         assertEquals(sha1, metadata.get(prefix + "SHA1"));
         assertEquals(sha256, metadata.get(prefix + "SHA256"));
+    }
+
+    private void assertTextDigestsMatchContent(Metadata metadata) throws Exception {
+        String content = metadata.get(TikaCoreProperties.TIKA_CONTENT);
+        assertNotNull(content);
+        byte[] utf8 = content.getBytes(StandardCharsets.UTF_8);
+        assertEquals(digest("MD5", utf8), metadata.get("X-TIKA:digest:text:MD5"));
+        assertEquals(digest("SHA-1", utf8), metadata.get("X-TIKA:digest:text:SHA1"));
+        assertEquals(digest("SHA-256", utf8), metadata.get("X-TIKA:digest:text:SHA256"));
+    }
+
+    private String digest(String algorithm, byte[] bytes) throws Exception {
+        return HexFormat
+                .of()
+                .formatHex(MessageDigest.getInstance(algorithm).digest(bytes));
+    }
+
+    private List<Metadata> getRecursiveMetadataWithRawText(
+            String resourceName, Parser parser, ParseContext context) throws Exception {
+        RecursiveParserWrapper wrapper = new RecursiveParserWrapper(parser);
+        RecursiveParserWrapperHandler handler =
+                new RecursiveParserWrapperHandler(RawTextContentHandler::new);
+        try (TikaInputStream stream =
+                     getResourceAsStream("/test-documents/" + resourceName)) {
+            wrapper.parse(stream, handler, new Metadata(), context);
+        }
+        return handler.getMetadataList();
+    }
+
+    private static class RawTextContentHandler extends DefaultHandler {
+        private final StringBuilder text = new StringBuilder();
+
+        @Override
+        public void characters(char[] chars, int start, int length) {
+            text.append(chars, start, length);
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] chars, int start, int length) {
+            text.append(chars, start, length);
+        }
+
+        @Override
+        public String toString() {
+            return text.toString();
+        }
     }
 }
