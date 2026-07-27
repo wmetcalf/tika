@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -69,8 +70,13 @@ public final class HtmlColorQRExtractor {
     private static final int MAX_STYLESHEET_CHARS = 256 * 1024;
     private static final int MAX_STYLESHEET_SELECTORS = 4_096;
     private static final int MAX_CELL_TEXT_SCAN_CHARS = 4_096;
+    private static final int MAX_COMBINED_STYLE_CHARS = 64 * 1024;
+    private static final int MAX_STYLE_RESOLUTION_CHARS = 2 * 1024 * 1024;
+    private static final int MAX_STYLE_RULE_LOOKUPS = 64 * 1024;
     private static final String STYLESHEET_LIMIT_WARNING =
             "HTML color-QR stylesheet limit reached; color-QR extraction is incomplete";
+    private static final String COLOR_QR_LIMIT_WARNING =
+            "HTML color-QR analysis limit reached; color-QR extraction is incomplete";
     private static final Pattern SIMPLE_CSS_SELECTOR = Pattern.compile(
             "^(?:[a-z][a-z0-9-]*|\\.[a-z0-9_-]+|#[a-z0-9_-]+)$");
 
@@ -108,7 +114,12 @@ public final class HtmlColorQRExtractor {
                         "HTML color-QR extraction incomplete; encoded link content may be hidden");
             }
         }
-        List<List<List<Cell>>> clusters = findClusters(doc, stylesheetResult.rules);
+        ClusterSearchResult clusterResult =
+                findClustersBounded(doc, stylesheetResult.rules);
+        if (clusterResult.incomplete && metadata != null) {
+            markAnalysisIncomplete(metadata, COLOR_QR_LIMIT_WARNING);
+        }
+        List<List<List<Cell>>> clusters = clusterResult.clusters;
         if (clusters.isEmpty()) {
             return decoded;
         }
@@ -126,16 +137,11 @@ public final class HtmlColorQRExtractor {
                 tmp = Files.createTempFile("htmlcolorqr-", ".png");
                 ImageIO.write(img, "PNG", tmp.toFile());
                 List<ZXingCPPScanner.Result> results = scanner.scan(tmp, config, context);
-                boolean hit = false;
                 for (ZXingCPPScanner.Result r : results) {
                     String t = r.getText();
                     if (t != null && !t.isEmpty()) {
                         decoded.add(r);
-                        hit = true;
                     }
-                }
-                if (hit) {
-                    break;
                 }
             } catch (IOException e) {
                 // best-effort
@@ -174,14 +180,22 @@ public final class HtmlColorQRExtractor {
      */
     static List<List<List<Cell>>> findClusters(Document doc,
                                                Map<String, String> classRules) {
+        return findClustersBounded(doc, classRules).clusters;
+    }
+
+    private static ClusterSearchResult findClustersBounded(
+            Document doc, Map<String, String> classRules) {
         List<List<List<Cell>>> clusters = new ArrayList<>();
         GridBudget budget = new GridBudget();
+        StyleResolutionContext styles =
+                new StyleResolutionContext(classRules, new StyleBudget());
         // Mode 1: <pre>/<code>
         for (Element block : doc.select("pre, code")) {
             if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                budget.markIncomplete();
                 break;
             }
-            List<List<Cell>> grid = buildGrid(block, classRules, budget);
+            List<List<Cell>> grid = buildGrid(block, styles, budget);
             if (grid != null && grid.size() >= MIN_CLUSTER_LINES
                     && maxCols(grid) >= MIN_CLUSTER_COLS) {
                 clusters.add(grid);
@@ -190,15 +204,17 @@ public final class HtmlColorQRExtractor {
         // Mode 2: <table> grids — one row per <tr>, one cell per <td>/<th>.
         for (Element table : doc.select("table")) {
             if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                budget.markIncomplete();
                 break;
             }
-            List<List<Cell>> grid = buildTableGrid(table, classRules, budget);
+            List<List<Cell>> grid = buildTableGrid(table, styles, budget);
             if (grid != null && grid.size() >= MIN_CLUSTER_LINES
                     && maxCols(grid) >= MIN_CLUSTER_COLS) {
                 clusters.add(grid);
             }
         }
-        return clusters;
+        return new ClusterSearchResult(
+                clusters, budget.incomplete || styles.budget.incomplete);
     }
 
     private static int maxCols(List<List<Cell>> grid) {
@@ -217,12 +233,13 @@ public final class HtmlColorQRExtractor {
      * the cell's own bgcolor/style or the inherited row/table.
      */
     private static List<List<Cell>> buildTableGrid(Element table,
-                                                   Map<String, String> classRules,
+                                                   StyleResolutionContext styles,
                                                    GridBudget budget) {
         List<List<Cell>> grid = new ArrayList<>();
         int candidateUnits = 0;
         for (Element tr : directTableRows(table)) {
             if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
+                budget.markIncomplete();
                 return null;
             }
             List<Cell> row = new ArrayList<>();
@@ -232,9 +249,10 @@ public final class HtmlColorQRExtractor {
                     continue;
                 }
                 if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
+                    budget.markIncomplete();
                     return null;
                 }
-                EffectiveStyle eff = resolveEffectiveStyle(td, classRules);
+                EffectiveStyle eff = styles.resolve(td);
                 char ref = firstRepresentativeCharacter(td);
                 row.add(classifyCell(ref, eff));
             }
@@ -317,13 +335,14 @@ public final class HtmlColorQRExtractor {
      * new row.
      */
     private static List<List<Cell>> buildGrid(Element block,
-                                               Map<String, String> classRules,
+                                               StyleResolutionContext styles,
                                                GridBudget budget) {
         GridAccumulator accumulator =
-                new GridAccumulator(classRules, budget);
+                new GridAccumulator(styles, budget);
         try {
             block.traverse(accumulator);
         } catch (GridLimitException e) {
+            budget.markIncomplete();
             return null;
         }
         List<List<Cell>> grid = accumulator.grid;
@@ -334,14 +353,14 @@ public final class HtmlColorQRExtractor {
     }
 
     private static final class GridAccumulator implements NodeVisitor {
-        private final Map<String, String> classRules;
+        private final StyleResolutionContext styles;
         private final GridBudget budget;
         private final List<List<Cell>> grid = new ArrayList<>();
         private List<Cell> currentRow = new ArrayList<>();
         private int candidateUnits;
 
-        private GridAccumulator(Map<String, String> classRules, GridBudget budget) {
-            this.classRules = classRules;
+        private GridAccumulator(StyleResolutionContext styles, GridBudget budget) {
+            this.styles = styles;
             this.budget = budget;
             grid.add(currentRow);
         }
@@ -365,8 +384,7 @@ public final class HtmlColorQRExtractor {
             TextNode textNode = (TextNode) node;
             Element parent = textNode.parent() instanceof Element
                     ? (Element) textNode.parent() : null;
-            EffectiveStyle effectiveStyle =
-                    resolveEffectiveStyle(parent, classRules);
+            EffectiveStyle effectiveStyle = styles.resolve(parent);
             String text = textNode.getWholeText();
             for (int i = 0; i < text.length(); i++) {
                 consumeUnit();
@@ -398,6 +416,7 @@ public final class HtmlColorQRExtractor {
 
     private static final class GridBudget {
         private int consumed;
+        private boolean incomplete;
 
         private boolean consume() {
             if (consumed >= MAX_DOCUMENT_GRID_UNITS) {
@@ -409,6 +428,10 @@ public final class HtmlColorQRExtractor {
 
         private boolean exhausted() {
             return consumed >= MAX_DOCUMENT_GRID_UNITS;
+        }
+
+        private void markIncomplete() {
+            incomplete = true;
         }
     }
 
@@ -461,17 +484,31 @@ public final class HtmlColorQRExtractor {
         }
     }
 
-    private static EffectiveStyle resolveEffectiveStyle(
-            Element start, Map<String, String> classRules) {
-        int fgLuma = 0;
-        int bgLuma = 255;
-        boolean fgFound = false;
-        boolean bgFound = false;
+    private static final class StyleResolutionContext {
+        private final Map<String, String> rules;
+        private final StyleBudget budget;
+        private final Map<Element, String> combinedStyles = new IdentityHashMap<>();
+        private final Map<Element, EffectiveStyle> effectiveStyles = new IdentityHashMap<>();
 
-        // Background does NOT inherit in CSS — only the immediate element's
-        // own background applies. Read it once from `start` only.
-        if (start != null) {
-            String startStyle = combinedStyle(start, classRules);
+        private StyleResolutionContext(Map<String, String> rules, StyleBudget budget) {
+            this.rules = rules;
+            this.budget = budget;
+        }
+
+        private EffectiveStyle resolve(Element start) {
+            if (start == null) {
+                return new EffectiveStyle(0, 255, false, false);
+            }
+            EffectiveStyle cached = effectiveStyles.get(start);
+            if (cached != null) {
+                return cached;
+            }
+            int fgLuma = 0;
+            int bgLuma = 255;
+            boolean fgFound = false;
+            boolean bgFound = false;
+
+            String startStyle = combinedStyle(start);
             Integer bg = readColor(startStyle, "background-color");
             if (bg == null) {
                 bg = readBackgroundShorthand(startStyle);
@@ -486,47 +523,127 @@ public final class HtmlColorQRExtractor {
                 bgLuma = bg;
                 bgFound = true;
             }
+
+            Element element = start;
+            while (element != null && !fgFound) {
+                Integer fg = readColor(combinedStyle(element), "color");
+                if (fg != null) {
+                    fgLuma = fg;
+                    fgFound = true;
+                    break;
+                }
+                element = element.parent() instanceof Element
+                        ? (Element) element.parent() : null;
+            }
+            EffectiveStyle result =
+                    new EffectiveStyle(fgLuma, bgLuma, fgFound, bgFound);
+            effectiveStyles.put(start, result);
+            return result;
         }
 
-        // Foreground DOES inherit — walk up until a `color` is found.
-        Element el = start;
-        while (el != null && !fgFound) {
-            String style = combinedStyle(el, classRules);
-            Integer fg = readColor(style, "color");
-            if (fg != null) {
-                fgLuma = fg;
-                fgFound = true;
-                break;
+        private String combinedStyle(Element element) {
+            String cached = combinedStyles.get(element);
+            if (cached != null) {
+                return cached;
             }
-            el = el.parent() instanceof Element ? (Element) el.parent() : null;
+            StringBuilder style = new StringBuilder();
+            appendRule(style, element.tagName().toLowerCase(Locale.ROOT));
+
+            String classes = element.attr("class");
+            int classLimit = Math.min(classes.length(), MAX_COMBINED_STYLE_CHARS);
+            if (classLimit < classes.length()) {
+                budget.incomplete = true;
+            }
+            int cursor = 0;
+            while (cursor < classLimit) {
+                while (cursor < classLimit && Character.isWhitespace(classes.charAt(cursor))) {
+                    cursor++;
+                }
+                int start = cursor;
+                while (cursor < classLimit && !Character.isWhitespace(classes.charAt(cursor))) {
+                    cursor++;
+                }
+                if (start < cursor) {
+                    appendRule(style, "."
+                            + classes.substring(start, cursor).toLowerCase(Locale.ROOT));
+                }
+            }
+
+            String id = element.id();
+            if (!id.isEmpty()) {
+                if (id.length() <= MAX_COMBINED_STYLE_CHARS) {
+                    appendRule(style, "#" + id.toLowerCase(Locale.ROOT));
+                } else {
+                    budget.incomplete = true;
+                }
+            }
+            appendDeclaration(style, element.attr("style"));
+            String result = style.toString();
+            combinedStyles.put(element, result);
+            return result;
         }
-        return new EffectiveStyle(fgLuma, bgLuma, fgFound, bgFound);
+
+        private void appendRule(StringBuilder style, String selector) {
+            if (!budget.consumeLookup()) {
+                return;
+            }
+            appendDeclaration(style, rules.get(selector));
+        }
+
+        private void appendDeclaration(StringBuilder style, String declaration) {
+            if (declaration == null || declaration.isEmpty()) {
+                return;
+            }
+            int localRemaining = MAX_COMBINED_STYLE_CHARS - style.length();
+            int retained = budget.retainableChars(declaration.length(), localRemaining);
+            if (retained > 0) {
+                style.append(declaration, 0, retained);
+            }
+            if (retained < declaration.length()) {
+                budget.incomplete = true;
+                return;
+            }
+            if (style.length() < MAX_COMBINED_STYLE_CHARS && budget.retainableChars(1, 1) == 1) {
+                style.append(';');
+            }
+        }
     }
 
-    private static String combinedStyle(Element el, Map<String, String> rules) {
-        StringBuilder sb = new StringBuilder();
-        String tagRule = rules.get(el.tagName().toLowerCase(Locale.ROOT));
-        if (tagRule != null) {
-            sb.append(tagRule).append(';');
-        }
-        for (String cls : el.classNames()) {
-            String r = rules.get("." + cls.toLowerCase(Locale.ROOT));
-            if (r != null) {
-                sb.append(r).append(';');
+    private static final class StyleBudget {
+        private int chars;
+        private int lookups;
+        private boolean incomplete;
+
+        private int retainableChars(int requested, int localRemaining) {
+            int remaining = Math.min(
+                    Math.max(0, MAX_STYLE_RESOLUTION_CHARS - chars),
+                    Math.max(0, localRemaining));
+            int retained = Math.min(requested, remaining);
+            chars += retained;
+            if (retained < requested) {
+                incomplete = true;
             }
+            return retained;
         }
-        String id = el.id();
-        if (!id.isEmpty()) {
-            String r = rules.get("#" + id.toLowerCase(Locale.ROOT));
-            if (r != null) {
-                sb.append(r).append(';');
+
+        private boolean consumeLookup() {
+            if (lookups >= MAX_STYLE_RULE_LOOKUPS) {
+                incomplete = true;
+                return false;
             }
+            lookups++;
+            return true;
         }
-        String inline = el.attr("style");
-        if (!inline.isEmpty()) {
-            sb.append(inline);
+    }
+
+    private static final class ClusterSearchResult {
+        private final List<List<List<Cell>>> clusters;
+        private final boolean incomplete;
+
+        private ClusterSearchResult(List<List<List<Cell>>> clusters, boolean incomplete) {
+            this.clusters = clusters;
+            this.incomplete = incomplete;
         }
-        return sb.toString();
     }
 
     /**
@@ -698,13 +815,34 @@ public final class HtmlColorQRExtractor {
         if (rgb.find()) {
             return parseColor(rgb.group());
         }
-        for (String tok : value.split("\\s+")) {
-            Integer c = parseColor(tok);
+        int cursor = 0;
+        while (cursor < value.length()) {
+            while (cursor < value.length()
+                    && Character.isWhitespace(value.charAt(cursor))) {
+                cursor++;
+            }
+            int start = cursor;
+            while (cursor < value.length()
+                    && !Character.isWhitespace(value.charAt(cursor))) {
+                cursor++;
+            }
+            if (start == cursor) {
+                continue;
+            }
+            Integer c = parseColor(value.substring(start, cursor));
             if (c != null) {
                 return c;
             }
         }
         return null;
+    }
+
+    private static void markAnalysisIncomplete(Metadata metadata, String warning) {
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "HTML color-QR extraction incomplete; encoded link content may be hidden");
+        }
     }
 
     /** Parse a CSS color value into perceptual luminance (0..255). */

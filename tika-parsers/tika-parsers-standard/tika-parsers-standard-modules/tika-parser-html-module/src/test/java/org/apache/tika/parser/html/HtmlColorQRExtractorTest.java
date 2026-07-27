@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.AbstractList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -143,6 +144,64 @@ public class HtmlColorQRExtractorTest {
                 "skipped color-QR style analysis must not look complete");
     }
 
+    @Test
+    public void oversizedInlineStyleIsBoundedAndSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        String html = "<html><body><pre style=\"background:"
+                + "notacolor ".repeat(16_000)
+                + "\">######\n######\n######\n######\n######\n######</pre></body></html>";
+
+        parse(html, body, metadata, contextFor(fakeScanner));
+
+        assertTrue(body.toString().contains("######"));
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "truncated inline-style analysis must be reported");
+        assertNotNull(metadata.get("ExploitClass"),
+                "an oversized inline style can hide a later color-QR declaration");
+    }
+
+    @Test
+    public void effectiveStyleIsResolvedOncePerElement() {
+        String row = "x<!---->".repeat(500);
+        Document document = Jsoup.parse("<html><body><pre class=\"a b\">"
+                + String.join("\n", row, row, row, row, row, row)
+                + "</pre></body></html>");
+        CountingRules rules = new CountingRules();
+        rules.put(".a", "color:black");
+        rules.put(".b", "background-color:white");
+
+        HtmlColorQRExtractor.findClusters(document, rules);
+
+        assertTrue(rules.lookups < 100,
+                "sibling text nodes must share one effective-style computation");
+    }
+
+    @Test
+    public void earlyLargeMonospaceBlockCannotHideLaterUnicodeQr() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        String html = "<html><body><pre>"
+                + "A".repeat(2 * 1024 * 1024)
+                + "</pre><pre>" + unicodeGrid + "</pre></body></html>";
+
+        parse(html, body, metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "each bounded monospace candidate must be inspected independently");
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "truncated Unicode-QR analysis must be reported");
+        assertNotNull(metadata.get("ExploitClass"),
+                "truncated Unicode-QR analysis must fail closed");
+    }
+
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,
                               ParseContext context) throws Exception {
         metadata.set(Metadata.CONTENT_TYPE, "text/html; charset=UTF-8");
@@ -178,5 +237,15 @@ public class HtmlColorQRExtractorTest {
         Files.setPosixFilePermissions(script,
                 PosixFilePermissions.fromString("rwx------"));
         return script;
+    }
+
+    private static final class CountingRules extends HashMap<String, String> {
+        private int lookups;
+
+        @Override
+        public String get(Object key) {
+            lookups++;
+            return super.get(key);
+        }
     }
 }

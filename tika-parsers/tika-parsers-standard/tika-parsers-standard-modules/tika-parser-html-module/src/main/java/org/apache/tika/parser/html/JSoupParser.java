@@ -34,6 +34,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.DataNode;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.parser.Parser;
@@ -41,6 +42,7 @@ import org.jsoup.parser.Tag;
 import org.jsoup.parser.TagSet;
 import org.jsoup.select.NodeFilter;
 import org.jsoup.select.NodeTraversor;
+import org.jsoup.select.NodeVisitor;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
@@ -89,6 +91,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             new HashSet<MediaType>(Arrays.asList(MediaType.text("html"), XHTML, WAP_XHTML, X_ASP)));
 
     private static final TagSet SELF_CLOSEABLE_TAGS = TagSet.Html();
+    private static final int MAX_UNICODE_QR_CANDIDATES = 16;
+    private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
+    private static final String UNICODE_QR_LIMIT_WARNING =
+            "HTML Unicode-QR analysis limit reached; Unicode-QR extraction is incomplete";
 
     static {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -272,58 +278,120 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             if (monospace.isEmpty()) {
                 return;
             }
-            // Cap the buffered monospace text: a QR-art code is at most a few KB, and
-            // an unbounded buffer would feed an oversized render (memory-exhaustion DoS).
-            final int maxBufChars = 2 * 1024 * 1024;
-            StringBuilder buf = new StringBuilder();
-            for (org.jsoup.nodes.Element el : monospace) {
-                // wholeText() preserves newlines inside <pre>; text() collapses them.
-                String txt = el.wholeText();
-                if (txt == null || txt.isEmpty()) {
+            boolean incomplete = monospace.size() > MAX_UNICODE_QR_CANDIDATES;
+            int inspected = 0;
+            for (Element element : monospace) {
+                if (inspected++ >= MAX_UNICODE_QR_CANDIDATES) {
+                    break;
+                }
+                BoundedMonospaceText candidate = collectMonospaceText(element);
+                incomplete |= candidate.truncated;
+                if (candidate.text.isEmpty()) {
                     continue;
                 }
-                int remaining = maxBufChars - buf.length();
-                if (remaining <= 0) {
-                    break;
+                int glyphCount = org.apache.tika.parser.image.UnicodeQRExtractor
+                        .countQrGlyphs(candidate.text);
+                if (glyphCount < 50) {
+                    continue;
                 }
-                // Cap each element's contribution: a single huge <pre>/<code> must not
-                // be appended in full before the buffer-size check.
-                if (txt.length() >= remaining) {
-                    buf.append(txt, 0, remaining);
-                    break;
-                }
-                buf.append(txt);
-                if (!txt.endsWith("\n")) {
-                    buf.append('\n');
-                }
-                buf.append('\n');
-                if (buf.length() >= maxBufChars) {
-                    break;
+                metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
+                try {
+                    org.apache.tika.parser.image.ZXingCPPScanner scanner =
+                            new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
+                    java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
+                            org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
+                                    candidate.text, scanner, zCfg, context);
+                    org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(
+                            decoded, metadata);
+                    if (!decoded.isEmpty()) {
+                        metadata.add("ExploitClass",
+                                "Decoded " + decoded.size()
+                              + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
+                              + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
+                    }
+                } catch (Throwable t) {
+                    incomplete = true;
                 }
             }
-            if (buf.length() == 0) {
-                return;
-            }
-            int glyphCount = org.apache.tika.parser.image.UnicodeQRExtractor
-                    .countQrGlyphs(buf.toString());
-            if (glyphCount < 50) {
-                return;
-            }
-            org.apache.tika.parser.image.ZXingCPPScanner scanner =
-                    new org.apache.tika.parser.image.ZXingCPPScanner(zCfg);
-            java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result> decoded =
-                    org.apache.tika.parser.image.UnicodeQRExtractor.extractAndDecode(
-                            buf.toString(), scanner, zCfg, context);
-            org.apache.tika.parser.image.ColorGridQRDecoder.emitBarcodes(decoded, metadata);
-            metadata.add("html_unicode_qr:glyph_count", String.valueOf(glyphCount));
-            if (!decoded.isEmpty()) {
-                metadata.add("ExploitClass",
-                        "Decoded " + decoded.size()
-                      + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
-                      + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
+            if (incomplete) {
+                markUnicodeQrIncomplete(metadata);
             }
         } catch (Throwable t) {
-            // Best-effort.
+            markUnicodeQrIncomplete(metadata);
+        }
+    }
+
+    private static BoundedMonospaceText collectMonospaceText(Element element) {
+        StringBuilder text = new StringBuilder();
+        BoundedTextVisitor visitor = new BoundedTextVisitor(text);
+        try {
+            element.traverse(visitor);
+        } catch (UnicodeQrTextLimitException e) {
+            visitor.truncated = true;
+        }
+        return new BoundedMonospaceText(text.toString(), visitor.truncated);
+    }
+
+    private static void markUnicodeQrIncomplete(Metadata metadata) {
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                UNICODE_QR_LIMIT_WARNING);
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "HTML Unicode-QR extraction incomplete; encoded link content may be hidden");
+        }
+    }
+
+    private static final class BoundedTextVisitor implements NodeVisitor {
+        private final StringBuilder text;
+        private boolean truncated;
+
+        private BoundedTextVisitor(StringBuilder text) {
+            this.text = text;
+        }
+
+        @Override
+        public void head(Node node, int depth) {
+            if (node instanceof Element
+                    && "br".equalsIgnoreCase(((Element) node).tagName())) {
+                append("\n");
+            } else if (node instanceof TextNode) {
+                append(((TextNode) node).getWholeText());
+            }
+        }
+
+        @Override
+        public void tail(Node node, int depth) {
+            // no-op
+        }
+
+        private void append(String value) {
+            int remaining = MAX_UNICODE_QR_CANDIDATE_CHARS - text.length();
+            if (value.length() > remaining) {
+                if (remaining > 0) {
+                    text.append(value, 0, remaining);
+                }
+                throw UnicodeQrTextLimitException.INSTANCE;
+            }
+            text.append(value);
+        }
+    }
+
+    private static final class UnicodeQrTextLimitException extends RuntimeException {
+        private static final UnicodeQrTextLimitException INSTANCE =
+                new UnicodeQrTextLimitException();
+
+        private UnicodeQrTextLimitException() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static final class BoundedMonospaceText {
+        private final String text;
+        private final boolean truncated;
+
+        private BoundedMonospaceText(String text, boolean truncated) {
+            this.text = text;
+            this.truncated = truncated;
         }
     }
 

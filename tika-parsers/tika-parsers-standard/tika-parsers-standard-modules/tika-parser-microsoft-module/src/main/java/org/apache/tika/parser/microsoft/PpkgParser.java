@@ -958,9 +958,11 @@ public class PpkgParser implements Parser {
                 continue;
             }
             if (tokenStart >= 0 && i - tokenStart >= 4) {
-                int dot = value.lastIndexOf('.', i - 1);
+                int inspectionEnd = dataReferencePathEnd(value, tokenStart, i);
+                int dot = value.lastIndexOf('.', inspectionEnd - 1);
                 if (dot >= tokenStart) {
-                    String ext = value.substring(dot, i).toLowerCase(Locale.ROOT);
+                    String ext = value.substring(dot, inspectionEnd)
+                            .toLowerCase(Locale.ROOT);
                     if (DANGEROUS_EXTENSIONS.contains(ext)
                             && !out.add(value.substring(tokenStart, i))) {
                         return;
@@ -969,6 +971,34 @@ public class PpkgParser implements Parser {
             }
             tokenStart = -1;
         }
+    }
+
+    private static int dataReferencePathEnd(String value, int start, int end) {
+        int pathEnd = end;
+        for (int i = start; i < pathEnd; i++) {
+            char c = value.charAt(i);
+            if (c == '?' || c == '#') {
+                pathEnd = i;
+                break;
+            }
+            if (c == '%' && i + 2 < pathEnd) {
+                char hi = Character.toLowerCase(value.charAt(i + 1));
+                char lo = Character.toLowerCase(value.charAt(i + 2));
+                if ((hi == '3' && lo == 'f') || (hi == '2' && lo == '3')) {
+                    pathEnd = i;
+                    break;
+                }
+            }
+        }
+        while (pathEnd > start && isTrailingReferencePunctuation(value.charAt(pathEnd - 1))) {
+            pathEnd--;
+        }
+        return pathEnd;
+    }
+
+    private static boolean isTrailingReferencePunctuation(char c) {
+        return c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+                || c == ':' || c == '!' || c == '.';
     }
 
     private static void recordDangerousReference(String name, List<String> dataRefs) {

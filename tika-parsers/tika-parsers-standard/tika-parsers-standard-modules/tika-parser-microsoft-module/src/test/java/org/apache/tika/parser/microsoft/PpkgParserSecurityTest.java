@@ -309,6 +309,26 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void dangerousReferencesWithUrlSuffixesArePreserved() throws Exception {
+        String xml = """
+                <wap-provisioningdoc>
+                  <CustomData>https://example.invalid/payload.exe?download=1
+                    https://example.invalid/stage.ps1#run
+                    (https://example.invalid/setup.msi)</CustomData>
+                </wap-provisioningdoc>
+                """;
+
+        Metadata metadata = parseMetadata(buildWim(xml));
+        assertEquals(3, metadata.getValues("ppkg:data_asset_ref").length);
+        assertEquals("https://example.invalid/payload.exe?download=1",
+                metadata.getValues("ppkg:data_asset_ref")[0]);
+        assertEquals("https://example.invalid/stage.ps1#run",
+                metadata.getValues("ppkg:data_asset_ref")[1]);
+        assertEquals("(https://example.invalid/setup.msi)",
+                metadata.getValues("ppkg:data_asset_ref")[2]);
+    }
+
+    @Test
     public void dataReferenceCardinalityIsBoundedAndSignaled() throws Exception {
         StringBuilder xml = new StringBuilder("<wap-provisioningdoc><CustomData>");
         for (int i = 0; i < 5_000; i++) {

@@ -87,6 +87,8 @@ public class WinShortcutParserTest {
 
         assertNotNull(result.metadata.get("lnk:ExploitClass"),
                 "exploit signatures after the first 64 KiB must not evade classification");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "LNK security classifications must use the common metadata channel");
     }
 
     @Test
@@ -267,6 +269,30 @@ public class WinShortcutParserTest {
                 "bounded input must be reported as incomplete");
         assertNotNull(result.metadata.get("lnk:ExploitClass"),
                 "truncation must fail closed because late indicators may be hidden");
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "incomplete LNK analysis must use the common metadata channel");
+    }
+
+    @Test
+    public void testEncodingHeuristicDoesNotConsumeFollowingPayload() throws Exception {
+        ParseResult result = parse(buildStringDataCursorConfusionLnk());
+
+        assertEquals("2044", result.metadata.get("lnk:AppendedDataSize"),
+                "alternate decoding must not claim bytes outside the flag-owned field");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "the appended ActiveX payload must remain classifiable");
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void testPropertyStoreVectorCardinalityIsBoundedAndSignaled() throws Exception {
+        ParseResult result = parse(buildPropertyVectorLnk(10_000, 10_000));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "large typed vectors must be bounded before object amplification");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "skipped PropertyStore values must fail closed");
+        assertNotNull(result.metadata.get("ExploitClass"));
     }
 
     @Test
@@ -404,6 +430,59 @@ public class WinShortcutParserTest {
         out.write("<script>new ActiveXObject('WScript.Shell')</script>"
                 .getBytes(StandardCharsets.US_ASCII));
         return out.toByteArray();
+    }
+
+    private static byte[] buildStringDataCursorConfusionLnk() throws IOException {
+        int segmentBytes = 2_048;
+        byte[] header = java.util.Arrays.copyOf(buildLnk(), HEADER_SIZE);
+        ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 0x20);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(header);
+        out.write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) segmentBytes).array());
+        out.write("A".repeat(segmentBytes / 2).getBytes(StandardCharsets.UTF_16LE));
+        out.write(new byte[4]);
+
+        String script = "<!doctype html><script>"
+                + "new ActiveXObject('WScript.Shell')"
+                + "</script>";
+        byte[] scriptBytes = script.getBytes(StandardCharsets.UTF_16LE);
+        byte[] payload = new byte[segmentBytes - 4];
+        System.arraycopy(scriptBytes, 0, payload, 0, scriptBytes.length);
+        for (int i = scriptBytes.length; i + 1 < payload.length; i += 2) {
+            payload[i] = 0x20;
+        }
+        out.write(payload);
+        return out.toByteArray();
+    }
+
+    private static byte[] buildPropertyVectorLnk(int payloadBytes, int declaredElements) {
+        int valueSize = 17 + payloadBytes;
+        int storageSize = 24 + valueSize;
+        int blockSize = 8 + storageSize;
+        byte[] bytes = new byte[HEADER_SIZE + blockSize + 4];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0, HEADER_SIZE);
+        buffer.putInt(60, 1);
+        int block = HEADER_SIZE;
+        buffer.putInt(block, blockSize);
+        buffer.putInt(block + 4, 0xA0000009);
+        int storage = block + 8;
+        buffer.putInt(storage, storageSize);
+        buffer.putInt(storage + 4, 0x53505331);
+        int value = storage + 24;
+        buffer.putInt(value, valueSize);
+        buffer.putInt(value + 4, 2);
+        buffer.put(value + 8, (byte) 0);
+        buffer.putShort(value + 9, (short) 0x1011);
+        buffer.putShort(value + 11, (short) 0);
+        buffer.putInt(value + 13, declaredElements);
+        for (int i = 0; i < payloadBytes; i++) {
+            buffer.put(value + 17 + i, (byte) (i & 0xff));
+        }
+        return bytes;
     }
 
     private static byte[] buildUtf16IndicatorLnk(Charset charset, byte[] bom)

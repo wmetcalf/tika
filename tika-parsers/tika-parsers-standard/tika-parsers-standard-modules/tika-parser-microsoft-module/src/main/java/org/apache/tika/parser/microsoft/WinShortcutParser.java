@@ -303,6 +303,8 @@ public class WinShortcutParser implements Parser {
     private static final int VT_BLOB     = 0x0041;
     private static final int VT_CLSID    = 0x0048;
     private static final int VT_VECTOR   = 0x1000; // OR'd with base type
+    private static final int MAX_PROPERTY_VECTOR_ELEMENTS = 4_096;
+    private static final int MAX_PROPERTY_VALUE_CHARS = 64 * 1024;
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -384,6 +386,9 @@ public class WinShortcutParser implements Parser {
         // names and made structured access impossible.
         for (Map.Entry<String, String> e : fields.entrySet()) {
             metadata.add("lnk:" + e.getKey(), e.getValue());
+            if ("ExploitClass".equals(e.getKey())) {
+                metadata.add("ExploitClass", e.getValue());
+            }
         }
         for (String w : warnings) {
             metadata.add("lnk:warning", w);
@@ -947,27 +952,24 @@ public class WinShortcutParser implements Parser {
             }
             int charCount = Short.toUnsignedInt(buf.getShort(pos));
             pos += 2;
-            // MS-SHLLINK §2.4 says the IsUnicode flag determines whether the
-            // following COUNT_CHARACTERS units are UTF-16 (charCount*2 bytes) or
-            // ANSI (charCount bytes). Malformed/malicious LNKs lie about the flag,
-            // so we score both decodings and prefer the one with more printable
-            // text. Ties go to the flag-claimed encoding.
+            // MS-SHLLINK §2.4 makes IsUnicode authoritative for field ownership:
+            // COUNT_CHARACTERS occupies charCount*2 bytes for Unicode and charCount
+            // bytes for ANSI. Alternate decoding may improve analyst-facing text,
+            // but it must never move the structural cursor into following records.
             byte[] data = buf.array();
-            int wantUnicodeBytes = charCount * 2;
-            int wantAnsiBytes    = charCount;
-            boolean canDecodeUnicode = pos + wantUnicodeBytes <= fileLen;
-            boolean canDecodeAnsi    = pos + wantAnsiBytes <= fileLen;
-            if (!canDecodeUnicode && !canDecodeAnsi) {
+            int structuralBytes = unicode ? charCount * 2 : charCount;
+            if (pos + structuralBytes > fileLen) {
                 markAnalysisIncomplete(fields, warnings,
                         keyNames[fi] + " extends beyond the available input");
                 return fileLen;
             }
-            String unicodeStr = canDecodeUnicode
-                    ? new String(data, pos, wantUnicodeBytes, StandardCharsets.UTF_16LE) : "";
-            String ansiStr = canDecodeAnsi
-                    ? new String(data, pos, wantAnsiBytes, cp1252()) : "";
-            int unicodeScore = canDecodeUnicode ? textScore(unicodeStr) : -1;
-            int ansiScore    = canDecodeAnsi    ? textScore(ansiStr)    : -1;
+            int unicodeBytes = structuralBytes - (structuralBytes & 1);
+            String unicodeStr = unicodeBytes == 0 ? ""
+                    : new String(data, pos, unicodeBytes, StandardCharsets.UTF_16LE);
+            String ansiStr = structuralBytes == 0 ? ""
+                    : new String(data, pos, structuralBytes, cp1252());
+            int unicodeScore = unicodeBytes == 0 ? -1 : textScore(unicodeStr);
+            int ansiScore = structuralBytes == 0 ? -1 : textScore(ansiStr);
             boolean actualUnicode;
             if (unicodeScore > ansiScore) {
                 actualUnicode = true;
@@ -985,15 +987,12 @@ public class WinShortcutParser implements Parser {
                 actualUnicode = unicode;
             }
             String value;
-            int byteLen;
             if (actualUnicode) {
-                byteLen = wantUnicodeBytes;
                 value = unicodeStr;
             } else {
-                byteLen = wantAnsiBytes;
                 value = ansiStr;
             }
-            pos += byteLen;
+            pos += structuralBytes;
             if (actualUnicode != unicode && !value.isEmpty()) {
                 warnings.add(keyNames[fi] + ": IsUnicode flag=" + unicode
                         + " but content decodes cleanly as "
@@ -1363,10 +1362,11 @@ public class WinShortcutParser implements Parser {
                 }
                 try {
                     if (named) {
-                        parseStringNamedProp(buf, vpos, valueSize, sEnd, prefix, fields);
+                        parseStringNamedProp(
+                                buf, vpos, valueSize, sEnd, prefix, fields, warnings);
                     } else {
                         parseIntNamedProp(buf, vpos, valueSize, sEnd, prefix,
-                                propNames, fields);
+                                propNames, fields, warnings);
                     }
                 } catch (Exception e) {
                     warnings.add("PropertyStore parse error: " + e.getMessage());
@@ -1379,12 +1379,15 @@ public class WinShortcutParser implements Parser {
 
     private void parseStringNamedProp(ByteBuffer buf, int pos, int valueSize,
                                       int limit, String prefix,
-                                      Map<String, String> fields) {
-        if (pos + 9 > limit) {
+                                      Map<String, String> fields,
+                                      List<String> warnings) {
+        int valueLimit = (int) Math.min((long) limit, (long) pos + valueSize);
+        if (pos + 9 > valueLimit) {
             return;
         }
         int nameSize = buf.getInt(pos + 4);
-        if (buf.get(pos + 8) != 0 || nameSize < 0 || pos + 9 + nameSize > limit) {
+        if (buf.get(pos + 8) != 0 || nameSize < 0
+                || (long) pos + 9 + nameSize > valueLimit) {
             return;
         }
         String name = nameSize > 0
@@ -1394,7 +1397,8 @@ public class WinShortcutParser implements Parser {
             name = name.substring(0, nullIdx);
         }
         int typedStart = pos + 9 + nameSize;
-        String value = readTypedPropertyValue(buf, typedStart, limit);
+        String value =
+                readTypedPropertyValue(buf, typedStart, valueLimit, fields, warnings);
         if (value != null && !name.isEmpty()) {
             fields.put(prefix + "[" + name + "]", value);
         }
@@ -1403,22 +1407,27 @@ public class WinShortcutParser implements Parser {
     private void parseIntNamedProp(ByteBuffer buf, int pos, int valueSize,
                                    int limit, String prefix,
                                    Map<Integer, String> propNames,
-                                   Map<String, String> fields) {
-        if (pos + 9 > limit) {
+                                   Map<String, String> fields,
+                                   List<String> warnings) {
+        int valueLimit = (int) Math.min((long) limit, (long) pos + valueSize);
+        if (pos + 9 > valueLimit) {
             return;
         }
         int id = buf.getInt(pos + 4);
         if (buf.get(pos + 8) != 0) {
             return;
         }
-        String value = readTypedPropertyValue(buf, pos + 9, limit);
+        String value =
+                readTypedPropertyValue(buf, pos + 9, valueLimit, fields, warnings);
         if (value != null) {
             String keyName = propNames.getOrDefault(id, String.valueOf(id));
             fields.put(prefix + "[" + keyName + "]", value);
         }
     }
 
-    private String readTypedPropertyValue(ByteBuffer buf, int pos, int limit) {
+    private String readTypedPropertyValue(ByteBuffer buf, int pos, int limit,
+                                          Map<String, String> fields,
+                                          List<String> warnings) {
         if (pos + 4 > limit) {
             return null;
         }
@@ -1436,36 +1445,75 @@ public class WinShortcutParser implements Parser {
             }
             int count = buf.getInt(dataPos);
             dataPos += 4;
-            List<String> items = new ArrayList<>();
-            for (int i = 0; i < count && dataPos + 4 <= limit; i++) {
+            if (count < 0) {
+                markAnalysisIncomplete(
+                        fields, warnings, "PropertyStore vector has a negative element count");
+                return null;
+            }
+            int acceptedCount = Math.min(count, MAX_PROPERTY_VECTOR_ELEMENTS);
+            if (count > acceptedCount) {
+                markAnalysisIncomplete(fields, warnings,
+                        "PropertyStore vector exceeded the element limit; extraction is incomplete");
+            }
+            StringBuilder items = new StringBuilder();
+            for (int i = 0; i < acceptedCount; i++) {
+                String element;
                 // For VT_LPWSTR vector each element is a counted string (uint32 + UTF-16LE)
                 if (baseType == VT_LPWSTR) {
+                    if (dataPos + 4 > limit) {
+                        markAnalysisIncomplete(fields, warnings,
+                                "PropertyStore string vector ended before its declared count");
+                        break;
+                    }
                     int len = buf.getInt(dataPos);
                     dataPos += 4;
-                    if (len > 0 && dataPos + len * 2 <= limit) {
-                        String s = new String(buf.array(), dataPos, len * 2,
-                                StandardCharsets.UTF_16LE);
-                        int ni = s.indexOf('\0');
-                        items.add(ni >= 0 ? s.substring(0, ni) : s);
-                        dataPos += len * 2;
+                    long stringBytes = (long) len * 2;
+                    if (len < 0 || stringBytes > limit - dataPos) {
+                        markAnalysisIncomplete(fields, warnings,
+                                "PropertyStore string vector has an invalid element length");
+                        break;
                     }
+                    String value = new String(buf.array(), dataPos, (int) stringBytes,
+                            StandardCharsets.UTF_16LE);
+                    int nullIndex = value.indexOf('\0');
+                    element = nullIndex >= 0 ? value.substring(0, nullIndex) : value;
+                    dataPos += (int) stringBytes;
                 } else {
                     // For fixed-size scalars, decode each element
                     int elementBytes = vtElementSize(baseType);
                     if (elementBytes <= 0 || dataPos + elementBytes > limit) {
+                        markAnalysisIncomplete(fields, warnings,
+                                "PropertyStore vector ended before its declared count");
                         break;
                     }
-                    String element = readTypedPropertyValueAt(buf, dataPos, baseType, limit);
-                    if (element != null) {
-                        items.add(element);
-                    }
+                    element = readTypedPropertyValueAt(buf, dataPos, baseType, limit);
                     dataPos += elementBytes;
                 }
+                if (element != null
+                        && !appendPropertyVectorItem(items, element, fields, warnings)) {
+                    break;
+                }
             }
-            return items.isEmpty() ? null : String.join(", ", items);
+            return items.length() == 0 ? null : items.toString();
         }
 
         return readTypedPropertyValueAt(buf, dataPos, vtype, limit);
+    }
+
+    private boolean appendPropertyVectorItem(StringBuilder items, String value,
+                                             Map<String, String> fields,
+                                             List<String> warnings) {
+        int separatorChars = items.length() == 0 ? 0 : 2;
+        if (value.length() > MAX_PROPERTY_VALUE_CHARS - items.length() - separatorChars) {
+            markAnalysisIncomplete(fields, warnings,
+                    "PropertyStore vector exceeded the output limit; extraction is incomplete");
+            return false;
+        }
+        if (separatorChars != 0) {
+            items.append(", ");
+        }
+        items.append(value);
+        return true;
     }
 
     private String readTypedPropertyValueAt(ByteBuffer buf, int pos, int vtype, int limit) {
