@@ -193,9 +193,23 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                     metadata, context);
             parsedCleanly = true;
         } catch (EncryptedDocumentException ede) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, ede);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
             primaryFailure = ede;
             recordException(ede, context);
         } catch (CorruptedFileException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
             //necessary to stop the parse to avoid infinite loops
             //on corrupt sqlite3 files
             IOException ioFailure = new IOException(e);
@@ -232,13 +246,34 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             primaryFailure = e;
             throw e;
         } catch (SecurityException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
             primaryFailure = e;
             downstreamOutputFailure = true;
             throw e;
         } catch (RuntimeException e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
             primaryFailure = e;
             throw e;
         } catch (Error e) {
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                downstreamOutputFailure = true;
+                throw outputFailure;
+            }
             primaryFailure = e;
             downstreamOutputFailure = true;
             throw e;

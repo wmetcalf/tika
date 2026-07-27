@@ -33,6 +33,8 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.exception.CorruptedFileException;
+import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -70,6 +72,36 @@ public class ParsingEmbeddedDocumentExtractorTest {
     public void testTikaExceptionWrappedDownstreamSaxDenialPropagates()
             throws Exception {
         assertWrappedDownstreamDenialPropagates(FailureWrapper.TIKA);
+    }
+
+    @Test
+    public void testRuntimeExceptionWrappedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(FailureWrapper.RUNTIME);
+    }
+
+    @Test
+    public void testEncryptedDocumentExceptionWrappedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(FailureWrapper.ENCRYPTED);
+    }
+
+    @Test
+    public void testCorruptedFileExceptionWrappedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(FailureWrapper.CORRUPTED);
+    }
+
+    @Test
+    public void testSecurityExceptionWrappedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(FailureWrapper.SECURITY);
+    }
+
+    @Test
+    public void testErrorWrappedDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertWrappedDownstreamDenialPropagates(FailureWrapper.ERROR);
     }
 
     @Test
@@ -248,6 +280,23 @@ public class ParsingEmbeddedDocumentExtractorTest {
                 if (wrapper == FailureWrapper.IO) {
                     throw new IOException("wrapped downstream failure", e);
                 }
+                if (wrapper == FailureWrapper.RUNTIME) {
+                    throw new RuntimeException("wrapped downstream failure", e);
+                }
+                if (wrapper == FailureWrapper.ENCRYPTED) {
+                    throw new EncryptedDocumentException(
+                            "wrapped downstream failure", e);
+                }
+                if (wrapper == FailureWrapper.CORRUPTED) {
+                    throw new CorruptedFileException(
+                            "wrapped downstream failure", e);
+                }
+                if (wrapper == FailureWrapper.SECURITY) {
+                    throw new SecurityException("wrapped downstream failure", e);
+                }
+                if (wrapper == FailureWrapper.ERROR) {
+                    throw new AssertionError("wrapped downstream failure", e);
+                }
                 throw e;
             }
         }
@@ -256,7 +305,12 @@ public class ParsingEmbeddedDocumentExtractorTest {
     private enum FailureWrapper {
         NONE,
         TIKA,
-        IO
+        IO,
+        RUNTIME,
+        ENCRYPTED,
+        CORRUPTED,
+        SECURITY,
+        ERROR
     }
 
     private static final class RuntimeFailureParser implements Parser {
