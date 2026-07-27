@@ -1,4 +1,4 @@
-# Mantis Fork Findings Remediation Design
+# Mantis Tika Security Remediation Design
 
 - **Date:** 2026-07-22
 - **Base branch:** `origin/4.0-upstream-office-links`
@@ -8,8 +8,9 @@
 ## Objective
 
 Fix every security-relevant defect that the completed Mantis audit attributes to
-the Tika fork, prove each fix with a regression test and an isolated Mantis
-reattack, and deliver the changes as one reviewable pull request targeting
+the Tika fork, resolve the confirmed defects found by the full-tree Marla review,
+prove each fix with a regression test and isolated Mantis evidence, and deliver
+the combined changes as one reviewable pull request targeting
 `4.0-upstream-office-links`. Run a Marla Singer review loop over the completed
 pull-request diff before declaring the branch ready.
 
@@ -42,6 +43,62 @@ showed that defect was inherited from upstream, so it belongs in the later
 upstream campaign. The negative RTF Unicode skip-count issue and the PDF
 first-page-only OCR propagation issue are also upstream-inherited and excluded
 from this pull request.
+
+## Approved Run 38 Scope Extension
+
+On 2026-07-27 the user approved broad scope option 3. In addition to the ten
+original fork findings, this branch must resolve all twelve unique confirmed
+Run 38 findings and retain two explicitly requested resource-budget hardenings.
+
+The nine fork-associated or current-patch findings are:
+
+1. restore caller-owned output denials when embedded output is not wrapped in
+   package-entry XHTML;
+2. distinguish ordinary parser runtime failures from caller denials, and balance
+   parser-owned output before rethrowing ordinary runtimes;
+3. let cleanup-time output denials supersede parser failures, preserve the
+   parser failure as suppressed context, and stop later callbacks;
+4. decode bounded calendar `data:` attachments through the same local
+   hash, MIME, risk-classification, and embedded-parser route as inline bytes;
+5. unwrap caller denials across the complete Windows shortcut XHTML lifecycle;
+6. preserve caller denials from referenced DOCX notes and unreferenced comments;
+7. propagate `RuntimeSAXException` from the XLSB salvage path;
+8. preserve cleanup-time caller denials in the RTF parser; and
+9. prevent PDF page-end output denials from being downgraded to successful
+   partial parses.
+
+The three upstream-inherited findings now included in the fork PR are:
+
+1. PPTX slide and related-part SAX recovery must distinguish malformed XML from
+   caller output denials;
+2. PST attachment recovery must not swallow `SecurityException` or SAX output
+   denials; and
+3. Pipes `UnpackExtractor` must preserve the superclass embedded-output
+   provenance and cleanup contract.
+
+The retained hardenings impose a 32 MiB document-wide decompressed-input budget
+on optional DOCX inline-part collection and XLM capture. These two items are
+defense-in-depth rather than confirmed vulnerabilities, and the PR must label
+them accordingly.
+
+### Shared Fail-Stop Invariant
+
+Every parser-owned recovery boundary follows one contract:
+
+- tag the complete region in which a caller `ContentHandler` can be invoked,
+  regardless of `outputHtml`;
+- restore the original caller-owned `SAXException`, `SecurityException`, or
+  write-limit denial instead of treating a wrapper as parser corruption;
+- perform bounded balancing only for parser-originated failures;
+- when balancing itself reaches a caller denial, throw that denial, attach the
+  original parser failure as suppressed context, and issue no later callbacks;
+  and
+- keep malformed-input recovery only where the failure is proven to originate
+  inside parser-owned source processing.
+
+This contract is implemented with the existing Tika tagged-SAX mechanism and
+small parser-local cleanup helpers. It does not introduce a new public
+exception hierarchy.
 
 ## Evidence Gate
 
@@ -118,8 +175,8 @@ No test may be weakened merely to accommodate an implementation.
   explicit resource bounds where supported.
 - Fixtures stay inside test resources or the Mantis evidence workspace.
 - The dirty user checkout and unrelated `test/all-fixes` branch remain intact.
-- Existing upstream-inherited findings are neither silently fixed nor mixed
-  into this fork-only pull request.
+- Upstream-inherited Run 38 fixes are labeled by provenance in the fork PR and
+  kept as separable commits so that they can be transplanted independently.
 
 ## Integration and Pull Request
 
@@ -138,17 +195,27 @@ After all eligible finding transactions are complete:
 6. Re-run the affected test matrix and confirm the branch is clean and the PR
    head matches the locally verified commit.
 
+After the fork PR is verified, each upstream-inherited fix is transplanted onto
+a clean branch based on the then-current `upstream/main`. Each upstream branch
+must reproduce the defect against upstream `main`, pass its focused and module
+tests after the fix, and include only the minimum production change, regression
+test, and evidence summary required for Apache review. Upstream submissions are
+draft pull requests and remain unmerged unless an Apache maintainer merges them.
+
 The pull request remains unmerged until the user explicitly requests merging.
 
 ## Completion Criteria
 
 The branch is ready for review only when:
 
-- every reproducible fork-introduced finding has a minimal fix and regression
-  test;
+- every reproducible fork-introduced and approved upstream-inherited finding has
+  a minimal fix and regression test;
 - every fix has unpatched-baseline, patched-control, attack, and independent
   reattack evidence;
 - all targeted and integration tests pass;
 - the Marla Singer loop has no unresolved validated finding;
-- the PR clearly distinguishes fork fixes from queued upstream work; and
+- the fork PR clearly distinguishes fork fixes, upstream-inherited fixes, and
+  optional hardening;
+- upstream-inherited fixes have clean, upstream-main-compatible patch branches
+  and evidence-backed draft pull requests; and
 - no unrelated checkout, branch, or Mantis snapshot has been modified.
