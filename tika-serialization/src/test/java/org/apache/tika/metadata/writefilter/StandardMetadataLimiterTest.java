@@ -23,6 +23,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
@@ -507,6 +512,36 @@ public class StandardMetadataLimiterTest extends TikaTest {
         assertEquals("01234567890123456789", metadata.get("dc:creator"));
         assertEquals("01234567890123456789", metadata.get("subjectB"));
         assertNull(metadata.get("subject"));
+    }
+
+    @Test
+    public void testDeserializationInitializesNewAlignedGroupState() throws Exception {
+        StandardMetadataLimiter limiter = new StandardMetadataLimiter(
+                100, 1000, 10000, 10, Set.of(), Set.of(), true);
+        Field state = StandardMetadataLimiter.class
+                .getDeclaredField("suppressedAlignedGroups");
+        state.setAccessible(true);
+        // Simulate a stream written by the compatible base version, which
+        // predates this field and therefore deserializes it as null.
+        state.set(limiter, null);
+
+        byte[] serialized;
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(limiter);
+            serialized = bytes.toByteArray();
+        }
+
+        StandardMetadataLimiter restored;
+        try (ObjectInputStream input = new ObjectInputStream(
+                new ByteArrayInputStream(serialized))) {
+            restored = (StandardMetadataLimiter) input.readObject();
+        }
+        Metadata metadata = new Metadata(restored);
+        metadata.add(Office.OFFICE_LINK_URL, "https://example.invalid/");
+
+        assertEquals("https://example.invalid/",
+                metadata.get(Office.OFFICE_LINK_URL));
     }
 
 

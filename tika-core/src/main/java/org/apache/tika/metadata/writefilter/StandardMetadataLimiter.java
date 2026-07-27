@@ -16,6 +16,8 @@
  */
 package org.apache.tika.metadata.writefilter;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -217,6 +219,17 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         this.includeFields = includeFields != null ? new HashSet<>(includeFields) : new HashSet<>();
         this.excludeFields = excludeFields != null ? new HashSet<>(excludeFields) : new HashSet<>();
         this.includeEmpty = includeEmpty;
+    }
+
+    private void readObject(ObjectInputStream input)
+            throws IOException, ClassNotFoundException {
+        input.defaultReadObject();
+        if (fieldSizes == null) {
+            fieldSizes = new HashMap<>();
+        }
+        if (suppressedAlignedGroups == null) {
+            suppressedAlignedGroups = new HashSet<>();
+        }
     }
 
     @Override

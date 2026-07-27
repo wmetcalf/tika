@@ -174,7 +174,8 @@ public class OOXMLTikaBodyPartHandler
                 // Skip pure whitespace — adds no QR-grid signal and would
                 // typically be inter-module spacing. NBSP (U+00A0) is a
                 // common Word-HTML evasion alternative to U+0020.
-                if (c == ' ' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                if (c == ' ' || c == '\u00a0'
+                        || c == '\t' || c == '\n' || c == '\r') {
                     continue;
                 }
                 colorCollector.addCell(luma);
@@ -466,6 +467,7 @@ public class OOXMLTikaBodyPartHandler
         // left on the SAX stack (<p>/<td>/etc.) and StrictXHTMLValidator
         // propagates a misleading error.
         OOXMLTikaBodyPartHandler innerHandler = new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        innerHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, parseContext);
         try {
             XMLReaderUtils.parseSAX(new ByteArrayInputStream(xml),
                     new EmbeddedContentHandler(
@@ -476,6 +478,8 @@ public class OOXMLTikaBodyPartHandler
         } catch (TikaException | IOException | SAXException e) {
             innerHandler.closeAnyPending();
             xhtml.characters("[" + cssClass + " parse error]");
+        } finally {
+            colorCollector.addCollector(innerHandler.getColorCollector());
         }
         xhtml.endElement("div");
     }

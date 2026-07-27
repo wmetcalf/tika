@@ -300,6 +300,16 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testLateHtmlTagStillTriggersStructuralExploitDetection() throws Exception {
+        ParseResult result = parse(buildVirtualFolderHtmlLnk(
+                StandardCharsets.US_ASCII, new byte[0], " ".repeat(100_000)));
+
+        assertNotNull(result.metadata.get("lnk:ExploitClass"),
+                "leading padding beyond the MIME detector window must not hide "
+                        + "the structural MSHTML trigger");
+    }
+
+    @Test
     public void testOversizedInputIsTruncatedAndSignaled() throws Exception {
         byte[] oversized = new byte[16 * 1024 * 1024 + 1];
         System.arraycopy(buildLnk(), 0, oversized, 0, HEADER_SIZE);
@@ -664,6 +674,11 @@ public class WinShortcutParserTest {
 
     private static byte[] buildVirtualFolderHtmlLnk(Charset charset, byte[] bom)
             throws IOException {
+        return buildVirtualFolderHtmlLnk(charset, bom, "");
+    }
+
+    private static byte[] buildVirtualFolderHtmlLnk(
+            Charset charset, byte[] bom, String prefix) throws IOException {
         byte[] header = new byte[HEADER_SIZE];
         ByteBuffer fields = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
         fields.putInt(0, HEADER_SIZE);
@@ -685,7 +700,7 @@ public class WinShortcutParserTest {
         out.write(new byte[2]);
         out.write(new byte[4]);
         out.write(bom);
-        out.write("<!doctype html><script>alert(1)</script>".getBytes(charset));
+        out.write((prefix + "<!doctype html><script>alert(1)</script>").getBytes(charset));
         return out.toByteArray();
     }
 

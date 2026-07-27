@@ -1884,18 +1884,90 @@ public class WinShortcutParser implements Parser {
         if ("text/html".equals(appendedMime)) {
             return true;
         }
-        if (payload.length < 4) {
-            return false;
+        for (int encoding = 0; encoding < 3; encoding++) {
+            if (containsEncodedHtmlElement(payload, encoding)) {
+                return true;
+            }
         }
-        boolean utf16LeBom = (payload[0] & 0xff) == 0xff
-                && (payload[1] & 0xff) == 0xfe;
-        boolean utf16BeBom = (payload[0] & 0xff) == 0xfe
-                && (payload[1] & 0xff) == 0xff;
-        if (!utf16LeBom && !utf16BeBom) {
-            return false;
+        return false;
+    }
+
+    private static boolean containsEncodedHtmlElement(byte[] payload, int encoding) {
+        int stride = encoding == 0 ? 1 : 2;
+        for (int alignment = 0; alignment < stride; alignment++) {
+            for (int offset = alignment; offset + stride <= payload.length;
+                    offset += stride) {
+                if (readEncodedAscii(payload, offset, encoding) != '<') {
+                    continue;
+                }
+                int nameOffset = offset + stride;
+                if (readEncodedAscii(payload, nameOffset, encoding) == '/') {
+                    nameOffset += stride;
+                }
+                if (matchesEncodedHtmlTagName(
+                        payload, nameOffset, encoding)) {
+                    return true;
+                }
+            }
         }
-        int encoding = utf16LeBom ? 1 : 2;
-        return containsEncodedAsciiTerm(payload, "<", encoding);
+        return false;
+    }
+
+    private static boolean matchesEncodedHtmlTagName(
+            byte[] payload, int offset, int encoding) {
+        return switch (lowerAscii(readEncodedAscii(payload, offset, encoding))) {
+            case '!' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "!doctype");
+            case 'a' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "a");
+            case 'b' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "body");
+            case 'd' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "div");
+            case 'e' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "embed");
+            case 'h' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "html")
+                    || matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "head");
+            case 'i' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "iframe")
+                    || matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "img");
+            case 'l' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "link");
+            case 'm' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "meta");
+            case 'o' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "object");
+            case 's' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "script")
+                    || matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "svg")
+                    || matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "style")
+                    || matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "span");
+            case 't' -> matchesEncodedHtmlTagName(
+                    payload, offset, encoding, "table");
+            default -> false;
+        };
+    }
+
+    private static boolean matchesEncodedHtmlTagName(
+            byte[] payload, int offset, int encoding, String tagName) {
+        int stride = encoding == 0 ? 1 : 2;
+        for (int i = 0; i < tagName.length(); i++) {
+            int value = readEncodedAscii(
+                    payload, offset + i * stride, encoding);
+            if (lowerAscii(value) != tagName.charAt(i)) {
+                return false;
+            }
+        }
+        int boundary = readEncodedAscii(
+                payload, offset + tagName.length() * stride, encoding);
+        return boundary < 0 || boundary == '>' || boundary == '/'
+                || Character.isWhitespace((char) boundary);
     }
 
     private void detectExploitIndicators(byte[] payload, Map<String, String> fields,

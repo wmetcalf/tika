@@ -153,21 +153,14 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
         if (hiddenSlideCount > 0) {
             metadata.set(Office.NUM_HIDDEN_SLIDES, hiddenSlideCount);
         }
+        if (config.isIncludeSlideMasterContent()) {
+            handleColorTextPart(XSLFRelation.SLIDE_MASTER.getRelation(),
+                    "slide-master", mainDocument, xhtml, new HashMap<>(), true);
+            handleColorTextPart(HANDOUT_MASTER, "slide-handout-master",
+                    mainDocument, xhtml, new HashMap<>(), false);
+        }
         OOXMLColorQRScanHelper.scan(pptxColorRows, context, metadata,
                 "pptx_color_qr", "PPTX");
-
-        if (config.isIncludeSlideMasterContent()) {
-            handleGeneralTextContainingPart(XSLFRelation.SLIDE_MASTER.getRelation(), "slide-master",
-                    mainDocument, metadata, new PlaceHolderSkipper(
-                            new OOXMLWordAndPowerPointTextHandler(
-                                    new OOXMLTikaBodyPartHandler(xhtml),
-                                    new HashMap<>())));
-
-            handleGeneralTextContainingPart(HANDOUT_MASTER, "slide-handout-master", mainDocument,
-                    metadata,
-                    new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-                            new HashMap<>()));
-        }
     }
 
     private void loadCommentAuthors() {
@@ -237,7 +230,6 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
             if (wordAndPPTHandler.hasAnimations()) {
                 metadata.set(Office.HAS_ANIMATIONS, true);
             }
-            pptxColorRows.addCollector(bodyHandler.getColorCollector());
         } catch (SAXException e) {
             // Truncated/malformed slide XML can leave the body handler with
             // unclosed <p>, <td>, etc. on the wire. Close them before the
@@ -252,40 +244,54 @@ public class SXSLFPowerPointExtractorDecorator extends AbstractOOXMLExtractor {
                     ExceptionUtils.getStackTrace(e));
             bodyHandler.closeAnyPending();
         }
+        pptxColorRows.addCollector(bodyHandler.getColorCollector());
 
         xhtml.endElement("div");
 
         if (config.isIncludeSlideMasterContent()) {
-            handleGeneralTextContainingPart(XSLFRelation.SLIDE_LAYOUT.getRelation(),
-                    "slide-master-content", slidePart, metadata, new PlaceHolderSkipper(
-                            new OOXMLWordAndPowerPointTextHandler(
-                                    new OOXMLTikaBodyPartHandler(xhtml), linkedRelationships)));
+            handleColorTextPart(XSLFRelation.SLIDE_LAYOUT.getRelation(),
+                    "slide-master-content", slidePart, xhtml,
+                    linkedRelationships, true);
         }
         if (config.isIncludeSlideNotes()) {
-            handleGeneralTextContainingPart(XSLFRelation.NOTES.getRelation(), "slide-notes",
-                    slidePart, metadata,
-                    new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-                            linkedRelationships));
+            handleColorTextPart(XSLFRelation.NOTES.getRelation(), "slide-notes",
+                    slidePart, xhtml, linkedRelationships, false);
             if (config.isIncludeSlideMasterContent()) {
-                handleGeneralTextContainingPart(XSLFRelation.NOTES_MASTER.getRelation(),
-                        "slide-notes-master", slidePart, metadata,
-                        new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-                                linkedRelationships));
+                handleColorTextPart(XSLFRelation.NOTES_MASTER.getRelation(),
+                        "slide-notes-master", slidePart, xhtml,
+                        linkedRelationships, false);
 
             }
         }
         handleGeneralTextContainingPart(XSLFRelation.COMMENTS.getRelation(), null, slidePart,
                 metadata, new XSLFCommentsHandler(xhtml, commentAuthors));
 
-        handleGeneralTextContainingPart(AbstractOOXMLExtractor.RELATION_DIAGRAM_DATA,
-                "diagram-data", slidePart, metadata,
-                new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-                        linkedRelationships));
-
-        handleGeneralTextContainingPart(XSLFRelation.CHART.getRelation(), "chart", slidePart,
-                metadata, new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-                        linkedRelationships));
+        handleColorTextPart(AbstractOOXMLExtractor.RELATION_DIAGRAM_DATA,
+                "diagram-data", slidePart, xhtml, linkedRelationships, false);
+        handleColorTextPart(XSLFRelation.CHART.getRelation(), "chart",
+                slidePart, xhtml, linkedRelationships, false);
         return hidden;
+    }
+
+    private void handleColorTextPart(
+            String relation, String xhtmlClass, PackagePart parent,
+            XHTMLContentHandler xhtml, Map<String, String> linkedRelationships,
+            boolean skipPlaceholders) throws SAXException {
+        OOXMLTikaBodyPartHandler bodyHandler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        bodyHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
+        OOXMLWordAndPowerPointTextHandler textHandler =
+                new OOXMLWordAndPowerPointTextHandler(
+                        bodyHandler, linkedRelationships);
+        if (skipPlaceholders) {
+            handleGeneralTextContainingPart(
+                    relation, xhtmlClass, parent, metadata,
+                    new PlaceHolderSkipper(textHandler));
+        } else {
+            handleGeneralTextContainingPart(
+                    relation, xhtmlClass, parent, metadata, textHandler);
+        }
+        pptxColorRows.addCollector(bodyHandler.getColorCollector());
     }
 
     /**

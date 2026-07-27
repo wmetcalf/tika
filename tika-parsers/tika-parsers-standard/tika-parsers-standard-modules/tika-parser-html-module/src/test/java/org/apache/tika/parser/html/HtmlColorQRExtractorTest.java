@@ -93,6 +93,33 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void colorQrCandidateTraversalDoesNotMaterializeSelectorResults() {
+        Document document = new GetAllElementsTrapDocument();
+        document.appendElement("pre")
+                .attr("style", "color:black;background-color:white")
+                .text("######\n######\n######\n######\n######\n######");
+
+        assertEquals(1, HtmlColorQRExtractor.findClusters(document, Map.of()).size());
+    }
+
+    @Test
+    public void fullBlockForegroundOverridesCellBackground() {
+        Document document = Jsoup.parse("<html><body>" + VALID_GRID + "</body></html>");
+
+        List<List<List<HtmlColorQRExtractor.Cell>>> clusters =
+                HtmlColorQRExtractor.findClusters(document, Map.of());
+
+        assertTrue(clusters.get(0).get(0).get(0).dark,
+                "a full-block glyph is visibly painted with its foreground color");
+    }
+
+    @Test
+    public void finalCssDeclarationWins() {
+        assertEquals(0, HtmlColorQRExtractor.readColor(
+                "color:white;color:black", "color"));
+    }
+
+    @Test
     public void oversizedCandidateGridIsRejectedBeforeMaterialization() {
         String row = "#".repeat(50_000);
         Document document = Jsoup.parse("<html><body><pre>"
@@ -308,6 +335,38 @@ public class HtmlColorQRExtractorTest {
     }
 
     @Test
+    public void unsupportedBrowserColorValueIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><body><pre style=\"color:hsl(0 0% 0%)\">"
+                        + "######\n######\n######\n######\n######\n######"
+                        + "</pre></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(metadata.get("ExploitClass"),
+                "unsupported browser-valid colors must not look like a clean negative");
+    }
+
+    @Test
+    public void transparentBackgroundShorthandIsSecurityVisible() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+
+        parse("<html><body><pre style=\"background:transparent\">"
+                        + "######\n######\n######\n######\n######\n######"
+                        + "</pre></body></html>",
+                new BodyContentHandler(-1), metadata, contextFor(fakeScanner));
+
+        assertTrue(metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0,
+                "transparent shorthand depends on the painted background and "
+                        + "must not look like a fully classified grid");
+    }
+
+    @Test
     public void stylesheetTraversalDoesNotMaterializeAllElements() throws Exception {
         Document document = new GetAllElementsTrapDocument();
         document.appendElement("style")
@@ -453,6 +512,11 @@ public class HtmlColorQRExtractorTest {
         @Override
         public Elements getAllElements() {
             throw new AssertionError("getAllElements materializes the attacker DOM");
+        }
+
+        @Override
+        public Elements select(String cssQuery) {
+            throw new AssertionError("select materializes attacker-wide candidates");
         }
     }
 

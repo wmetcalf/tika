@@ -106,6 +106,7 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         private final int maxGlyphs;
         private final List<Glyph> glyphs = new ArrayList<>();
         private boolean truncated;
+        private boolean classificationFailed;
 
         GlyphBuffer(int maxGlyphs) {
             if (maxGlyphs < 1) {
@@ -130,9 +131,18 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
             return truncated;
         }
 
+        void markClassificationFailure() {
+            classificationFailed = true;
+        }
+
+        boolean isClassificationFailed() {
+            return classificationFailed;
+        }
+
         void clear() {
             glyphs.clear();
             truncated = false;
+            classificationFailed = false;
         }
     }
 
@@ -148,8 +158,7 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
                         (int) (rgb[2] * 255));
                 pageGlyphs.add(text.getXDirAdj(), text.getYDirAdj(), luma);
             } catch (Exception ignored) {
-                // No color available for this glyph — skip (it won't contribute
-                // to a QR module either way).
+                pageGlyphs.markClassificationFailure();
             }
         }
         super.processTextPosition(text);
@@ -170,6 +179,10 @@ final class PDF2XHTMLColorAware extends PDF2XHTML {
         if (pageGlyphs.isTruncated()) {
             BarcodeMetadataUtil.markAnalysisIncomplete(
                     metadata, "PDF color-QR analysis limit", null);
+        }
+        if (pageGlyphs.isClassificationFailed()) {
+            BarcodeMetadataUtil.markAnalysisIncomplete(
+                    metadata, "PDF color-QR glyph classification", null);
         }
         if (glyphs.size() < 64) {
             metadata.add("pdf_color_qr:stage", "skip-below-64");

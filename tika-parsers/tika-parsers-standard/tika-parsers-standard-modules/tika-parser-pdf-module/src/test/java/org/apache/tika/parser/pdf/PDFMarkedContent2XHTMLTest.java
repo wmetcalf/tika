@@ -113,6 +113,25 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     }
 
     @Test
+    public void testMarkedContentPostProcessingHonorsAnalysisPageLimit() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+            config.setMaxPages(1);
+            Metadata metadata = new Metadata();
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    metadata, config, null, 2);
+
+            assertEquals(1, metadata.getValues(
+                    org.apache.tika.metadata.PDF.CHARACTERS_PER_PAGE).length,
+                    "marked-content post-processing must not revisit pages "
+                            + "outside the analysis budget");
+        }
+    }
+
+    @Test
     public void testAllowedPageLinkBelowExcludedPageParentIsVisited() throws Exception {
         try (PDDocument document = buildPageOverrideDocument()) {
             ToXMLContentHandler handler = new ToXMLContentHandler();
@@ -245,6 +264,24 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
 
             assertFalse(handler.toString().contains(
                     "https://excluded-annotation.invalid/"));
+        }
+    }
+
+    @Test
+    public void testAnalysisPageLimitSuppressesDirectUriOnlyLink() throws Exception {
+        try (PDDocument document = buildPageOverrideDocument()) {
+            addDirectPageLinkStructure(
+                    document, 5, "https://excluded-analysis-page.invalid/");
+            ToXMLContentHandler handler = new ToXMLContentHandler();
+            PDFParserConfig config = new PDFParserConfig();
+            config.setExtractMarkedContent(true);
+            config.setMaxPages(1);
+
+            PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
+                    new Metadata(), config, null, -1);
+
+            assertFalse(handler.toString().contains(
+                    "https://excluded-analysis-page.invalid/"));
         }
     }
 
@@ -554,6 +591,29 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
         COSDictionary link = new COSDictionary();
         link.setItem(COSName.S, COSName.getPDFName("Link"));
         link.setItem(COSName.K, objectReference);
+
+        PDStructureTreeRoot root = new PDStructureTreeRoot();
+        COSArray rootKids = new COSArray();
+        rootKids.add(new COSObject(link));
+        root.setK(rootKids);
+        document.getDocumentCatalog().setStructureTreeRoot(root);
+    }
+
+    private static void addDirectPageLinkStructure(PDDocument document,
+                                                   int pageIndex, String uri) {
+        COSArray pageRefs = (COSArray) document.getPages().getCOSObject()
+                .getDictionaryObject(COSName.KIDS);
+
+        COSDictionary action = new COSDictionary();
+        action.setItem(COSName.S, COSName.URI);
+        action.setString(COSName.URI, uri);
+        COSDictionary linkTarget = new COSDictionary();
+        linkTarget.setItem(COSName.A, action);
+
+        COSDictionary link = new COSDictionary();
+        link.setItem(COSName.S, COSName.getPDFName("Link"));
+        link.setItem(COSName.PG, pageRefs.get(pageIndex));
+        link.setItem(COSName.K, linkTarget);
 
         PDStructureTreeRoot root = new PDStructureTreeRoot();
         COSArray rootKids = new COSArray();

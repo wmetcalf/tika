@@ -22,9 +22,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Set;
 import javax.imageio.ImageIO;
 
@@ -43,6 +47,7 @@ import org.apache.batik.util.SVGConstants;
 import org.apache.batik.util.XMLResourceDescriptor;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -126,6 +131,9 @@ public class XMLParser implements Parser {
     // Data URI images are stripped before rendering so the main crash vector is handled;
     // 10 MB covers legitimate AI-generated art, data visualisations, and complex diagrams.
     private static final long SVG_RASTER_MAX_BYTES = 10L * 1024 * 1024; // 10 MB
+    private static final int SVG_USE_MAX_ELEMENTS = 4_096;
+    private static final int SVG_USE_MAX_EXPANSIONS = 4_096;
+    private static final int SVG_USE_MAX_REFERENCE_DEPTH = 64;
 
     /**
      * Rasterize {@code svgPath} to PNG bytes at the given max dimension.
@@ -163,11 +171,13 @@ public class XMLParser implements Parser {
         return bytes;
     }
 
-    private static void sanitizeSvgDocument(Document document) {
+    private static void sanitizeSvgDocument(Document document) throws IOException {
         removeSvgElements(document.getElementsByTagNameNS(
                 SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_IMAGE_TAG));
-        sanitizeSvgReferences(document.getElementsByTagNameNS(
-                SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_USE_TAG));
+        NodeList useElements = document.getElementsByTagNameNS(
+                SVGConstants.SVG_NAMESPACE_URI, SVGConstants.SVG_USE_TAG);
+        validateSvgUseGraph(document, useElements);
+        sanitizeSvgReferences(useElements);
     }
 
     private static void removeSvgElements(NodeList elements) {
@@ -196,6 +206,83 @@ public class XMLParser implements Parser {
                         "xlink:" + SVGConstants.XLINK_HREF_ATTRIBUTE, "");
             }
         }
+    }
+
+    private static void validateSvgUseGraph(Document document, NodeList useElements)
+            throws IOException {
+        if (useElements.getLength() > SVG_USE_MAX_ELEMENTS) {
+            throw new IOException("SVG internal use graph exceeds the "
+                    + SVG_USE_MAX_ELEMENTS + " element limit");
+        }
+        Map<String, Element> elementsById = new HashMap<>();
+        NodeList allElements = document.getElementsByTagName("*");
+        for (int i = 0; i < allElements.getLength(); i++) {
+            Element element = (Element) allElements.item(i);
+            String id = element.getAttribute("id");
+            if (!id.isEmpty()) {
+                elementsById.putIfAbsent(id, element);
+            }
+        }
+        UseExpansionBudget budget = new UseExpansionBudget();
+        Set<Element> activeTargets =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        for (int i = 0; i < useElements.getLength(); i++) {
+            Element use = (Element) useElements.item(i);
+            if (!validateUseReference(
+                    use, elementsById, activeTargets, 0, budget)) {
+                throw new IOException("SVG internal use graph exceeds safe "
+                        + "reference depth or expansion limits");
+            }
+        }
+    }
+
+    private static boolean validateUseReference(
+            Element use, Map<String, Element> elementsById,
+            Set<Element> activeTargets, int depth, UseExpansionBudget budget) {
+        if (++budget.expansions > SVG_USE_MAX_EXPANSIONS
+                || depth >= SVG_USE_MAX_REFERENCE_DEPTH) {
+            return false;
+        }
+        String href = use.getAttributeNS(
+                SVGConstants.XLINK_NAMESPACE_URI, SVGConstants.XLINK_HREF_ATTRIBUTE);
+        if (href.isEmpty()) {
+            href = use.getAttribute("href");
+        }
+        if (!href.startsWith("#") || href.length() == 1) {
+            return true;
+        }
+        Element target = elementsById.get(href.substring(1));
+        if (target == null) {
+            return true;
+        }
+        if (!activeTargets.add(target)) {
+            return false;
+        }
+        try {
+            ArrayDeque<Node> pending = new ArrayDeque<>();
+            pending.add(target);
+            while (!pending.isEmpty()) {
+                Node node = pending.removeLast();
+                if (node instanceof Element
+                        && SVGConstants.SVG_USE_TAG.equals(node.getLocalName())
+                        && !validateUseReference(
+                                (Element) node, elementsById, activeTargets,
+                                depth + 1, budget)) {
+                    return false;
+                }
+                for (Node child = node.getFirstChild();
+                        child != null; child = child.getNextSibling()) {
+                    pending.add(child);
+                }
+            }
+            return true;
+        } finally {
+            activeTargets.remove(target);
+        }
+    }
+
+    private static final class UseExpansionBudget {
+        private int expansions;
     }
 
     private static final class SecurePngTranscoder extends PNGTranscoder {

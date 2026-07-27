@@ -211,6 +211,44 @@ class XMLParserSvgSecurityTest {
     }
 
     @Test
+    void testExponentialUseGraphIsRejectedBeforeBatikExpansion() throws Exception {
+        StringBuilder svg = new StringBuilder(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">"
+                        + "<defs><g id=\"g0\"><rect width=\"1\" height=\"1\"/></g>");
+        for (int i = 1; i <= 13; i++) {
+            svg.append("<g id=\"g").append(i).append("\"><use href=\"#g")
+                    .append(i - 1).append("\"/><use href=\"#g")
+                    .append(i - 1).append("\"/></g>");
+        }
+        svg.append("</defs><use href=\"#g13\"/></svg>");
+
+        ParseResult result = parse(svg.toString());
+
+        assertNull(result.metadata.get(ImageHash.PHASH));
+        assertTrue(result.metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length > 0);
+        assertNotNull(result.metadata.get("ExploitClass"),
+                "unsafe internal use expansion must not reach Batik");
+    }
+
+    @Test
+    void testSelfReferentialUseIsRejectedBeforeBatikExpansion()
+            throws Exception {
+        String svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+                  <use id="cycle" href="#cycle"/>
+                </svg>
+                """;
+
+        ParseResult result = parse(svg);
+
+        assertTrue(warnings(result.metadata).contains(
+                        "safe reference depth or expansion limits"),
+                "a use that expands itself must be rejected by the graph "
+                        + "validator, before Batik processes the cycle");
+    }
+
+    @Test
     void testExternalReferenceCardinalityIsBoundedAndSignaled() throws Exception {
         StringBuilder svg = new StringBuilder(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\">");

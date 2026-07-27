@@ -80,6 +80,10 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         super.characters(ch, start, length);
+        if (length > 0 && buffer.length() >= MAX_BUFFER_CHARS) {
+            truncated = true;
+            return;
+        }
         if (buffer.length() < MAX_BUFFER_CHARS) {
             int room = MAX_BUFFER_CHARS - buffer.length();
             int take = Math.min(length, room);
@@ -104,13 +108,15 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
     @Override
     public void endDocument() throws SAXException {
         try {
+            if (truncated) {
+                metadata.add("unicode_qr:warning",
+                        "Text exceeded " + MAX_BUFFER_CHARS
+                                + " chars — QR scan ran on the prefix only");
+                BarcodeMetadataUtil.markAnalysisIncomplete(
+                        metadata, "Unicode QR analysis limit", null);
+            }
             if (qrGlyphCount >= PROBE_MIN_GLYPHS) {
                 metadata.set("unicode_qr:glyph_count", Integer.toString(qrGlyphCount));
-                if (truncated) {
-                    metadata.add("unicode_qr:warning",
-                            "Text exceeded " + MAX_BUFFER_CHARS
-                          + " chars — QR scan ran on the prefix only");
-                }
                 if (scanner != null && scanner.hasZXingCPP(config)) {
                     try {
                         List<ZXingCPPScanner.Result> decoded =

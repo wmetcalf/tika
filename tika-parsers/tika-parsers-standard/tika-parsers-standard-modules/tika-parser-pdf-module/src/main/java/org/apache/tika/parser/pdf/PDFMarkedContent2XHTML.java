@@ -270,9 +270,16 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             super.processPages(pageTree);
             return;
         }
-        if (outputPageLimit >= 0) {
+        if (hasPageRefLimit()) {
+            int pageRefLimit = pageRefs.size();
+            if (outputPageLimit >= 0) {
+                pageRefLimit = Math.min(pageRefLimit, outputPageLimit);
+            }
+            if (config.getMaxPages() > 0) {
+                pageRefLimit = Math.min(pageRefLimit, config.getMaxPages());
+            }
             outputPageRefs = new HashSet<>(
-                    pageRefs.subList(0, Math.min(outputPageLimit, pageRefs.size())));
+                    pageRefs.subList(0, pageRefLimit));
         }
 
         PDStructureTreeRoot structureTreeRoot =
@@ -324,9 +331,15 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         //TODO: figure out when we're crossing page boundaries during the recursion
         // step above and do the page by page processing then...rather than dumping this
         // all here.
+        int pagesProcessed = 0;
         for (PDPage page : pageTree) {
+            if (config.getMaxPages() > 0 && pagesProcessed >= config.getMaxPages()) {
+                break;
+            }
             startPage(page);
             endPage(page);
+            pagesProcessed++;
+            pageIndex++;
         }
 
     }
@@ -398,7 +411,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             boolean ignoreTag = false;
             if ("link".equals(tag.clazz)) {
                 LinkState linkState = new LinkState(currentPageRef);
-                linkState.hasAllowedContent = outputPageLimit < 0
+                linkState.hasAllowedContent = !hasPageRefLimit()
                         || (currentPageRef != null && outputAllowed);
                 state.linkStates.push(linkState);
                 startedLink = true;
@@ -470,7 +483,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             //check for subtype /Link ?
             //COSName subtype = obj.getCOSName(COSName.SUBTYPE);
             if (anchor != null && !state.linkStates.isEmpty()) {
-                boolean anchorOutputAllowed = outputPageLimit < 0
+                boolean anchorOutputAllowed = !hasPageRefLimit()
                         || (currentPageRef != null && isOutputAllowed(currentPageRef));
                 LinkState linkState = state.linkStates.peek();
                 if (anchorOutputAllowed || ownsActiveLinkAction) {
@@ -519,12 +532,16 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     }
 
     private boolean isOutputAllowed(ObjectRef pageRef) {
-        return outputPageLimit < 0 || pageRef == null || outputPageRefs.contains(pageRef);
+        return !hasPageRefLimit() || pageRef == null || outputPageRefs.contains(pageRef);
     }
 
     private boolean isKnownOutputAllowed(ObjectRef pageRef) {
-        return outputPageLimit < 0
+        return !hasPageRefLimit()
                 || (pageRef != null && outputPageRefs.contains(pageRef));
+    }
+
+    private boolean hasPageRefLimit() {
+        return outputPageLimit >= 0 || config.getMaxPages() > 0;
     }
 
     private void writeLink() throws SAXException, IOException {
@@ -532,7 +549,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
         //If we want to catch within doc references (GOTO, we need to cache those in state.
         //See testPDF_childAttachments.pdf for examples
         LinkState linkState = state.linkStates.pop();
-        if (outputPageLimit >= 0 && !linkState.hasAllowedContent) {
+        if (hasPageRefLimit() && !linkState.hasAllowedContent) {
             return;
         }
 
@@ -613,6 +630,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             } catch (IOException e) {
                 handleCatchableIOE(e);
                 continue;
+            } finally {
+                pageCount++;
             }
             for (PDMarkedContent c : ex.getMarkedContents()) {
                 //TODO: at some point also handle
@@ -665,7 +684,6 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                 paragraphs.put(mcid, p);
 
             }
-            pageCount++;
         }
         return paragraphs;
     }

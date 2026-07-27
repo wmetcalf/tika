@@ -266,6 +266,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
 
     private void handleDocumentPart(PackagePart documentPart, XHTMLContentHandler xhtml)
             throws IOException, SAXException {
+        BoundedColorGridCollector documentColorRows =
+                new BoundedColorGridCollector();
         //load the numbering/list manager and styles from the main document part
         XWPFNumberingShim numbering = loadNumbering(documentPart);
         XWPFListManager listManager = new XWPFListManager(
@@ -295,8 +297,10 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                         if (header == null) {
                             continue;
                         }
-                        handlePart(header, styles, listManager, xhtml,
-                                OOXMLInlineBodyPartMap.EMPTY);
+                        documentColorRows.addCollector(
+                                handlePart(header, styles, listManager, xhtml,
+                                        OOXMLInlineBodyPartMap.EMPTY)
+                                        .getColorCollector());
                     }
                 }
             } catch (InvalidFormatException | ZipException e) {
@@ -321,7 +325,7 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     ExceptionUtils.getStackTrace(e));
         }
         if (mainBodyHandler != null) {
-            scanColorAwareQR(mainBodyHandler.getColorCollector());
+            documentColorRows.addCollector(mainBodyHandler.getColorCollector());
         }
         //dump remaining components at end (diagrams, charts, footers)
         for (String rel : new String[]{AbstractOOXMLExtractor.RELATION_DIAGRAM_DATA,
@@ -341,8 +345,10 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                         if (packagePart == null) {
                             continue;
                         }
-                        handlePart(packagePart, styles, listManager, xhtml,
-                                OOXMLInlineBodyPartMap.EMPTY);
+                        documentColorRows.addCollector(
+                                handlePart(packagePart, styles, listManager, xhtml,
+                                        OOXMLInlineBodyPartMap.EMPTY)
+                                        .getColorCollector());
                     }
                 }
             } catch (InvalidFormatException | ZipException e) {
@@ -352,13 +358,15 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
         }
         //dump any comments that were NOT inlined via commentReference
         handleUnreferencedComments(documentPart, styles, listManager, xhtml,
-                inlinePartMap, emittedCommentIds);
+                inlinePartMap, emittedCommentIds, documentColorRows);
+        scanColorAwareQR(documentColorRows);
     }
 
     private void handleUnreferencedComments(PackagePart documentPart,
             XWPFStylesShim styles, XWPFListManager listManager,
             XHTMLContentHandler xhtml, OOXMLInlineBodyPartMap inlinePartMap,
-            java.util.Set<String> emittedCommentIds) {
+            java.util.Set<String> emittedCommentIds,
+            BoundedColorGridCollector documentColorRows) {
         if (!inlinePartMap.hasComments()) {
             return;
         }
@@ -368,19 +376,24 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             if (emittedCommentIds.contains(entry.getKey())) {
                 continue;
             }
+            OOXMLTikaBodyPartHandler bodyHandler =
+                    new OOXMLTikaBodyPartHandler(xhtml);
+            bodyHandler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
             try {
                 xhtml.startElement("div", "class", "comment");
                 XMLReaderUtils.parseSAX(
                         new java.io.ByteArrayInputStream(entry.getValue()),
                         new EmbeddedContentHandler(
                                 new OOXMLWordAndPowerPointTextHandler(
-                                        new OOXMLTikaBodyPartHandler(xhtml),
+                                        bodyHandler,
                                         linkedRelationships)),
                         context);
                 xhtml.endElement("div");
             } catch (TikaException | IOException | SAXException e) {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
+            } finally {
+                documentColorRows.addCollector(bodyHandler.getColorCollector());
             }
         }
     }

@@ -25,11 +25,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import javax.imageio.ImageIO;
 
 import org.jsoup.nodes.DataNode;
@@ -192,27 +194,42 @@ public final class HtmlColorQRExtractor {
         StyleResolutionContext styles =
                 new StyleResolutionContext(classRules, new StyleBudget());
         // Mode 1: <pre>/<code>
-        for (Element block : doc.select("pre, code")) {
-            if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
-                budget.markIncomplete();
-                break;
-            }
-            List<List<Cell>> grid = buildGrid(block, styles, budget);
-            if (grid != null && grid.size() >= MIN_CLUSTER_LINES
-                    && maxCols(grid) >= MIN_CLUSTER_COLS) {
-                clusters.add(grid);
+        try (Stream<Element> elements = doc.nodeStream(Element.class)) {
+            Iterator<Element> iterator = elements.iterator();
+            while (iterator.hasNext()) {
+                Element block = iterator.next();
+                if (!"pre".equalsIgnoreCase(block.tagName())
+                        && !"code".equalsIgnoreCase(block.tagName())) {
+                    continue;
+                }
+                if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                    budget.markIncomplete();
+                    break;
+                }
+                List<List<Cell>> grid = buildGrid(block, styles, budget);
+                if (grid != null && grid.size() >= MIN_CLUSTER_LINES
+                        && maxCols(grid) >= MIN_CLUSTER_COLS) {
+                    clusters.add(grid);
+                }
             }
         }
         // Mode 2: <table> grids — one row per <tr>, one cell per <td>/<th>.
-        for (Element table : doc.select("table")) {
-            if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
-                budget.markIncomplete();
-                break;
-            }
-            List<List<Cell>> grid = buildTableGrid(table, styles, budget);
-            if (grid != null && grid.size() >= MIN_CLUSTER_LINES
-                    && maxCols(grid) >= MIN_CLUSTER_COLS) {
-                clusters.add(grid);
+        try (Stream<Element> elements = doc.nodeStream(Element.class)) {
+            Iterator<Element> iterator = elements.iterator();
+            while (iterator.hasNext()) {
+                Element table = iterator.next();
+                if (!"table".equalsIgnoreCase(table.tagName())) {
+                    continue;
+                }
+                if (clusters.size() >= MAX_CLUSTERS || budget.exhausted()) {
+                    budget.markIncomplete();
+                    break;
+                }
+                List<List<Cell>> grid = buildTableGrid(table, styles, budget);
+                if (grid != null && grid.size() >= MIN_CLUSTER_LINES
+                        && maxCols(grid) >= MIN_CLUSTER_COLS) {
+                    clusters.add(grid);
+                }
             }
         }
         return new ClusterSearchResult(
@@ -238,36 +255,16 @@ public final class HtmlColorQRExtractor {
                                                    StyleResolutionContext styles,
                                                    GridBudget budget) {
         List<List<Cell>> grid = new ArrayList<>();
-        int candidateUnits = 0;
-        for (Element tr : directTableRows(table)) {
-            if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
-                budget.markIncomplete();
-                return null;
+        int[] candidateUnits = new int[1];
+        for (Node childNode : table.childNodes()) {
+            if (!(childNode instanceof Element)) {
+                continue;
             }
-            List<Cell> row = new ArrayList<>();
-            for (Element td : tr.children()) {
-                if (!"td".equalsIgnoreCase(td.tagName())
-                        && !"th".equalsIgnoreCase(td.tagName())) {
-                    continue;
-                }
-                if (!budget.consume() || ++candidateUnits > MAX_GRID_UNITS) {
-                    budget.markIncomplete();
+            Element child = (Element) childNode;
+            if ("tr".equalsIgnoreCase(child.tagName())) {
+                if (!appendTableRow(child, grid, styles, budget, candidateUnits)) {
                     return null;
                 }
-                EffectiveStyle eff = styles.resolve(td);
-                char ref = firstRepresentativeCharacter(td);
-                row.add(classifyCell(ref, eff));
-            }
-            grid.add(row);
-        }
-        return grid;
-    }
-
-    private static List<Element> directTableRows(Element table) {
-        List<Element> rows = new ArrayList<>();
-        for (Element child : table.children()) {
-            if ("tr".equalsIgnoreCase(child.tagName())) {
-                rows.add(child);
                 continue;
             }
             if (!"thead".equalsIgnoreCase(child.tagName())
@@ -275,13 +272,49 @@ public final class HtmlColorQRExtractor {
                     && !"tfoot".equalsIgnoreCase(child.tagName())) {
                 continue;
             }
-            for (Element sectionChild : child.children()) {
+            for (Node sectionChildNode : child.childNodes()) {
+                if (!(sectionChildNode instanceof Element)) {
+                    continue;
+                }
+                Element sectionChild = (Element) sectionChildNode;
                 if ("tr".equalsIgnoreCase(sectionChild.tagName())) {
-                    rows.add(sectionChild);
+                    if (!appendTableRow(
+                            sectionChild, grid, styles, budget, candidateUnits)) {
+                        return null;
+                    }
                 }
             }
         }
-        return rows;
+        return grid;
+    }
+
+    private static boolean appendTableRow(
+            Element tr, List<List<Cell>> grid, StyleResolutionContext styles,
+            GridBudget budget, int[] candidateUnits) {
+        if (!budget.consume() || ++candidateUnits[0] > MAX_GRID_UNITS) {
+            budget.markIncomplete();
+            return false;
+        }
+        List<Cell> row = new ArrayList<>();
+        for (Node cellNode : tr.childNodes()) {
+            if (!(cellNode instanceof Element)) {
+                continue;
+            }
+            Element td = (Element) cellNode;
+            if (!"td".equalsIgnoreCase(td.tagName())
+                    && !"th".equalsIgnoreCase(td.tagName())) {
+                continue;
+            }
+            if (!budget.consume() || ++candidateUnits[0] > MAX_GRID_UNITS) {
+                budget.markIncomplete();
+                return false;
+            }
+            EffectiveStyle eff = styles.resolve(td);
+            char ref = firstRepresentativeCharacter(td);
+            row.add(classifyCell(ref, eff));
+        }
+        grid.add(row);
+        return true;
     }
 
     private static char firstRepresentativeCharacter(Element cell) {
@@ -459,9 +492,9 @@ public final class HtmlColorQRExtractor {
         boolean isDarkGlyph = c == '█' || c == '#' || c == '@' || c == '■'
                 || c == '▓' || c == '▒' || c == '◼' || c == '⬛';
         int luma;
-        // Explicit background dominates the cell's visible color — it fills
-        // the entire cell regardless of what glyph sits on top.
-        if (eff.bgFound) {
+        if (isDarkGlyph && eff.fgFound) {
+            luma = eff.fgLuma;
+        } else if (eff.bgFound) {
             luma = eff.bgLuma;
         } else if (eff.fgFound) {
             luma = eff.fgLuma;
@@ -511,14 +544,22 @@ public final class HtmlColorQRExtractor {
             boolean bgFound = false;
 
             String startStyle = combinedStyle(start);
-            Integer bg = readColor(startStyle, "background-color");
-            if (bg == null) {
-                bg = readBackgroundShorthand(startStyle);
+            ColorReadResult bgResult =
+                    readColorResult(startStyle, "background-color");
+            if (!bgResult.declared) {
+                bgResult = readBackgroundShorthandResult(startStyle);
             }
-            if (bg == null) {
+            if (bgResult.unresolved) {
+                budget.incomplete = true;
+            }
+            Integer bg = bgResult.luma;
+            if (!bgResult.declared) {
                 String bgAttr = start.attr("bgcolor");
                 if (!bgAttr.isEmpty()) {
                     bg = parseColor(bgAttr);
+                    if (bg == null && isUnsupportedBrowserColor(bgAttr)) {
+                        budget.incomplete = true;
+                    }
                 }
             }
             if (bg != null) {
@@ -528,10 +569,18 @@ public final class HtmlColorQRExtractor {
 
             Element element = start;
             while (element != null && !fgFound) {
-                Integer fg = readColor(combinedStyle(element), "color");
-                if (fg != null) {
-                    fgLuma = fg;
+                ColorReadResult fgResult =
+                        readColorResult(combinedStyle(element), "color");
+                if (fgResult.unresolved) {
+                    budget.incomplete = true;
+                    break;
+                }
+                if (fgResult.luma != null) {
+                    fgLuma = fgResult.luma;
                     fgFound = true;
+                    break;
+                }
+                if (fgResult.declared) {
                     break;
                 }
                 element = element.parent() instanceof Element
@@ -813,23 +862,68 @@ public final class HtmlColorQRExtractor {
     }
 
     static Integer readColor(String style, String property) {
+        return readColorResult(style, property).luma;
+    }
+
+    private static ColorReadResult readColorResult(String style, String property) {
         Matcher m = Pattern.compile(
                 "(?i)(?:^|;|\\s)" + Pattern.quote(property) + "\\s*:\\s*([^;]+)"
         ).matcher(style);
-        if (!m.find()) {
-            return null;
+        Integer luma = null;
+        boolean declared = false;
+        boolean unresolved = false;
+        while (m.find()) {
+            String value = m.group(1).trim();
+            Integer parsed = parseColor(value);
+            if (parsed != null) {
+                luma = parsed;
+                declared = true;
+                unresolved = false;
+            } else if ("transparent".equalsIgnoreCase(value)) {
+                luma = null;
+                declared = true;
+                unresolved = "background-color".equalsIgnoreCase(property);
+            } else if (isUnsupportedBrowserColor(value)) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+            }
         }
-        return parseColor(m.group(1).trim());
+        return new ColorReadResult(luma, declared, unresolved);
     }
 
     static Integer readBackgroundShorthand(String style) {
+        return readBackgroundShorthandResult(style).luma;
+    }
+
+    private static ColorReadResult readBackgroundShorthandResult(String style) {
         Matcher m = Pattern.compile(
                 "(?i)(?:^|;|\\s)background\\s*:\\s*([^;]+)"
         ).matcher(style);
-        if (!m.find()) {
-            return null;
+        Integer luma = null;
+        boolean declared = false;
+        boolean unresolved = false;
+        while (m.find()) {
+            String value = m.group(1).trim();
+            Integer parsed = parseBackgroundColor(value);
+            if (parsed != null) {
+                luma = parsed;
+                declared = true;
+                unresolved = false;
+            } else if (containsTransparentToken(value)) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+            } else if (isUnsupportedBrowserColor(value)) {
+                luma = null;
+                declared = true;
+                unresolved = true;
+            }
         }
-        String value = m.group(1).trim();
+        return new ColorReadResult(luma, declared, unresolved);
+    }
+
+    private static Integer parseBackgroundColor(String value) {
         Matcher hex = Pattern.compile("#[0-9a-fA-F]{3,8}").matcher(value);
         if (hex.find()) {
             return parseColor(hex.group());
@@ -858,6 +952,38 @@ public final class HtmlColorQRExtractor {
             }
         }
         return null;
+    }
+
+    private static boolean containsTransparentToken(String value) {
+        return Pattern.compile(
+                "(?i)(?:^|[\\s/,])transparent(?:$|[\\s/,])")
+                .matcher(value)
+                .find();
+    }
+
+    private static boolean isUnsupportedBrowserColor(String value) {
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return normalized.contains("var(")
+                || normalized.contains("hsl(")
+                || normalized.contains("hwb(")
+                || normalized.contains("lab(")
+                || normalized.contains("lch(")
+                || normalized.contains("oklab(")
+                || normalized.contains("oklch(")
+                || normalized.contains("color(")
+                || normalized.matches(".*rgba?\\([^,)]*\\s+[^,)]*\\).*");
+    }
+
+    private static final class ColorReadResult {
+        private final Integer luma;
+        private final boolean declared;
+        private final boolean unresolved;
+
+        private ColorReadResult(Integer luma, boolean declared, boolean unresolved) {
+            this.luma = luma;
+            this.declared = declared;
+            this.unresolved = unresolved;
+        }
     }
 
     private static void markAnalysisIncomplete(Metadata metadata, String warning) {

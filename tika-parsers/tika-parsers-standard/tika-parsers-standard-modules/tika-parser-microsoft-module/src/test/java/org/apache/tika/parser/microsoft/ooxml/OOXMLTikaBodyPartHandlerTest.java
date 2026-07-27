@@ -30,11 +30,34 @@ import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
+import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.ToXMLContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 class OOXMLTikaBodyPartHandlerTest {
+
+    @Test
+    void testNbspIsInterModuleSpacingNotAColorCell() throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        ColorAwareConfig colorAwareConfig = new ColorAwareConfig();
+        colorAwareConfig.setEnabled(true);
+        context.set(ColorAwareConfig.class, colorAwareConfig);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, context);
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        handler.setInlineBodyPartMap(OOXMLInlineBodyPartMap.EMPTY, context);
+
+        xhtml.startDocument();
+        handler.startParagraph(new ParagraphProperties());
+        handler.run(new RunProperties(), "A\u00a0B");
+        handler.endParagraph();
+        xhtml.endDocument();
+
+        assertEquals(2, handler.getColorCollector().getCellCount());
+    }
 
     @Test
     void testInlineFootnoteHyperlinkAddsMetadata() throws Exception {
@@ -60,6 +83,34 @@ class OOXMLTikaBodyPartHandlerTest {
         assertTrue(List.of(metadata.getValues(Office.OFFICE_LINK_URL))
                 .contains("https://example.com/footnote"));
         assertTrue(List.of(metadata.getValues(Office.OFFICE_LINK_TEXT)).contains("note link"));
+    }
+
+    @Test
+    void testInlineFootnoteContributesToDocumentColorGrid() throws Exception {
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        ColorAwareConfig colorAwareConfig = new ColorAwareConfig();
+        colorAwareConfig.setEnabled(true);
+        context.set(ColorAwareConfig.class, colorAwareConfig);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, context);
+        OOXMLTikaBodyPartHandler handler =
+                new OOXMLTikaBodyPartHandler(xhtml, metadata);
+        Map<String, byte[]> footnotes = new HashMap<>();
+        footnotes.put("1", """
+                <w:footnote xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:p><w:r><w:rPr><w:color w:val="000000"/></w:rPr><w:t>X</w:t></w:r></w:p>
+                </w:footnote>
+                """.getBytes(StandardCharsets.UTF_8));
+        handler.setInlineBodyPartMap(new OOXMLInlineBodyPartMap(
+                footnotes, Collections.emptyMap(), Collections.emptyMap(),
+                Collections.emptyMap()), context);
+
+        xhtml.startDocument();
+        handler.footnoteReference("1");
+        xhtml.endDocument();
+
+        assertEquals(1, handler.getColorCollector().getCellCount());
     }
 
     @Test

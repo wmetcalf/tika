@@ -17,6 +17,7 @@
 package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -34,5 +35,17 @@ public class PDF2XHTMLColorAwareBudgetTest {
 
         assertEquals(2, buffer.glyphs().size());
         assertTrue(buffer.isTruncated());
+    }
+
+    @Test
+    public void glyphColorClassificationFailuresAreRetainedUntilPageEnd() {
+        PDF2XHTMLColorAware.GlyphBuffer buffer =
+                new PDF2XHTMLColorAware.GlyphBuffer(2);
+
+        buffer.markClassificationFailure();
+
+        assertTrue(buffer.isClassificationFailed());
+        buffer.clear();
+        assertFalse(buffer.isClassificationFailed());
     }
 }
