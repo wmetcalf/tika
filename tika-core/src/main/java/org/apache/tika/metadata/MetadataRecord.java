@@ -25,6 +25,8 @@ import java.util.Set;
  */
 public final class MetadataRecord {
 
+    public static final String PPKG_DATA_ASSET_RECORD = "ppkg:data_asset";
+
     private static final char[] HEX = "0123456789abcdef".toCharArray();
     private static final Map<String, Set<String>> COMPOSITE_FIELD_MEMBERS = Map.of(
             Office.OFFICE_LINK_RECORD.getName(), Set.of(
@@ -44,7 +46,14 @@ public final class MetadataRecord {
                     Barcode.BARCODE_RAW_BYTES.getName(),
                     Barcode.BARCODE_POSITION.getName(),
                     Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
-                    Barcode.BARCODE_IS_MIRRORED.getName()));
+                    Barcode.BARCODE_IS_MIRRORED.getName()),
+            PPKG_DATA_ASSET_RECORD, Set.of(
+                    "ppkg:embedded_file_sha256",
+                    "ppkg:embedded_file_md5",
+                    "ppkg:embedded_file_sha1",
+                    "ppkg:embedded_file_name",
+                    "ppkg:embedded_file_size",
+                    "ppkg:embedded_file_mime"));
 
     private MetadataRecord() {
     }

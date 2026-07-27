@@ -310,6 +310,24 @@ public class ImageParserTest extends TikaTest {
     }
 
     @Test
+    public void testImageHashLargeSampleModelIsSkippedBeforeDecode() throws Exception {
+        ImageParser hashingParser = new ImageParser();
+        hashingParser.setImageHashingEnabled(true);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, "image/png");
+
+        try (TikaInputStream tis = TikaInputStream.get(
+                buildPngWithFormat(4_096, 4_096, 16, 6))) {
+            hashingParser.parse(tis, new DefaultHandler(), metadata, new ParseContext());
+        }
+
+        assertEquals(null, metadata.get(ImageHash.PHASH));
+        assertEquals(1, metadata
+                .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length,
+                "a 128 MiB decoded sample model must be rejected before ImageIO.read");
+    }
+
+    @Test
     public void testBarcodeMetadataEmittedFromImageParsing() throws Exception {
         Metadata metadata = new Metadata();
         metadata.set(Metadata.CONTENT_TYPE, "image/png");
@@ -492,6 +510,11 @@ public class ImageParserTest extends TikaTest {
     }
 
     private static byte[] buildPngWithDimensions(int width, int height) throws Exception {
+        return buildPngWithFormat(width, height, 8, 0);
+    }
+
+    private static byte[] buildPngWithFormat(
+            int width, int height, int bitDepth, int colorType) throws Exception {
         ByteArrayOutputStream png = new ByteArrayOutputStream();
         png.write(new byte[]{
                 (byte) 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a
@@ -501,8 +524,8 @@ public class ImageParserTest extends TikaTest {
         try (DataOutputStream ihdr = new DataOutputStream(ihdrBytes)) {
             ihdr.writeInt(width);
             ihdr.writeInt(height);
-            ihdr.writeByte(8);
-            ihdr.writeByte(0);
+            ihdr.writeByte(bitDepth);
+            ihdr.writeByte(colorType);
             ihdr.writeByte(0);
             ihdr.writeByte(0);
             ihdr.writeByte(0);

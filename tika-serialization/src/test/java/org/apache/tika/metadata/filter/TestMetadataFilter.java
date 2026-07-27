@@ -92,15 +92,22 @@ public class TestMetadataFilter extends TikaTest {
                 "{\"url\":\"https://secret.invalid\"}");
         metadata.add(Barcode.BARCODE_VALUE, "secret");
         metadata.add(Barcode.BARCODE_RECORD, "{\"value\":\"secret\"}");
+        metadata.add("ppkg:embedded_file_sha256", "secret-hash");
+        metadata.add("ppkg:data_asset",
+                "reference=secret.exe;mime_type=application/octet-stream;"
+                        + "size=1;sha256=secret-hash;sha1=x;md5=y");
 
         MetadataFilter filter = new ExcludeFieldMetadataFilter(
-                set(Office.OFFICE_LINK_URL.getName(), Barcode.BARCODE_VALUE.getName()));
+                set(Office.OFFICE_LINK_URL.getName(), Barcode.BARCODE_VALUE.getName(),
+                        "ppkg:embedded_file_sha256"));
         metadata = filterOne(filter, metadata);
 
         assertNull(metadata.get(Office.OFFICE_LINK_URL));
         assertNull(metadata.get(Office.OFFICE_LINK_RECORD));
         assertNull(metadata.get(Barcode.BARCODE_VALUE));
         assertNull(metadata.get(Barcode.BARCODE_RECORD));
+        assertNull(metadata.get("ppkg:embedded_file_sha256"));
+        assertNull(metadata.get("ppkg:data_asset"));
     }
 
     @Test

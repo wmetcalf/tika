@@ -309,23 +309,52 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
-    public void dangerousReferencesWithUrlSuffixesArePreserved() throws Exception {
+    public void dangerousReferencesWithEncodedAndPathSuffixesArePreserved() throws Exception {
         String xml = """
                 <wap-provisioningdoc>
                   <CustomData>https://example.invalid/payload.exe?download=1
                     https://example.invalid/stage.ps1#run
-                    (https://example.invalid/setup.msi)</CustomData>
+                    (https://example.invalid/setup.msi)
+                    https://example.invalid/payload%2Eexe?download=1
+                    https://example.invalid/payload.%65xe?download=1
+                    https://example.invalid/stage.p%731#run
+                    https://example.invalid/payload.exe;v=1
+                    https://example.invalid/payload.exe%3Bv=1
+                    C:\\temp\\payload.exe:stream</CustomData>
                 </wap-provisioningdoc>
                 """;
 
         Metadata metadata = parseMetadata(buildWim(xml));
-        assertEquals(3, metadata.getValues("ppkg:data_asset_ref").length);
+        assertEquals(9, metadata.getValues("ppkg:data_asset_ref").length);
         assertEquals("https://example.invalid/payload.exe?download=1",
                 metadata.getValues("ppkg:data_asset_ref")[0]);
         assertEquals("https://example.invalid/stage.ps1#run",
                 metadata.getValues("ppkg:data_asset_ref")[1]);
         assertEquals("(https://example.invalid/setup.msi)",
                 metadata.getValues("ppkg:data_asset_ref")[2]);
+        assertEquals("https://example.invalid/payload%2Eexe?download=1",
+                metadata.getValues("ppkg:data_asset_ref")[3]);
+        assertEquals("https://example.invalid/payload.%65xe?download=1",
+                metadata.getValues("ppkg:data_asset_ref")[4]);
+        assertEquals("https://example.invalid/stage.p%731#run",
+                metadata.getValues("ppkg:data_asset_ref")[5]);
+        assertEquals("https://example.invalid/payload.exe;v=1",
+                metadata.getValues("ppkg:data_asset_ref")[6]);
+        assertEquals("https://example.invalid/payload.exe%3Bv=1",
+                metadata.getValues("ppkg:data_asset_ref")[7]);
+        assertEquals("C:\\temp\\payload.exe:stream",
+                metadata.getValues("ppkg:data_asset_ref")[8]);
+    }
+
+    @Test
+    public void executableLookingUrlHostIsNotADataReference() throws Exception {
+        Metadata metadata = parseMetadata(buildWim("""
+                <wap-provisioningdoc>
+                  <CustomData>https://host.exe:443/index.html</CustomData>
+                </wap-provisioningdoc>
+                """));
+
+        assertEquals(0, metadata.getValues("ppkg:data_asset_ref").length);
     }
 
     @Test

@@ -1390,6 +1390,11 @@ public class WinShortcutParser implements Parser {
                 || (long) pos + 9 + nameSize > valueLimit) {
             return;
         }
+        if (nameSize > (MAX_PROPERTY_VALUE_CHARS + 1) * 2) {
+            markAnalysisIncomplete(fields, warnings,
+                    "PropertyStore property name exceeded the output limit");
+            return;
+        }
         String name = nameSize > 0
                 ? new String(buf.array(), pos + 9, nameSize, StandardCharsets.UTF_16LE) : "";
         int nullIdx = name.indexOf('\0');
@@ -1473,6 +1478,12 @@ public class WinShortcutParser implements Parser {
                                 "PropertyStore string vector has an invalid element length");
                         break;
                     }
+                    if (len > MAX_PROPERTY_VALUE_CHARS + 1) {
+                        markAnalysisIncomplete(fields, warnings,
+                                "PropertyStore string vector exceeded the output limit; "
+                                        + "extraction is incomplete");
+                        break;
+                    }
                     String value = new String(buf.array(), dataPos, (int) stringBytes,
                             StandardCharsets.UTF_16LE);
                     int nullIndex = value.indexOf('\0');
@@ -1486,7 +1497,8 @@ public class WinShortcutParser implements Parser {
                                 "PropertyStore vector ended before its declared count");
                         break;
                     }
-                    element = readTypedPropertyValueAt(buf, dataPos, baseType, limit);
+                    element = readTypedPropertyValueAt(
+                            buf, dataPos, baseType, limit, fields, warnings);
                     dataPos += elementBytes;
                 }
                 if (element != null
@@ -1497,7 +1509,7 @@ public class WinShortcutParser implements Parser {
             return items.length() == 0 ? null : items.toString();
         }
 
-        return readTypedPropertyValueAt(buf, dataPos, vtype, limit);
+        return readTypedPropertyValueAt(buf, dataPos, vtype, limit, fields, warnings);
     }
 
     private boolean appendPropertyVectorItem(StringBuilder items, String value,
@@ -1516,7 +1528,9 @@ public class WinShortcutParser implements Parser {
         return true;
     }
 
-    private String readTypedPropertyValueAt(ByteBuffer buf, int pos, int vtype, int limit) {
+    private String readTypedPropertyValueAt(ByteBuffer buf, int pos, int vtype, int limit,
+                                            Map<String, String> fields,
+                                            List<String> warnings) {
         switch (vtype) {
             case VT_EMPTY:
             case VT_NULL:
@@ -1557,9 +1571,9 @@ public class WinShortcutParser implements Parser {
             case VT_BOOL:
                 return pos + 2 > limit ? null : (buf.getShort(pos) != 0 ? "true" : "false");
             case VT_LPSTR:
-                return readNullTermA(buf, pos, limit);
+                return readBoundedPropertyStringA(buf, pos, limit, fields, warnings);
             case VT_LPWSTR:
-                return readNullTermW(buf, pos, limit);
+                return readBoundedPropertyStringW(buf, pos, limit, fields, warnings);
             case VT_FILETIME:
                 if (pos + 8 > limit) {
                     return null;
@@ -1577,6 +1591,35 @@ public class WinShortcutParser implements Parser {
             default:
                 return null;
         }
+    }
+
+    private String readBoundedPropertyStringA(ByteBuffer buf, int pos, int limit,
+                                              Map<String, String> fields,
+                                              List<String> warnings) {
+        int boundedLimit = (int) Math.min((long) limit,
+                (long) pos + MAX_PROPERTY_VALUE_CHARS + 1);
+        String value = readNullTermA(buf, pos, boundedLimit);
+        if (boundedLimit < limit && boundedLimit > pos
+                && buf.array()[boundedLimit - 1] != 0) {
+            markAnalysisIncomplete(fields, warnings,
+                    "PropertyStore string exceeded the output limit");
+        }
+        return value;
+    }
+
+    private String readBoundedPropertyStringW(ByteBuffer buf, int pos, int limit,
+                                              Map<String, String> fields,
+                                              List<String> warnings) {
+        int boundedLimit = (int) Math.min((long) limit,
+                (long) pos + (MAX_PROPERTY_VALUE_CHARS + 1L) * 2);
+        String value = readNullTermW(buf, pos, boundedLimit);
+        if (boundedLimit < limit && boundedLimit - pos >= 2
+                && (buf.array()[boundedLimit - 2] != 0
+                || buf.array()[boundedLimit - 1] != 0)) {
+            markAnalysisIncomplete(fields, warnings,
+                    "PropertyStore wide string exceeded the output limit");
+        }
+        return value;
     }
 
     /** Returns the fixed byte size of a scalar VT_* type, or -1 if variable/unknown. */

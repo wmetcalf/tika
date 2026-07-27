@@ -17,6 +17,7 @@
 package org.apache.tika.parser.image;
 
 import java.awt.image.BufferedImage;
+import java.awt.image.SampleModel;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -26,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
+import javax.imageio.ImageTypeSpecifier;
 import javax.imageio.stream.ImageInputStream;
 
 import org.slf4j.Logger;
@@ -52,9 +54,13 @@ public abstract class AbstractImageParser implements Parser {
     public static String OCR_MEDIATYPE_PREFIX = "ocr-";
     private static final Logger LOG = LoggerFactory.getLogger(AbstractImageParser.class);
     private static final long MAX_IMAGE_HASH_PIXELS = 16L * 1024 * 1024;
+    private static final long MAX_IMAGE_HASH_RASTER_BYTES = 64L * 1024 * 1024;
     private static final String IMAGE_HASH_DIMENSION_WARNING =
             "Image hashing skipped because decoded dimensions exceed the "
                     + MAX_IMAGE_HASH_PIXELS + " pixel limit";
+    private static final String IMAGE_HASH_RASTER_WARNING =
+            "Image hashing skipped because the decoded raster exceeds the "
+                    + MAX_IMAGE_HASH_RASTER_BYTES + " byte limit";
     private boolean imageHashingEnabled = false;
 
     /**
@@ -145,6 +151,28 @@ public abstract class AbstractImageParser implements Parser {
                         || (long) width * height > MAX_IMAGE_HASH_PIXELS) {
                     metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                             IMAGE_HASH_DIMENSION_WARNING + ": " + width + "x" + height);
+                    return false;
+                }
+                ImageTypeSpecifier imageType = reader.getRawImageType(0);
+                if (imageType == null) {
+                    Iterator<ImageTypeSpecifier> imageTypes = reader.getImageTypes(0);
+                    imageType = imageTypes.hasNext() ? imageTypes.next() : null;
+                }
+                if (imageType == null) {
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            IMAGE_HASH_RASTER_WARNING + ": unknown sample model");
+                    return false;
+                }
+                SampleModel sampleModel = imageType.getSampleModel();
+                long bitsPerPixel = 0;
+                for (int sampleBits : sampleModel.getSampleSize()) {
+                    bitsPerPixel += sampleBits;
+                }
+                long decodedBytes =
+                        (((long) width * height * bitsPerPixel) + 7) / 8;
+                if (bitsPerPixel <= 0 || decodedBytes > MAX_IMAGE_HASH_RASTER_BYTES) {
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            IMAGE_HASH_RASTER_WARNING + ": " + decodedBytes + " bytes");
                     return false;
                 }
                 return true;

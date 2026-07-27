@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -26,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -296,6 +298,17 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testPropertyStoreWideVectorIsBoundedBeforeDecode() throws Exception {
+        ParseResult result = assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> parse(buildPropertyWideStringVectorLnk(100_000)));
+
+        assertNotNull(result.metadata.get("lnk:warning"),
+                "wide vector strings must be bounded before allocating their declared size");
+        assertNotNull(result.metadata.get("lnk:ExploitClass"));
+        assertNotNull(result.metadata.get("ExploitClass"));
+    }
+
+    @Test
     public void testMalformedSectionLengthsFailClosed() throws Exception {
         for (byte[] lnk : List.of(
                 buildMalformedIdListLnk(),
@@ -481,6 +494,36 @@ public class WinShortcutParserTest {
         buffer.putInt(value + 13, declaredElements);
         for (int i = 0; i < payloadBytes; i++) {
             buffer.put(value + 17 + i, (byte) (i & 0xff));
+        }
+        return bytes;
+    }
+
+    private static byte[] buildPropertyWideStringVectorLnk(int chars) {
+        int payloadBytes = chars * 2;
+        int valueSize = 21 + payloadBytes;
+        int storageSize = 24 + valueSize;
+        int blockSize = 8 + storageSize;
+        byte[] bytes = new byte[HEADER_SIZE + blockSize + 4];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0, HEADER_SIZE);
+        buffer.putInt(60, 1);
+        int block = HEADER_SIZE;
+        buffer.putInt(block, blockSize);
+        buffer.putInt(block + 4, 0xA0000009);
+        int storage = block + 8;
+        buffer.putInt(storage, storageSize);
+        buffer.putInt(storage + 4, 0x53505331);
+        int value = storage + 24;
+        buffer.putInt(value, valueSize);
+        buffer.putInt(value + 4, 2);
+        buffer.put(value + 8, (byte) 0);
+        buffer.putShort(value + 9, (short) 0x101f);
+        buffer.putShort(value + 11, (short) 0);
+        buffer.putInt(value + 13, 1);
+        buffer.putInt(value + 17, chars);
+        for (int i = 0; i < chars; i++) {
+            buffer.putChar(value + 21 + i * 2, 'A');
         }
         return bytes;
     }

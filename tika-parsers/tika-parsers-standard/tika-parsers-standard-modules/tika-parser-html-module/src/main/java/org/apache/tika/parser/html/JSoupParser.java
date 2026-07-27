@@ -93,6 +93,7 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
     private static final TagSet SELF_CLOSEABLE_TAGS = TagSet.Html();
     private static final int MAX_UNICODE_QR_CANDIDATES = 16;
     private static final int MAX_UNICODE_QR_CANDIDATE_CHARS = 128 * 1024;
+    private static final int MAX_UNICODE_QR_STYLE_CHARS = 64 * 1024;
     private static final String UNICODE_QR_LIMIT_WARNING =
             "HTML Unicode-QR analysis limit reached; Unicode-QR extraction is incomplete";
 
@@ -273,15 +274,25 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         try {
             // Collect raw text from <pre>, <code>, and any element with an
             // inline style declaring whitespace pre-served rendering.
-            org.jsoup.select.Elements monospace = document.select(
-                    "pre, code, [style*=white-space:pre], [style*=white-space: pre]");
-            if (monospace.isEmpty()) {
-                return;
-            }
-            boolean incomplete = monospace.size() > MAX_UNICODE_QR_CANDIDATES;
+            org.jsoup.select.Elements candidates = document.select("pre, code, [style]");
+            boolean incomplete = false;
             int inspected = 0;
-            for (Element element : monospace) {
+            for (Element element : candidates) {
+                boolean preformatted = "pre".equalsIgnoreCase(element.tagName())
+                        || "code".equalsIgnoreCase(element.tagName());
+                if (!preformatted) {
+                    String style = element.attr("style");
+                    if (style.length() > MAX_UNICODE_QR_STYLE_CHARS) {
+                        incomplete = true;
+                        style = style.substring(0, MAX_UNICODE_QR_STYLE_CHARS);
+                    }
+                    preformatted = preservesWhitespace(style);
+                }
+                if (!preformatted) {
+                    continue;
+                }
                 if (inspected++ >= MAX_UNICODE_QR_CANDIDATES) {
+                    incomplete = true;
                     break;
                 }
                 BoundedMonospaceText candidate = collectMonospaceText(element);
@@ -319,6 +330,48 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
         } catch (Throwable t) {
             markUnicodeQrIncomplete(metadata);
         }
+    }
+
+    private static boolean preservesWhitespace(String style) {
+        int declarationStart = 0;
+        while (declarationStart < style.length()) {
+            int declarationEnd = style.indexOf(';', declarationStart);
+            if (declarationEnd < 0) {
+                declarationEnd = style.length();
+            }
+            int colon = style.indexOf(':', declarationStart);
+            if (colon >= declarationStart && colon < declarationEnd) {
+                int nameStart = declarationStart;
+                while (nameStart < colon && Character.isWhitespace(style.charAt(nameStart))) {
+                    nameStart++;
+                }
+                int nameEnd = colon;
+                while (nameEnd > nameStart
+                        && Character.isWhitespace(style.charAt(nameEnd - 1))) {
+                    nameEnd--;
+                }
+                if (nameEnd - nameStart == "white-space".length()
+                        && style.regionMatches(true, nameStart, "white-space", 0,
+                        "white-space".length())) {
+                    int valueStart = colon + 1;
+                    while (valueStart < declarationEnd
+                            && Character.isWhitespace(style.charAt(valueStart))) {
+                        valueStart++;
+                    }
+                    int afterPre = valueStart + 3;
+                    if (afterPre <= declarationEnd
+                            && style.regionMatches(true, valueStart, "pre", 0, 3)
+                            && (afterPre == declarationEnd
+                            || Character.isWhitespace(style.charAt(afterPre))
+                            || style.charAt(afterPre) == '-'
+                            || style.charAt(afterPre) == '!')) {
+                        return true;
+                    }
+                }
+            }
+            declarationStart = declarationEnd + 1;
+        }
+        return false;
     }
 
     private static BoundedMonospaceText collectMonospaceText(Element element) {

@@ -245,6 +245,49 @@ public class StandardMetadataLimiterTest extends TikaTest {
     }
 
     @Test
+    public void testPpkgDataAssetRecordsAreDroppedInsteadOfTruncated() {
+        Metadata metadata = filter(100, 160, 1000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, false);
+        String first = "reference=one.exe;mime_type=a;size=1;sha256=aa;sha1=bb;md5=cc";
+        String tooLarge = "reference=two.exe;mime_type=application/octet-stream;size=2;"
+                + "sha256=" + "a".repeat(64) + ";sha1=" + "b".repeat(40)
+                + ";md5=" + "c".repeat(32);
+
+        metadata.add("ppkg:data_asset", first);
+        metadata.add("ppkg:data_asset", tooLarge);
+
+        assertArrayEquals(new String[]{first},
+                metadata.getValues("ppkg:data_asset"));
+        assertTruncated(metadata);
+    }
+
+    @Test
+    public void testPpkgCompatibilityArraysRetainRecordPlaceholders() {
+        Metadata metadata = filter(100, 130, 100_000, 10,
+                Collections.EMPTY_SET, Collections.EMPTY_SET, true);
+
+        for (char fill : new char[]{'a', 'b', 'c'}) {
+            metadata.add("ppkg:embedded_file_sha256", String.valueOf(fill).repeat(64));
+            metadata.add("ppkg:embedded_file_md5", String.valueOf(fill).repeat(32));
+            metadata.add("ppkg:embedded_file_sha1", String.valueOf(fill).repeat(40));
+            metadata.add("ppkg:embedded_file_name", fill + ".exe");
+            metadata.add("ppkg:embedded_file_size", "1234");
+            metadata.add("ppkg:embedded_file_mime", "application/octet-stream");
+        }
+
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_sha256").length);
+        assertEquals("", metadata.getValues("ppkg:embedded_file_sha256")[1]);
+        assertEquals("", metadata.getValues("ppkg:embedded_file_sha256")[2]);
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_md5").length);
+        assertEquals("", metadata.getValues("ppkg:embedded_file_md5")[2]);
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_sha1").length);
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_name").length);
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_size").length);
+        assertEquals(3, metadata.getValues("ppkg:embedded_file_mime").length);
+        assertTruncated(metadata);
+    }
+
+    @Test
     public void testFirstAtomicValueIsDroppedInsteadOfTruncated() {
         Metadata metadata = filter(100, 40, 1000, 10,
                 Collections.EMPTY_SET, Collections.EMPTY_SET, false);

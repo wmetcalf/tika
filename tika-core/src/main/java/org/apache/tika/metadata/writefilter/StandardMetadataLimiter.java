@@ -80,7 +80,14 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
      */
     public static final Set<String> ATOMIC_ADD_FIELDS = Set.of(
             "msoffice:link:record",
-            "barcode:record");
+            "barcode:record",
+            MetadataRecord.PPKG_DATA_ASSET_RECORD,
+            "ppkg:embedded_file_sha256",
+            "ppkg:embedded_file_md5",
+            "ppkg:embedded_file_sha1",
+            "ppkg:embedded_file_name",
+            "ppkg:embedded_file_size",
+            "ppkg:embedded_file_mime");
 
     /**
      * Compatibility fields that represent parallel records. Empty placeholders must
@@ -102,7 +109,13 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             Barcode.BARCODE_RAW_BYTES.getName(),
             Barcode.BARCODE_POSITION.getName(),
             Barcode.BARCODE_ERROR_CORRECTION_LEVEL.getName(),
-            Barcode.BARCODE_IS_MIRRORED.getName());
+            Barcode.BARCODE_IS_MIRRORED.getName(),
+            "ppkg:embedded_file_sha256",
+            "ppkg:embedded_file_md5",
+            "ppkg:embedded_file_sha1",
+            "ppkg:embedded_file_name",
+            "ppkg:embedded_file_size",
+            "ppkg:embedded_file_mime");
 
     static {
         ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
@@ -374,6 +387,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         int valueSize = estimateSize(value);
         if (valueSize > Math.min(allowedByField, allowedByTotal)) {
             setTruncated(data);
+            addAlignedPlaceholder(filterKey, values, keySize, data);
             return;
         }
 
@@ -383,6 +397,23 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
             data.put(filterKey.string, new String[]{value});
         } else {
             data.put(filterKey.string, appendValue(values, value));
+        }
+    }
+
+    private void addAlignedPlaceholder(StringSizePair filterKey, String[] values,
+                                       int keySize, Map<String, String[]> data) {
+        if (!ALIGNED_ADD_FIELDS.contains(filterKey.string)) {
+            return;
+        }
+        if (values == null) {
+            if (keySize > maxTotalEstimatedSize - estimatedSize) {
+                return;
+            }
+            estimatedSize += keySize;
+            fieldSizes.put(filterKey.string, 0);
+            data.put(filterKey.string, new String[]{""});
+        } else {
+            data.put(filterKey.string, appendValue(values, ""));
         }
     }
 

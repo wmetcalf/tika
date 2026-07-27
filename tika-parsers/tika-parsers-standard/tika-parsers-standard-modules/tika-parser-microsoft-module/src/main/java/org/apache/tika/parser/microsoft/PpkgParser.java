@@ -47,6 +47,7 @@ import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.MetadataRecord;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -874,6 +875,18 @@ public class PpkgParser implements Parser {
         }
         embMeta.set(Metadata.CONTENT_TYPE, mime);
 
+        // Canonical per-asset record. The limiter treats this as one atomic value,
+        // so hashes, name, size, and MIME cannot be partially associated.
+        String asset = "reference=" + sanitizeAssetField(name)
+                + ";mime_type=" + sanitizeAssetField(mime)
+                + ";size=" + data.length
+                + ";sha256=" + sha256
+                + ";sha1=" + sha1Hex
+                + ";md5=" + md5;
+        rootMeta.add(MetadataRecord.PPKG_DATA_ASSET_RECORD, asset);
+
+        // Compatibility arrays. Consumers that need record association should use
+        // the atomic ppkg:data_asset representation above.
         rootMeta.add("ppkg:embedded_file_sha256", sha256);
         rootMeta.add("ppkg:embedded_file_md5", md5);
         rootMeta.add("ppkg:embedded_file_sha1", sha1Hex);
@@ -889,16 +902,6 @@ public class PpkgParser implements Parser {
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         }
 
-        // Structured per-asset record (matches ppkg_happiness copiedDataAssets shape).
-        // Reference is percent-encoded to prevent ';' / '=' in attacker-controlled
-        // WIM paths from spoofing record fields downstream.
-        String asset = "reference=" + sanitizeAssetField(name)
-                + ";mime_type=" + sanitizeAssetField(mime)
-                + ";size=" + data.length
-                + ";sha256=" + sha256
-                + ";sha1=" + sha1Hex
-                + ";md5=" + md5;
-        rootMeta.add("ppkg:data_asset", asset);
         // ppkg:data_asset metadata is canonical; don't duplicate as
         // "DataAsset: ..." body text.
     }
@@ -959,18 +962,97 @@ public class PpkgParser implements Parser {
             }
             if (tokenStart >= 0 && i - tokenStart >= 4) {
                 int inspectionEnd = dataReferencePathEnd(value, tokenStart, i);
-                int dot = value.lastIndexOf('.', inspectionEnd - 1);
-                if (dot >= tokenStart) {
-                    String ext = value.substring(dot, inspectionEnd)
-                            .toLowerCase(Locale.ROOT);
-                    if (DANGEROUS_EXTENSIONS.contains(ext)
-                            && !out.add(value.substring(tokenStart, i))) {
-                        return;
-                    }
+                if (containsDangerousExtension(value, tokenStart, inspectionEnd)
+                        && !out.add(value.substring(tokenStart, i))) {
+                    return;
                 }
             }
             tokenStart = -1;
         }
+    }
+
+    private static boolean containsDangerousExtension(String value, int start, int end) {
+        int pathStart = dataReferencePathStart(value, start, end);
+        for (int i = pathStart; i < end; i++) {
+            if (!isPercentEncodedAscii(value, i, end, '.')) {
+                continue;
+            }
+            for (String extension : DANGEROUS_EXTENSIONS) {
+                int extensionEnd = matchPercentEncodedAscii(value, i, end, extension);
+                if (extensionEnd >= 0
+                        && isDangerousExtensionSuffix(value, extensionEnd, end)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static int dataReferencePathStart(String value, int start, int end) {
+        int scheme = value.indexOf("://", start);
+        if (scheme < start || scheme >= end) {
+            return start;
+        }
+        int slash = value.indexOf('/', scheme + 3);
+        return slash >= 0 && slash < end ? slash : end;
+    }
+
+    private static boolean isPercentEncodedAscii(
+            String value, int offset, int end, char expected) {
+        char actual = value.charAt(offset);
+        if (actual == expected) {
+            return true;
+        }
+        if (actual != '%' || offset + 2 >= end) {
+            return false;
+        }
+        int hi = Character.digit(value.charAt(offset + 1), 16);
+        int lo = Character.digit(value.charAt(offset + 2), 16);
+        return hi >= 0 && lo >= 0 && ((hi << 4) | lo) == expected;
+    }
+
+    private static int matchPercentEncodedAscii(
+            String value, int start, int end, String expected) {
+        int offset = start;
+        for (int i = 0; i < expected.length(); i++) {
+            if (offset >= end) {
+                return -1;
+            }
+            char actual = value.charAt(offset);
+            if (actual == '%' && offset + 2 < end) {
+                int hi = Character.digit(value.charAt(offset + 1), 16);
+                int lo = Character.digit(value.charAt(offset + 2), 16);
+                if (hi < 0 || lo < 0) {
+                    return -1;
+                }
+                actual = (char) ((hi << 4) | lo);
+                offset += 3;
+            } else {
+                offset++;
+            }
+            if (Character.toLowerCase(actual)
+                    != Character.toLowerCase(expected.charAt(i))) {
+                return -1;
+            }
+        }
+        return offset;
+    }
+
+    private static boolean isDangerousExtensionSuffix(String value, int start, int end) {
+        if (start == end) {
+            return true;
+        }
+        char suffix = value.charAt(start);
+        if (suffix == ';' || suffix == ':') {
+            return true;
+        }
+        if (suffix == '%' && start + 2 < end) {
+            int hi = Character.digit(value.charAt(start + 1), 16);
+            int lo = Character.digit(value.charAt(start + 2), 16);
+            int decoded = hi < 0 || lo < 0 ? -1 : (hi << 4) | lo;
+            return decoded == ';' || decoded == ':';
+        }
+        return false;
     }
 
     private static int dataReferencePathEnd(String value, int start, int end) {
@@ -1002,9 +1084,8 @@ public class PpkgParser implements Parser {
     }
 
     private static void recordDangerousReference(String name, List<String> dataRefs) {
-        String nameLower = name.toLowerCase(Locale.ROOT);
-        int dot = nameLower.lastIndexOf('.');
-        if (dot >= 0 && DANGEROUS_EXTENSIONS.contains(nameLower.substring(dot))) {
+        int inspectionEnd = dataReferencePathEnd(name, 0, name.length());
+        if (containsDangerousExtension(name, 0, inspectionEnd)) {
             dataRefs.add(name);
         }
     }

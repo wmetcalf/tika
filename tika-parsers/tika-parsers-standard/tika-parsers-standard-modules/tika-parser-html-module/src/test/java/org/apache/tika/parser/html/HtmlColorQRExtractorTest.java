@@ -202,6 +202,24 @@ public class HtmlColorQRExtractorTest {
                 "truncated Unicode-QR analysis must fail closed");
     }
 
+    @Test
+    public void cssWhitespaceAroundColonDoesNotHideUnicodeQr() throws Exception {
+        Path fakeScanner = createFakeScanner();
+        Metadata metadata = new Metadata();
+        BodyContentHandler body = new BodyContentHandler(-1);
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        String html = "<html><body><div style=\"white-space : pre\">"
+                + unicodeGrid + "</div></body></html>";
+
+        parse(html, body, metadata, contextFor(fakeScanner));
+
+        assertEquals("64", metadata.get("html_unicode_qr:glyph_count"),
+                "valid CSS whitespace must not remove a monospace QR carrier");
+        assertEquals("decoded-control", metadata.get(Barcode.BARCODE_VALUE));
+    }
+
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,
                               ParseContext context) throws Exception {
         metadata.set(Metadata.CONTENT_TYPE, "text/html; charset=UTF-8");
