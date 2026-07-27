@@ -69,6 +69,7 @@ import org.apache.tika.parser.microsoft.OfficeParser.POIFSDocumentType;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.microsoft.SummaryExtractor;
 import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLBalancingHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.ExceptionUtils;
@@ -109,10 +110,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     RELATION_DIAGRAM_DATA};
     private static final String TYPE_OLE_OBJECT =
             "application/vnd.openxmlformats-officedocument.oleObject";
+    private static final String LINKED_RELATIONSHIP_COLLECTION_WARNING =
+            "OOXML linked-relationship collection limit reached";
 
 
     private final EmbeddedDocumentExtractor embeddedExtractor;
     private final ParseContext context;
+    private final OOXMLPartContentCollector.CollectionBudget
+            linkedRelationshipCollectionBudget =
+            OOXMLPartContentCollector.newDefaultCollectionBudget();
     protected OfficeParserConfig config;
     protected OPCPackage opcPackage;
     private Exception vbaRelationshipDiscoveryFailure;
@@ -1287,8 +1293,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     continue;
                 }
                 remainingHighPriority++;
-                int before = metadata.getValues(
-                        Office.OFFICE_LINK_RECORD).length;
+                long before = getStoredOfficeLinkTargetCount(metadata);
                 String relationshipType =
                         relationship.getRelationshipType();
                 OfficeLinkMetadataUtil.addLink(
@@ -1298,12 +1303,31 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                         relationship.getTargetURI().toString(),
                         null, null, source, "relationship",
                         relationshipType, relationship.getId());
-                if (metadata.getValues(
-                        Office.OFFICE_LINK_RECORD).length > before) {
+                if (getStoredOfficeLinkTargetCount(metadata) > before) {
                     preRecordedMetadataKeys.add(key);
                 }
                 setHasFlagFor(relationshipType, metadata);
             }
+        }
+
+        private static long getStoredOfficeLinkTargetCount(
+                Metadata metadata) {
+            // Auxiliary aligned fields can fit after the URL becomes an empty
+            // placeholder; only these fields prove that the target survived.
+            return countNonEmptyValues(
+                    metadata.getValues(Office.OFFICE_LINK_URL))
+                    + countNonEmptyValues(
+                    metadata.getValues(Office.OFFICE_LINK_RECORD));
+        }
+
+        private static long countNonEmptyValues(String[] values) {
+            long count = 0;
+            for (String value : values) {
+                if (value != null && !value.isEmpty()) {
+                    count++;
+                }
+            }
+            return count;
         }
 
         private boolean hasReservedMaximum() {
@@ -1454,6 +1478,18 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     protected Map<String, String> loadLinkedRelationships(PackagePart bodyPart,
                                                           boolean includeInternal,
                                                           Metadata metadata) {
+        Map<String, String> relationships =
+                loadLinkedRelationships(bodyPart, includeInternal, metadata,
+                        linkedRelationshipCollectionBudget);
+        if (linkedRelationshipCollectionBudget.isLimitReached()) {
+            signalLinkedRelationshipCollectionLimit(metadata);
+        }
+        return relationships;
+    }
+
+    protected Map<String, String> loadLinkedRelationships(
+            PackagePart bodyPart, boolean includeInternal, Metadata metadata,
+            OOXMLPartContentCollector.CollectionBudget collectionBudget) {
         Map<String, String> linkedRelationships = new HashMap<>();
         try {
             PackageRelationshipCollection prc =
@@ -1469,6 +1505,10 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 String id = pr.getId();
                 String url = (pr.getTargetURI() == null) ? null : pr.getTargetURI().toString();
                 if (id != null && url != null) {
+                    if (collectionBudget != null &&
+                            !collectionBudget.tryRetainAuxiliaryEntry(id, url)) {
+                        return linkedRelationships;
+                    }
                     linkedRelationships.put(id, url);
                 }
             }
@@ -1494,6 +1534,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     }
                     if (id != null) {
                         fileName = (fileName == null) ? "" : fileName;
+                        if (collectionBudget != null &&
+                                !collectionBudget.tryRetainAuxiliaryEntry(
+                                        id, fileName)) {
+                            return linkedRelationships;
+                        }
                         linkedRelationships.put(id, fileName);
                     }
                 }
@@ -1503,6 +1548,27 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
         }
         return linkedRelationships;
+    }
+
+    private static void signalLinkedRelationshipCollectionLimit(
+            Metadata metadata) {
+        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        boolean warningAlreadyPresent = false;
+        for (String warning : metadata.getValues(
+                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+            if (LINKED_RELATIONSHIP_COLLECTION_WARNING.equals(warning)) {
+                warningAlreadyPresent = true;
+                break;
+            }
+        }
+        if (!warningAlreadyPresent) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    LINKED_RELATIONSHIP_COLLECTION_WARNING);
+        }
+        if (metadata.get("ExploitClass") == null) {
+            metadata.set("ExploitClass",
+                    "OOXML linked-relationship collection incomplete");
+        }
     }
 
     /**
@@ -1566,18 +1632,21 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     // inner parser left open if it throws mid-element. Without
                     // this, the </div> emitted after the loop would land on
                     // top of an open <p>/<td>/etc. from the failed sub-parse.
+                    TaggedContentHandler taggedHandler =
+                            new TaggedContentHandler(contentHandler);
                     XHTMLBalancingHandler balancer =
-                            new XHTMLBalancingHandler(contentHandler);
+                            new XHTMLBalancingHandler(taggedHandler);
                     try (InputStream stream = relatedPartPart.getInputStream()) {
                         XMLReaderUtils.parseSAX(stream,
                                 new EmbeddedContentHandler(balancer), context);
 
                     } catch (IOException | TikaException e) {
-                        balancer.drainOpenElements();
+                        drainOpenElements(balancer, taggedHandler);
                         parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                                 ExceptionUtils.getStackTrace(e));
                     } catch (SAXException e) {
-                        balancer.drainOpenElements();
+                        taggedHandler.throwIfCauseOf(e);
+                        drainOpenElements(balancer, taggedHandler);
                         WriteLimitReachedException.throwIfWriteLimitReached(e);
                         parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                                 ExceptionUtils.getStackTrace(e));
@@ -1590,6 +1659,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             contentHandler.endElement("", "div", "div");
         }
 
+    }
+
+    private static void drainOpenElements(
+            XHTMLBalancingHandler balancer,
+            TaggedContentHandler taggedHandler) throws SAXException {
+        try {
+            balancer.drainOpenElements();
+        } catch (SAXException cleanupFailure) {
+            taggedHandler.throwIfCauseOf(cleanupFailure);
+            throw cleanupFailure;
+        }
     }
 
 }
