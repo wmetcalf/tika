@@ -493,14 +493,12 @@ public class ZipParser extends AbstractArchiveParser {
         writeEntryXhtml(name, xhtml);
 
         if (extractor.shouldParseEmbedded(entryMetadata)) {
-            TemporaryResources tmp = new TemporaryResources();
-            try (InputStream entryStream = zipFile.getInputStream(entry)) {
+            try (TemporaryResources tmp = new TemporaryResources();
+                    InputStream entryStream = zipFile.getInputStream(entry)) {
                 TikaInputStream tis = TikaInputStream.get(entryStream, tmp, entryMetadata);
                 extractor.parseEmbedded(tis, xhtml, entryMetadata, new ParseContext(), true);
             } catch (UnsupportedZipFeatureException e) {
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
-            } finally {
-                tmp.dispose();
             }
         }
     }
@@ -535,14 +533,11 @@ public class ZipParser extends AbstractArchiveParser {
         writeEntryXhtml(name, xhtml);
 
         if (extractor.shouldParseEmbedded(entryMetadata)) {
-            TemporaryResources tmp = new TemporaryResources();
-            try {
+            try (TemporaryResources tmp = new TemporaryResources()) {
                 TikaInputStream tis = TikaInputStream.get(zis, tmp, entryMetadata);
                 extractor.parseEmbedded(tis, xhtml, entryMetadata, new ParseContext(), true);
             } catch (UnsupportedZipFeatureException e) {
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
-            } finally {
-                tmp.dispose();
             }
         }
     }

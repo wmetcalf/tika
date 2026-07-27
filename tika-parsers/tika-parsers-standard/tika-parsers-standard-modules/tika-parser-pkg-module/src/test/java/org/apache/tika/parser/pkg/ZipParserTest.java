@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -52,6 +54,8 @@ import org.apache.tika.parser.ParseContext;
  * Test case for parsing zip files.
  */
 public class ZipParserTest extends AbstractPkgTest {
+
+    private static final String DENIED_OUTPUT = "denied output";
 
     /**
      * Tests that the ParseContext parser is correctly
@@ -194,14 +198,21 @@ public class ZipParserTest extends AbstractPkgTest {
 
     private void assertOutputDenialStopsCallbacks(TikaInputStream tis) {
         SAXException denial = new SAXException("simulated ZIP output denial");
+        IOException cleanupFailure =
+                new IOException("simulated temporary resource cleanup failure");
+        FailingCloseable cleanupResource = new FailingCloseable(cleanupFailure);
         FailStopHandler handler = new FailStopHandler(denial);
         ParseContext context = new ParseContext();
-        context.set(EmbeddedDocumentExtractor.class, new DenyingEmbeddedDocumentExtractor());
+        context.set(EmbeddedDocumentExtractor.class,
+                new DenyingEmbeddedDocumentExtractor(cleanupResource));
 
-        SAXException thrown = assertThrows(SAXException.class,
+        Exception thrown = assertThrows(Exception.class,
                 () -> new ZipParser().parse(tis, handler, new Metadata(), context));
 
+        assertTrue(cleanupResource.closed);
         assertSame(denial, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(cleanupFailure, thrown.getSuppressed()[0]);
         assertEquals(0, handler.callbacksAfterDenial);
     }
 
@@ -223,7 +234,11 @@ public class ZipParserTest extends AbstractPkgTest {
     private static final class DenyingEmbeddedDocumentExtractor
             implements EmbeddedDocumentExtractor {
 
-        private static final char[] DENIED_OUTPUT = "denied output".toCharArray();
+        private final Closeable cleanupResource;
+
+        private DenyingEmbeddedDocumentExtractor(Closeable cleanupResource) {
+            this.cleanupResource = cleanupResource;
+        }
 
         @Override
         public boolean shouldParseEmbedded(Metadata metadata) {
@@ -234,7 +249,25 @@ public class ZipParserTest extends AbstractPkgTest {
         public void parseEmbedded(
                 TikaInputStream stream, ContentHandler handler, Metadata metadata,
                 ParseContext parseContext, boolean outputHtml) throws SAXException {
-            handler.characters(DENIED_OUTPUT, 0, DENIED_OUTPUT.length);
+            stream.addCloseableResource(cleanupResource);
+            char[] deniedOutput = DENIED_OUTPUT.toCharArray();
+            handler.characters(deniedOutput, 0, deniedOutput.length);
+        }
+    }
+
+    private static final class FailingCloseable implements Closeable {
+
+        private final IOException cleanupFailure;
+        private boolean closed;
+
+        private FailingCloseable(IOException cleanupFailure) {
+            this.cleanupFailure = cleanupFailure;
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            throw cleanupFailure;
         }
     }
 
@@ -254,6 +287,9 @@ public class ZipParserTest extends AbstractPkgTest {
         public void characters(char[] ch, int start, int length) throws SAXException {
             if (denied) {
                 rejectCallback();
+            }
+            if (!DENIED_OUTPUT.equals(new String(ch, start, length))) {
+                return;
             }
             denied = true;
             throw denial;
