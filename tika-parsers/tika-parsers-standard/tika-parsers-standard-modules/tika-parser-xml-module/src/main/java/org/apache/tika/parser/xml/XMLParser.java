@@ -102,39 +102,135 @@ public class XMLParser implements Parser {
         boolean isSvg = isSvg(metadata);
         Path svgPath = isSvg ? tis.getPath() : null;
 
-        final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-        xhtml.startElement("p");
-
         TaggedContentHandler tagged = new TaggedContentHandler(handler);
+        final XHTMLContentHandler xhtml = new XHTMLContentHandler(tagged, metadata, context);
         ContentHandler enrichingHandler = getContentHandler(tagged, metadata, context);
         SvgEnrichingHandler svgEnrichingHandler =
                 enrichingHandler instanceof SvgEnrichingHandler
                         ? (SvgEnrichingHandler) enrichingHandler : null;
         tis.setCloseShield();
+        boolean documentStarted = false;
+        boolean paragraphStarted = false;
         boolean parsedSuccessfully = false;
+        boolean outputRefused = false;
+        Throwable primaryFailure = null;
         try {
+            xhtml.startDocument();
+            documentStarted = true;
+            xhtml.startElement("p");
+            paragraphStarted = true;
             XMLReaderUtils.parseSAX(tis,
                             new EmbeddedContentHandler(enrichingHandler),
                     context);
             parsedSuccessfully = true;
+            Throwable outputFailure = tagged.getUncheckedFailure();
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throwUnchecked(outputFailure);
+            }
         } catch (SAXException e) {
-            tagged.throwIfCauseOf(e);
-            throw new TikaException("XML parse error", e);
+            SAXException outputFailure = findTaggedOutputFailure(tagged, e);
+            if (outputFailure != null) {
+                primaryFailure = outputFailure;
+                outputRefused = true;
+                throw outputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(tagged, e);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            TikaException parseFailure = new TikaException("XML parse error", e);
+            primaryFailure = parseFailure;
+            throw parseFailure;
+        } catch (IOException | TikaException e) {
+            SAXException saxOutputFailure =
+                    findTaggedOutputFailure(tagged, e);
+            if (saxOutputFailure != null) {
+                primaryFailure = saxOutputFailure;
+                outputRefused = true;
+                throw saxOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(tagged, e);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            primaryFailure = e;
+            throw e;
+        } catch (RuntimeException | Error e) {
+            SAXException saxOutputFailure =
+                    findTaggedOutputFailure(tagged, e);
+            if (saxOutputFailure != null) {
+                primaryFailure = saxOutputFailure;
+                outputRefused = true;
+                throw saxOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(tagged, e);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            primaryFailure = e;
+            outputRefused = e instanceof Error;
+            throw e;
         } finally {
-            tis.removeCloseShield();
-            if (svgPath != null && parsedSuccessfully) {
-                if (svgEnrichingHandler != null
-                        && svgEnrichingHandler.isRasterElementLimitExceeded()) {
-                    markSvgEnrichmentIncomplete(metadata,
-                            "SVG raster enrichment skipped because input exceeds the "
-                                    + SVG_RASTER_MAX_ELEMENTS + " element limit");
-                } else {
-                    trySvgOcr(svgPath, xhtml, metadata, context);
+            try {
+                tis.removeCloseShield();
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (primaryFailure == null) {
+                    throw cleanupFailure;
+                }
+                if (cleanupFailure instanceof Error
+                        && !(primaryFailure instanceof Error)) {
+                    addSuppressed(cleanupFailure, primaryFailure);
+                    throw cleanupFailure;
+                }
+                addSuppressed(primaryFailure, cleanupFailure);
+            }
+            if (!outputRefused) {
+                try {
+                    if (svgPath != null && parsedSuccessfully) {
+                        if (svgEnrichingHandler != null
+                                && svgEnrichingHandler.isRasterElementLimitExceeded()) {
+                            markSvgEnrichmentIncomplete(metadata,
+                                    "SVG raster enrichment skipped because input exceeds the "
+                                            + SVG_RASTER_MAX_ELEMENTS + " element limit");
+                        } else {
+                            trySvgOcr(svgPath, xhtml, metadata, context);
+                        }
+                    }
+                    if (paragraphStarted) {
+                        xhtml.endElement("p");
+                    }
+                    if (documentStarted) {
+                        xhtml.endDocument();
+                    }
+                } catch (SAXException | RuntimeException | Error cleanupFailure) {
+                    SAXException saxOutputFailure =
+                            findTaggedOutputFailure(tagged, cleanupFailure);
+                    if (saxOutputFailure != null) {
+                        addSuppressed(saxOutputFailure, primaryFailure);
+                        throw saxOutputFailure;
+                    }
+                    Throwable uncheckedOutputFailure =
+                            findUncheckedOutputFailure(tagged, cleanupFailure);
+                    Throwable failure = uncheckedOutputFailure != null
+                            ? uncheckedOutputFailure : cleanupFailure;
+                    addSuppressed(failure, primaryFailure);
+                    if (failure instanceof SAXException saxFailure) {
+                        throw saxFailure;
+                    }
+                    throwUnchecked(failure);
                 }
             }
-            xhtml.endElement("p");
-            xhtml.endDocument();
         }
     }
 
@@ -327,6 +423,7 @@ public class XMLParser implements Parser {
     private static void trySvgOcr(Path svgPath, XHTMLContentHandler xhtml,
                                    Metadata metadata, ParseContext context)
             throws SAXException {
+        Throwable uncheckedOcrOutputFailure = null;
         try {
             // Guard against huge SVGs (e.g. embedded base64 images) that OOM the JVM
             if (Files.size(svgPath) > SVG_RASTER_MAX_BYTES) {
@@ -365,6 +462,8 @@ public class XMLParser implements Parser {
                     org.apache.tika.mime.MediaType.image("ocr-png");
                 if (ocrParser != null
                         && ocrParser.getSupportedTypes(context).contains(pngOcrType)) {
+                    TaggedContentHandler taggedOcrOutput =
+                            new TaggedContentHandler(xhtml);
                     try (org.apache.tika.io.TikaInputStream pngStream =
                             org.apache.tika.io.TikaInputStream.get(pngBytes)) {
                         Metadata ocrMeta = Metadata.newInstance(context);
@@ -373,15 +472,44 @@ public class XMLParser implements Parser {
                         ocrMeta.set(Metadata.CONTENT_TYPE, "image/png");
                         ocrParser.parse(pngStream,
                             new org.apache.tika.sax.EmbeddedContentHandler(
-                                new BodyContentHandler(xhtml)),
+                                new BodyContentHandler(taggedOcrOutput)),
                             ocrMeta, context);
+                        Throwable outputFailure =
+                                taggedOcrOutput.getUncheckedFailure();
+                        if (outputFailure != null) {
+                            uncheckedOcrOutputFailure = outputFailure;
+                            throwUnchecked(outputFailure);
+                        }
                     } catch (SecurityException e) {
+                        Throwable outputFailure =
+                                findUncheckedOutputFailure(taggedOcrOutput, e);
+                        if (outputFailure != null) {
+                            throwUnchecked(outputFailure);
+                        }
                         throw e;
                     } catch (Exception e) {
+                        SAXException saxOutputFailure =
+                                findTaggedOutputFailure(taggedOcrOutput, e);
+                        if (saxOutputFailure != null) {
+                            throw saxOutputFailure;
+                        }
+                        Throwable uncheckedOutputFailure =
+                                findUncheckedOutputFailure(taggedOcrOutput, e);
+                        if (uncheckedOutputFailure != null) {
+                            uncheckedOcrOutputFailure = uncheckedOutputFailure;
+                            throwUnchecked(uncheckedOutputFailure);
+                        }
                         WriteLimitReachedException.throwIfWriteLimitReached(e);
                         markSvgEnrichmentIncomplete(metadata,
                                 "SVG OCR enrichment failed: "
                                         + e.getClass().getSimpleName());
+                    } catch (Error e) {
+                        Throwable outputFailure =
+                                findUncheckedOutputFailure(taggedOcrOutput, e);
+                        Error fatalFailure = outputFailure instanceof Error error
+                                ? error : e;
+                        uncheckedOcrOutputFailure = fatalFailure;
+                        throw fatalFailure;
                     }
                 }
             }
@@ -411,12 +539,74 @@ public class XMLParser implements Parser {
             }
         } catch (SecurityException e) {
             throw e;
+        } catch (SAXException e) {
+            throw e;
         } catch (Exception e) {
+            if (e == uncheckedOcrOutputFailure) {
+                throwUnchecked(e);
+            }
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             addSvgRasterWarning(metadata, e);
         } catch (LinkageError | StackOverflowError | OutOfMemoryError e) {
+            if (e == uncheckedOcrOutputFailure) {
+                throw e;
+            }
             addSvgRasterWarning(metadata, e);
         }
+    }
+
+    private static SAXException findTaggedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    return outputFailure;
+                }
+                return null;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Throwable findUncheckedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Throwable outputFailure = taggedOutput.findUncheckedCause(failure);
+        return outputFailure != null
+                ? outputFailure : taggedOutput.getUncheckedFailure();
+    }
+
+    private static void addSuppressed(Throwable primaryFailure, Throwable suppressedFailure) {
+        if (suppressedFailure != null && primaryFailure != suppressedFailure) {
+            primaryFailure.addSuppressed(suppressedFailure);
+        }
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        throw (Error) failure;
     }
 
     private static void addSvgRasterWarning(Metadata metadata, Throwable failure) {
