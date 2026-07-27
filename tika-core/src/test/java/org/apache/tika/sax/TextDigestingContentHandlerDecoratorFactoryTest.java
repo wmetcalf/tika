@@ -19,7 +19,10 @@ package org.apache.tika.sax;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.HexFormat;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -95,6 +98,38 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
 
         assertEquals("186ca4f1a2d2ac0d5381177c6719713b",
                 metadata.get("X-TIKA:digest:text:MD5"));
+    }
+
+    @Test
+    public void testMalformedSurrogatesUseUtf8Replacement() throws Exception {
+        assertDigestMatchesJavaUtf8("a\uD83D");
+        assertDigestMatchesJavaUtf8("a", "\uDE00b");
+        assertDigestMatchesJavaUtf8("a\uD83D", "b");
+    }
+
+    private static void assertDigestMatchesJavaUtf8(String... chunks)
+            throws Exception {
+        Metadata metadata = new Metadata();
+        TextDigestingContentHandlerDecoratorFactory factory =
+                new TextDigestingContentHandlerDecoratorFactory();
+        factory.setDigests(Arrays.asList(
+                new DigestDef(DigestDef.Algorithm.MD5)));
+
+        ContentHandler handler = factory.decorate(new DefaultHandler(), metadata,
+                new ParseContext());
+        handler.startDocument();
+        StringBuilder expectedText = new StringBuilder();
+        for (String chunk : chunks) {
+            expectedText.append(chunk);
+            char[] chars = chunk.toCharArray();
+            handler.characters(chars, 0, chars.length);
+        }
+        handler.endDocument();
+
+        String expected = HexFormat.of().formatHex(
+                MessageDigest.getInstance("MD5").digest(
+                        expectedText.toString().getBytes(StandardCharsets.UTF_8)));
+        assertEquals(expected, metadata.get("X-TIKA:digest:text:MD5"));
     }
 
     @Test

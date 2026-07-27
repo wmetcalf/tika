@@ -19,6 +19,8 @@ package org.apache.tika.parser.microsoft.rtf;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -34,7 +36,9 @@ import org.apache.poi.poifs.filesystem.Ole10Native;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -104,6 +108,61 @@ public class RTFObjDataParserTest {
             assertEquals(topic, metadata.get(Office.OFFICE_LINK_URL));
             assertNotNull(metadata.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
             assertNotNull(metadata.get("ExploitClass"));
+        }
+    }
+
+    @Test
+    public void testFinalObjDataSecurityExceptionPropagates() throws Exception {
+        SecurityException failure =
+                new SecurityException("simulated RTF embedded security boundary");
+
+        SecurityException thrown = assertThrows(SecurityException.class,
+                () -> parseWithEmbeddedFailure(buildRtf(DISTINCT_COMMAND), failure));
+
+        assertSame(failure, thrown);
+    }
+
+    @Test
+    public void testFinalObjDataWriteLimitPropagates() throws Exception {
+        WriteLimitReachedException failure = new WriteLimitReachedException(7);
+
+        WriteLimitReachedException thrown =
+                assertThrows(WriteLimitReachedException.class,
+                        () -> parseWithEmbeddedFailure(
+                                buildRtf(DISTINCT_COMMAND), failure));
+
+        assertSame(failure, thrown);
+    }
+
+    private static void parseWithEmbeddedFailure(byte[] rtf, Exception failure)
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException, SAXException {
+                if (failure instanceof IOException ioException) {
+                    throw ioException;
+                }
+                if (failure instanceof SAXException saxException) {
+                    throw saxException;
+                }
+                if (failure instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new AssertionError("unsupported test exception", failure);
+            }
+        });
+
+        try (TikaInputStream stream = TikaInputStream.get(rtf)) {
+            new RTFParser().parse(
+                    stream, new BodyContentHandler(-1), new Metadata(), context);
         }
     }
 

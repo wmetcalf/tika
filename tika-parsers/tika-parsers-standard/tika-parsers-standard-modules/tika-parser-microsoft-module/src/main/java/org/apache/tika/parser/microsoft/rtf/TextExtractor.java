@@ -42,6 +42,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.metadata.DublinCore;
 import org.apache.tika.metadata.Metadata;
@@ -613,6 +614,10 @@ final class TextExtractor {
         try {
             embObjHandler.flushLastObjData();
         } catch (Exception e) {
+            WriteLimitReachedException.throwIfWriteLimitReached(e);
+            if (e instanceof SecurityException securityException) {
+                throw securityException;
+            }
             EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
         }
 
@@ -632,8 +637,10 @@ final class TextExtractor {
                 org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper
                         .scan(colorCollector, parseContext, metadata,
                               "rtf_color_qr", "RTF");
-            } catch (Throwable t) {
-                // Best-effort; never fail the parse for QR scanning.
+            } catch (SecurityException e) {
+                throw e;
+            } catch (RuntimeException t) {
+                // Ordinary scanner failures remain best-effort.
                 metadata.add("rtf_color_qr:error", t.getClass().getSimpleName()
                         + ":" + t.getMessage());
             }
@@ -1538,6 +1545,10 @@ final class TextExtractor {
             try {
                 embObjHandler.flushLastObjData();
             } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                if (e instanceof SecurityException securityException) {
+                    throw securityException;
+                }
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
             }
             embObjHandler.setInObject(true);

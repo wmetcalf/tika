@@ -256,8 +256,10 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                       + " CSS-colored QR code(s) from HTML — invisible to "
                       + "image-based scanners (color encodes dark/light, not glyph)");
             }
-        } catch (Throwable t) {
-            // Never let QR scanning kill HTML parsing.
+        } catch (SecurityException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Ordinary scanner failures remain best-effort.
         }
         scanForUnicodeArtQR(document, metadata, context);
     }
@@ -356,7 +358,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
                                   + " Unicode-art QR code(s) from HTML monospace block (<pre>/"
                                   + "<code>/white-space:pre) — typical X-ALT-DESC carrier");
                         }
-                    } catch (Throwable t) {
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (RuntimeException e) {
                         incomplete = true;
                     }
                 }
@@ -364,7 +368,9 @@ public class JSoupParser extends AbstractEncodingDetectorParser {
             if (incomplete) {
                 markUnicodeQrIncomplete(metadata);
             }
-        } catch (Throwable t) {
+        } catch (SecurityException e) {
+            throw e;
+        } catch (RuntimeException e) {
             markUnicodeQrIncomplete(metadata);
         }
     }

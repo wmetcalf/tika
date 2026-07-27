@@ -53,6 +53,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
@@ -215,6 +216,46 @@ public class AbstractOOXMLExtractorSecurityTest {
     }
 
     @Test
+    public void testRootExternalRelationshipSecurityExceptionPropagates()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            opcPackage.addExternalRelationship(
+                    "https://example.invalid/external",
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/hyperlink");
+
+            assertThrows(SecurityException.class,
+                    () -> new EmptyExtractor(context, opcPackage).getXHTML(
+                            new LinkSecurityExceptionHandler(),
+                            new Metadata(), context));
+        }
+    }
+
+    @Test
+    public void testNonMainExternalRelationshipSecurityExceptionPropagates()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart settings = createXmlPart(
+                    opcPackage, "/word/settings.xml");
+            settings.addExternalRelationship(
+                    "https://example.invalid/external",
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/hyperlink");
+
+            assertThrows(SecurityException.class,
+                    () -> new EmptyExtractor(context, opcPackage).getXHTML(
+                            new LinkSecurityExceptionHandler(),
+                            new Metadata(), context));
+        }
+    }
+
+    @Test
     public void testSameUrlWithExecutableRelationshipKeepsBothSemantics()
             throws Exception {
         ParseContext context = new ParseContext();
@@ -276,8 +317,84 @@ public class AbstractOOXMLExtractorSecurityTest {
         assertArrayEquals(
                 new String[]{attachedTemplateRelationship},
                 metadata.getValues(Office.OFFICE_LINK_RELATIONSHIP_TYPE));
+        assertArrayEquals(
+                new String[]{"attached_template"},
+                metadata.getValues(Office.OFFICE_LINK_TYPE));
         assertEquals(1,
                 metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals("true",
+                metadata.get(Office.HAS_ATTACHED_TEMPLATE));
+    }
+
+    @Test
+    public void testRepeatedMainPartDoesNotConsumeRelationshipBudget()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        Metadata metadata = new Metadata();
+        LinkCountingHandler linkCountingHandler = new LinkCountingHandler();
+        String repeatedUrl =
+                "https://attacker.invalid/repeated-template.dotm";
+        String laterUrl =
+                "https://attacker.invalid/later-template.dotm";
+        String attachedTemplateRelationship =
+                "http://schemas.openxmlformats.org/officeDocument/"
+                        + "2006/relationships/attachedTemplate";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart repeatedMainPart = createXmlPart(
+                    opcPackage, "/word/document.xml");
+            repeatedMainPart.addExternalRelationship(
+                    repeatedUrl, attachedTemplateRelationship);
+            PackagePart nonMainPart = createXmlPart(
+                    opcPackage, "/word/z-settings.xml");
+            nonMainPart.addExternalRelationship(
+                    laterUrl, attachedTemplateRelationship);
+
+            new EmptyExtractor(
+                    context, opcPackage,
+                    Collections.nCopies(1_024, repeatedMainPart))
+                    .getXHTML(linkCountingHandler, metadata, context);
+        }
+
+        assertEquals(2,
+                metadata.getValues(Office.OFFICE_LINK_RECORD).length);
+        assertEquals(1L,
+                List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                        .stream()
+                        .filter(laterUrl::equals)
+                        .count());
+        assertEquals(2, linkCountingHandler.anchorCount);
+    }
+
+    @Test
+    public void testBodyLinkCharacterPressureDoesNotStarveExecutableLink()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, new OfficeParserConfig());
+        Metadata metadata = new Metadata();
+        String executableUrl =
+                "https://attacker.invalid/non-main-template.dotm";
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            PackagePart nonMainPart = createXmlPart(
+                    opcPackage, "/word/z-settings.xml");
+            nonMainPart.addExternalRelationship(
+                    executableUrl,
+                    "http://schemas.openxmlformats.org/officeDocument/"
+                            + "2006/relationships/attachedTemplate");
+
+            new LinkFloodingExtractor(context, opcPackage, metadata)
+                    .getXHTML(new BodyContentHandler(-1), metadata, context);
+        }
+
+        assertEquals(1L,
+                List.of(metadata.getValues(Office.OFFICE_LINK_URL))
+                        .stream()
+                        .filter(executableUrl::equals)
+                        .count(),
+                "high-priority relationship metadata must be retained before "
+                        + "generic body links consume the character budget");
     }
 
     @Test
@@ -594,6 +711,19 @@ public class AbstractOOXMLExtractorSecurityTest {
         }
     }
 
+    private static final class LinkSecurityExceptionHandler
+            extends DefaultHandler {
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) {
+            if ("a".equals(localName) || "a".equals(qName)) {
+                throw new SecurityException(
+                        "simulated relationship security failure");
+            }
+        }
+    }
+
     private static final class LinkCountingHandler extends DefaultHandler {
         private int anchorCount;
 
@@ -665,6 +795,40 @@ public class AbstractOOXMLExtractorSecurityTest {
             payload = stream.readAllBytes();
             contentLength =
                     metadata.get(org.apache.tika.metadata.HttpHeaders.CONTENT_LENGTH);
+        }
+    }
+
+    private static final class LinkFloodingExtractor
+            extends AbstractOOXMLExtractor {
+
+        private final Metadata metadata;
+
+        private LinkFloodingExtractor(
+                ParseContext context, OPCPackage opcPackage,
+                Metadata metadata) {
+            super(context, opcPackage);
+            this.metadata = metadata;
+        }
+
+        @Override
+        protected void buildXHTML(XHTMLContentHandler xhtml) {
+            String maximumUrl =
+                    "https://decoy.invalid/" + "x".repeat(70_000);
+            for (int i = 0; i < 15; i++) {
+                OfficeLinkMetadataUtil.addLink(
+                        metadata, "hyperlink", maximumUrl,
+                        null, null, "document.xml", "relationship",
+                        "hyperlink", "r" + i);
+            }
+            OfficeLinkMetadataUtil.addLink(
+                    metadata, "hyperlink", "x".repeat(63_458),
+                    null, null, "document.xml", "relationship",
+                    "hyperlink", "r15");
+        }
+
+        @Override
+        protected List<PackagePart> getMainDocumentParts() {
+            return Collections.emptyList();
         }
     }
 

@@ -99,6 +99,7 @@ public class PpkgParser implements Parser {
     private static final long MAX_CUMULATIVE_EXPANDED_BYTES = 16L * 1024 * 1024;
     private static final int MAX_RETAINED_XML_VALUES = 4_096;
     private static final int MAX_RETAINED_XML_VALUE_CHARS = 1024 * 1024;
+    private static final int MAX_SEMANTIC_EXTENSION_LENGTH = 16;
     private static final String RESOURCE_LIMIT_WARNING =
             "PPKG WIM resource exceeded the 8 MB extraction limit and was skipped";
     private static final String INCOMPLETE_RESOURCE_WARNING =
@@ -743,7 +744,8 @@ public class PpkgParser implements Parser {
                 if (rh != null) {
                     recordDangerousReference(name, dataRefs);
                 }
-                String processingKey = sha1Hex + (xmlResource ? ":xml" : ":embedded");
+                String processingKey = sha1Hex
+                        + semanticResourceDiscriminator(nameLower, xmlResource);
                 if (rh != null && !resourceState.reserve(processingKey, rh, warnings)) {
                     rh = null;
                 }
@@ -769,6 +771,20 @@ public class PpkgParser implements Parser {
     }
 
     // ── XML content parsing ───────────────────────────────────────────────────
+
+    private static String semanticResourceDiscriminator(
+            String nameLower, boolean xmlResource) {
+        String resourceClass = xmlResource ? ":xml" : ":embedded";
+        int dot = nameLower.lastIndexOf('.');
+        if (dot < 0 || dot == nameLower.length() - 1) {
+            return resourceClass;
+        }
+        String extension = nameLower.substring(dot);
+        if (extension.length() > MAX_SEMANTIC_EXTENSION_LENGTH) {
+            return resourceClass + ":other";
+        }
+        return resourceClass + ":" + extension;
+    }
 
     private void parseXmlContent(byte[] xmlBytes, String name,
                                  List<String> commands, List<String> warnings,

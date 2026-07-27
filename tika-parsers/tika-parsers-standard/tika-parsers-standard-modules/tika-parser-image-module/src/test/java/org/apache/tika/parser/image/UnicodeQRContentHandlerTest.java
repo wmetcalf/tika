@@ -19,9 +19,12 @@ package org.apache.tika.parser.image;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -74,5 +77,31 @@ public class UnicodeQRContentHandlerTest {
                         TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
                 .anyMatch(value -> value.contains("Unicode QR analysis limit")));
         assertNotNull(metadata.get("ExploitClass"));
+    }
+
+    @Test
+    public void scannerSecurityExceptionPropagates() throws Exception {
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        UnicodeQRContentHandler handler = new UnicodeQRContentHandler(
+                null, new Metadata(), new SecurityExceptionScanner(),
+                config, new ParseContext());
+        char[] text = "████████\n".repeat(13).toCharArray();
+        handler.characters(text, 0, text.length);
+
+        assertThrows(SecurityException.class, handler::endDocument);
+    }
+
+    private static final class SecurityExceptionScanner extends ZXingCPPScanner {
+        @Override
+        boolean hasZXingCPP(ZXingCPPConfig config) {
+            return true;
+        }
+
+        @Override
+        public List<Result> scan(
+                Path imagePath, ZXingCPPConfig config, ParseContext context) {
+            throw new SecurityException("simulated scanner policy rejection");
+        }
     }
 }

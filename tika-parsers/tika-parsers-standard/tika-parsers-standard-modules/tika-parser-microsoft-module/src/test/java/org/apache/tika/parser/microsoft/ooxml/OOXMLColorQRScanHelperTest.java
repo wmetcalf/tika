@@ -18,12 +18,17 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,6 +40,7 @@ import org.apache.tika.parser.ColorAwareConfig;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.image.BoundedColorGridCollector;
 import org.apache.tika.parser.image.ZXingCPPConfig;
+import org.apache.tika.parser.image.ZXingCPPScanner;
 
 public class OOXMLColorQRScanHelperTest {
 
@@ -100,5 +106,41 @@ public class OOXMLColorQRScanHelperTest {
 
         assertEquals("body-qr", metadata.get(Barcode.BARCODE_VALUE));
         assertEquals("1", metadata.get("docx_color_qr:decode_count"));
+    }
+
+    @Test
+    public void scannerSecurityExceptionPropagates() {
+        ParseContext context = new ParseContext();
+        context.set(ColorAwareConfig.class,
+                new ColorAwareConfig().setEnabled(true));
+        ZXingCPPConfig zxing = new ZXingCPPConfig();
+        zxing.setEnabled(true);
+        context.set(ZXingCPPConfig.class, zxing);
+
+        List<List<Integer>> rows = new ArrayList<>();
+        for (int row = 0; row < 21; row++) {
+            rows.add(Collections.nCopies(21, row % 2 == 0 ? 0 : 255));
+        }
+        SecurityException failure =
+                new SecurityException("simulated scanner security boundary");
+        ZXingCPPScanner scanner = new ZXingCPPScanner(zxing) {
+            @Override
+            public boolean hasZXingCPP() {
+                return true;
+            }
+
+            @Override
+            public List<Result> scan(Path imagePath, ZXingCPPConfig config,
+                                     ParseContext parseContext) {
+                throw failure;
+            }
+        };
+
+        SecurityException thrown = assertThrows(SecurityException.class,
+                () -> OOXMLColorQRScanHelper.scan(
+                        rows, context, new Metadata(), "test_color_qr",
+                        "TEST", scanner));
+
+        assertSame(failure, thrown);
     }
 }

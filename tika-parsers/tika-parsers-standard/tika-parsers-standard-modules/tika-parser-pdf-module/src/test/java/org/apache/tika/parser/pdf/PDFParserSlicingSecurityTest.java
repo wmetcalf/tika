@@ -72,13 +72,13 @@ public class PDFParserSlicingSecurityTest {
     private static final String FINAL_PAGE_MARKER = "SECURITY_FINAL_PAGE_MARKER";
 
     @Test
-    public void testSixPageOutputIsSlicedButWholeDocumentIsAnalyzed() throws Exception {
+    public void testSixPageOutputAndAnalysisCoverWholeDocument() throws Exception {
         ParseResult result = parse(buildPdf(6, false), null);
 
         assertTrue(result.text.contains("page-1"));
         assertTrue(result.text.contains("page-2"));
-        assertFalse(result.text.contains("page-3"));
-        assertFalse(result.text.contains(FINAL_PAGE_MARKER));
+        assertTrue(result.text.contains("page-3"));
+        assertTrue(result.text.contains(FINAL_PAGE_MARKER));
         assertEquals("6", result.metadata.get(PagedText.N_PAGES));
         assertTrue(result.embeddedNames.contains(ATTACHMENT_NAME));
         assertEquals(6, result.metadata.getValues(

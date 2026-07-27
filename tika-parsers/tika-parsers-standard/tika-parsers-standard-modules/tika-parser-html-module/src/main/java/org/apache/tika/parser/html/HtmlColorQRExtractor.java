@@ -178,6 +178,8 @@ public final class HtmlColorQRExtractor {
                         decoded.add(r);
                     }
                 }
+            } catch (SecurityException e) {
+                throw e;
             } catch (IOException | RuntimeException e) {
                 if (metadata != null) {
                     markAnalysisIncomplete(metadata,

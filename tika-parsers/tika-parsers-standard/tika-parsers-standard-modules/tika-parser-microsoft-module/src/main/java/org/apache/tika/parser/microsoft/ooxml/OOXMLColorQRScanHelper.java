@@ -63,6 +63,13 @@ public final class OOXMLColorQRScanHelper {
     public static void scan(List<List<Integer>> rows, ParseContext context,
                      Metadata metadata, String keyPrefix,
                      String exploitFormatLabel) {
+        scan(rows, context, metadata, keyPrefix, exploitFormatLabel, null);
+    }
+
+    static void scan(List<List<Integer>> rows, ParseContext context,
+                     Metadata metadata, String keyPrefix,
+                     String exploitFormatLabel,
+                     ZXingCPPScanner injectedScanner) {
         if (rows == null || rows.isEmpty()) {
             return;
         }
@@ -109,7 +116,8 @@ public final class OOXMLColorQRScanHelper {
         List<List<List<ColorGridQRDecoder.Cell>>> grids = new ArrayList<>();
         grids.add(grid);
         try {
-            ZXingCPPScanner scanner = new ZXingCPPScanner(zcfg);
+            ZXingCPPScanner scanner = injectedScanner == null
+                    ? new ZXingCPPScanner(zcfg) : injectedScanner;
             List<ZXingCPPScanner.Result> decoded =
                     ColorGridQRDecoder.decode(grids, scanner, zcfg, null);
             ColorGridQRDecoder.emitBarcodes(decoded, metadata);
@@ -123,6 +131,8 @@ public final class OOXMLColorQRScanHelper {
                       + " — invisible to image-based scanners and to standard "
                       + exploitFormatLabel + " text extraction");
             }
+        } catch (SecurityException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
             metadata.add(keyPrefix + ":error",
                     ex.getClass().getSimpleName() + ":" + ex.getMessage());

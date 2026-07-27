@@ -141,6 +141,8 @@ public class UnicodeQRContentHandler extends ContentHandlerDecorator {
                                   + " Unicode-block-art QR code(s) from extracted text "
                                   + "— invisible-to-image-scanner phishing payload");
                         }
+                    } catch (SecurityException e) {
+                        throw e;
                     } catch (RuntimeException e) {
                         BarcodeMetadataUtil.markAnalysisIncomplete(
                                 metadata, "Unicode QR analysis", e);

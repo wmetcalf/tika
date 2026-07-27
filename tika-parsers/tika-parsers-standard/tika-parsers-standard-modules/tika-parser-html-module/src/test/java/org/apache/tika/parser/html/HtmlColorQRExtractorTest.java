@@ -20,10 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -1159,6 +1161,47 @@ public class HtmlColorQRExtractorTest {
                 "a configured scanner failure must not look like a clean negative");
     }
 
+    @Test
+    public void colorQrSecurityExceptionPropagates() {
+        Document document = Jsoup.parse("<html><body>" + VALID_GRID + "</body></html>");
+        ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+
+        assertThrows(SecurityException.class,
+                () -> HtmlColorQRExtractor.extractAndDecode(
+                        document, new SecurityExceptionScanner(), config,
+                        new ParseContext(), new Metadata()));
+    }
+
+    @Test
+    public void htmlScannerSecurityExceptionPropagates() {
+        Metadata metadata = new Metadata();
+
+        assertThrows(SecurityException.class, () ->
+                parse("<html><body>ordinary text</body></html>",
+                        new BodyContentHandler(-1), metadata,
+                        contextForSecurityException()));
+    }
+
+    @Test
+    public void unicodeQrScannerSecurityExceptionPropagates() throws Exception {
+        String unicodeGrid = String.join("\n",
+                "████████", "████████", "████████", "████████",
+                "████████", "████████", "████████", "████████");
+        Document document = Jsoup.parse(
+                "<html><body><pre>" + unicodeGrid + "</pre></body></html>");
+        Method scan = JSoupParser.class.getDeclaredMethod(
+                "scanForUnicodeArtQR", Document.class, Metadata.class, ParseContext.class);
+        scan.setAccessible(true);
+
+        InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> scan.invoke(null, document, new Metadata(),
+                        contextForSecurityException()));
+
+        assertTrue(thrown.getCause() instanceof SecurityException);
+    }
+
     private static void parse(String html, BodyContentHandler handler, Metadata metadata,
                               ParseContext context) throws Exception {
         parse(html, "text/html; charset=UTF-8", handler, metadata, context);
@@ -1185,6 +1228,19 @@ public class HtmlColorQRExtractorTest {
 
     private static ParseContext contextForUncheckedScanner() {
         ZXingCPPConfig config = new ZXingCPPConfig();
+        config.setEnabled(true);
+        ParseContext context = new ParseContext();
+        context.set(ZXingCPPConfig.class, config);
+        return context;
+    }
+
+    private static ParseContext contextForSecurityException() {
+        ZXingCPPConfig config = new ZXingCPPConfig() {
+            @Override
+            public String getZxingPath() {
+                throw new SecurityException("simulated scanner policy rejection");
+            }
+        };
         config.setEnabled(true);
         ParseContext context = new ParseContext();
         context.set(ZXingCPPConfig.class, config);
@@ -1263,6 +1319,19 @@ public class HtmlColorQRExtractorTest {
                 Path imagePath, ZXingCPPConfig config, ParseContext context) {
             invoked = true;
             throw new RuntimeException("simulated scanner failure");
+        }
+    }
+
+    private static final class SecurityExceptionScanner extends ZXingCPPScanner {
+        @Override
+        public boolean hasZXingCPP() {
+            return true;
+        }
+
+        @Override
+        public List<Result> scan(
+                Path imagePath, ZXingCPPConfig config, ParseContext context) {
+            throw new SecurityException("simulated scanner policy rejection");
         }
     }
 }

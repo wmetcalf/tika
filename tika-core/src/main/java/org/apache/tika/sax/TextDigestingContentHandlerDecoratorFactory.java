@@ -152,7 +152,12 @@ public class TextDigestingContentHandlerDecoratorFactory
         }
 
         private void writeCodePoint(int cp) {
-            if (cp <= 0x7F) {
+            if (cp >= Character.MIN_SURROGATE
+                    && cp <= Character.MAX_SURROGATE) {
+                // Match String.getBytes(UTF_8): malformed UTF-16 code units
+                // are replaced with a single ASCII question mark.
+                writeByte((byte) '?');
+            } else if (cp <= 0x7F) {
                 writeByte((byte) cp);
             } else if (cp <= 0x7FF) {
                 writeByte((byte) (0xC0 | (cp >> 6)));

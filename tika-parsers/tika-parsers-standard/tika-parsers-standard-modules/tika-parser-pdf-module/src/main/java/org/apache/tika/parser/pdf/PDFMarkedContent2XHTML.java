@@ -95,22 +95,13 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
 
     //this stores state as we recurse through the structure tag tree
     private State state = new State();
-    private final int outputPageLimit;
     private Set<ObjectRef> outputPageRefs = Collections.emptySet();
 
     private PDFMarkedContent2XHTML(PDDocument document, ContentHandler handler,
                                    ParseContext context, Metadata metadata, PDFParserConfig config,
                                    Renderer renderer)
             throws IOException {
-        this(document, handler, context, metadata, config, renderer, -1);
-    }
-
-    private PDFMarkedContent2XHTML(PDDocument document, ContentHandler handler,
-                                   ParseContext context, Metadata metadata, PDFParserConfig config,
-                                   Renderer renderer, int outputPageLimit)
-            throws IOException {
         super(document, handler, context, metadata, config, renderer);
-        this.outputPageLimit = outputPageLimit;
     }
 
     /**
@@ -130,18 +121,11 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
                                ParseContext context,
                                Metadata metadata, PDFParserConfig config, Renderer renderer)
             throws SAXException, TikaException {
-        process(pdDocument, handler, context, metadata, config, renderer, -1);
-    }
-
-    static void process(PDDocument pdDocument, ContentHandler handler,
-                        ParseContext context, Metadata metadata, PDFParserConfig config,
-                        Renderer renderer, int outputPageLimit)
-            throws SAXException, TikaException {
         PDFMarkedContent2XHTML pdfMarkedContent2XHTML = null;
         try {
             pdfMarkedContent2XHTML =
                     new PDFMarkedContent2XHTML(pdDocument, handler, context, metadata, config,
-                            renderer, outputPageLimit);
+                            renderer);
         } catch (IOException e) {
             throw new TikaException("couldn't initialize PDFMarkedContent2XHTML", e);
         }
@@ -270,14 +254,8 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
             super.processPages(pageTree);
             return;
         }
-        if (hasPageRefLimit()) {
-            int pageRefLimit = pageRefs.size();
-            if (outputPageLimit >= 0) {
-                pageRefLimit = Math.min(pageRefLimit, outputPageLimit);
-            }
-            if (config.getMaxPages() > 0) {
-                pageRefLimit = Math.min(pageRefLimit, config.getMaxPages());
-            }
+        if (config.getMaxPages() > 0) {
+            int pageRefLimit = Math.min(pageRefs.size(), config.getMaxPages());
             outputPageRefs = new HashSet<>(
                     pageRefs.subList(0, pageRefLimit));
         }
@@ -541,7 +519,7 @@ public class PDFMarkedContent2XHTML extends PDF2XHTML {
     }
 
     private boolean hasPageRefLimit() {
-        return outputPageLimit >= 0 || config.getMaxPages() > 0;
+        return config.getMaxPages() > 0;
     }
 
     private void writeLink() throws SAXException, IOException {

@@ -146,6 +146,12 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
+        // Reserve structured link metadata for executable relationships before
+        // body hyperlinks can consume OfficeLinkMetadataUtil's character budget.
+        // XHTML anchors are still emitted by the normal relationship walks.
+        ExternalReferenceBudget externalReferenceBudget =
+                createExternalReferenceBudget(metadata);
+
         // Extract VBA macros BEFORE the main body. The recursive write-limit is a CUMULATIVE
         // total across the whole parse (RecursiveParserWrapper.SecureHandlerCounter), so a
         // workbook/doc padded with megabytes of junk body text -- a known malspam evasion --
@@ -158,8 +164,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         buildXHTML(xhtml);
 
         // Now do any embedded parts
-        ExternalReferenceBudget externalReferenceBudget =
-                createExternalReferenceBudget();
         Set<String> handledRelationshipParts =
                 handleEmbeddedParts(xhtml, metadata, getEmbeddedPartMetadataMap(),
                         externalReferenceBudget);
@@ -379,6 +383,12 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     //parts can go missing; silently ignore --  TIKA-2134
                     continue;
                 }
+                String sourcePartName = source.getPartName() == null
+                        ? null : source.getPartName().getName();
+                if (sourcePartName != null
+                        && !handledRelationshipParts.add(sourcePartName)) {
+                    continue;
+                }
                 for (PackageRelationship rel : source.getRelationships()) {
                     try {
                         handleEmbeddedPart(source, rel, xhtml, metadata,
@@ -389,9 +399,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     } catch (Exception e) {
                         EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
                     }
-                }
-                if (source.getPartName() != null) {
-                    handledRelationshipParts.add(source.getPartName().getName());
                 }
             }
         } catch (InvalidFormatException e) {
@@ -423,23 +430,19 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (targetURI == null || targetURI.toString().isEmpty()) {
                 return;
             }
-            if (!externalReferenceBudget.tryAcquire(rel)) {
+            String sourcePath = normalizePartName(
+                    sourceURI != null ? sourceURI.getPath() : "");
+            if (!externalReferenceBudget.tryAcquire(sourcePath, rel)) {
                 return;
             }
             // External target - emit as external reference for security analysis
             String type = rel.getRelationshipType();
-            String sourcePath = sourceURI != null ? sourceURI.getPath() : "";
-            if (OLE_OBJECT_REL_TYPE.equals(type)) {
-                emitExternalRef(xhtml, parentMetadata, "externalOleObject", targetURI.toString(),
-                        sourcePath, type, rel.getId());
-                parentMetadata.set(Office.HAS_EXTERNAL_OLE_OBJECTS, true);
-            } else if (PackageRelationshipTypes.IMAGE_PART.equals(type)) {
-                emitExternalRef(xhtml, parentMetadata, "externalImage", targetURI.toString(),
-                        sourcePath, type, rel.getId());
-            } else {
-                emitExternalRef(xhtml, parentMetadata, "externalResource", targetURI.toString(),
-                        sourcePath, type, rel.getId());
-            }
+            String refType = externalRefType(type);
+            emitExternalRef(xhtml, parentMetadata, refType, targetURI.toString(),
+                    sourcePath, type, rel.getId(),
+                    !externalReferenceBudget.wasMetadataPreRecorded(
+                            sourcePath, rel));
+            setHasFlagFor(type, parentMetadata);
             return;
         }
         PackagePart target;
@@ -1037,14 +1040,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      * Used for detecting external resources that could be security risks.
      */
     private void emitExternalRef(XHTMLContentHandler xhtml, Metadata metadata, String refType,
-                                 String url, String source, String relationshipType, String id)
+                                 String url, String source, String relationshipType, String id,
+                                 boolean addMetadata)
             throws SAXException {
         if (url == null || url.isEmpty()) {
             return;
         }
-        OfficeLinkMetadataUtil.addLink(metadata,
-                OfficeLinkMetadataUtil.normalizeType(refType), url, null, null,
-                source, "relationship", relationshipType, id);
+        if (addMetadata) {
+            OfficeLinkMetadataUtil.addLink(metadata,
+                    OfficeLinkMetadataUtil.normalizeType(refType), url, null, null,
+                    source, "relationship", relationshipType, id);
+        }
         AttributesImpl attrs = new AttributesImpl();
         attrs.addAttribute("", "class", "class", "CDATA", "external-ref-" + refType);
         attrs.addAttribute("", "href", "href", "CDATA", url);
@@ -1094,6 +1100,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception ignored) {
             // best-effort
         }
@@ -1105,6 +1113,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 PackageRelationshipCollection rels;
                 try {
                     rels = part.getRelationships();
+                } catch (SecurityException e) {
+                    throw e;
                 } catch (Exception e) {
                     continue;
                 }
@@ -1115,6 +1125,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             }
         } catch (SAXException e) {
             WriteLimitReachedException.throwIfWriteLimitReached(e);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception e) {
             // never fail the parse over a relationship walk
         }
@@ -1135,17 +1147,19 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (rel.getTargetURI() == null) continue;
             String url = rel.getTargetURI().toString();
             if (url.isEmpty()) continue;
-            String relationshipKey = partName + "\u0000" + rel.getId()
+            String sourceName = normalizePartName(partName);
+            String relationshipKey = sourceName + "\u0000" + rel.getId()
                     + "\u0000" + rel.getRelationshipType() + "\u0000" + url;
             if (seen.contains(relationshipKey)) continue;
-            if (!externalReferenceBudget.tryAcquire(rel)) continue;
+            if (!externalReferenceBudget.tryAcquire(sourceName, rel)) continue;
             seen.add(relationshipKey);
 
-            String refType = shortRelType(rel.getRelationshipType());
+            String refType = externalRefType(rel.getRelationshipType());
             try {
                 emitExternalRef(xhtml, metadata, refType, url,
-                        partName.startsWith("/") ? partName.substring(1) : partName,
-                        rel.getRelationshipType(), rel.getId());
+                        sourceName, rel.getRelationshipType(), rel.getId(),
+                        !externalReferenceBudget.wasMetadataPreRecorded(
+                                sourceName, rel));
             } catch (SAXException e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
             }
@@ -1156,54 +1170,43 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         }
     }
 
-    private ExternalReferenceBudget createExternalReferenceBudget() {
-        int highPriorityCount = 0;
+    private ExternalReferenceBudget createExternalReferenceBudget(
+            Metadata metadata) {
+        ExternalReferenceBudget budget = new ExternalReferenceBudget();
         if (opcPackage == null) {
-            return new ExternalReferenceBudget(highPriorityCount);
+            return budget;
         }
         try {
-            highPriorityCount = countHighPriorityExternalRelationships(
-                    opcPackage.getRelationships(), highPriorityCount);
+            budget.preRecordHighPriority(
+                    opcPackage.getRelationships(), "_rels/.rels", metadata);
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception ignored) {
             // best-effort
         }
         try {
             for (PackagePart part : opcPackage.getParts()) {
-                if (part == null) continue;
+                if (part == null || part.getPartName() == null) continue;
                 try {
-                    highPriorityCount = countHighPriorityExternalRelationships(
-                            part.getRelationships(), highPriorityCount);
+                    budget.preRecordHighPriority(
+                            part.getRelationships(),
+                            normalizePartName(part.getPartName().getName()),
+                            metadata);
+                } catch (SecurityException e) {
+                    throw e;
                 } catch (Exception ignored) {
                     continue;
                 }
-                if (highPriorityCount >= MAX_EXTERNAL_REFS_PER_DOC) {
+                if (budget.hasReservedMaximum()) {
                     break;
                 }
             }
+        } catch (SecurityException e) {
+            throw e;
         } catch (Exception ignored) {
             // best-effort
         }
-        return new ExternalReferenceBudget(highPriorityCount);
-    }
-
-    private int countHighPriorityExternalRelationships(
-            PackageRelationshipCollection relationships, int count) {
-        if (relationships == null) {
-            return count;
-        }
-        for (PackageRelationship relationship : relationships) {
-            if (relationship.getTargetMode() == TargetMode.EXTERNAL
-                    && relationship.getTargetURI() != null
-                    && !relationship.getTargetURI().toString().isEmpty()
-                    && isHighPriorityExternalRelationship(
-                    relationship.getRelationshipType())) {
-                count++;
-                if (count >= MAX_EXTERNAL_REFS_PER_DOC) {
-                    return count;
-                }
-            }
-        }
-        return count;
+        return budget;
     }
 
     private static boolean isHighPriorityExternalRelationship(
@@ -1222,18 +1225,77 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     }
 
     private static final class ExternalReferenceBudget {
+        private final Set<String> admittedRelationshipKeys =
+                new HashSet<>();
+        private final Set<String> reservedHighPriorityKeys =
+                new HashSet<>();
+        private final Set<String> preRecordedMetadataKeys =
+                new HashSet<>();
         private int remainingHighPriority;
         private int emitted;
         private boolean truncated;
 
-        private ExternalReferenceBudget(int remainingHighPriority) {
-            this.remainingHighPriority = remainingHighPriority;
+        private void preRecordHighPriority(
+                PackageRelationshipCollection relationships,
+                String source, Metadata metadata) {
+            if (relationships == null) {
+                return;
+            }
+            for (PackageRelationship relationship : relationships) {
+                if (reservedHighPriorityKeys.size()
+                        >= MAX_EXTERNAL_REFS_PER_DOC) {
+                    return;
+                }
+                if (relationship.getTargetMode() != TargetMode.EXTERNAL
+                        || relationship.getTargetURI() == null
+                        || relationship.getTargetURI().toString().isEmpty()
+                        || !isHighPriorityExternalRelationship(
+                        relationship.getRelationshipType())) {
+                    continue;
+                }
+                String key = relationshipKey(source, relationship);
+                if (!reservedHighPriorityKeys.add(key)) {
+                    continue;
+                }
+                remainingHighPriority++;
+                int before = metadata.getValues(
+                        Office.OFFICE_LINK_RECORD).length;
+                String relationshipType =
+                        relationship.getRelationshipType();
+                OfficeLinkMetadataUtil.addLink(
+                        metadata,
+                        OfficeLinkMetadataUtil.normalizeType(
+                                externalRefType(relationshipType)),
+                        relationship.getTargetURI().toString(),
+                        null, null, source, "relationship",
+                        relationshipType, relationship.getId());
+                if (metadata.getValues(
+                        Office.OFFICE_LINK_RECORD).length > before) {
+                    preRecordedMetadataKeys.add(key);
+                }
+                setHasFlagFor(relationshipType, metadata);
+            }
         }
 
-        private boolean tryAcquire(PackageRelationship relationship) {
+        private boolean hasReservedMaximum() {
+            return reservedHighPriorityKeys.size()
+                    >= MAX_EXTERNAL_REFS_PER_DOC;
+        }
+
+        private boolean tryAcquire(
+                String source, PackageRelationship relationship) {
+            String key = relationshipKey(source, relationship);
+            if (!admittedRelationshipKeys.add(key)) {
+                return false;
+            }
             boolean highPriority = isHighPriorityExternalRelationship(
                     relationship.getRelationshipType());
-            if (highPriority && remainingHighPriority > 0) {
+            if (highPriority
+                    && !reservedHighPriorityKeys.contains(key)) {
+                truncated = true;
+                return false;
+            }
+            if (highPriority) {
                 remainingHighPriority--;
             }
             int remaining = MAX_EXTERNAL_REFS_PER_DOC - emitted;
@@ -1246,11 +1308,44 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             return true;
         }
 
+        private boolean wasMetadataPreRecorded(
+                String source, PackageRelationship relationship) {
+            return preRecordedMetadataKeys.contains(
+                    relationshipKey(source, relationship));
+        }
+
         private void markTruncation(Metadata metadata) {
             if (truncated) {
                 OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
             }
         }
+    }
+
+    private static String relationshipKey(
+            String source, PackageRelationship relationship) {
+        return normalizePartName(source) + "\u0000"
+                + relationship.getId() + "\u0000"
+                + relationship.getRelationshipType() + "\u0000"
+                + relationship.getTargetURI();
+    }
+
+    private static String normalizePartName(String partName) {
+        if (partName == null) {
+            return "";
+        }
+        return partName.startsWith("/")
+                ? partName.substring(1) : partName;
+    }
+
+    private static String externalRefType(String relationshipType) {
+        if (OLE_OBJECT_REL_TYPE.equals(relationshipType)) {
+            return "externalOleObject";
+        }
+        if (PackageRelationshipTypes.IMAGE_PART.equals(
+                relationshipType)) {
+            return "externalImage";
+        }
+        return shortRelType(relationshipType);
     }
 
     /** Trim a fully-qualified relationship type URI down to its last path component. */
@@ -1270,6 +1365,12 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 break;
             case "attachedTemplate":
                 metadata.set(org.apache.tika.metadata.Office.HAS_ATTACHED_TEMPLATE, true);
+                break;
+            case "ddeLink":
+                metadata.set(org.apache.tika.metadata.Office.HAS_DDE_LINKS, true);
+                break;
+            case "externalLink":
+                metadata.set(org.apache.tika.metadata.Office.HAS_EXTERNAL_LINKS, true);
                 break;
             case "subDocument":
                 metadata.set(org.apache.tika.metadata.Office.HAS_SUBDOCUMENTS, true);

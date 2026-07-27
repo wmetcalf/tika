@@ -19,6 +19,7 @@ package org.apache.tika.parser.pdf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayOutputStream;
@@ -42,7 +43,6 @@ import org.apache.pdfbox.pdmodel.documentinterchange.logicalstructure.PDStructur
 import org.apache.pdfbox.pdmodel.documentinterchange.markedcontent.PDPropertyList;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.TikaTest;
@@ -57,25 +57,23 @@ import org.apache.tika.sax.ToXMLContentHandler;
 
 public class PDFMarkedContent2XHTMLTest extends TikaTest {
 
-    static ParseContext MARKUP_CONTEXT = new ParseContext();
-
-    @BeforeAll
-    public static void setUp() {
+    private static ParseContext markupContext() {
+        ParseContext context = new ParseContext();
         PDFParserConfig config = new PDFParserConfig();
         config.setExtractMarkedContent(true);
-
-        MARKUP_CONTEXT.set(PDFParserConfig.class, config);
+        context.set(PDFParserConfig.class, config);
+        return context;
     }
 
     @Test
     public void testJournal() throws Exception {
-        String xml = getXML("testJournalParser.pdf", MARKUP_CONTEXT).xml;
+        String xml = getXML("testJournalParser.pdf", markupContext()).xml;
         assertContains("<h1>I. INTRODUCTION</h1>", xml);
     }
 
     @Test
     public void testVarious() throws Exception {
-        String xml = getXML("testPDFVarious.pdf", MARKUP_CONTEXT).xml;
+        String xml = getXML("testPDFVarious.pdf", markupContext()).xml;
         assertContains("<div class=\"textbox\"><p>Here is a text box</p>", xml);
         assertContains("<div class=\"footnote\"><p>1 This is a footnote.</p>", xml);
         assertContains("<ul>\t<li>Bullet 1</li>", xml);
@@ -87,7 +85,7 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     }
 
     @Test
-    public void testColorAwareAnalysisTakesPriorityOverMarkedContentExtraction()
+    public void testDisabledColorAwareScannerDoesNotOverrideMarkedContentExtraction()
             throws Exception {
         ParseContext context = new ParseContext();
         PDFParserConfig config = new PDFParserConfig();
@@ -100,17 +98,37 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
 
         assertEquals("true", result.metadata.get(
                 org.apache.tika.metadata.PDF.HAS_MARKED_CONTENT));
+        assertContains("<h1>I. INTRODUCTION</h1>", result.xml);
+        assertNull(result.metadata.get("pdf_color_qr:glyphs"),
+                "a disabled scanner must not override requested marked-content extraction");
+    }
+
+    @Test
+    public void testEnabledColorAwareScannerTakesPriorityOverMarkedContentExtraction()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        PDFParserConfig config = new PDFParserConfig();
+        config.setExtractMarkedContent(true);
+        context.set(PDFParserConfig.class, config);
+        context.set(ColorAwareConfig.class, new ColorAwareConfig().setEnabled(true));
+        ZXingCPPConfig zxingConfig = new ZXingCPPConfig();
+        zxingConfig.setEnabled(true);
+        context.set(ZXingCPPConfig.class, zxingConfig);
+
+        XMLResult result = getXML("testJournalParser.pdf", context);
+
+        assertEquals("true", result.metadata.get(
+                org.apache.tika.metadata.PDF.HAS_MARKED_CONTENT));
         assertNotNull(result.metadata.get("pdf_color_qr:glyphs"),
-                "tagged PDFs must still run color-aware glyph analysis");
+                "an enabled scanner must retain color-aware analysis priority");
     }
 
     @Test
     public void testChildAttachments() throws Exception {
         List<Metadata> metadataList =
-                getRecursiveMetadata("testPDF_childAttachments.pdf", MARKUP_CONTEXT);
+                getRecursiveMetadata("testPDF_childAttachments.pdf", markupContext());
 
-        // Full-document analysis still extracts annotations beyond the visible
-        // two-page output window.
+        // Full-document analysis extracts annotations from every page.
         assertEquals(5, metadataList.size());
 
         String xml = metadataList.get(0).get(TikaCoreProperties.TIKA_CONTENT);
@@ -123,14 +141,12 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
     }
 
     @Test
-    public void testMarkedContentHonorsLegacyVisiblePageLimit() throws Exception {
-        String xml = getXML("testJournalParser.pdf", MARKUP_CONTEXT).xml;
+    public void testMarkedContentCoversWholeDocumentByDefault() throws Exception {
+        String xml = getXML("testJournalParser.pdf", markupContext()).xml;
 
         assertContains("I. INTRODUCTION", xml);
-        assertFalse(xml.contains("We now construct the control primitives"),
-                "marked-content text from page six must not bypass the two-page output limit");
-        assertFalse(xml.contains("<table>"),
-                "marked-content structure from later pages must not bypass the output limit");
+        assertContains("We now construct the control primitives", xml);
+        assertContains("<table>", xml);
     }
 
     @Test
@@ -143,7 +159,7 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             Metadata metadata = new Metadata();
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    metadata, config, null, 2);
+                    metadata, config, null);
 
             assertEquals(1, metadata.getValues(
                     org.apache.tika.metadata.PDF.CHARACTERS_PER_PAGE).length,
@@ -158,9 +174,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertContains("<a href=\"https://allowed.invalid/\">ALLOWED_CHILD</a>",
                     handler.toString());
@@ -174,9 +191,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertContains(
                     "<a href=\"https://allowed-descendant.invalid/\">ALLOWED_CHILD</a>",
@@ -190,9 +208,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertContains(
                     "<a href=\"https://outer.invalid/\">OUTER_BEFOREOUTER_AFTER</a>",
@@ -207,9 +226,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             String xml = handler.toString();
             assertContains(
@@ -227,9 +247,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             String xml = handler.toString();
             assertContains(
@@ -245,9 +266,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             String xml = handler.toString();
             assertContains("<a href=\"https://outer.invalid/\">OUTER</a>", xml);
@@ -262,9 +284,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertContains("href=\"https://empty-allowed.invalid/\"",
                     handler.toString());
@@ -279,9 +302,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertFalse(handler.toString().contains(
                     "https://excluded-annotation.invalid/"));
@@ -299,7 +323,7 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             config.setMaxPages(1);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, -1);
+                    new Metadata(), config, null);
 
             assertFalse(handler.toString().contains(
                     "https://excluded-analysis-page.invalid/"));
@@ -314,9 +338,10 @@ public class PDFMarkedContent2XHTMLTest extends TikaTest {
             ToXMLContentHandler handler = new ToXMLContentHandler();
             PDFParserConfig config = new PDFParserConfig();
             config.setExtractMarkedContent(true);
+            config.setMaxPages(2);
 
             PDFMarkedContent2XHTML.process(document, handler, new ParseContext(),
-                    new Metadata(), config, null, 2);
+                    new Metadata(), config, null);
 
             assertContains("href=\"https://allowed-annotation.invalid/\"",
                     handler.toString());

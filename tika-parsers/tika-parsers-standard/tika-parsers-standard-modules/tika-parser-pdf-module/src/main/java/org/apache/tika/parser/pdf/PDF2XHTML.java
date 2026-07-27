@@ -166,8 +166,10 @@ class PDF2XHTML extends AbstractPDF2XHTML {
     static boolean usesColorAwareAnalysis(ParseContext context, PDFParserConfig config) {
         org.apache.tika.parser.ColorAwareConfig colorConfig =
                 context.get(org.apache.tika.parser.ColorAwareConfig.class);
+        org.apache.tika.parser.image.ZXingCPPConfig zxingConfig =
+                context.get(org.apache.tika.parser.image.ZXingCPPConfig.class);
         return !config.isDetectAngles() && colorConfig != null && colorConfig.isEnabled()
-                && context.get(org.apache.tika.parser.image.ZXingCPPConfig.class) != null;
+                && zxingConfig != null && zxingConfig.isEnabled();
     }
 
     @Override

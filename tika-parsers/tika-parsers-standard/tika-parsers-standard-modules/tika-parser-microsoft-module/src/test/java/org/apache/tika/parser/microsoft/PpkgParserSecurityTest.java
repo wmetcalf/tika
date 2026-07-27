@@ -286,6 +286,35 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void sameContentWithDifferentSemanticExtensionsIsProcessedSeparately()
+            throws Exception {
+        ParseResult result = parseResult(buildAliasedWim(
+                new String[]{"benign.dat", "stage.ps1"},
+                "Write-Output 'same bytes'".getBytes(StandardCharsets.UTF_8)));
+
+        assertEquals(2, result.metadata.getValues("ppkg:embedded_file_name").length);
+        assertTrue(Arrays.asList(result.metadata.getValues("ppkg:embedded_file_name"))
+                .contains("benign.dat"));
+        assertTrue(Arrays.asList(result.metadata.getValues("ppkg:embedded_file_name"))
+                .contains("stage.ps1"));
+    }
+
+    @Test
+    public void sameContentWithDifferentXmlExtensionsPreservesBothSources()
+            throws Exception {
+        ParseResult result = parseResult(buildAliasedWim(
+                new String[]{"policy.xml", "commands.provxml"},
+                ("<provisioning><CommandLine>" + COMMAND
+                        + "</CommandLine></provisioning>")
+                        .getBytes(StandardCharsets.UTF_8)));
+
+        assertEquals(1, result.metadata.getValues("ppkg:command").length);
+        assertEquals(2, countOccurrences(result.body, "Source: "));
+        assertTrue(result.body.contains("Source: policy.xml"));
+        assertTrue(result.body.contains("Source: commands.provxml"));
+    }
+
+    @Test
     public void embeddedAssetCompatibilityArraysStayAlignedUnderLowTotalBudget()
             throws Exception {
         assertEmbeddedAssetCompatibilityArraysStayAligned(158);
@@ -721,38 +750,49 @@ public class PpkgParserSecurityTest {
     }
 
     private static byte[] buildAliasedWim(int entries, String xml) {
-        byte[] xmlBytes = xml.getBytes(StandardCharsets.UTF_8);
+        String[] names = new String[entries];
+        for (int i = 0; i < entries; i++) {
+            names[i] = String.format(Locale.ROOT, "p%05d.provxml", i);
+        }
+        return buildAliasedWim(names, xml.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static byte[] buildAliasedWim(String[] names, byte[] resourceBytes) {
         int lookupOffset = 208;
         int lookupLength = 100;
         int metadataOffset = lookupOffset + lookupLength;
-        int dentrySize = 136;
-        int metadataLength = 32 + entries * dentrySize + 8;
-        int xmlOffset = metadataOffset + metadataLength;
-        byte[] wim = header(xmlOffset + xmlBytes.length, 32768);
+        int dentryBytes = 0;
+        for (String name : names) {
+            int entryLength = 102 + name.getBytes(StandardCharsets.UTF_16LE).length;
+            dentryBytes += (entryLength + 7) & ~7;
+        }
+        int metadataLength = 32 + dentryBytes + 8;
+        int resourceOffset = metadataOffset + metadataLength;
+        byte[] wim = header(resourceOffset + resourceBytes.length, 32768);
         ByteBuffer buffer = ByteBuffer.wrap(wim).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putInt(44, 1);
         putResourceHeader(wim, buffer, 48, lookupLength, 0,
                 lookupOffset, lookupLength);
 
         byte[] metadataHash = repeated((byte) 0x11);
-        byte[] xmlHash = repeated((byte) 0x42);
+        byte[] resourceHash = repeated((byte) 0x42);
         putLookupEntry(wim, buffer, lookupOffset, metadataLength, 0x04,
                 metadataOffset, metadataLength, metadataHash);
-        putLookupEntry(wim, buffer, lookupOffset + 50, xmlBytes.length, 0,
-                xmlOffset, xmlBytes.length, xmlHash);
+        putLookupEntry(wim, buffer, lookupOffset + 50, resourceBytes.length, 0,
+                resourceOffset, resourceBytes.length, resourceHash);
 
         buffer.putInt(metadataOffset, 8);
         buffer.putLong(metadataOffset + 24, 32);
-        for (int i = 0; i < entries; i++) {
-            int dentry = metadataOffset + 32 + i * dentrySize;
-            byte[] name = String.format(Locale.ROOT, "p%05d.provxml", i)
-                    .getBytes(StandardCharsets.UTF_16LE);
+        int dentry = metadataOffset + 32;
+        for (int i = 0; i < names.length; i++) {
+            byte[] name = names[i].getBytes(StandardCharsets.UTF_16LE);
             buffer.putLong(dentry, 102L + name.length);
-            System.arraycopy(xmlHash, 0, wim, dentry + 64, xmlHash.length);
+            System.arraycopy(resourceHash, 0, wim, dentry + 64, resourceHash.length);
             buffer.putShort(dentry + 100, (short) name.length);
             System.arraycopy(name, 0, wim, dentry + 102, name.length);
+            dentry += (102 + name.length + 7) & ~7;
         }
-        System.arraycopy(xmlBytes, 0, wim, xmlOffset, xmlBytes.length);
+        System.arraycopy(resourceBytes, 0, wim, resourceOffset, resourceBytes.length);
         return wim;
     }
 

@@ -28,6 +28,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.TikaMemoryLimitException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -413,6 +414,7 @@ class RTFEmbObjHandler {
                     EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
                 } catch (SAXException e) {
                     balancer.drainOpenElements();
+                    WriteLimitReachedException.throwIfWriteLimitReached(e);
                     EmbeddedDocumentUtil.recordException(e, metadata);
                 }
             }
