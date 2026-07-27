@@ -157,7 +157,8 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
      * Detects security-relevant features like mail merge, attached templates,
      * subdocuments, and framesets.
      */
-    private void detectSecurityFeatures(PackagePart documentPart, XHTMLContentHandler xhtml) {
+    private void detectSecurityFeatures(PackagePart documentPart, XHTMLContentHandler xhtml)
+            throws SAXException {
         // Extract document features (hidden text, track changes, comments, comment persons)
         new XWPFFeatureExtractor().process(documentPart, metadata, context);
 
@@ -174,7 +175,7 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     }
                 }
             }
-        } catch (InvalidFormatException | SAXException e) {
+        } catch (InvalidFormatException e) {
             // swallow
         }
 
@@ -191,7 +192,7 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     }
                 }
             }
-        } catch (InvalidFormatException | SAXException e) {
+        } catch (InvalidFormatException e) {
             // swallow
         }
 
