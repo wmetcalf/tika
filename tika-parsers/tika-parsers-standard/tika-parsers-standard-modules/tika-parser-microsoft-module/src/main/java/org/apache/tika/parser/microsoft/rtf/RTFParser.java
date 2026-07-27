@@ -18,7 +18,9 @@ package org.apache.tika.parser.microsoft.rtf;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
@@ -106,7 +108,21 @@ public class RTFParser implements Parser {
         try {
             xhtml.startDocument();
             parseInline(tis, balancer, metadata, context);
+            Throwable swallowedOutputFailure =
+                    taggedOutput.getUncheckedFailure();
+            if (swallowedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = swallowedOutputFailure;
+                throwUnchecked(swallowedOutputFailure);
+            }
         } catch (IOException e) {
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = uncheckedOutputFailure;
+                throwUnchecked(uncheckedOutputFailure);
+            }
             try {
                 tagged.throwIfCauseOf(e);
             } catch (IOException inputFailure) {
@@ -133,6 +149,13 @@ public class RTFParser implements Parser {
                 primaryFailure = outputFailure;
                 throw outputFailure;
             }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = uncheckedOutputFailure;
+                throwUnchecked(uncheckedOutputFailure);
+            }
             throw e;
         } catch (TikaException e) {
             SAXException outputFailure =
@@ -142,13 +165,47 @@ public class RTFParser implements Parser {
                 primaryFailure = outputFailure;
                 throw outputFailure;
             }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = uncheckedOutputFailure;
+                throwUnchecked(uncheckedOutputFailure);
+            }
             primaryFailure = e;
             throw e;
         } catch (RuntimeException e) {
+            SAXException taggedOutputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (taggedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = taggedOutputFailure;
+                throw taggedOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = uncheckedOutputFailure;
+                throwUnchecked(uncheckedOutputFailure);
+            }
             primaryFailure = e;
-            shouldCleanupAfterFailure = false;
             throw e;
         } catch (Error e) {
+            SAXException taggedOutputFailure =
+                    findTaggedOutputFailure(taggedOutput, e);
+            if (taggedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = taggedOutputFailure;
+                throw taggedOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedOutput, e);
+            if (uncheckedOutputFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = uncheckedOutputFailure;
+                throwUnchecked(uncheckedOutputFailure);
+            }
             primaryFailure = e;
             shouldCleanupAfterFailure = false;
             throw e;
@@ -176,8 +233,15 @@ public class RTFParser implements Parser {
             TaggedContentHandler taggedOutput, Throwable failure) {
         Set<Throwable> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
-        Throwable current = failure;
-        while (current != null && seen.add(current)) {
+        Deque<Throwable> pending = new ArrayDeque<>();
+        if (failure != null) {
+            pending.push(failure);
+        }
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
             if (current instanceof SAXException saxFailure
                     && taggedOutput.isCauseOf(saxFailure)) {
                 try {
@@ -188,9 +252,26 @@ public class RTFParser implements Parser {
                 return null;
             }
             Throwable cause = current.getCause();
-            current = cause != current ? cause : null;
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
         }
         return null;
+    }
+
+    private static Throwable findUncheckedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Throwable outputFailure =
+                taggedOutput.findUncheckedCause(failure);
+        return outputFailure != null
+                ? outputFailure : taggedOutput.getUncheckedFailure();
     }
 
     private static void cleanupAfterFailure(
@@ -201,41 +282,48 @@ public class RTFParser implements Parser {
         try {
             balancer.drainOpenElements();
         } catch (Throwable cleanupFailure) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, cleanupFailure);
-            if (outputFailure != null) {
-                addSuppressed(outputFailure, primaryFailure);
-                throw outputFailure;
-            }
-            throwIfUncheckedCleanupFailure(
-                    cleanupFailure, primaryFailure);
-            addSuppressed(primaryFailure, cleanupFailure);
+            handleCleanupFailure(
+                    taggedOutput, primaryFailure, cleanupFailure);
         }
         try {
             xhtml.endDocument();
         } catch (Throwable cleanupFailure) {
-            SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, cleanupFailure);
-            if (outputFailure != null) {
-                addSuppressed(outputFailure, primaryFailure);
-                throw outputFailure;
-            }
-            throwIfUncheckedCleanupFailure(
-                    cleanupFailure, primaryFailure);
-            addSuppressed(primaryFailure, cleanupFailure);
+            handleCleanupFailure(
+                    taggedOutput, primaryFailure, cleanupFailure);
         }
     }
 
-    private static void throwIfUncheckedCleanupFailure(
-            Throwable cleanupFailure, Throwable primaryFailure) {
-        if (cleanupFailure instanceof RuntimeException runtimeFailure) {
-            addSuppressed(runtimeFailure, primaryFailure);
+    static void handleCleanupFailure(
+            TaggedContentHandler taggedOutput, Throwable primaryFailure,
+            Throwable cleanupFailure) throws SAXException {
+        SAXException outputFailure =
+                findTaggedOutputFailure(taggedOutput, cleanupFailure);
+        if (outputFailure != null) {
+            addSuppressed(outputFailure, primaryFailure);
+            throw outputFailure;
+        }
+        Throwable uncheckedOutputFailure =
+                findUncheckedOutputFailure(taggedOutput, cleanupFailure);
+        if (uncheckedOutputFailure != null) {
+            addSuppressed(uncheckedOutputFailure, primaryFailure);
+            throwUnchecked(uncheckedOutputFailure);
+        }
+        if (cleanupFailure instanceof Error fatalCleanupFailure) {
+            addSuppressed(fatalCleanupFailure, primaryFailure);
+            throw fatalCleanupFailure;
+        }
+        addSuppressed(primaryFailure, cleanupFailure);
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
             throw runtimeFailure;
         }
-        if (cleanupFailure instanceof Error errorFailure) {
-            addSuppressed(errorFailure, primaryFailure);
+        if (failure instanceof Error errorFailure) {
             throw errorFailure;
         }
+        throw new IllegalArgumentException(
+                "Expected an unchecked output failure", failure);
     }
 
     private static void addSuppressed(
