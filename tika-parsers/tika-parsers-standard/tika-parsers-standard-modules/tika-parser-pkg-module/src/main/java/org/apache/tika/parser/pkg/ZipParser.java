@@ -277,20 +277,17 @@ public class ZipParser extends AbstractArchiveParser {
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
 
-        try {
-            Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
-            while (entries.hasMoreElements()) {
-                ZipArchiveEntry entry = entries.nextElement();
-                if (centralDirectoryEntries != null) {
-                    centralDirectoryEntries.add(entry.getName());
-                }
-                if (!entry.isDirectory()) {
-                    parseZipFileEntry(zipFile, entry, extractor, metadata, xhtml, context, config);
-                }
+        Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
+        while (entries.hasMoreElements()) {
+            ZipArchiveEntry entry = entries.nextElement();
+            if (centralDirectoryEntries != null) {
+                centralDirectoryEntries.add(entry.getName());
             }
-        } finally {
-            xhtml.endDocument();
+            if (!entry.isDirectory()) {
+                parseZipFileEntry(zipFile, entry, extractor, metadata, xhtml, context, config);
+            }
         }
+        xhtml.endDocument();
 
         // Perform integrity check if enabled
         if (config.isIntegrityCheck()) {
@@ -324,8 +321,6 @@ public class ZipParser extends AbstractArchiveParser {
         String encoding = config.getEntryEncoding() != null
                 ? config.getEntryEncoding().name()
                 : null;
-        ZipArchiveInputStream zis = new ZipArchiveInputStream(tis, encoding, true, startWithDataDescriptor);
-
         updateMediaType(metadata);
 
         EmbeddedDocumentExtractor extractor =
@@ -336,23 +331,25 @@ public class ZipParser extends AbstractArchiveParser {
 
         AtomicInteger entryCnt = new AtomicInteger();
         try {
-            parseStreamEntries(zis, metadata, extractor, xhtml, false, entryCnt, context, config,
-                    seenEntryNames, duplicates);
+            try (ZipArchiveInputStream zis =
+                    new ZipArchiveInputStream(tis, encoding, true, startWithDataDescriptor)) {
+                parseStreamEntries(zis, metadata, extractor, xhtml, false, entryCnt, context, config,
+                        seenEntryNames, duplicates);
+            }
         } catch (UnsupportedZipFeatureException zfe) {
             if (zfe.getFeature() == Feature.DATA_DESCRIPTOR && !startWithDataDescriptor) {
                 // Re-read with data descriptor support
-                zis.close();
                 tis.rewind();
-                zis = new ZipArchiveInputStream(tis, encoding, true, true);
-                parseStreamEntries(zis, metadata, extractor, xhtml, true, entryCnt, context, config,
-                        seenEntryNames, duplicates);
+                try (ZipArchiveInputStream zis =
+                        new ZipArchiveInputStream(tis, encoding, true, true)) {
+                    parseStreamEntries(zis, metadata, extractor, xhtml, true, entryCnt, context,
+                            config, seenEntryNames, duplicates);
+                }
             } else {
                 throw zfe;
             }
-        } finally {
-            zis.close();
-            xhtml.endDocument();
         }
+        xhtml.endDocument();
 
         // Record integrity check results (streaming only = can't compare to central directory)
         if (config.isIntegrityCheck()) {

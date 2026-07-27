@@ -18,6 +18,7 @@ package org.apache.tika.parser.pkg;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -31,11 +32,16 @@ import java.util.List;
 import java.util.Locale;
 
 import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.Tika;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -164,6 +170,113 @@ public class ZipParserTest extends AbstractPkgTest {
         assertThrows(TikaException.class, () -> {
             getXML("droste.zip");
         });
+    }
+
+    @Test
+    public void testZipFilePreservesOutputDenialWithoutCleanupCallbacks(@TempDir Path tempDir)
+            throws Exception {
+        Path zipPath = tempDir.resolve("output-denial.zip");
+        Files.write(zipPath, createSingleEntryZip(true));
+
+        try (TikaInputStream tis = TikaInputStream.get(zipPath)) {
+            tis.setOpenContainer(ZipFile.builder().setFile(zipPath.toFile()).get());
+            assertOutputDenialStopsCallbacks(tis);
+        }
+    }
+
+    @Test
+    public void testStreamingPreservesOutputDenialWithoutCleanupCallbacks() throws Exception {
+        try (TikaInputStream tis = TikaInputStream.get(createSingleEntryZip(false))) {
+            assertOutputDenialStopsCallbacks(tis);
+            assertNull(tis.getOpenContainer(), "fixture must use the streaming ZIP path");
+        }
+    }
+
+    private void assertOutputDenialStopsCallbacks(TikaInputStream tis) {
+        SAXException denial = new SAXException("simulated ZIP output denial");
+        FailStopHandler handler = new FailStopHandler(denial);
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new DenyingEmbeddedDocumentExtractor());
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> new ZipParser().parse(tis, handler, new Metadata(), context));
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    private byte[] createSingleEntryZip(boolean includeCentralDirectory) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] content = "entry content".getBytes(StandardCharsets.UTF_8);
+        int localHeaderOffset = baos.size();
+        writeLocalFileHeader(baos, "entry.txt", content);
+        if (includeCentralDirectory) {
+            int centralDirectoryOffset = baos.size();
+            writeCentralDirectoryEntry(baos, "entry.txt", content, localHeaderOffset);
+            int centralDirectorySize = baos.size() - centralDirectoryOffset;
+            writeEndOfCentralDirectory(
+                    baos, 1, centralDirectorySize, centralDirectoryOffset);
+        }
+        return baos.toByteArray();
+    }
+
+    private static final class DenyingEmbeddedDocumentExtractor
+            implements EmbeddedDocumentExtractor {
+
+        private static final char[] DENIED_OUTPUT = "denied output".toCharArray();
+
+        @Override
+        public boolean shouldParseEmbedded(Metadata metadata) {
+            return true;
+        }
+
+        @Override
+        public void parseEmbedded(
+                TikaInputStream stream, ContentHandler handler, Metadata metadata,
+                ParseContext parseContext, boolean outputHtml) throws SAXException {
+            handler.characters(DENIED_OUTPUT, 0, DENIED_OUTPUT.length);
+        }
+    }
+
+    private static final class FailStopHandler extends DefaultHandler {
+
+        private final SAXException denial;
+        private final SAXException cleanupFailure =
+                new SAXException("SAX callback delivered after ZIP output denial");
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopHandler(SAXException denial) {
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            if (denied) {
+                rejectCallback();
+            }
+            denied = true;
+            throw denial;
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            if (denied) {
+                rejectCallback();
+            }
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            if (denied) {
+                rejectCallback();
+            }
+        }
+
+        private void rejectCallback() throws SAXException {
+            callbacksAfterDenial++;
+            throw cleanupFailure;
+        }
     }
 
     @Test
