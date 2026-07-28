@@ -20,6 +20,10 @@ import static java.lang.String.valueOf;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.Set;
 
 import com.pff.PSTAttachment;
@@ -60,6 +64,25 @@ public class PSTMailItemParser implements Parser {
     public static final String PST_MAIL_ITEM_STRING = PST_MAIL_ITEM.toString();
     public static final Set<MediaType> SUPPORTED_ITEMS = Set.of(PST_MAIL_ITEM);
 
+    private static final class AttachmentTaggedContentHandler
+            extends TaggedContentHandler {
+
+        private final Set<Throwable> fatalCleanupFailures =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+
+        private AttachmentTaggedContentHandler(ContentHandler proxy) {
+            super(proxy);
+        }
+
+        private void recordFatalCleanupFailure(Throwable failure) {
+            fatalCleanupFailures.add(failure);
+        }
+
+        private boolean isFatalCleanupFailure(Throwable failure) {
+            return fatalCleanupFailures.contains(failure);
+        }
+    }
+
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_ITEMS;
@@ -79,23 +102,37 @@ public class PSTMailItemParser implements Parser {
         }
         PSTMessage pstMsg = (PSTMessage) openContainerObj;
         EmbeddedDocumentExtractor ex = EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        TaggedContentHandler taggedOutput = new TaggedContentHandler(handler);
+        AttachmentTaggedContentHandler taggedOutput =
+                new AttachmentTaggedContentHandler(handler);
         XHTMLContentHandler xhtml =
                 new XHTMLContentHandler(taggedOutput, metadata, context);
         try {
             xhtml.startDocument();
             parseMailAndAttachments(
                     pstMsg, xhtml, metadata, context, ex, taggedOutput);
+            throwIfOutputFailure(taggedOutput, null);
             xhtml.endDocument();
         } catch (SAXException e) {
-            taggedOutput.throwIfCauseOf(e);
+            throwIfOutputFailure(taggedOutput, e);
+            throwIfSecurityException(e);
+            throw e;
+        } catch (IOException | TikaException e) {
+            throwIfOutputFailure(taggedOutput, e);
+            throwIfSecurityException(e);
+            throw e;
+        } catch (RuntimeException e) {
+            throwIfOutputFailure(taggedOutput, e);
+            throwIfSecurityException(e);
+            throw e;
+        } catch (Error e) {
+            throwIfOutputFailure(taggedOutput, e);
             throw e;
         }
     }
 
     private void parseMailAndAttachments(PSTMessage pstMsg, XHTMLContentHandler handler, Metadata metadata, ParseContext context,
                                          EmbeddedDocumentExtractor embeddedExtractor,
-                                         TaggedContentHandler taggedOutput)
+                                         AttachmentTaggedContentHandler taggedOutput)
             throws SAXException, IOException, TikaException {
         extractMetadata(pstMsg, metadata);
         AttributesImpl attributes = new AttributesImpl();
@@ -104,6 +141,7 @@ public class PSTMailItemParser implements Parser {
         handler.startElement("div", attributes);
 
         parseMailItem(pstMsg, handler, metadata, context);
+        throwIfOutputFailure(taggedOutput, null);
         parseMailAttachments(
                 pstMsg, handler, metadata, context, embeddedExtractor,
                 taggedOutput);
@@ -218,41 +256,167 @@ public class PSTMailItemParser implements Parser {
     private void parseMailAttachments(PSTMessage email, XHTMLContentHandler xhtml,
                                       Metadata metadata, ParseContext context,
                                       EmbeddedDocumentExtractor embeddedExtractor,
-                                      TaggedContentHandler taggedOutput)
+                                      AttachmentTaggedContentHandler taggedOutput)
             throws TikaException, SAXException {
         int numberOfAttachments = email.getNumberOfAttachments();
         for (int i = 0; i < numberOfAttachments; i++) {
             try {
                 PSTAttachment attachment = email.getAttachment(i);
-                parseMailAttachment(xhtml, attachment, metadata, embeddedExtractor, context);
+                parseMailAttachment(
+                        xhtml, attachment, metadata, embeddedExtractor,
+                        context, taggedOutput);
+                throwIfOutputFailure(taggedOutput, null);
             } catch (SecurityException e) {
+                throwIfOutputFailure(taggedOutput, e);
                 throw e;
             } catch (SAXException e) {
-                taggedOutput.throwIfCauseOf(e);
+                throwIfOutputFailure(taggedOutput, e);
+                throwIfSecurityException(e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
             } catch (Exception e) {
+                throwIfOutputFailure(taggedOutput, e);
+                throwIfSecurityException(e);
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
+            } catch (Error e) {
+                throwIfOutputFailure(taggedOutput, e);
+                throw e;
+            }
+        }
+    }
+
+    private static void throwIfOutputFailure(
+            AttachmentTaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        if (taggedOutput.isFatalCleanupFailure(failure)) {
+            return;
+        }
+        Throwable outputFailure =
+                findOutputSaxFailure(taggedOutput, failure);
+        if (outputFailure == null) {
+            outputFailure = taggedOutput.findUncheckedCause(failure);
+        }
+        if (!(failure instanceof Error)) {
+            if (outputFailure == null) {
+                outputFailure = taggedOutput.getSaxFailure();
+            }
+            if (outputFailure == null) {
+                outputFailure = taggedOutput.getUncheckedFailure();
+            }
+        }
+        if (outputFailure == null) {
+            return;
+        }
+        if (failure != null) {
+            if (containsThrowable(failure, outputFailure)) {
+                copySuppressed(outputFailure, failure);
+            } else {
+                addSuppressed(outputFailure, failure);
+            }
+        }
+        if (outputFailure instanceof SAXException saxFailure) {
+            throw saxFailure;
+        }
+        if (outputFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (outputFailure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
+    }
+
+    private static SAXException findOutputSaxFailure(
+            AttachmentTaggedContentHandler taggedOutput, Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        SAXException recordedFailure = taggedOutput.getSaxFailure();
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current == recordedFailure) {
+                return recordedFailure;
+            }
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    return outputFailure;
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void throwIfSecurityException(Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current instanceof SecurityException securityFailure) {
+                copySuppressed(securityFailure, failure);
+                throw securityFailure;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable candidate = suppressed[i];
+                if (candidate != null && candidate != current) {
+                    pending.push(candidate);
+                }
             }
         }
     }
 
     private void parseMailAttachment(XHTMLContentHandler xhtml, PSTAttachment attachment, Metadata metadata,
-                                     EmbeddedDocumentExtractor embeddedExtractor, ParseContext context)
+                                     EmbeddedDocumentExtractor embeddedExtractor, ParseContext context,
+                                     AttachmentTaggedContentHandler taggedOutput)
             throws PSTException, IOException, TikaException, SAXException {
 
         PSTMessage attachedEmail = attachment.getEmbeddedPSTMessage();
         //check for whether this is a binary attachment or an embedded pst msg
         if (attachedEmail != null) {
             long sz = OutlookPSTParser.estimateSize(attachedEmail);
-            try (TikaInputStream tis = TikaInputStream.getFromContainer(attachedEmail, sz, metadata)) {
-                Metadata attachMetadata = Metadata.newInstance(context);
-                attachMetadata.set(Metadata.CONTENT_TYPE, PSTMailItemParser.PST_MAIL_ITEM_STRING);
-                attachMetadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, PSTMailItemParser.PST_MAIL_ITEM_STRING);
-                attachMetadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, attachedEmail.getSubject() + ".msg");
-                attachMetadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE, TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
-                embeddedExtractor.parseEmbedded(tis, xhtml, attachMetadata, context, true);
-            }
+            TikaInputStream tis =
+                    TikaInputStream.getFromContainer(
+                            attachedEmail, sz, metadata);
+            Metadata attachMetadata = Metadata.newInstance(context);
+            attachMetadata.set(Metadata.CONTENT_TYPE, PSTMailItemParser.PST_MAIL_ITEM_STRING);
+            attachMetadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, PSTMailItemParser.PST_MAIL_ITEM_STRING);
+            attachMetadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, attachedEmail.getSubject() + ".msg");
+            attachMetadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE, TikaCoreProperties.EmbeddedResourceType.ATTACHMENT.name());
+            parseEmbeddedAndClose(
+                    tis, embeddedExtractor, xhtml, attachMetadata,
+                    context, true, taggedOutput);
             return;
         }
 
@@ -282,12 +446,205 @@ public class PSTMailItemParser implements Parser {
                 return;
             }
 
-            try {
-                embeddedExtractor.parseEmbedded(tis, xhtml, attachMeta, context, false);
-            } finally {
-                tis.close();
+            parseEmbeddedAndClose(
+                    tis, embeddedExtractor, xhtml, attachMeta,
+                    context, false, taggedOutput);
+        }
+        throwIfOutputFailure(taggedOutput, null);
+        xhtml.endElement("div");
+    }
+
+    private static void parseEmbeddedAndClose(
+            TikaInputStream stream,
+            EmbeddedDocumentExtractor embeddedExtractor,
+            ContentHandler handler, Metadata metadata,
+            ParseContext context, boolean outputHtml,
+            AttachmentTaggedContentHandler taggedOutput)
+            throws IOException, SAXException {
+        Throwable primaryFailure = null;
+        Throwable parserFailure = null;
+        try {
+            embeddedExtractor.parseEmbedded(
+                    stream, handler, metadata, context, outputHtml);
+            throwIfOutputFailure(taggedOutput, null);
+        } catch (IOException | SAXException | RuntimeException | Error e) {
+            parserFailure = e;
+            primaryFailure =
+                    normalizeParserFailure(taggedOutput, parserFailure);
+            if (primaryFailure instanceof IOException ioFailure) {
+                throw ioFailure;
+            }
+            if (primaryFailure instanceof SAXException saxFailure) {
+                throw saxFailure;
+            }
+            if (primaryFailure instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            throw (Error) primaryFailure;
+        } finally {
+            closeAttachmentStream(
+                    stream, primaryFailure, parserFailure, taggedOutput);
+        }
+    }
+
+    private static Throwable normalizeParserFailure(
+            AttachmentTaggedContentHandler taggedOutput,
+            Throwable parserFailure) {
+        Throwable outputFailure =
+                findOutputSaxFailure(taggedOutput, parserFailure);
+        if (outputFailure == null) {
+            outputFailure =
+                    taggedOutput.findUncheckedCause(parserFailure);
+        }
+        if (outputFailure == null) {
+            return parserFailure;
+        }
+        copySuppressed(outputFailure, parserFailure);
+        return outputFailure;
+    }
+
+    private static void closeAttachmentStream(
+            TikaInputStream stream, Throwable primaryFailure,
+            Throwable parserFailure,
+            AttachmentTaggedContentHandler taggedOutput)
+            throws IOException {
+        try {
+            stream.close();
+        } catch (Throwable cleanupFailure) {
+            if (primaryFailure == null) {
+                if (isFatalFailure(cleanupFailure)) {
+                    preserveRecordedOutputEvidence(
+                            taggedOutput, cleanupFailure);
+                    taggedOutput.recordFatalCleanupFailure(cleanupFailure);
+                }
+                throwCleanupFailure(cleanupFailure);
+            }
+            if (fatalCleanupSupersedes(
+                    cleanupFailure, primaryFailure)) {
+                addSuppressed(cleanupFailure, primaryFailure);
+                addSuppressed(cleanupFailure, parserFailure);
+                preserveRecordedOutputEvidence(
+                        taggedOutput, cleanupFailure);
+                taggedOutput.recordFatalCleanupFailure(cleanupFailure);
+                throwCleanupFailure(cleanupFailure);
+            }
+            addSuppressed(primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static boolean fatalCleanupSupersedes(
+            Throwable cleanupFailure, Throwable primaryFailure) {
+        if (cleanupFailure instanceof Error) {
+            return !(primaryFailure instanceof Error);
+        }
+        return cleanupFailure instanceof SecurityException
+                && !(primaryFailure instanceof Error)
+                && !(primaryFailure instanceof SecurityException);
+    }
+
+    private static boolean isFatalFailure(Throwable failure) {
+        return failure instanceof SecurityException
+                || failure instanceof Error;
+    }
+
+    private static void preserveRecordedOutputEvidence(
+            AttachmentTaggedContentHandler taggedOutput,
+            Throwable primaryFailure) {
+        preserveRecordedOutputFailure(
+                primaryFailure, taggedOutput.getSaxFailure());
+        preserveRecordedOutputFailure(
+                primaryFailure, taggedOutput.getUncheckedFailure());
+    }
+
+    private static void preserveRecordedOutputFailure(
+            Throwable primaryFailure, Throwable outputFailure) {
+        if (outputFailure != null
+                && !containsThrowable(primaryFailure, outputFailure)) {
+            addSuppressed(primaryFailure, outputFailure);
+        }
+    }
+
+    private static void throwCleanupFailure(Throwable failure)
+            throws IOException {
+        if (failure instanceof IOException ioException) {
+            throw ioException;
+        }
+        if (failure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new IOException(
+                "Unexpected PST attachment cleanup failure", failure);
+    }
+
+    private static void copySuppressed(
+            Throwable target, Throwable failure) {
+        if (target == null || failure == null || target == failure) {
+            return;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                addSuppressed(target, suppressed);
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
             }
         }
-        xhtml.endElement("div");
+    }
+
+    private static void addSuppressed(
+            Throwable primaryFailure, Throwable suppressedFailure) {
+        if (primaryFailure == null || suppressedFailure == null
+                || primaryFailure == suppressedFailure
+                || containsThrowable(suppressedFailure, primaryFailure)) {
+            return;
+        }
+        for (Throwable existing : primaryFailure.getSuppressed()) {
+            if (existing == suppressedFailure) {
+                return;
+            }
+        }
+        primaryFailure.addSuppressed(suppressedFailure);
+    }
+
+    private static boolean containsThrowable(
+            Throwable root, Throwable sought) {
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (current == sought) {
+                return true;
+            }
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        return false;
     }
 }

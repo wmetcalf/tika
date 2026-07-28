@@ -25,9 +25,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 
+import com.pff.PSTAttachment;
+import com.pff.PSTException;
 import com.pff.PSTFile;
 import com.pff.PSTFolder;
 import com.pff.PSTMessage;
@@ -157,36 +160,706 @@ public class OutlookPSTParserTest extends TikaTest {
                                 blockedOutput, saxDenial)));
     }
 
+    @Test
+    public void testAttachmentWrappedAndSwallowedSaxDenialsPropagate()
+            throws Exception {
+        SAXException causeDenial =
+                new SAXException(
+                        "simulated cause-wrapped PST attachment output denial");
+        TextRejectingHandler causeHandler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        causeDenial);
+
+        SAXException suppressedDenial =
+                new SAXException(
+                        "simulated suppressed PST attachment output denial");
+        TextRejectingHandler suppressedHandler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        suppressedDenial);
+
+        SAXException swallowedDenial =
+                new SAXException(
+                        "simulated swallowed PST attachment output denial");
+        TextRejectingHandler swallowedHandler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        swallowedDenial);
+
+        assertAll(
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            causeDenial, causeHandler,
+                            FailureMode.WRAP_CHECKED_SAX_CAUSE);
+                    assertEquals(0, causeHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            suppressedDenial, suppressedHandler,
+                            FailureMode.WRAP_CHECKED_SAX_SUPPRESSED);
+                    assertEquals(0, suppressedHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            swallowedDenial, swallowedHandler,
+                            FailureMode.SWALLOW_CHECKED_SAX);
+                    assertEquals(0, swallowedHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testAttachmentUncheckedOutputDenialsPropagate()
+            throws Exception {
+        RuntimeException directDenial =
+                new RuntimeException(
+                        "simulated direct PST attachment output denial");
+        FailStopUncheckedTextRejectingHandler directHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        directDenial);
+
+        RuntimeException swallowedDenial =
+                new RuntimeException(
+                        "simulated swallowed PST attachment output denial");
+        FailStopUncheckedTextRejectingHandler swallowedHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        swallowedDenial);
+
+        RuntimeException wrappedDenial =
+                new RuntimeException(
+                        "simulated wrapped PST attachment output denial");
+        FailStopUncheckedTextRejectingHandler wrappedHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        wrappedDenial);
+
+        assertAll(
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            directDenial, directHandler, FailureMode.DIRECT);
+                    assertEquals(0, directHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            swallowedDenial, swallowedHandler, FailureMode.SWALLOW);
+                    assertEquals(0, swallowedHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            wrappedDenial, wrappedHandler,
+                            FailureMode.WRAP_IO_CAUSE);
+                    assertEquals(0, wrappedHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testAttachmentSaxWrappedUncheckedOutputDenialsPropagate()
+            throws Exception {
+        RuntimeException runtimeDenial =
+                new IllegalStateException(
+                        "simulated SAX-cause-wrapped PST output denial");
+        FailStopUncheckedTextRejectingHandler runtimeHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        runtimeDenial);
+
+        AssertionError errorDenial =
+                new AssertionError(
+                        "simulated SAX-suppressed PST output denial");
+        FailStopUncheckedTextRejectingHandler errorHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        errorDenial);
+
+        assertAll(
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            runtimeDenial, runtimeHandler,
+                            FailureMode.WRAP_SAX_CAUSE);
+                    assertEquals(0, runtimeHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            errorDenial, errorHandler,
+                            FailureMode.WRAP_SAX_SUPPRESSED);
+                    assertEquals(0, errorHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testAttachmentErrorWrappedUncheckedOutputDenialsPropagate()
+            throws Exception {
+        RuntimeException causeDenial =
+                new IllegalStateException(
+                        "simulated error-cause-wrapped PST output denial");
+        FailStopUncheckedTextRejectingHandler causeHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        causeDenial);
+
+        AssertionError suppressedDenial =
+                new AssertionError(
+                        "simulated error-suppressed PST output denial");
+        FailStopUncheckedTextRejectingHandler suppressedHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        suppressedDenial);
+
+        assertAll(
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            causeDenial, causeHandler,
+                            FailureMode.WRAP_ERROR_CAUSE);
+                    assertEquals(0, causeHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            suppressedDenial, suppressedHandler,
+                            FailureMode.WRAP_ERROR_SUPPRESSED);
+                    assertEquals(
+                            0, suppressedHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testBinaryAttachmentSwallowedUncheckedDenialsStopCallbacks()
+            throws Exception {
+        RuntimeException runtimeDenial =
+                new IllegalStateException(
+                        "simulated swallowed binary attachment runtime denial");
+        FailStopUncheckedTextRejectingHandler runtimeHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        runtimeDenial);
+
+        AssertionError errorDenial =
+                new AssertionError(
+                        "simulated swallowed binary attachment error denial");
+        FailStopUncheckedTextRejectingHandler errorHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        errorDenial);
+
+        assertAll(
+                () -> {
+                    assertBinaryAttachmentDenialPropagates(
+                            runtimeDenial, runtimeHandler,
+                            FailureMode.SWALLOW);
+                    assertEquals(0, runtimeHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertBinaryAttachmentDenialPropagates(
+                            errorDenial, errorHandler,
+                            FailureMode.SWALLOW);
+                    assertEquals(0, errorHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testAttachmentWrappedSecurityDenialsPropagate()
+            throws Exception {
+        SecurityException parserSecurityDenial =
+                new SecurityException(
+                        "simulated wrapped parser-origin PST security denial");
+
+        RuntimeException outputDenial =
+                new IllegalStateException(
+                        "simulated security-wrapped PST output denial");
+        FailStopUncheckedTextRejectingHandler outputHandler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+
+        assertAll(
+                () -> assertAttachmentDenialPropagates(
+                        parserSecurityDenial, new DefaultHandler(),
+                        FailureMode.WRAP_PARSER_SECURITY_IO),
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            outputDenial, outputHandler,
+                            FailureMode.WRAP_OUTPUT_SECURITY);
+                    assertEquals(0, outputHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testAttachmentOutputSaxSurvivesCleanupFailure()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated PST attachment output SAX denial");
+        IOException cleanupFailure =
+                new IOException(
+                        "simulated PST attachment cleanup failure");
+        FailingCloseable cleanupResource =
+                new FailingCloseable(cleanupFailure);
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+
+        SAXException thrown = assertThrows(
+                SAXException.class,
+                () -> parseMessageWithBinaryAttachment(
+                        handler,
+                        new AttachmentRejectingExtractor(
+                                outputDenial, FailureMode.DIRECT,
+                                cleanupResource)));
+
+        assertSame(outputDenial, thrown);
+        assertTrue(cleanupResource.closed);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(cleanupFailure, thrown.getSuppressed()[0]);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testSwallowedUncheckedOutputRetainsCleanupFailure()
+            throws Exception {
+        RuntimeException outputDenial =
+                new RuntimeException(
+                        "simulated swallowed PST attachment output denial");
+        IOException cleanupFailure =
+                new IOException(
+                        "simulated PST attachment cleanup failure");
+        FailingCloseable cleanupResource =
+                new FailingCloseable(cleanupFailure);
+        FailStopUncheckedTextRejectingHandler handler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+
+        RuntimeException thrown = assertThrows(
+                RuntimeException.class,
+                () -> parseMessageWithBinaryAttachment(
+                        handler,
+                        new AttachmentRejectingExtractor(
+                                outputDenial, FailureMode.SWALLOW,
+                                cleanupResource)));
+
+        assertSame(outputDenial, thrown);
+        assertTrue(cleanupResource.closed);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(cleanupFailure, thrown.getSuppressed()[0]);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testAttachmentParserSecuritySurvivesCleanupFailure()
+            throws Exception {
+        SecurityException parserDenial =
+                new SecurityException(
+                        "simulated PST attachment parser security denial");
+        IOException cleanupFailure =
+                new IOException(
+                        "simulated PST attachment cleanup failure");
+        FailingCloseable cleanupResource =
+                new FailingCloseable(cleanupFailure);
+
+        SecurityException thrown = assertThrows(
+                SecurityException.class,
+                () -> parseMessageWithBinaryAttachment(
+                        new DefaultHandler(),
+                        new AttachmentRejectingExtractor(
+                                parserDenial, FailureMode.DIRECT,
+                                cleanupResource)));
+
+        assertSame(parserDenial, thrown);
+        assertTrue(cleanupResource.closed);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(cleanupFailure, thrown.getSuppressed()[0]);
+    }
+
+    @Test
+    public void testAttachmentFatalCleanupErrorSupersedesParserFailure()
+            throws Exception {
+        SecurityException parserDenial =
+                new SecurityException(
+                        "simulated PST attachment parser security denial");
+        AssertionError cleanupFailure =
+                new AssertionError(
+                        "simulated fatal PST attachment cleanup failure");
+        FailingCloseable cleanupResource =
+                new FailingCloseable(cleanupFailure);
+
+        AssertionError thrown = assertThrows(
+                AssertionError.class,
+                () -> parseMessageWithBinaryAttachment(
+                        new DefaultHandler(),
+                        new AttachmentRejectingExtractor(
+                                parserDenial, FailureMode.DIRECT,
+                                cleanupResource)));
+
+        assertSame(cleanupFailure, thrown);
+        assertTrue(cleanupResource.closed);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(parserDenial, thrown.getSuppressed()[0]);
+    }
+
+    @Test
+    public void testEmbeddedAttachmentFatalCleanupErrorSupersedesSaxOutputDenial()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated embedded PST attachment SAX denial");
+        AssertionError cleanupFailure =
+                new AssertionError(
+                        "simulated embedded PST fatal cleanup error");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial, FailureMode.DIRECT,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.EMBEDDED, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testBinaryAttachmentFatalCleanupErrorSupersedesUncheckedOutputDenial()
+            throws Exception {
+        RuntimeException outputDenial =
+                new IllegalStateException(
+                        "simulated binary PST attachment unchecked denial");
+        AssertionError cleanupFailure =
+                new AssertionError(
+                        "simulated binary PST fatal cleanup error");
+        FailStopUncheckedTextRejectingHandler handler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial, FailureMode.DIRECT,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.BINARY, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(!extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testEmbeddedAttachmentFatalCleanupSecuritySupersedesUncheckedOutputDenial()
+            throws Exception {
+        RuntimeException outputDenial =
+                new IllegalStateException(
+                        "simulated embedded PST attachment unchecked denial");
+        SecurityException cleanupFailure =
+                new SecurityException(
+                        "simulated embedded PST fatal cleanup security denial");
+        FailStopUncheckedTextRejectingHandler handler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial, FailureMode.DIRECT,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.EMBEDDED, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testBinaryAttachmentFatalCleanupSecuritySupersedesSaxOutputDenial()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated binary PST attachment SAX denial");
+        SecurityException cleanupFailure =
+                new SecurityException(
+                        "simulated binary PST fatal cleanup security denial");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial, FailureMode.DIRECT,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.BINARY, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(!extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testEmbeddedAttachmentFatalCleanupErrorSupersedesErrorCauseWrappedSaxDenial()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated embedded PST Error-cause-wrapped SAX denial");
+        AssertionError cleanupFailure =
+                new AssertionError(
+                        "simulated embedded PST fatal cleanup error");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial,
+                        FailureMode.WRAP_ERROR_UNWRAPPED_SAX_CAUSE,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.EMBEDDED, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testBinaryAttachmentFatalCleanupSecuritySupersedesErrorSuppressedSaxDenial()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated binary PST Error-suppressed SAX denial");
+        SecurityException cleanupFailure =
+                new SecurityException(
+                        "simulated binary PST fatal cleanup security denial");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial,
+                        FailureMode.WRAP_ERROR_UNWRAPPED_SAX_SUPPRESSED,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.BINARY, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(!extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testEmbeddedAttachmentFatalCleanupSecuritySupersedesSecurityWrappedOutputDenial()
+            throws Exception {
+        RuntimeException outputDenial =
+                new IllegalStateException(
+                        "simulated embedded PST Security-wrapped output denial");
+        SecurityException cleanupFailure =
+                new SecurityException(
+                        "simulated embedded PST fatal cleanup security denial");
+        FailStopUncheckedTextRejectingHandler handler =
+                new FailStopUncheckedTextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+        AttachmentRejectingExtractor extractor =
+                new AttachmentRejectingExtractor(
+                        outputDenial, FailureMode.WRAP_OUTPUT_SECURITY,
+                        new FailingCloseable(cleanupFailure));
+
+        assertFatalCleanupSupersedesOutputDenial(
+                AttachmentFixture.EMBEDDED, handler, extractor,
+                outputDenial, cleanupFailure);
+
+        assertTrue(extractor.outputHtml);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testAttachmentErrorWrappedUnwrappedSaxDenialsPropagate()
+            throws Exception {
+        SAXException causeDenial =
+                new SAXException(
+                        "simulated unwrapped SAX denial in Error cause");
+        TextRejectingHandler causeHandler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        causeDenial);
+        SAXException suppressedDenial =
+                new SAXException(
+                        "simulated unwrapped SAX denial suppressed on Error");
+        TextRejectingHandler suppressedHandler =
+                new TextRejectingHandler(
+                        AttachmentRejectingExtractor.BLOCKED_OUTPUT,
+                        suppressedDenial);
+
+        assertAll(
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            causeDenial, causeHandler,
+                            FailureMode.WRAP_ERROR_UNWRAPPED_SAX_CAUSE);
+                    assertEquals(0, causeHandler.callbacksAfterDenial);
+                },
+                () -> {
+                    assertAttachmentDenialPropagates(
+                            suppressedDenial, suppressedHandler,
+                            FailureMode.WRAP_ERROR_UNWRAPPED_SAX_SUPPRESSED);
+                    assertEquals(
+                            0, suppressedHandler.callbacksAfterDenial);
+                });
+    }
+
+    @Test
+    public void testUnrelatedFatalErrorRemainsAuthoritativeAfterSwallowedSaxDenial()
+            throws Exception {
+        SAXException outputDenial =
+                new SAXException(
+                        "simulated swallowed PST attachment SAX denial");
+        AssertionError parserFailure =
+                new AssertionError(
+                        "simulated unrelated fatal PST parser error");
+        TextRejectingHandler handler =
+                new TextRejectingHandler(
+                        SwallowedSaxThenErrorExtractor.BLOCKED_OUTPUT,
+                        outputDenial);
+
+        AssertionError thrown = assertThrows(
+                AssertionError.class,
+                () -> parseMessageWithBinaryAttachment(
+                        handler,
+                        new SwallowedSaxThenErrorExtractor(
+                                parserFailure)));
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testAttachmentParserSaxRemainsRecoverable()
+            throws Exception {
+        SAXException parserFailure =
+                new SAXException(
+                        "simulated recoverable PST attachment parser failure");
+
+        Metadata metadata = parseMessage(
+                new DefaultHandler(),
+                new AttachmentRejectingExtractor(
+                        parserFailure, FailureMode.DIRECT_PARSER_SAX));
+
+        assertNotNull(
+                metadata.get(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_EMBEDDED_STREAM));
+    }
+
+    private void assertFatalCleanupSupersedesOutputDenial(
+            AttachmentFixture fixture, ContentHandler handler,
+            AttachmentRejectingExtractor extractor,
+            Throwable outputDenial, Throwable cleanupFailure) {
+        Throwable thrown = assertThrows(
+                Throwable.class,
+                () -> parseMessage(
+                        handler, extractor, fixture));
+
+        assertSame(cleanupFailure, thrown);
+        assertTrue(containsThrowableByIdentity(
+                cleanupFailure, outputDenial));
+        assertTrue(!containsThrowableByIdentity(
+                outputDenial, cleanupFailure));
+        if (extractor.wrapperFailure != null) {
+            assertTrue(containsThrowableByIdentity(
+                    cleanupFailure, extractor.wrapperFailure));
+            assertTrue(containsThrowableByIdentity(
+                    extractor.wrapperFailure, outputDenial));
+            assertTrue(!containsThrowableByIdentity(
+                    extractor.wrapperFailure, cleanupFailure));
+        }
+    }
+
     private void assertAttachmentDenialPropagates(
             Throwable denial, ContentHandler handler) throws Exception {
-        ParseContext context = new ParseContext();
-        context.set(EmbeddedDocumentExtractor.class,
-                new AttachmentRejectingExtractor(denial));
+        assertAttachmentDenialPropagates(
+                denial, handler, FailureMode.DIRECT);
+    }
 
-        Throwable thrown;
+    private void assertAttachmentDenialPropagates(
+            Throwable denial, ContentHandler handler,
+            FailureMode failureMode) throws Exception {
+        Throwable thrown = assertThrows(
+                denial.getClass(),
+                () -> parseMessage(
+                        handler,
+                        new AttachmentRejectingExtractor(
+                                denial, failureMode)));
+        assertSame(denial, thrown);
+    }
+
+    private void assertBinaryAttachmentDenialPropagates(
+            Throwable denial, ContentHandler handler,
+            FailureMode failureMode) throws Exception {
+        Throwable thrown = assertThrows(
+                denial.getClass(),
+                () -> parseMessageWithBinaryAttachment(
+                        handler,
+                        new AttachmentRejectingExtractor(
+                                denial, failureMode)));
+        assertSame(denial, thrown);
+    }
+
+    private Metadata parseMessage(
+            ContentHandler handler,
+            EmbeddedDocumentExtractor embeddedExtractor) throws Exception {
+        return parseMessage(
+                handler, embeddedExtractor, AttachmentFixture.ANY);
+    }
+
+    private Metadata parseMessageWithBinaryAttachment(
+            ContentHandler handler,
+            EmbeddedDocumentExtractor embeddedExtractor) throws Exception {
+        return parseMessage(
+                handler, embeddedExtractor, AttachmentFixture.BINARY);
+    }
+
+    private Metadata parseMessage(
+            ContentHandler handler,
+            EmbeddedDocumentExtractor embeddedExtractor,
+            AttachmentFixture fixture) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(
+                EmbeddedDocumentExtractor.class, embeddedExtractor);
         try (TikaInputStream pstStream =
                 getResourceAsStream("/test-documents/testPST.pst")) {
             PSTFile pstFile = new PSTFile(pstStream.getFile());
             try {
                 PSTMessage message =
-                        findMessageWithAttachment(pstFile.getRootFolder());
+                        switch (fixture) {
+                            case ANY -> findMessageWithAttachment(
+                                    pstFile.getRootFolder());
+                            case BINARY -> findMessageWithBinaryAttachment(
+                                    pstFile.getRootFolder());
+                            case EMBEDDED -> findMessageWithEmbeddedAttachment(
+                                    pstFile.getRootFolder());
+                        };
                 assertNotNull(message, "fixture must contain an attachment");
                 Metadata metadata = new Metadata();
                 long size = OutlookPSTParser.estimateSize(message);
                 try (TikaInputStream messageStream =
                         TikaInputStream.getFromContainer(
                                 message, size, metadata)) {
-                    thrown = assertThrows(denial.getClass(),
-                            () -> new PSTMailItemParser().parse(
-                                    messageStream, handler, metadata,
-                                    context));
+                    new PSTMailItemParser().parse(
+                            messageStream, handler, metadata, context);
                 }
+                return metadata;
             } finally {
                 pstFile.close();
             }
         }
-
-        assertSame(denial, thrown);
     }
 
     private static PSTMessage findMessageWithAttachment(PSTFolder folder)
@@ -207,15 +880,102 @@ public class OutlookPSTParserTest extends TikaTest {
         return null;
     }
 
+    private static PSTMessage findMessageWithEmbeddedAttachment(
+            PSTFolder folder) throws Exception {
+        PSTMessage message = (PSTMessage) folder.getNextChild();
+        while (message != null) {
+            for (int i = 0; i < message.getNumberOfAttachments(); i++) {
+                if (message
+                                .getAttachment(i)
+                                .getEmbeddedPSTMessage()
+                        != null) {
+                    return message;
+                }
+            }
+            message = (PSTMessage) folder.getNextChild();
+        }
+        try {
+            for (PSTFolder child : folder.getSubFolders()) {
+                message = findMessageWithEmbeddedAttachment(child);
+                if (message != null) {
+                    return message;
+                }
+            }
+        } catch (PSTException e) {
+            // Some synthetic search folders in this fixture have dangling
+            // descriptors. They do not contain an embedded attachment.
+        }
+        return null;
+    }
+
+    private static PSTMessage findMessageWithBinaryAttachment(
+            PSTFolder folder) throws Exception {
+        PSTMessage message = (PSTMessage) folder.getNextChild();
+        while (message != null) {
+            PSTMessage match =
+                    findNestedMessageWithBinaryAttachment(message);
+            if (match != null) {
+                return match;
+            }
+            message = (PSTMessage) folder.getNextChild();
+        }
+        try {
+            for (PSTFolder child : folder.getSubFolders()) {
+                message = findMessageWithBinaryAttachment(child);
+                if (message != null) {
+                    return message;
+                }
+            }
+        } catch (PSTException e) {
+            // Some synthetic search folders in this fixture have dangling
+            // descriptors. They do not contain the binary attachment.
+        }
+        return null;
+    }
+
+    private static PSTMessage findNestedMessageWithBinaryAttachment(
+            PSTMessage message) throws Exception {
+        for (int i = 0; i < message.getNumberOfAttachments(); i++) {
+            PSTAttachment attachment = message.getAttachment(i);
+            PSTMessage attachedMessage = attachment.getEmbeddedPSTMessage();
+            if (attachedMessage == null) {
+                return message;
+            }
+            PSTMessage match =
+                    findNestedMessageWithBinaryAttachment(attachedMessage);
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
+    }
+
     private static final class AttachmentRejectingExtractor
             implements EmbeddedDocumentExtractor {
 
-        private static final String BLOCKED_OUTPUT =
+        static final String BLOCKED_OUTPUT =
                 "blocked PST attachment output";
         private final Throwable denial;
+        private final FailureMode failureMode;
+        private final Closeable cleanupResource;
+        private boolean outputHtml;
+        private Throwable wrapperFailure;
 
         private AttachmentRejectingExtractor(Throwable denial) {
+            this(denial, FailureMode.DIRECT);
+        }
+
+        private AttachmentRejectingExtractor(
+                Throwable denial, FailureMode failureMode) {
+            this(denial, failureMode, null);
+        }
+
+        private AttachmentRejectingExtractor(
+                Throwable denial, FailureMode failureMode,
+                Closeable cleanupResource) {
             this.denial = denial;
+            this.failureMode = failureMode;
+            this.cleanupResource = cleanupResource;
         }
 
         @Override
@@ -228,11 +988,149 @@ public class OutlookPSTParserTest extends TikaTest {
                 TikaInputStream stream, ContentHandler handler,
                 Metadata metadata, ParseContext context,
                 boolean outputHtml) throws IOException, SAXException {
+            this.outputHtml = outputHtml;
+            if (cleanupResource != null) {
+                stream.addCloseableResource(cleanupResource);
+            }
             if (denial instanceof SecurityException securityException) {
+                if (failureMode == FailureMode.WRAP_PARSER_SECURITY_IO) {
+                    throw new IOException(
+                            "wrapped parser-origin PST security denial",
+                            securityException);
+                }
                 throw securityException;
             }
+            if (denial instanceof SAXException saxException
+                    && failureMode == FailureMode.DIRECT_PARSER_SAX) {
+                throw saxException;
+            }
             char[] output = BLOCKED_OUTPUT.toCharArray();
-            handler.characters(output, 0, output.length);
+            try {
+                handler.characters(output, 0, output.length);
+            } catch (SAXException outputFailure) {
+                switch (failureMode) {
+                    case SWALLOW_CHECKED_SAX:
+                        return;
+                    case WRAP_CHECKED_SAX_CAUSE:
+                        throw new IOException(
+                                "cause-wrapped PST attachment SAX denial",
+                                outputFailure);
+                    case WRAP_CHECKED_SAX_SUPPRESSED:
+                        SAXException wrapper =
+                                new SAXException(
+                                        "suppressed PST attachment SAX denial");
+                        wrapper.addSuppressed(outputFailure);
+                        throw wrapper;
+                    case WRAP_ERROR_UNWRAPPED_SAX_CAUSE:
+                        wrapperFailure = new AssertionError(
+                                "Error cause-wrapped unwrapped PST SAX denial",
+                                unwrapFailure(outputFailure));
+                        throw (AssertionError) wrapperFailure;
+                    case WRAP_ERROR_UNWRAPPED_SAX_SUPPRESSED:
+                        AssertionError errorWrapper =
+                                new AssertionError(
+                                        "Error-suppressed unwrapped PST SAX denial");
+                        errorWrapper.addSuppressed(
+                                unwrapFailure(outputFailure));
+                        wrapperFailure = errorWrapper;
+                        throw errorWrapper;
+                    default:
+                        throw outputFailure;
+                }
+            } catch (RuntimeException | Error outputFailure) {
+                switch (failureMode) {
+                    case SWALLOW:
+                        return;
+                    case WRAP_IO_CAUSE:
+                        throw new IOException(
+                                "wrapped PST attachment output denial",
+                                outputFailure);
+                    case WRAP_SAX_CAUSE:
+                        throw new SAXException(
+                                "SAX-wrapped PST attachment output denial",
+                                (Exception) outputFailure);
+                    case WRAP_SAX_SUPPRESSED:
+                        SAXException saxWrapper =
+                                new SAXException(
+                                        "SAX-suppressed PST attachment output denial");
+                        saxWrapper.addSuppressed(outputFailure);
+                        throw saxWrapper;
+                    case WRAP_ERROR_CAUSE:
+                        throw new AssertionError(
+                                "error-cause-wrapped PST attachment output denial",
+                                outputFailure);
+                    case WRAP_ERROR_SUPPRESSED:
+                        AssertionError errorWrapper =
+                                new AssertionError(
+                                        "error-suppressed PST attachment output denial");
+                        errorWrapper.addSuppressed(outputFailure);
+                        throw errorWrapper;
+                    case WRAP_OUTPUT_SECURITY:
+                        wrapperFailure = new SecurityException(
+                                "security-wrapped PST attachment output denial",
+                                outputFailure);
+                        throw (SecurityException) wrapperFailure;
+                    default:
+                        throwUnchecked(outputFailure);
+                }
+            }
+        }
+    }
+
+    private enum FailureMode {
+        DIRECT,
+        SWALLOW,
+        WRAP_IO_CAUSE,
+        WRAP_SAX_CAUSE,
+        WRAP_SAX_SUPPRESSED,
+        WRAP_ERROR_CAUSE,
+        WRAP_ERROR_SUPPRESSED,
+        WRAP_OUTPUT_SECURITY,
+        WRAP_PARSER_SECURITY_IO,
+        DIRECT_PARSER_SAX,
+        WRAP_CHECKED_SAX_CAUSE,
+        WRAP_CHECKED_SAX_SUPPRESSED,
+        SWALLOW_CHECKED_SAX,
+        WRAP_ERROR_UNWRAPPED_SAX_CAUSE,
+        WRAP_ERROR_UNWRAPPED_SAX_SUPPRESSED
+    }
+
+    private enum AttachmentFixture {
+        ANY,
+        BINARY,
+        EMBEDDED
+    }
+
+    private static final class SwallowedSaxThenErrorExtractor
+            implements EmbeddedDocumentExtractor {
+
+        private static final String BLOCKED_OUTPUT =
+                "blocked swallowed-SAX PST output";
+        private final AssertionError parserFailure;
+
+        private SwallowedSaxThenErrorExtractor(
+                AssertionError parserFailure) {
+            this.parserFailure = parserFailure;
+        }
+
+        @Override
+        public boolean shouldParseEmbedded(Metadata metadata) {
+            return true;
+        }
+
+        @Override
+        public void parseEmbedded(
+                TikaInputStream stream, ContentHandler handler,
+                Metadata metadata, ParseContext context,
+                boolean outputHtml) throws SAXException {
+            char[] output = BLOCKED_OUTPUT.toCharArray();
+            try {
+                handler.characters(output, 0, output.length);
+            } catch (SAXException expected) {
+                throw parserFailure;
+            }
+            throw new AssertionError(
+                    "expected PST output handler to deny content");
         }
     }
 
@@ -241,6 +1139,8 @@ public class OutlookPSTParserTest extends TikaTest {
 
         private final String rejectedText;
         private final SAXException denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
 
         private TextRejectingHandler(
                 String rejectedText, SAXException denial) {
@@ -251,9 +1151,155 @@ public class OutlookPSTParserTest extends TikaTest {
         @Override
         public void characters(char[] ch, int start, int length)
                 throws SAXException {
+            if (denied) {
+                callbacksAfterDenial++;
+                return;
+            }
             if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
                 throw denial;
             }
         }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            recordCallback();
+        }
+
+        @Override
+        public void endDocument() {
+            recordCallback();
+        }
+
+        private void recordCallback() {
+            if (denied) {
+                callbacksAfterDenial++;
+            }
+        }
+    }
+
+    private static final class FailingCloseable implements Closeable {
+
+        private final Throwable cleanupFailure;
+        private boolean closed;
+
+        private FailingCloseable(Throwable cleanupFailure) {
+            this.cleanupFailure = cleanupFailure;
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            if (cleanupFailure instanceof IOException ioException) {
+                throw ioException;
+            }
+            throwUnchecked(cleanupFailure);
+        }
+    }
+
+    private static final class FailStopUncheckedTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final Throwable denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopUncheckedTextRejectingHandler(
+                String rejectedText, Throwable denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void startDocument() {
+            recordCallback();
+        }
+
+        @Override
+        public void endDocument() {
+            recordCallback();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            recordCallback();
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            recordCallback();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (denied) {
+                callbacksAfterDenial++;
+                return;
+            }
+            if (new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throwUnchecked(denial);
+            }
+        }
+
+        private void recordCallback() {
+            if (denied) {
+                callbacksAfterDenial++;
+            }
+        }
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        throw (Error) failure;
+    }
+
+    private static Throwable unwrapFailure(Throwable failure) {
+        Throwable current = failure;
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        while (current.getCause() != null
+                && current.getCause() != current
+                && seen.add(current)) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private static boolean containsThrowableByIdentity(
+            Throwable root, Throwable sought) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        java.util.Deque<Throwable> pending =
+                new java.util.ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (current == sought) {
+                return true;
+            }
+            if (!seen.add(current)) {
+                continue;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        return false;
     }
 }
