@@ -27,6 +27,7 @@ import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -51,16 +52,18 @@ import org.slf4j.LoggerFactory;
  *   <li>If rename fails (another process won), clean up temp dir</li>
  * </ol>
  * <p>
- * A stable sibling lock file serializes only stale recovery and the non-atomic fallback. The lock
- * file is never deleted, so OS lock ownership is released automatically on process death without
- * introducing Windows lock-file deletion races. For a non-atomic move, the completion marker is
- * removed from the moving tree and created at the destination only after that move succeeds, so a
- * partially moved directory cannot appear complete.
+ * A stable root lock in a reserved child directory serializes only stale recovery and the
+ * non-atomic fallback. The lock file is never deleted, so OS lock ownership is released
+ * automatically on process death without introducing Windows lock-file deletion races. For a
+ * non-atomic move, the completion marker is removed from the moving tree and created at the
+ * destination only after that move succeeds, so a partially moved directory cannot appear
+ * complete.
  */
 public class ThreadSafeUnzipper {
     private static final Logger LOG = LoggerFactory.getLogger(TikaPluginManager.class);
     private static final String COMPLETE_MARKER = ".tika-extraction-complete";
-    private static final String LOCK_SUFFIX = ".tika-extraction.lock";
+    private static final String LOCK_DIRECTORY = "tika_lck";
+    private static final String ROOT_LOCK_FILE = "root.lock";
 
     @FunctionalInterface
     interface MoveOperation {
@@ -85,6 +88,10 @@ public class ThreadSafeUnzipper {
         }
 
         Path destination = getDestination(source);
+        if (isReservedLockDestination(destination)) {
+            throw new IllegalArgumentException(
+                    "plugin file name uses reserved extraction-lock namespace: " + source);
+        }
 
         // Already extracted - check for both directory AND completion marker
         if (isExtractionComplete(destination)) {
@@ -251,6 +258,21 @@ public class ThreadSafeUnzipper {
     }
 
     private static FileChannel openLockChannel(Path destination) throws IOException {
+        Path lockDirectory = destination.getParent().resolve(LOCK_DIRECTORY);
+        if (!Files.exists(lockDirectory)) {
+            try {
+                Files.createDirectory(lockDirectory);
+            } catch (FileAlreadyExistsException e) {
+                // Another process created the shared lock directory.
+            }
+        }
+        if (!Files.isDirectory(lockDirectory, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("extraction lock path is not a directory: " + lockDirectory);
+        }
+        if (Files.exists(lockDirectory.resolve(COMPLETE_MARKER))) {
+            throw new IOException("reserved extraction lock directory is a plugin destination: "
+                    + lockDirectory);
+        }
         return FileChannel.open(getLockPath(destination), StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE);
     }
@@ -271,8 +293,29 @@ public class ThreadSafeUnzipper {
         }
     }
 
-    private static Path getLockPath(Path destination) {
-        return destination.resolveSibling(destination.getFileName() + LOCK_SUFFIX);
+    static Path getLockPath(Path destination) {
+        return destination.getParent().resolve(LOCK_DIRECTORY).resolve(ROOT_LOCK_FILE);
+    }
+
+    static boolean isLockDirectory(Path path) {
+        return path.getFileName() != null &&
+                path.getFileName().toString().equalsIgnoreCase(LOCK_DIRECTORY);
+    }
+
+    private static boolean isReservedLockDestination(Path destination) throws IOException {
+        if (isLockDirectory(destination)) {
+            return true;
+        }
+        Path lockDirectory = destination.getParent().resolve(LOCK_DIRECTORY);
+        if (!Files.exists(destination) || !Files.exists(lockDirectory)) {
+            return false;
+        }
+        try {
+            return Files.isSameFile(destination, lockDirectory);
+        } catch (NoSuchFileException e) {
+            // A concurrent extractor moved the destination after the existence check.
+            return false;
+        }
     }
 
     /**
@@ -325,7 +368,18 @@ public class ThreadSafeUnzipper {
     private static Path getDestination(Path source) {
         String fName = source.getFileName().toString();
         fName = fName.substring(0, fName.length() - 4);
-        return source.toAbsolutePath().getParent().resolve(fName);
+        if (fName.isEmpty() || fName.equals(".") || fName.equals("..") ||
+                fName.endsWith(".") || fName.endsWith(" ")) {
+            throw new IllegalArgumentException("unsafe plugin archive name: " + source);
+        }
+
+        Path parent = source.toAbsolutePath().normalize().getParent();
+        Path destination = parent.resolve(fName).normalize();
+        if (!parent.equals(destination.getParent())) {
+            throw new IllegalArgumentException(
+                    "plugin destination must be an immediate child of its root: " + source);
+        }
+        return destination;
     }
 
     private static void deleteRecursively(Path path) {

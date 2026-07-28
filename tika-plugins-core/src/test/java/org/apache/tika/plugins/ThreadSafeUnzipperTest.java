@@ -19,7 +19,9 @@ package org.apache.tika.plugins;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
@@ -157,7 +159,7 @@ public class ThreadSafeUnzipperTest {
 
         assertFalse(Files.exists(destination.resolve(MARKER)),
                 "a failed partial move must not appear complete");
-        assertTrue(Files.exists(tmp.resolve("plugin.tika-extraction.lock")),
+        assertTrue(Files.exists(ThreadSafeUnzipper.getLockPath(destination)),
                 "stable publisher lock file should remain for crash-safe reuse");
 
         ThreadSafeUnzipper.unzipPlugin(zip, nonAtomicMover);
@@ -170,9 +172,10 @@ public class ThreadSafeUnzipperTest {
     public void testAbandonedPublisherLockDoesNotWedge(@TempDir Path tmp) throws Exception {
         Path zip = writeTrivialZip(tmp.resolve("plugin.zip"));
         Path destination = tmp.resolve("plugin");
-        Path lockPath = tmp.resolve("plugin.tika-extraction.lock");
+        Path lockPath = ThreadSafeUnzipper.getLockPath(destination);
         Files.createDirectories(destination);
         Files.writeString(destination.resolve("partial.txt"), "partial");
+        Files.createDirectories(lockPath.getParent());
 
         // A process crash releases its OS lock but leaves the stable lock file behind.
         try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE,
@@ -192,9 +195,10 @@ public class ThreadSafeUnzipperTest {
     public void testSameJvmOverlappingLockWaits(@TempDir Path tmp) throws Exception {
         Path zip = writeTrivialZip(tmp.resolve("plugin.zip"));
         Path destination = tmp.resolve("plugin");
-        Path lockPath = tmp.resolve("plugin.tika-extraction.lock");
+        Path lockPath = ThreadSafeUnzipper.getLockPath(destination);
         Files.createDirectories(destination);
         Files.writeString(destination.resolve("partial.txt"), "partial");
+        Files.createDirectories(lockPath.getParent());
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         CountDownLatch started = new CountDownLatch(1);
@@ -222,6 +226,75 @@ public class ThreadSafeUnzipperTest {
         assertFalse(Files.exists(destination.resolve("partial.txt")));
         assertTrue(Files.exists(destination.resolve("inside.txt")));
         assertTrue(Files.exists(destination.resolve(MARKER)));
+    }
+
+    @Test
+    public void testLockNamespaceDoesNotAliasPluginDestination(@TempDir Path tmp)
+            throws Exception {
+        Path firstZip = writeTrivialZip(tmp.resolve("plugin.zip"));
+        Path pairedZip = writeTrivialZip(tmp.resolve("plugin.tika-extraction.lock.zip"));
+        ThreadSafeUnzipper.MoveOperation nonAtomicMover = (source, target, options) -> {
+            if (options.length > 0 && options[0] == StandardCopyOption.ATOMIC_MOVE) {
+                throw new AtomicMoveNotSupportedException(source.toString(), target.toString(),
+                        "simulated");
+            }
+            Files.move(source, target, options);
+        };
+
+        ThreadSafeUnzipper.unzipPlugin(firstZip, nonAtomicMover);
+        ThreadSafeUnzipper.unzipPlugin(pairedZip, nonAtomicMover);
+
+        assertTrue(Files.exists(tmp.resolve("plugin").resolve(MARKER)));
+        assertTrue(Files.exists(
+                tmp.resolve("plugin.tika-extraction.lock").resolve(MARKER)));
+        assertTrue(Files.isDirectory(tmp.resolve("tika_lck")));
+    }
+
+    @Test
+    public void testReservedLockNamespaceIsRejected(@TempDir Path tmp) throws Exception {
+        Path zip = writeTrivialZip(tmp.resolve("tika_lck.zip"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ThreadSafeUnzipper.unzipPlugin(zip));
+    }
+
+    @Test
+    public void testExistingAliasOfLockDirectoryIsRejected(@TempDir Path tmp) throws Exception {
+        Path lockDirectory = Files.createDirectories(tmp.resolve("tika_lck"));
+        Path alias = tmp.resolve("lock-alias");
+        try {
+            Files.createSymbolicLink(alias, lockDirectory.getFileName());
+        } catch (IOException | UnsupportedOperationException | SecurityException e) {
+            assumeTrue(false, "symbolic links are unavailable: " + e.getMessage());
+        }
+        Path zip = writeTrivialZip(tmp.resolve("lock-alias.zip"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ThreadSafeUnzipper.unzipPlugin(zip));
+        assertTrue(Files.isSameFile(alias, lockDirectory));
+    }
+
+    @Test
+    public void testUnsafeArchiveStemsAreRejectedBeforeMutation(@TempDir Path tmp)
+            throws Exception {
+        Path rootSentinel = Files.writeString(tmp.resolve("root-sentinel.txt"), "root");
+        Path parentSentinel = Files.writeString(tmp.getParent().resolve(
+                "parent-sentinel-" + tmp.getFileName() + ".txt"), "parent");
+        try {
+            for (String name : List.of(".zip", "..zip", "...zip", "plugin..zip",
+                    "plugin .zip", "tika_lck..zip")) {
+                Path zip = writeTrivialZip(tmp.resolve(name));
+                assertThrows(IllegalArgumentException.class,
+                        () -> ThreadSafeUnzipper.unzipPlugin(zip), name);
+            }
+
+            assertTrue(Files.exists(rootSentinel));
+            assertTrue(Files.exists(parentSentinel));
+            assertTrue(Files.isDirectory(tmp));
+            assertFalse(Files.exists(tmp.resolve("tika_lck")));
+        } finally {
+            Files.deleteIfExists(parentSentinel);
+        }
     }
 
     private static void runConcurrentExtractions(Path tmp, boolean createStaleDestination)

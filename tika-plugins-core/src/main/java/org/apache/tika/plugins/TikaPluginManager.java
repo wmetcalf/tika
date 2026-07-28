@@ -264,7 +264,20 @@ public class TikaPluginManager extends DefaultPluginManager {
                 }
             };
         }
-        return super.createPluginRepository();
+        org.pf4j.PluginRepository delegate = super.createPluginRepository();
+        return new org.pf4j.PluginRepository() {
+            @Override
+            public List<Path> getPluginPaths() {
+                List<Path> paths = new java.util.ArrayList<>(delegate.getPluginPaths());
+                paths.removeIf(ThreadSafeUnzipper::isLockDirectory);
+                return paths;
+            }
+
+            @Override
+            public boolean deletePluginPath(Path pluginPath) {
+                return delegate.deletePluginPath(pluginPath);
+            }
+        };
     }
     
     /**

@@ -17,7 +17,10 @@
 package org.apache.tika.plugins;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 
@@ -53,5 +56,18 @@ public class TikaPluginManagerTest {
         } finally {
             System.clearProperty("tika.plugin.dev.mode");
         }
+    }
+
+    @Test
+    public void testDeploymentRepositoryExcludesLockDirectory(@TempDir Path tmpDir)
+            throws Exception {
+        Path lockDirectory = Files.createDirectories(tmpDir.resolve("tika_lck"));
+        Path jarPlugin = Files.createFile(tmpDir.resolve("plugin.jar"));
+        TikaPluginManager manager = new TikaPluginManager(Collections.singletonList(tmpDir));
+
+        org.pf4j.PluginRepository repository = manager.createPluginRepository();
+        assertFalse(repository.getPluginPaths().contains(lockDirectory));
+        assertTrue(repository.getPluginPaths().contains(jarPlugin),
+                "filter wrapper must preserve direct JAR plugin discovery");
     }
 }
