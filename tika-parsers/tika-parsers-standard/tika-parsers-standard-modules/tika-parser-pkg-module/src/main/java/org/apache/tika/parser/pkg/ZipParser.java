@@ -19,15 +19,19 @@ package org.apache.tika.parser.pkg;
 import static org.apache.tika.detect.zip.PackageConstants.JAR;
 import static org.apache.tika.detect.zip.PackageConstants.ZIP;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -59,6 +63,8 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.metadata.Zip;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.TaggedContentHandler;
+import org.apache.tika.sax.XHTMLBalancingHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.ParserUtils;
 
@@ -274,20 +280,20 @@ public class ZipParser extends AbstractArchiveParser {
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-
-        Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
-        while (entries.hasMoreElements()) {
-            ZipArchiveEntry entry = entries.nextElement();
-            if (centralDirectoryEntries != null) {
-                centralDirectoryEntries.add(entry.getName());
+        emitArchiveDocument(handler, metadata, context,
+                (xhtml, embeddedOutput, taggedOutput) -> {
+            Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
+            while (entries.hasMoreElements()) {
+                ZipArchiveEntry entry = entries.nextElement();
+                if (centralDirectoryEntries != null) {
+                    centralDirectoryEntries.add(entry.getName());
+                }
+                if (!entry.isDirectory()) {
+                    parseZipFileEntry(zipFile, entry, extractor, metadata, xhtml,
+                            embeddedOutput, taggedOutput, context, config);
+                }
             }
-            if (!entry.isDirectory()) {
-                parseZipFileEntry(zipFile, entry, extractor, metadata, xhtml, context, config);
-            }
-        }
-        xhtml.endDocument();
+        });
 
         // Perform integrity check if enabled
         if (config.isIntegrityCheck()) {
@@ -326,30 +332,25 @@ public class ZipParser extends AbstractArchiveParser {
         EmbeddedDocumentExtractor extractor =
                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-
         AtomicInteger entryCnt = new AtomicInteger();
-        try {
-            try (ZipArchiveInputStream zis =
-                    new ZipArchiveInputStream(tis, encoding, true, startWithDataDescriptor)) {
-                parseStreamEntries(zis, metadata, extractor, xhtml, false, entryCnt, context, config,
+        emitArchiveDocument(handler, metadata, context,
+                (xhtml, embeddedOutput, taggedOutput) -> {
+            try {
+                parseStreamAttempt(tis, encoding, startWithDataDescriptor, metadata, extractor,
+                        xhtml, embeddedOutput, taggedOutput, false, entryCnt, context, config,
                         seenEntryNames, duplicates);
-            }
-        } catch (UnsupportedZipFeatureException zfe) {
-            if (zfe.getFeature() == Feature.DATA_DESCRIPTOR && !startWithDataDescriptor) {
-                // Re-read with data descriptor support
-                tis.rewind();
-                try (ZipArchiveInputStream zis =
-                        new ZipArchiveInputStream(tis, encoding, true, true)) {
-                    parseStreamEntries(zis, metadata, extractor, xhtml, true, entryCnt, context,
+            } catch (UnsupportedZipFeatureException zfe) {
+                if (zfe.getFeature() == Feature.DATA_DESCRIPTOR && !startWithDataDescriptor) {
+                    // Re-read with data descriptor support
+                    tis.rewind();
+                    parseStreamAttempt(tis, encoding, true, metadata, extractor,
+                            xhtml, embeddedOutput, taggedOutput, true, entryCnt, context,
                             config, seenEntryNames, duplicates);
+                } else {
+                    throw zfe;
                 }
-            } else {
-                throw zfe;
             }
-        }
-        xhtml.endDocument();
+        });
 
         // Record integrity check results (streaming only = can't compare to central directory)
         if (config.isIntegrityCheck()) {
@@ -365,8 +366,448 @@ public class ZipParser extends AbstractArchiveParser {
         }
     }
 
+    private void emitArchiveDocument(ContentHandler handler, Metadata metadata, ParseContext context,
+                                     ArchiveParseAction action)
+            throws IOException, SAXException, TikaException {
+        ArchiveTaggedContentHandler taggedOutput =
+                new ArchiveTaggedContentHandler(handler);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(taggedOutput, metadata, context);
+        XHTMLBalancingHandler embeddedOutput =
+                new XHTMLBalancingHandler(xhtml);
+        Throwable primaryFailure = null;
+        boolean documentStarted = false;
+        boolean failStop = false;
+        try {
+            xhtml.startDocument();
+            documentStarted = true;
+            action.parse(xhtml, embeddedOutput, taggedOutput);
+            throwRecordedOutputFailure(taggedOutput);
+        } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+            Throwable outputFailure = findOutputFailure(taggedOutput, e);
+            if (outputFailure != null) {
+                preserveFailureEvidence(outputFailure, e);
+                primaryFailure = outputFailure;
+                failStop = true;
+                throwFailure(outputFailure);
+            }
+            primaryFailure = e;
+            failStop = isFatalFailure(e);
+            throw e;
+        } finally {
+            if (documentStarted && !failStop) {
+                finishArchiveDocument(
+                        embeddedOutput, xhtml, taggedOutput, primaryFailure);
+            }
+        }
+    }
+
+    private void finishArchiveDocument(
+                                       XHTMLBalancingHandler embeddedOutput,
+                                       XHTMLContentHandler xhtml,
+                                       ArchiveTaggedContentHandler taggedOutput,
+                                       Throwable primaryFailure)
+            throws IOException, SAXException, TikaException {
+        if (primaryFailure != null) {
+            try {
+                embeddedOutput.drainOpenElements();
+            } catch (SAXException | RuntimeException | Error cleanupFailure) {
+                handleDocumentCleanupFailure(
+                        taggedOutput, primaryFailure, cleanupFailure);
+            }
+        }
+        try {
+            xhtml.endDocument();
+        } catch (SAXException | RuntimeException | Error cleanupFailure) {
+            handleDocumentCleanupFailure(
+                    taggedOutput, primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static void handleDocumentCleanupFailure(
+            ArchiveTaggedContentHandler taggedOutput,
+            Throwable primaryFailure, Throwable cleanupFailure)
+            throws IOException, SAXException, TikaException {
+        Throwable outputFailure =
+                findOutputFailure(taggedOutput, cleanupFailure);
+        if (outputFailure != null) {
+            preserveFailureEvidence(outputFailure, cleanupFailure);
+            addSuppressed(outputFailure, primaryFailure);
+            throwFailure(outputFailure);
+        }
+        if (isFatalFailure(cleanupFailure)) {
+            addSuppressed(cleanupFailure, primaryFailure);
+            throwFailure(cleanupFailure);
+        }
+        if (primaryFailure == null) {
+            throwFailure(cleanupFailure);
+        }
+        addSuppressed(primaryFailure, cleanupFailure);
+    }
+
+    private static void recoverUnsupportedEmbeddedStream(
+            XHTMLBalancingHandler embeddedOutput,
+            ArchiveTaggedContentHandler taggedOutput,
+            UnsupportedZipFeatureException failure,
+            Metadata parentMetadata)
+            throws IOException, SAXException, TikaException {
+        Throwable outputFailure = findOutputFailure(taggedOutput, failure);
+        if (outputFailure != null) {
+            preserveFailureEvidence(outputFailure, failure);
+            throwFailure(outputFailure);
+        }
+        try {
+            embeddedOutput.drainOpenElements();
+        } catch (SAXException | RuntimeException | Error cleanupFailure) {
+            handleDocumentCleanupFailure(
+                    taggedOutput, failure, cleanupFailure);
+        }
+        EmbeddedDocumentUtil.recordEmbeddedStreamException(
+                failure, parentMetadata);
+    }
+
+    private static Throwable findOutputFailure(
+            ArchiveTaggedContentHandler taggedOutput, Throwable failure) {
+        if (taggedOutput.isFatalCleanupFailure(failure)) {
+            return null;
+        }
+        SAXException saxFailure =
+                findTaggedOutputFailure(taggedOutput, failure);
+        if (saxFailure != null) {
+            return saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure != null) {
+            return uncheckedFailure;
+        }
+        if (failure instanceof Error) {
+            return null;
+        }
+        if (taggedOutput.getSaxFailure() != null) {
+            return taggedOutput.getSaxFailure();
+        }
+        return taggedOutput.getUncheckedFailure();
+    }
+
+    private static SAXException findTaggedOutputFailure(
+            ArchiveTaggedContentHandler taggedOutput, Throwable failure) {
+        SAXException recordedFailure = taggedOutput.getSaxFailure();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        SAXException taggedOutputCandidate = null;
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            if (current == recordedFailure) {
+                return recordedFailure;
+            }
+            if (current instanceof SAXException saxFailure
+                    && taggedOutput.isCauseOf(saxFailure)) {
+                try {
+                    taggedOutput.throwIfCauseOf(saxFailure);
+                } catch (SAXException outputFailure) {
+                    if (taggedOutputCandidate == null) {
+                        taggedOutputCandidate = outputFailure;
+                    }
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        return taggedOutputCandidate;
+    }
+
+    private static void throwRecordedOutputFailure(
+            ArchiveTaggedContentHandler taggedOutput)
+            throws IOException, SAXException, TikaException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable outputFailure = taggedOutput.getUncheckedFailure();
+        if (outputFailure != null) {
+            throwFailure(outputFailure);
+        }
+    }
+
+    private static Throwable closeResource(Closeable resource, Throwable primaryFailure) {
+        if (resource == null) {
+            return primaryFailure;
+        }
+        try {
+            resource.close();
+            return primaryFailure;
+        } catch (Throwable cleanupFailure) {
+            return mergeCleanupFailure(primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static Throwable disposeTemporaryResources(
+            TemporaryResources tmp, Throwable primaryFailure) {
+        try {
+            tmp.close();
+            return primaryFailure;
+        } catch (Throwable cleanupFailure) {
+            return mergeCleanupFailure(primaryFailure, cleanupFailure);
+        }
+    }
+
+    private static Throwable mergeCleanupFailure(
+            Throwable primaryFailure, Throwable cleanupFailure) {
+        if (primaryFailure == null) {
+            return cleanupFailure;
+        }
+        if (failureRank(cleanupFailure)
+                > failureRank(primaryFailure)) {
+            addSuppressed(cleanupFailure, primaryFailure);
+            return cleanupFailure;
+        }
+        addSuppressed(primaryFailure, cleanupFailure);
+        return primaryFailure;
+    }
+
+    private static int failureRank(Throwable failure) {
+        if (failure instanceof Error) {
+            return 2;
+        }
+        if (failure instanceof SecurityException) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private static boolean isFatalFailure(Throwable failure) {
+        return failure instanceof SecurityException
+                || failure instanceof Error;
+    }
+
+    private static void throwIfReplacement(
+            Throwable primaryFailure, Throwable parserFailure,
+            Throwable finalFailure,
+            ArchiveTaggedContentHandler taggedOutput)
+            throws IOException, SAXException, TikaException {
+        if (finalFailure != null && finalFailure != primaryFailure) {
+            if (isFatalFailure(finalFailure)) {
+                addSuppressed(finalFailure, parserFailure);
+                preserveRecordedOutputEvidence(
+                        taggedOutput, finalFailure);
+                taggedOutput.recordFatalCleanupFailure(finalFailure);
+            }
+            throwFailure(finalFailure);
+        }
+    }
+
+    private static void preserveRecordedOutputEvidence(
+            ArchiveTaggedContentHandler taggedOutput,
+            Throwable primaryFailure) {
+        preserveRecordedOutputFailure(
+                primaryFailure, taggedOutput.getSaxFailure());
+        preserveRecordedOutputFailure(
+                primaryFailure, taggedOutput.getUncheckedFailure());
+    }
+
+    private static void preserveRecordedOutputFailure(
+            Throwable primaryFailure, Throwable outputFailure) {
+        if (outputFailure != null
+                && !containsThrowable(primaryFailure, outputFailure)) {
+            addSuppressed(primaryFailure, outputFailure);
+        }
+    }
+
+    private static Throwable normalizePrimaryFailureForCleanup(
+            ArchiveTaggedContentHandler taggedOutput,
+            Throwable parserFailure) {
+        if (taggedOutput.isFatalCleanupFailure(parserFailure)) {
+            return parserFailure;
+        }
+        Throwable outputFailure =
+                findTaggedOutputFailure(taggedOutput, parserFailure);
+        if (outputFailure == null) {
+            outputFailure =
+                    taggedOutput.findUncheckedCause(parserFailure);
+        }
+        if (outputFailure == null) {
+            return parserFailure;
+        }
+        preserveFailureEvidence(outputFailure, parserFailure);
+        return outputFailure;
+    }
+
+    private static void throwFailure(Throwable failure)
+            throws IOException, SAXException, TikaException {
+        if (failure instanceof IOException ioException) {
+            throw ioException;
+        }
+        if (failure instanceof SAXException saxException) {
+            throw saxException;
+        }
+        if (failure instanceof TikaException tikaException) {
+            throw tikaException;
+        }
+        if (failure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new TikaException("Unexpected ZIP parser failure", failure);
+    }
+
+    private static void preserveFailureEvidence(
+            Throwable target, Throwable failure) {
+        if (target == null || failure == null || target == failure) {
+            return;
+        }
+        if (!containsThrowable(failure, target)) {
+            addSuppressed(target, failure);
+            return;
+        }
+
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current && cause != target) {
+                preserveFailureEvidenceBranch(
+                        target, cause, pending);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null
+                        && suppressed != current
+                        && suppressed != target) {
+                    preserveFailureEvidenceBranch(
+                            target, suppressed, pending);
+                }
+            }
+        }
+    }
+
+    private static void preserveFailureEvidenceBranch(
+            Throwable target, Throwable candidate,
+            Deque<Throwable> pending) {
+        if (containsThrowable(candidate, target)) {
+            pending.push(candidate);
+        } else {
+            addSuppressed(target, candidate);
+        }
+    }
+
+    private static void addSuppressed(Throwable primaryFailure, Throwable suppressedFailure) {
+        if (primaryFailure == null || suppressedFailure == null
+                || primaryFailure == suppressedFailure
+                || containsThrowable(suppressedFailure, primaryFailure)) {
+            return;
+        }
+        for (Throwable existing : primaryFailure.getSuppressed()) {
+            if (existing == suppressedFailure) {
+                return;
+            }
+        }
+        primaryFailure.addSuppressed(suppressedFailure);
+    }
+
+    private static boolean containsThrowable(Throwable root, Throwable sought) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (current == sought) {
+                return true;
+            }
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        return false;
+    }
+
+    private void parseStreamAttempt(TikaInputStream tis, String encoding,
+                                    boolean startWithDataDescriptor, Metadata metadata,
+                                    EmbeddedDocumentExtractor extractor, XHTMLContentHandler xhtml,
+                                    XHTMLBalancingHandler embeddedOutput,
+                                    ArchiveTaggedContentHandler taggedOutput,
+                                    boolean shouldUseDataDescriptor, AtomicInteger entryCnt,
+                                    ParseContext context, ZipParserConfig config,
+                                    Set<String> seenEntryNames, List<String> duplicates)
+            throws IOException, SAXException, TikaException {
+        ZipArchiveInputStream zis =
+                new ZipArchiveInputStream(tis, encoding, true, startWithDataDescriptor);
+        Throwable primaryFailure = null;
+        Throwable parserFailure = null;
+        try {
+            parseStreamEntries(zis, metadata, extractor, xhtml,
+                    embeddedOutput, taggedOutput, shouldUseDataDescriptor,
+                    entryCnt, context, config, seenEntryNames, duplicates);
+        } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+            parserFailure = e;
+            primaryFailure =
+                    normalizePrimaryFailureForCleanup(
+                            taggedOutput, parserFailure);
+            throw e;
+        } finally {
+            Throwable finalFailure = closeResource(zis, primaryFailure);
+            throwIfReplacement(
+                    primaryFailure, parserFailure,
+                    finalFailure, taggedOutput);
+        }
+    }
+
+    @FunctionalInterface
+    private interface ArchiveParseAction {
+        void parse(XHTMLContentHandler xhtml,
+                   XHTMLBalancingHandler embeddedOutput,
+                   ArchiveTaggedContentHandler taggedOutput)
+                throws IOException, SAXException, TikaException;
+    }
+
+    private static final class ArchiveTaggedContentHandler
+            extends TaggedContentHandler {
+
+        private final Set<Throwable> fatalCleanupFailures =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+
+        private ArchiveTaggedContentHandler(ContentHandler handler) {
+            super(handler);
+        }
+
+        private void recordFatalCleanupFailure(Throwable failure) {
+            fatalCleanupFailures.add(failure);
+        }
+
+        private boolean isFatalCleanupFailure(Throwable failure) {
+            return fatalCleanupFailures.contains(failure);
+        }
+    }
+
     private void parseStreamEntries(ZipArchiveInputStream zis, Metadata metadata,
                                      EmbeddedDocumentExtractor extractor, XHTMLContentHandler xhtml,
+                                     XHTMLBalancingHandler embeddedOutput,
+                                     ArchiveTaggedContentHandler taggedOutput,
                                      boolean shouldUseDataDescriptor, AtomicInteger entryCnt,
                                      ParseContext context, ZipParserConfig config,
                                      Set<String> seenEntryNames, List<String> duplicates)
@@ -394,7 +835,7 @@ public class ZipParser extends AbstractArchiveParser {
 
                 if (!entry.isDirectory() && entry instanceof ZipArchiveEntry) {
                     parseStreamEntry(zis, (ZipArchiveEntry) entry, extractor, metadata,
-                            xhtml, context, config);
+                            xhtml, embeddedOutput, taggedOutput, context, config);
 
                     // Track duplicates AFTER successful processing
                     // (if DATA_DESCRIPTOR exception occurs, we'll re-read this entry)
@@ -462,7 +903,10 @@ public class ZipParser extends AbstractArchiveParser {
 
     private void parseZipFileEntry(ZipFile zipFile, ZipArchiveEntry entry,
                                     EmbeddedDocumentExtractor extractor, Metadata parentMetadata,
-                                    XHTMLContentHandler xhtml, ParseContext context,
+                                    XHTMLContentHandler xhtml,
+                                    XHTMLBalancingHandler embeddedOutput,
+                                    ArchiveTaggedContentHandler taggedOutput,
+                                    ParseContext context,
                                     ZipParserConfig config)
             throws SAXException, IOException, TikaException {
 
@@ -493,19 +937,44 @@ public class ZipParser extends AbstractArchiveParser {
         writeEntryXhtml(name, xhtml);
 
         if (extractor.shouldParseEmbedded(entryMetadata)) {
-            try (TemporaryResources tmp = new TemporaryResources();
-                    InputStream entryStream = zipFile.getInputStream(entry)) {
-                TikaInputStream tis = TikaInputStream.get(entryStream, tmp, entryMetadata);
-                extractor.parseEmbedded(tis, xhtml, entryMetadata, new ParseContext(), true);
+            try {
+                TemporaryResources tmp = new TemporaryResources();
+                InputStream entryStream = null;
+                Throwable primaryFailure = null;
+                Throwable parserFailure = null;
+                try {
+                    entryStream = zipFile.getInputStream(entry);
+                    TikaInputStream tis = TikaInputStream.get(entryStream, tmp, entryMetadata);
+                    extractor.parseEmbedded(
+                            tis, embeddedOutput, entryMetadata,
+                            new ParseContext(), true);
+                    throwRecordedOutputFailure(taggedOutput);
+                } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+                    parserFailure = e;
+                    primaryFailure =
+                            normalizePrimaryFailureForCleanup(
+                                    taggedOutput, parserFailure);
+                    throw e;
+                } finally {
+                    Throwable finalFailure = closeResource(entryStream, primaryFailure);
+                    finalFailure = disposeTemporaryResources(tmp, finalFailure);
+                    throwIfReplacement(
+                            primaryFailure, parserFailure,
+                            finalFailure, taggedOutput);
+                }
             } catch (UnsupportedZipFeatureException e) {
-                EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
+                recoverUnsupportedEmbeddedStream(
+                        embeddedOutput, taggedOutput, e, parentMetadata);
             }
         }
     }
 
     private void parseStreamEntry(ZipArchiveInputStream zis, ZipArchiveEntry entry,
                                    EmbeddedDocumentExtractor extractor, Metadata parentMetadata,
-                                   XHTMLContentHandler xhtml, ParseContext context,
+                                   XHTMLContentHandler xhtml,
+                                   XHTMLBalancingHandler embeddedOutput,
+                                   ArchiveTaggedContentHandler taggedOutput,
+                                   ParseContext context,
                                    ZipParserConfig config)
             throws SAXException, IOException, TikaException {
 
@@ -533,11 +1002,31 @@ public class ZipParser extends AbstractArchiveParser {
         writeEntryXhtml(name, xhtml);
 
         if (extractor.shouldParseEmbedded(entryMetadata)) {
-            try (TemporaryResources tmp = new TemporaryResources()) {
-                TikaInputStream tis = TikaInputStream.get(zis, tmp, entryMetadata);
-                extractor.parseEmbedded(tis, xhtml, entryMetadata, new ParseContext(), true);
+            try {
+                TemporaryResources tmp = new TemporaryResources();
+                Throwable primaryFailure = null;
+                Throwable parserFailure = null;
+                try {
+                    TikaInputStream tis = TikaInputStream.get(zis, tmp, entryMetadata);
+                    extractor.parseEmbedded(
+                            tis, embeddedOutput, entryMetadata,
+                            new ParseContext(), true);
+                    throwRecordedOutputFailure(taggedOutput);
+                } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+                    parserFailure = e;
+                    primaryFailure =
+                            normalizePrimaryFailureForCleanup(
+                                    taggedOutput, parserFailure);
+                    throw e;
+                } finally {
+                    Throwable finalFailure = disposeTemporaryResources(tmp, primaryFailure);
+                    throwIfReplacement(
+                            primaryFailure, parserFailure,
+                            finalFailure, taggedOutput);
+                }
             } catch (UnsupportedZipFeatureException e) {
-                EmbeddedDocumentUtil.recordEmbeddedStreamException(e, parentMetadata);
+                recoverUnsupportedEmbeddedStream(
+                        embeddedOutput, taggedOutput, e, parentMetadata);
             }
         }
     }
