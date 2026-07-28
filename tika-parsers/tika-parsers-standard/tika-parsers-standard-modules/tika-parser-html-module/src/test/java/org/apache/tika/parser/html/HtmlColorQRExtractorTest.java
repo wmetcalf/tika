@@ -36,6 +36,7 @@ import java.util.AbstractList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.jsoup.Jsoup;
@@ -1311,7 +1312,7 @@ public class HtmlColorQRExtractorTest {
 
     private Path createCountingEmptyScanner(Path invocationLog) throws IOException {
         Path script = temporaryDirectory.resolve("counting-zxing-reader");
-        Files.writeString(script, """
+        Files.writeString(script, String.format(Locale.ROOT, """
                 #!/bin/sh
                 if [ "$1" = "-version" ]; then
                     printf '%%s\\n' probe >> '%s'
@@ -1322,7 +1323,7 @@ public class HtmlColorQRExtractorTest {
                     exit 0
                 fi
                 exit 2
-                """.formatted(invocationLog, invocationLog), StandardCharsets.UTF_8);
+                """, invocationLog, invocationLog), StandardCharsets.UTF_8);
         Files.setPosixFilePermissions(script,
                 PosixFilePermissions.fromString("rwx------"));
         return script;
