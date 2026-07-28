@@ -190,6 +190,7 @@
               org.apache.tika.config.TikaActivator
             </Bundle-Activator>
             <Bundle-ActivationPolicy>lazy</Bundle-ActivationPolicy>
+            <Embed-Dependency>rosetta-squint-hash</Embed-Dependency>
             <Import-Package>
               org.apache.xerces.util;resolution:=optional,
               com.fasterxml.jackson.*;resolution:=optional,
