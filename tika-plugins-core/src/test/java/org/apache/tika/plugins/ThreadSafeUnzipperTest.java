@@ -37,6 +37,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
@@ -166,6 +167,52 @@ public class ThreadSafeUnzipperTest {
         assertTrue(Files.exists(destination.resolve(MARKER)));
         assertTrue(Files.exists(destination.resolve("inside.txt")));
         assertTrue(regularMoveAttempts.get() >= 2);
+    }
+
+    @Test
+    public void testGenericMoveRaceWaitsForPublishedMarker(@TempDir Path tmp)
+            throws Exception {
+        Path zip = writeTrivialZip(tmp.resolve("plugin.zip"));
+        Path destination = tmp.resolve("plugin");
+        AtomicBoolean injectedRace = new AtomicBoolean();
+        AtomicBoolean publicationFailed = new AtomicBoolean();
+        CountDownLatch publicationFinished = new CountDownLatch(1);
+
+        ThreadSafeUnzipper.MoveOperation racingMover = (source, target, options) -> {
+            if (source.getFileName().toString().contains(".tmp.")
+                    && injectedRace.compareAndSet(false, true)) {
+                Thread publisher = new Thread(() -> {
+                    try {
+                        Thread.sleep(50);
+                        Files.createDirectories(target);
+                        Files.writeString(target.resolve("inside.txt"), "winner");
+                        Files.createFile(target.resolve(MARKER));
+                    } catch (InterruptedException e) {
+                        publicationFailed.set(true);
+                        Thread.currentThread().interrupt();
+                    } catch (IOException e) {
+                        publicationFailed.set(true);
+                    } finally {
+                        publicationFinished.countDown();
+                    }
+                });
+                publisher.start();
+                throw new FileSystemException(source.toString(), target.toString(),
+                        "simulated transient losing rename");
+            }
+            Files.move(source, target, options);
+        };
+
+        try {
+            ThreadSafeUnzipper.unzipPlugin(zip, racingMover);
+        } finally {
+            assertTrue(publicationFinished.await(5, TimeUnit.SECONDS),
+                    "simulated concurrent publisher did not finish");
+        }
+
+        assertFalse(publicationFailed.get());
+        assertTrue(Files.exists(destination.resolve(MARKER)));
+        assertTrue(Files.exists(destination.resolve("inside.txt")));
     }
 
     @Test

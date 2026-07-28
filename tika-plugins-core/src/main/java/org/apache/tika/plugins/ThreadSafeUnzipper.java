@@ -64,6 +64,7 @@ public class ThreadSafeUnzipper {
     private static final String COMPLETE_MARKER = ".tika-extraction-complete";
     private static final String LOCK_DIRECTORY = "tika_lck";
     private static final String ROOT_LOCK_FILE = "root.lock";
+    private static final long GENERIC_MOVE_RACE_WAIT_MS = 1000;
 
     @FunctionalInterface
     interface MoveOperation {
@@ -330,7 +331,11 @@ public class ThreadSafeUnzipper {
      * This is called when we detect another process is extracting.
      */
     private static void waitForExtractionComplete(Path destination) throws IOException {
-        long maxWaitMs = 60000; // 1 minute max wait
+        waitForExtractionComplete(destination, 60000);
+    }
+
+    private static void waitForExtractionComplete(Path destination, long maxWaitMs)
+            throws IOException {
         long pollIntervalMs = 100;
         long waited = 0;
 
@@ -359,7 +364,17 @@ public class ThreadSafeUnzipper {
      */
     private static void handleGenericMoveFailure(Path destination, FileSystemException exception)
             throws IOException {
-        if (!isExtractionComplete(destination)) {
+        if (isExtractionComplete(destination)) {
+            LOG.debug("plugin already extracted by another process: {}", destination);
+            return;
+        }
+        try {
+            // A concurrent stale-destination quarantine can briefly move a completed
+            // destination out of the way after this rename has already lost its race.
+            // Give that publisher/recovery path a short window to restore the marker.
+            waitForExtractionComplete(destination, GENERIC_MOVE_RACE_WAIT_MS);
+        } catch (IOException waitFailure) {
+            exception.addSuppressed(waitFailure);
             throw exception;
         }
         LOG.debug("plugin already extracted by another process: {}", destination);
