@@ -327,6 +327,9 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         if (uncheckedOutputFailure != null) {
             return uncheckedOutputFailure;
         }
+        if (failure instanceof Error) {
+            return null;
+        }
         SAXException swallowedSaxFailure = taggedOutput.getSaxFailure();
         if (swallowedSaxFailure != null) {
             return swallowedSaxFailure;
@@ -342,20 +345,26 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         Set<Throwable> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> pending = new ArrayDeque<>();
+        SAXException recordedOutputFailure = taggedOutput.getSaxFailure();
+        SAXException taggedOutputCandidate = null;
         pending.push(failure);
         while (!pending.isEmpty()) {
             Throwable current = pending.pop();
             if (!seen.add(current)) {
                 continue;
             }
+            if (current == recordedOutputFailure) {
+                return recordedOutputFailure;
+            }
             if (current instanceof SAXException saxFailure
                     && taggedOutput.isCauseOf(saxFailure)) {
                 try {
                     taggedOutput.throwIfCauseOf(saxFailure);
                 } catch (SAXException outputFailure) {
-                    return outputFailure;
+                    if (taggedOutputCandidate == null) {
+                        taggedOutputCandidate = outputFailure;
+                    }
                 }
-                return null;
             }
             Throwable cause = current.getCause();
             if (cause != null && cause != current) {
@@ -369,7 +378,7 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                 }
             }
         }
-        return null;
+        return taggedOutputCandidate;
     }
 
     private static void handleCleanupFailure(

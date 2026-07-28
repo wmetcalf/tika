@@ -118,6 +118,70 @@ public class ParsingEmbeddedDocumentExtractorTest {
     }
 
     @Test
+    public void testUnrelatedErrorAfterSwallowedDownstreamSaxDenialRemainsAuthoritative()
+            throws Exception {
+        AssertionError parserFailure =
+                new AssertionError("simulated unrelated parser fatal failure");
+        ParseContext context = new ParseContext();
+        context.set(Parser.class, new SaxThenErrorParser(
+                SaxThenErrorMode.UNRELATED, parserFailure));
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        SAXException denial =
+                new SAXException("simulated swallowed output policy denial");
+        FailStopHandler handler = new FailStopHandler("blocked output", denial);
+
+        AssertionError thrown;
+        try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
+            thrown = assertThrows(AssertionError.class,
+                    () -> extractor.parseEmbedded(
+                            stream, handler, new Metadata(), context, true));
+        }
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testErrorCauseWithExactRawDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertRawDownstreamDenialInErrorGraphPropagates(
+                SaxThenErrorMode.RAW_CAUSE);
+    }
+
+    @Test
+    public void testErrorSuppressedWithExactRawDownstreamSaxDenialPropagates()
+            throws Exception {
+        assertRawDownstreamDenialInErrorGraphPropagates(
+                SaxThenErrorMode.RAW_SUPPRESSED);
+    }
+
+    @Test
+    public void testExactRecordedSaxWinsOverEarlierTaggedBranchInCyclicErrorGraph()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(Parser.class, new CompetingTaggedSaxBranchesParser());
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        SAXException firstDenial =
+                new SAXException("simulated first downstream output denial");
+        FailStopHandler handler =
+                new FailStopHandler("blocked output", firstDenial);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
+            thrown = assertThrows(SAXException.class,
+                    () -> extractor.parseEmbedded(
+                            stream, handler, new Metadata(), context, true));
+        }
+
+        assertSame(firstDenial, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(1, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testWrappedOutputDenialPropagatesWhenOutputHtmlIsFalse()
             throws Exception {
         ParseContext context = new ParseContext();
@@ -434,6 +498,28 @@ public class ParsingEmbeddedDocumentExtractorTest {
         assertEquals(0, handler.callbacksAfterDenial);
     }
 
+    private void assertRawDownstreamDenialInErrorGraphPropagates(
+            SaxThenErrorMode mode) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(Parser.class, new SaxThenErrorParser(mode, null));
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        SAXException denial =
+                new SAXException("simulated raw downstream output denial");
+        FailStopHandler handler = new FailStopHandler("blocked output", denial);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(new byte[0])) {
+            thrown = assertThrows(SAXException.class,
+                    () -> extractor.parseEmbedded(
+                            stream, handler, new Metadata(), context, true));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
     private static final class AbortingParser implements Parser {
 
         private static final long serialVersionUID = 1L;
@@ -514,6 +600,122 @@ public class ParsingEmbeddedDocumentExtractorTest {
         SECURITY,
         ERROR,
         SWALLOWED
+    }
+
+    private static final class SaxThenErrorParser implements Parser {
+
+        private static final long serialVersionUID = 1L;
+        private final SaxThenErrorMode mode;
+        private final Error unrelatedFailure;
+
+        private SaxThenErrorParser(
+                SaxThenErrorMode mode, Error unrelatedFailure) {
+            this.mode = mode;
+            this.unrelatedFailure = unrelatedFailure;
+        }
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.OCTET_STREAM);
+        }
+
+        @Override
+        public void parse(
+                TikaInputStream stream, ContentHandler handler,
+                Metadata metadata, ParseContext context)
+                throws SAXException {
+            XHTMLContentHandler xhtml =
+                    new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            xhtml.startElement("p", new AttributesImpl());
+            char[] chars = "blocked output".toCharArray();
+            try {
+                xhtml.characters(chars, 0, chars.length);
+            } catch (SAXException taggedFailure) {
+                SAXException rawFailure = taggedFailure;
+                while (rawFailure.getCause() instanceof SAXException cause) {
+                    rawFailure = cause;
+                }
+                if (mode == SaxThenErrorMode.UNRELATED) {
+                    throw unrelatedFailure;
+                }
+                if (mode == SaxThenErrorMode.RAW_CAUSE) {
+                    throw new AssertionError(
+                            "fatal parser failure with raw output cause",
+                            rawFailure);
+                }
+                AssertionError failure =
+                        new AssertionError(
+                                "fatal parser failure with raw output suppressed");
+                failure.addSuppressed(rawFailure);
+                throw failure;
+            }
+        }
+    }
+
+    private enum SaxThenErrorMode {
+        UNRELATED,
+        RAW_CAUSE,
+        RAW_SUPPRESSED
+    }
+
+    private static final class CompetingTaggedSaxBranchesParser
+            implements Parser {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.OCTET_STREAM);
+        }
+
+        @Override
+        public void parse(
+                TikaInputStream stream, ContentHandler handler,
+                Metadata metadata, ParseContext context)
+                throws SAXException {
+            XHTMLContentHandler xhtml =
+                    new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            xhtml.startElement("p", new AttributesImpl());
+            char[] chars = "blocked output".toCharArray();
+
+            SAXException firstTaggedFailure;
+            try {
+                xhtml.characters(chars, 0, chars.length);
+                throw new AssertionError("expected first output denial");
+            } catch (SAXException e) {
+                firstTaggedFailure = e;
+            }
+
+            SAXException laterTaggedFailure;
+            try {
+                xhtml.characters(chars, 0, chars.length);
+                throw new AssertionError("expected later output denial");
+            } catch (SAXException e) {
+                laterTaggedFailure = e;
+            }
+
+            SAXException firstRawFailure = firstTaggedFailure;
+            while (firstRawFailure.getCause() instanceof SAXException cause) {
+                firstRawFailure = cause;
+            }
+
+            RuntimeException cycleFirst =
+                    new RuntimeException("simulated cyclic branch");
+            RuntimeException cycleSecond =
+                    new RuntimeException(
+                            "simulated cyclic branch peer", cycleFirst);
+            cycleFirst.initCause(cycleSecond);
+
+            AssertionError parserFailure =
+                    new AssertionError(
+                            "fatal parser failure with competing SAX branches");
+            parserFailure.addSuppressed(laterTaggedFailure);
+            parserFailure.addSuppressed(cycleFirst);
+            parserFailure.addSuppressed(firstRawFailure);
+            throw parserFailure;
+        }
     }
 
     private static final class UncheckedAbortingParser implements Parser {
