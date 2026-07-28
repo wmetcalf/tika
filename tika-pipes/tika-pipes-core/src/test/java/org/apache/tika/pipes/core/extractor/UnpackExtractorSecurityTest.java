@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Set;
 
@@ -33,12 +35,14 @@ import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedStreamTranslator;
 import org.apache.tika.extractor.UnpackHandler;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.ParseRecord;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
 
@@ -54,6 +58,59 @@ public class UnpackExtractorSecurityTest {
     public void testWrappedOutputDenialPropagatesWhenOutputHtmlIsDisabled()
             throws Exception {
         assertWrappedOutputDenialPropagates(false);
+    }
+
+    @Test
+    public void testTranslationFailureConsumesEmbeddedCountLimit()
+            throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord parseRecord = new ParseRecord();
+        parseRecord.setMaxEmbeddedCount(1);
+        context.set(ParseRecord.class, parseRecord);
+        RecordingUnpackHandler unpackHandler = new RecordingUnpackHandler();
+        context.set(UnpackHandler.class, unpackHandler);
+        IOException translationFailure =
+                new IOException("simulated embedded translation failure");
+        FailingEmbeddedStreamTranslator translator =
+                new FailingEmbeddedStreamTranslator(translationFailure);
+        UnpackExtractor extractor = new UnpackExtractor(context);
+        setEmbeddedStreamTranslator(extractor, translator);
+        Metadata metadata = new Metadata();
+        metadata.set(TikaCoreProperties.EMBEDDED_ID, 1);
+
+        IOException thrown;
+        try (TikaInputStream stream =
+                     TikaInputStream.get(new byte[]{0x00, 0x01})) {
+            thrown = assertThrows(IOException.class,
+                    () -> extractor.parseEmbedded(
+                            stream, new DefaultHandler(), metadata, context,
+                            false));
+        }
+
+        assertSame(translationFailure, thrown);
+        assertEquals(1, parseRecord.getEmbeddedCount());
+        assertArrayEquals(
+                FailingEmbeddedStreamTranslator.PARTIAL_TRANSLATION,
+                unpackHandler.storedBytes);
+
+        try (TikaInputStream stream =
+                     TikaInputStream.get(new byte[]{0x02, 0x03})) {
+            extractor.parseEmbedded(
+                    stream, new DefaultHandler(), metadata, context, false);
+        }
+
+        assertEquals(1, translator.translateCalls);
+        assertEquals(1, parseRecord.getEmbeddedCount());
+    }
+
+    private static void setEmbeddedStreamTranslator(
+            UnpackExtractor extractor, EmbeddedStreamTranslator translator)
+            throws ReflectiveOperationException {
+        Field field =
+                UnpackExtractor.class.getDeclaredField(
+                        "embeddedStreamTranslator");
+        field.setAccessible(true);
+        field.set(extractor, translator);
     }
 
     private void assertWrappedOutputDenialPropagates(boolean outputHtml)
@@ -163,6 +220,35 @@ public class UnpackExtractorSecurityTest {
 
         @Override
         public void close() {
+        }
+    }
+
+    private static final class FailingEmbeddedStreamTranslator
+            implements EmbeddedStreamTranslator {
+
+        private static final byte[] PARTIAL_TRANSLATION =
+                new byte[]{0x55};
+
+        private final IOException failure;
+        private int translateCalls;
+
+        private FailingEmbeddedStreamTranslator(IOException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public boolean shouldTranslate(
+                TikaInputStream inputStream, Metadata metadata) {
+            return true;
+        }
+
+        @Override
+        public void translate(
+                TikaInputStream inputStream, Metadata metadata,
+                OutputStream outputStream) throws IOException {
+            translateCalls++;
+            outputStream.write(PARTIAL_TRANSLATION);
+            throw failure;
         }
     }
 }

@@ -83,7 +83,8 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
         UnpackHandler bytesHandler = context.get(UnpackHandler.class);
         if (bytesHandler != null) {
             parseWithBytes(
-                    tis, handler, metadata, parseContext, outputHtml);
+                    tis, handler, metadata, parseContext, outputHtml,
+                    parseRecord);
         } else {
             super.parseEmbedded(
                     tis, handler, metadata, parseContext, outputHtml);
@@ -92,15 +93,18 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
 
     private void parseWithBytes(
             TikaInputStream tis, ContentHandler handler, Metadata metadata,
-            ParseContext parseContext, boolean outputHtml)
+            ParseContext parseContext, boolean outputHtml,
+            ParseRecord parseRecord)
             throws IOException, SAXException {
 
-        //trigger spool to disk
-        Path rawBytes = tis.getPath();
-
+        Path rawBytes = null;
         //There may be a "translated" path for OLE2 etc
         Path translated = null;
+        boolean delegatedToSuper = false;
         try {
+            //trigger spool to disk
+            rawBytes = tis.getPath();
+
             //translate the stream or not
             if (embeddedStreamTranslator.shouldTranslate(tis, metadata)) {
                 translated = Files.createTempFile("tika-tmp-", ".bin");
@@ -108,8 +112,14 @@ public class UnpackExtractor extends ParsingEmbeddedDocumentExtractor {
                     embeddedStreamTranslator.translate(tis, metadata, os);
                 }
             }
+            delegatedToSuper = true;
             super.parseEmbedded(
                     tis, handler, metadata, parseContext, outputHtml);
+        } catch (IOException | RuntimeException | Error e) {
+            if (!delegatedToSuper && parseRecord != null) {
+                parseRecord.incrementEmbeddedCount();
+            }
+            throw e;
         } finally {
             try {
                 if (translated != null) {
