@@ -196,8 +196,8 @@ final class TextExtractor {
 
         ANSICPG_MAP.put(709, WINDOWS_709);  // Arabic (ASMO 449+, BCON V4)
         ANSICPG_MAP.put(710, WINDOWS_710);  // Arabic (transparent Arabic)
-        ANSICPG_MAP.put(710, WINDOWS_711);  // Arabic (Nafitha Enhanced)
-        ANSICPG_MAP.put(710, WINDOWS_720);  // Arabic (transparent ASMO)
+        ANSICPG_MAP.put(711, WINDOWS_711);  // Arabic (Nafitha Enhanced)
+        ANSICPG_MAP.put(720, WINDOWS_720);  // Arabic (transparent ASMO)
         ANSICPG_MAP.put(819, CP819);  // Windows 3.1 (US & Western Europe)
         ANSICPG_MAP.put(819, CP819);  // Windows 3.1 (US & Western Europe)
 
@@ -1689,7 +1689,16 @@ final class TextExtractor {
 
     private void throwIfOutputHandlerCause(Exception e) throws SAXException {
         if (out instanceof TaggedContentHandler taggedHandler) {
-            taggedHandler.throwIfCauseOf(e);
+            SAXException saxOutputFailure =
+                    RTFParser.findTaggedOutputFailure(taggedHandler, e);
+            if (saxOutputFailure != null) {
+                throw saxOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    taggedHandler.findUncheckedCause(e);
+            if (uncheckedOutputFailure != null) {
+                RTFParser.throwUnchecked(uncheckedOutputFailure);
+            }
         }
     }
 
@@ -1787,6 +1796,7 @@ final class TextExtractor {
                 // immediately -- never swallow them as a warning.
                 throw e;
             } catch (RuntimeException e) {
+                throwIfOutputHandlerCause(e);
                 // POI dispatch on a zero-byte embedded object throws
                 // EmptyFileException; other malformed embedded payloads
                 // can surface as a variety of runtime exceptions. Record
