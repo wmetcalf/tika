@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.junit.jupiter.api.Test;
@@ -133,7 +134,7 @@ public class PDF2XHTMLColorAwareBudgetTest {
             throws Exception {
         Path invocationLog = temporaryDirectory.resolve("pdf-zxing-invocations.log");
         Path fakeScanner = temporaryDirectory.resolve("fake-zxing-reader");
-        Files.writeString(fakeScanner, """
+        Files.writeString(fakeScanner, String.format(Locale.ROOT, """
                 #!/bin/sh
                 if [ "$1" = "-version" ]; then
                     printf '%%s\\n' probe >> '%s'
@@ -144,7 +145,7 @@ public class PDF2XHTMLColorAwareBudgetTest {
                     exit 0
                 fi
                 exit 2
-                """.formatted(invocationLog, invocationLog),
+                """, invocationLog, invocationLog),
                 StandardCharsets.UTF_8);
         fakeScanner.toFile().setExecutable(true);
 
