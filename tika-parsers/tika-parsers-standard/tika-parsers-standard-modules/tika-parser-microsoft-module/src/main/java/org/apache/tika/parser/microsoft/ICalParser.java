@@ -448,7 +448,7 @@ public class ICalParser implements Parser {
                 // but barcode:* values are appended via metadata.add and
                 // already land on the parent.)
             } catch (Exception e) {
-                taggedHandler.throwIfCauseOf(e);
+                throwIfEmbeddedOutputFailure(taggedHandler, e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 if (e instanceof SecurityException securityException) {
                     throw securityException;
@@ -456,6 +456,7 @@ public class ICalParser implements Parser {
                 metadata.add("ical:warning",
                         "x-alt-desc HTML parse failed: " + e.getMessage());
             }
+            throwIfEmbeddedOutputFailure(taggedHandler, null);
         }
         emitField(metadata, props, "dtstart",       "ical:event_dtstart");
         emitField(metadata, props, "dtend",         "ical:event_dtend");
@@ -915,13 +916,34 @@ public class ICalParser implements Parser {
                         tis, taggedHandler, embMeta, context, true);
             }
         } catch (Exception embeddedFailure) {
-            taggedHandler.throwIfCauseOf(embeddedFailure);
+            throwIfEmbeddedOutputFailure(taggedHandler, embeddedFailure);
             WriteLimitReachedException.throwIfWriteLimitReached(
                     embeddedFailure);
             if (embeddedFailure instanceof SecurityException securityException) {
                 throw securityException;
             }
             // embedded parse is best-effort
+        }
+        throwIfEmbeddedOutputFailure(taggedHandler, null);
+    }
+
+    private static void throwIfEmbeddedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (uncheckedFailure instanceof Error error) {
+            throw error;
         }
     }
 

@@ -84,6 +84,19 @@ public class MscParserSecurityTest {
     }
 
     @Test
+    public void testUrlQueryParametersAreNotTruncatedAtAmpersand() throws Exception {
+        ParseResult result = parse("""
+                <MMC_ConsoleFile>
+                  <String>https://api.example.test/data?key=abc&amp;format=json</String>
+                </MMC_ConsoleFile>
+                """);
+
+        assertEquals(
+                List.of("https://api.example.test/data?key=abc&format=json"),
+                List.of(result.metadata.getValues("msc:url")));
+    }
+
+    @Test
     public void testExternalXmlEntitiesAreNotResolved() throws Exception {
         String secret = "MSC_XXE_SECRET_SHOULD_NOT_LEAK";
         Path secretFile = temporaryDirectory.resolve("secret.txt");
@@ -331,6 +344,53 @@ public class MscParserSecurityTest {
         SAXException denial =
                 new SAXException("simulated MSC output policy denial");
         ParseContext context = embeddedOutputContext(rejectedText);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(
+                ("<MMC_ConsoleFile><BinaryData>"
+                        + "QUJDREVGR0hJSktMTU5PUA=="
+                        + "</BinaryData></MMC_ConsoleFile>")
+                        .getBytes(StandardCharsets.UTF_8))) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new MscParser().parse(
+                            stream, new TextRejectingHandler(rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testBinaryDirectUncheckedDenialPropagates() throws Exception {
+        String rejectedText = "blocked unchecked MSC embedded output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked MSC output denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(
+                ("<MMC_ConsoleFile><BinaryData>"
+                        + "QUJDREVGR0hJSktMTU5PUA=="
+                        + "</BinaryData></MMC_ConsoleFile>")
+                        .getBytes(StandardCharsets.UTF_8))) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> new MscParser().parse(
+                            stream,
+                            new UncheckedTextRejectingHandler(
+                                    rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testBinarySwallowedSaxDenialPropagates() throws Exception {
+        String rejectedText = "swallowed MSC embedded output refusal";
+        SAXException denial =
+                new SAXException("simulated swallowed MSC output denial");
+        ParseContext context =
+                swallowingEmbeddedOutputContext(rejectedText);
 
         SAXException thrown;
         try (TikaInputStream stream = TikaInputStream.get(
@@ -598,6 +658,29 @@ public class MscParserSecurityTest {
         return context;
     }
 
+    private static ParseContext swallowingEmbeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException ignored) {
+                    // Simulate an embedded parser swallowing downstream refusal.
+                }
+            }
+        });
+        return context;
+    }
+
     private static final class TextRejectingHandler extends DefaultHandler {
 
         private final String rejectedText;
@@ -611,6 +694,25 @@ public class MscParserSecurityTest {
         @Override
         public void characters(char[] ch, int start, int length)
                 throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
+    }
+
+    private static final class UncheckedTextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+
+        private UncheckedTextRejectingHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
             if (new String(ch, start, length).contains(rejectedText)) {
                 throw denial;
             }

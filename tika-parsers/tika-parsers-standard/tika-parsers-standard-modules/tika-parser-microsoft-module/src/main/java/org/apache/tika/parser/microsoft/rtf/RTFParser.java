@@ -108,6 +108,13 @@ public class RTFParser implements Parser {
         try {
             xhtml.startDocument();
             parseInline(tis, balancer, metadata, context);
+            SAXException swallowedSaxFailure =
+                    taggedOutput.getSaxFailure();
+            if (swallowedSaxFailure != null) {
+                shouldCleanupAfterFailure = false;
+                primaryFailure = swallowedSaxFailure;
+                throw swallowedSaxFailure;
+            }
             Throwable swallowedOutputFailure =
                     taggedOutput.getUncheckedFailure();
             if (swallowedOutputFailure != null) {
@@ -130,7 +137,8 @@ public class RTFParser implements Parser {
                 throw inputFailure;
             }
             SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+                    findRecoverableTaggedOutputFailure(
+                            taggedOutput, e);
             if (outputFailure != null) {
                 shouldCleanupAfterFailure = false;
                 primaryFailure = outputFailure;
@@ -143,7 +151,8 @@ public class RTFParser implements Parser {
         } catch (SAXException e) {
             primaryFailure = e;
             SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+                    findRecoverableTaggedOutputFailure(
+                            taggedOutput, e);
             if (outputFailure != null) {
                 shouldCleanupAfterFailure = false;
                 primaryFailure = outputFailure;
@@ -159,7 +168,8 @@ public class RTFParser implements Parser {
             throw e;
         } catch (TikaException e) {
             SAXException outputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+                    findRecoverableTaggedOutputFailure(
+                            taggedOutput, e);
             if (outputFailure != null) {
                 shouldCleanupAfterFailure = false;
                 primaryFailure = outputFailure;
@@ -176,7 +186,8 @@ public class RTFParser implements Parser {
             throw e;
         } catch (RuntimeException e) {
             SAXException taggedOutputFailure =
-                    findTaggedOutputFailure(taggedOutput, e);
+                    findRecoverableTaggedOutputFailure(
+                            taggedOutput, e);
             if (taggedOutputFailure != null) {
                 shouldCleanupAfterFailure = false;
                 primaryFailure = taggedOutputFailure;
@@ -200,7 +211,7 @@ public class RTFParser implements Parser {
                 throw taggedOutputFailure;
             }
             Throwable uncheckedOutputFailure =
-                    findUncheckedOutputFailure(taggedOutput, e);
+                    taggedOutput.findUncheckedCause(e);
             if (uncheckedOutputFailure != null) {
                 shouldCleanupAfterFailure = false;
                 primaryFailure = uncheckedOutputFailure;
@@ -229,7 +240,7 @@ public class RTFParser implements Parser {
         }
     }
 
-    private static SAXException findTaggedOutputFailure(
+    static SAXException findTaggedOutputFailure(
             TaggedContentHandler taggedOutput, Throwable failure) {
         SAXException recordedFailure = taggedOutput.getSaxFailure();
         Set<Throwable> seen =
@@ -271,6 +282,14 @@ public class RTFParser implements Parser {
         return taggedCandidate;
     }
 
+    private static SAXException findRecoverableTaggedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        SAXException outputFailure =
+                findTaggedOutputFailure(taggedOutput, failure);
+        return outputFailure != null
+                ? outputFailure : taggedOutput.getSaxFailure();
+    }
+
     private static Throwable findUncheckedOutputFailure(
             TaggedContentHandler taggedOutput, Throwable failure) {
         Throwable outputFailure =
@@ -308,7 +327,10 @@ public class RTFParser implements Parser {
             throw outputFailure;
         }
         Throwable uncheckedOutputFailure =
-                findUncheckedOutputFailure(taggedOutput, cleanupFailure);
+                cleanupFailure instanceof Error
+                        ? taggedOutput.findUncheckedCause(cleanupFailure)
+                        : findUncheckedOutputFailure(
+                                taggedOutput, cleanupFailure);
         if (uncheckedOutputFailure != null) {
             addSuppressed(uncheckedOutputFailure, primaryFailure);
             throwUnchecked(uncheckedOutputFailure);
@@ -320,7 +342,7 @@ public class RTFParser implements Parser {
         addSuppressed(primaryFailure, cleanupFailure);
     }
 
-    private static void throwUnchecked(Throwable failure) {
+    static void throwUnchecked(Throwable failure) {
         if (failure instanceof RuntimeException runtimeFailure) {
             throw runtimeFailure;
         }
@@ -359,8 +381,27 @@ public class RTFParser implements Parser {
         ert.setIgnoreListMarkup(ignoreListMarkup);
         try {
             ert.extract(is);
+            SAXException saxOutputFailure =
+                    taggedHandler.getSaxFailure();
+            if (saxOutputFailure != null) {
+                throw saxOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    taggedHandler.getUncheckedFailure();
+            if (uncheckedOutputFailure != null) {
+                throwUnchecked(uncheckedOutputFailure);
+            }
         } catch (SAXException e) {
-            taggedHandler.throwIfCauseOf(e);
+            SAXException outputFailure =
+                    findTaggedOutputFailure(taggedHandler, e);
+            if (outputFailure != null) {
+                throw outputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    findUncheckedOutputFailure(taggedHandler, e);
+            if (uncheckedOutputFailure != null) {
+                throwUnchecked(uncheckedOutputFailure);
+            }
             throw e;
         }
     }

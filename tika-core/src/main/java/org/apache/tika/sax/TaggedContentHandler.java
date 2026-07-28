@@ -66,8 +66,11 @@ import org.xml.sax.SAXException;
  */
 public class TaggedContentHandler extends ContentHandlerDecorator {
 
+    private static final int MAX_TRACKED_UNCHECKED_FAILURES = 64;
     private final Set<Throwable> uncheckedFailures =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Deque<Throwable> recentUncheckedFailures =
+            new ArrayDeque<>();
     private SAXException firstSaxFailure;
     private Throwable firstUncheckedFailure;
 
@@ -107,15 +110,63 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
      * @throws SAXException original exception, if any, thrown by this handler
      */
     public void throwIfCauseOf(Exception exception) throws SAXException {
-        SAXException original = null;
-        while (exception instanceof TaggedSAXException tagged
-                && this == tagged.getTag()) {
-            original = tagged.getCause();
-            exception = original;
+        SAXException saxFailure = findSaxCause(exception);
+        if (saxFailure != null) {
+            throw saxFailure;
         }
-        if (original != null) {
-            throw original;
+        Throwable uncheckedFailure = findUncheckedCause(exception);
+        if (uncheckedFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
         }
+        if (uncheckedFailure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
+    }
+
+    private SAXException findSaxCause(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        SAXException candidate = null;
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current == firstSaxFailure) {
+                return firstSaxFailure;
+            }
+            if (current instanceof TaggedSAXException tagged
+                    && this == tagged.getTag()) {
+                SAXException original = tagged.getCause();
+                while (original instanceof TaggedSAXException nested
+                        && this == nested.getTag()) {
+                    original = nested.getCause();
+                }
+                if (original == firstSaxFailure) {
+                    return firstSaxFailure;
+                }
+                if (candidate == null) {
+                    candidate = original;
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                Throwable suppressedFailure = suppressed[i];
+                if (suppressedFailure != null && suppressedFailure != current) {
+                    pending.push(suppressedFailure);
+                }
+            }
+        }
+        return candidate;
     }
 
     /**
@@ -153,14 +204,18 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
         Set<Throwable> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> pending = new ArrayDeque<>();
+        Throwable candidate = null;
         pending.push(failure);
         while (!pending.isEmpty()) {
             Throwable current = pending.pop();
             if (!seen.add(current)) {
                 continue;
             }
-            if (uncheckedFailures.contains(current)) {
-                return current;
+            if (current == firstUncheckedFailure) {
+                return firstUncheckedFailure;
+            }
+            if (candidate == null && uncheckedFailures.contains(current)) {
+                candidate = current;
             }
             Throwable cause = current.getCause();
             if (cause != null && cause != current) {
@@ -168,13 +223,13 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
             }
             Throwable[] suppressed = current.getSuppressed();
             for (int i = suppressed.length - 1; i >= 0; i--) {
-                Throwable candidate = suppressed[i];
-                if (candidate != null && candidate != current) {
-                    pending.push(candidate);
+                Throwable suppressedFailure = suppressed[i];
+                if (suppressedFailure != null && suppressedFailure != current) {
+                    pending.push(suppressedFailure);
                 }
             }
         }
-        return null;
+        return candidate;
     }
 
     @Override
@@ -270,8 +325,16 @@ public class TaggedContentHandler extends ContentHandlerDecorator {
     private void recordUncheckedFailure(Throwable failure) {
         if (firstUncheckedFailure == null) {
             firstUncheckedFailure = failure;
+            uncheckedFailures.add(failure);
+            return;
         }
-        uncheckedFailures.add(failure);
+        if (!uncheckedFailures.add(failure)) {
+            return;
+        }
+        recentUncheckedFailures.addLast(failure);
+        while (uncheckedFailures.size() > MAX_TRACKED_UNCHECKED_FAILURES) {
+            uncheckedFailures.remove(recentUncheckedFailures.removeFirst());
+        }
     }
 
     @FunctionalInterface

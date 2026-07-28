@@ -717,6 +717,49 @@ public class OutlookPSTParserTest extends TikaTest {
     }
 
     @Test
+    public void testExactRecordedSaxOutranksCompetingTaggedBranch()
+            throws Exception {
+        SAXException firstDenial =
+                new SAXException("first recorded PST SAX output denial");
+        SAXException laterDenial =
+                new SAXException("later competing PST SAX output denial");
+        ContentHandler rejectingHandler = new DefaultHandler() {
+            @Override
+            public void characters(char[] ch, int start, int length)
+                    throws SAXException {
+                throw firstDenial;
+            }
+        };
+
+        org.apache.tika.sax.TaggedContentHandler taggedOutput =
+                new org.apache.tika.sax.TaggedContentHandler(
+                        rejectingHandler);
+
+        SAXException firstTagged = assertThrows(
+                SAXException.class,
+                () -> taggedOutput.characters(new char[]{'x'}, 0, 1));
+        Object outputTag =
+                ((org.apache.tika.sax.TaggedSAXException) firstTagged).getTag();
+        SAXException competingTagged =
+                new org.apache.tika.sax.TaggedSAXException(
+                        laterDenial, outputTag);
+        Error parserFailure =
+                new Error("competing PST SAX failure branches");
+        RuntimeException cycle =
+                new RuntimeException("competing PST failure graph cycle");
+        parserFailure.addSuppressed(competingTagged);
+        parserFailure.addSuppressed(firstDenial);
+        parserFailure.addSuppressed(cycle);
+        cycle.addSuppressed(parserFailure);
+
+        SAXException found =
+                PSTMailItemParser.findOutputSaxFailure(
+                        taggedOutput, parserFailure);
+
+        assertSame(firstDenial, found);
+    }
+
+    @Test
     public void testUnrelatedFatalErrorRemainsAuthoritativeAfterSwallowedSaxDenial()
             throws Exception {
         SAXException outputDenial =

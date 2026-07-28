@@ -135,11 +135,16 @@ public class ChmParser implements Parser {
                         embeddedExtractor.parseEmbedded(
                                 embeddedTis, taggedEmbeddedOutput, embeddedMeta,
                                 context, true);
+                        throwIfRecordedOutputFailure(
+                                taggedEmbeddedOutput, null);
                     }
                 } catch (SecurityException e) {
+                    throwIfRecordedOutputFailure(
+                            taggedEmbeddedOutput, e);
                     throw e;
                 } catch (Exception e) {
-                    taggedEmbeddedOutput.throwIfCauseOf(e);
+                    throwIfRecordedOutputFailure(
+                            taggedEmbeddedOutput, e);
                     WriteLimitReachedException.throwIfWriteLimitReached(e);
                     LOG.warn("Failed to parse embedded CHM entry '{}': {}", displayName,
                             e.getMessage());
@@ -149,6 +154,26 @@ public class ChmParser implements Parser {
         }
 
         xhtml.endDocument();
+    }
+
+    private static void throwIfRecordedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (uncheckedFailure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
     }
 
     static void markEntryAnalysisIncomplete(

@@ -493,13 +493,38 @@ public class PDFParser implements Parser, RenderingParser {
                                 tis, taggedEmbeddedOutput, result.getMetadata(),
                                 context, false);
                     } catch (SecurityException e) {
+                        throwIfEmbeddedOutputFailure(
+                                taggedEmbeddedOutput, e);
                         throw e;
                     } catch (Exception e) {
-                        taggedEmbeddedOutput.throwIfCauseOf(e);
+                        throwIfEmbeddedOutputFailure(
+                                taggedEmbeddedOutput, e);
                         EmbeddedDocumentUtil.recordException(e, parentMetadata);
                     }
+                    throwIfEmbeddedOutputFailure(
+                            taggedEmbeddedOutput, null);
                 }
             }
+        }
+    }
+
+    private static void throwIfEmbeddedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (uncheckedFailure instanceof Error error) {
+            throw error;
         }
     }
 

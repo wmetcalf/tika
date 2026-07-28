@@ -16,7 +16,11 @@
  */
 package org.apache.tika.parser.microsoft.ooxml;
 
+import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Date;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 import org.xml.sax.Attributes;
 import org.xml.sax.Locator;
@@ -50,8 +54,18 @@ final class TaggedXWPFBodyContentsHandler implements XWPFBodyContentsHandler {
     static XHTMLContentHandler tagOutput(
             XHTMLContentHandler delegate, Metadata metadata,
             ParseContext context, Object outputTag) {
+        return tagOutput(
+                delegate, metadata, context, outputTag,
+                new UncheckedFailureTracker());
+    }
+
+    static XHTMLContentHandler tagOutput(
+            XHTMLContentHandler delegate, Metadata metadata,
+            ParseContext context, Object outputTag,
+            UncheckedFailureTracker uncheckedFailures) {
         return new FailStopTaggedXHTMLContentHandler(
-                delegate, metadata, context, outputTag);
+                delegate, metadata, context, outputTag,
+                uncheckedFailures);
     }
 
     void throwIfCauseOf(Exception exception) throws SAXException {
@@ -240,15 +254,18 @@ final class TaggedXWPFBodyContentsHandler implements XWPFBodyContentsHandler {
 
         private final XHTMLContentHandler delegate;
         private final Object outputTag;
+        private final UncheckedFailureTracker uncheckedFailures;
         private SAXException saxDenial;
         private SecurityException securityDenial;
 
         private FailStopTaggedXHTMLContentHandler(
                 XHTMLContentHandler delegate, Metadata metadata,
-                ParseContext context, Object outputTag) {
+                ParseContext context, Object outputTag,
+                UncheckedFailureTracker uncheckedFailures) {
             super(new DefaultHandler(), metadata, context);
             this.delegate = delegate;
             this.outputTag = outputTag;
+            this.uncheckedFailures = uncheckedFailures;
         }
 
         @Override
@@ -327,10 +344,60 @@ final class TaggedXWPFBodyContentsHandler implements XWPFBodyContentsHandler {
             } catch (SecurityException e) {
                 securityDenial = e;
                 throw e;
+            } catch (RuntimeException | Error e) {
+                uncheckedFailures.record(e);
+                throw e;
             } catch (SAXException e) {
                 saxDenial = e;
                 throw new TaggedSAXException(e, outputTag);
             }
+        }
+    }
+
+    static final class UncheckedFailureTracker {
+
+        private Throwable failure;
+
+        private void record(Throwable candidate) {
+            if (failure == null) {
+                failure = candidate;
+            }
+        }
+
+        Throwable getFailure() {
+            return failure;
+        }
+
+        Throwable findCause(Throwable candidate) {
+            if (failure == null || candidate == null) {
+                return null;
+            }
+            Set<Throwable> seen =
+                    Collections.newSetFromMap(new IdentityHashMap<>());
+            ArrayDeque<Throwable> pending = new ArrayDeque<>();
+            pending.push(candidate);
+            while (!pending.isEmpty()) {
+                Throwable current = pending.pop();
+                if (!seen.add(current)) {
+                    continue;
+                }
+                if (current == failure) {
+                    return failure;
+                }
+                Throwable cause = current.getCause();
+                if (cause != null && cause != current) {
+                    pending.push(cause);
+                }
+                Throwable[] suppressed = current.getSuppressed();
+                for (int i = suppressed.length - 1; i >= 0; i--) {
+                    Throwable suppressedFailure = suppressed[i];
+                    if (suppressedFailure != null
+                            && suppressedFailure != current) {
+                        pending.push(suppressedFailure);
+                    }
+                }
+            }
+            return null;
         }
     }
 }

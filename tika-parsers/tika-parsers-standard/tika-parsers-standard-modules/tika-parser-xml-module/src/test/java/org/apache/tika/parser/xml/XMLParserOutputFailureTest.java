@@ -206,6 +206,56 @@ class XMLParserOutputFailureTest {
     }
 
     @Test
+    void swallowedSaxCallerDenialPreservesIdentity() {
+        SAXException primary = new SAXException("XML swallowed SAX denial");
+        DenyingHandler handler =
+                new DenyingHandler("MANTIS_XML_BODY", primary, null);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(new SwallowingOutputSaxParser())));
+
+        assertSame(primary, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    void swallowedSaxThenIOExceptionPreservesDenialIdentity() {
+        SAXException denial =
+                new SAXException("XML swallowed SAX denial before IO failure");
+        DenyingHandler handler =
+                new DenyingHandler("MANTIS_XML_BODY", denial, null);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(
+                                new SwallowingOutputSaxThenIOExceptionParser())));
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    void swallowedRuntimeDoesNotMaskUnrelatedFatalError() {
+        IllegalStateException denial =
+                new IllegalStateException("XML swallowed runtime denial");
+        AssertionError parserFailure =
+                new AssertionError("unrelated fatal XML parser error");
+        UncheckedDenyingHandler handler =
+                new UncheckedDenyingHandler(
+                        "MANTIS_XML_BODY", denial, null);
+
+        AssertionError thrown = assertThrows(AssertionError.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(
+                                new UnrelatedErrorAfterUncheckedOutputParser(
+                                        parserFailure))));
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     void errorCauseUnwrappedSaxCallerDenialPreservesIdentity() {
         assertRawUnwrappedSaxDenialPreservesIdentity(
                 RawSaxWrapper.ERROR_CAUSE);
@@ -740,6 +790,70 @@ class XMLParserOutputFailureTest {
                         new IllegalStateException("suppressed XML output denial");
                 wrapper.addSuppressed(failure);
                 throw wrapper;
+            }
+        }
+    }
+
+    private static final class SwallowingOutputSaxParser
+            extends FailingSaxParser {
+
+        private SwallowingOutputSaxParser() {
+            super(null);
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            char[] chars = "MANTIS_XML_BODY".toCharArray();
+            try {
+                handler.characters(chars, 0, chars.length);
+            } catch (SAXException expected) {
+                // Models a custom SAX parser that catches a downstream
+                // handler refusal and reports successful parsing.
+            }
+        }
+    }
+
+    private static final class SwallowingOutputSaxThenIOExceptionParser
+            extends FailingSaxParser {
+
+        private SwallowingOutputSaxThenIOExceptionParser() {
+            super(null);
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            char[] chars = "MANTIS_XML_BODY".toCharArray();
+            try {
+                handler.characters(chars, 0, chars.length);
+            } catch (SAXException expected) {
+                // Models a custom SAX parser that swallows the downstream
+                // refusal and then fails independently.
+            }
+            throw new IOException("later unrelated XML parser failure");
+        }
+    }
+
+    private static final class UnrelatedErrorAfterUncheckedOutputParser
+            extends FailingSaxParser {
+
+        private final AssertionError parserFailure;
+
+        private UnrelatedErrorAfterUncheckedOutputParser(
+                AssertionError parserFailure) {
+            super(null);
+            this.parserFailure = parserFailure;
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            char[] chars = "MANTIS_XML_BODY".toCharArray();
+            try {
+                handler.characters(chars, 0, chars.length);
+            } catch (RuntimeException expected) {
+                throw parserFailure;
             }
         }
     }

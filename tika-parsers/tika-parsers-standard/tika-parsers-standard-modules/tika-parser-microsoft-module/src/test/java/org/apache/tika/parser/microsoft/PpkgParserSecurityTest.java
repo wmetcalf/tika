@@ -725,6 +725,54 @@ public class PpkgParserSecurityTest {
     }
 
     @Test
+    public void xmlEmbeddedDirectUncheckedDenialPropagates() throws Exception {
+        assertEmbeddedUncheckedOutputDenialPropagates(
+                buildWim("<wap-provisioningdoc/>"),
+                "blocked unchecked PPKG XML output");
+    }
+
+    @Test
+    public void directXmlSurfaceUncheckedDenialPropagates() throws Exception {
+        IllegalStateException denial =
+                new IllegalStateException("simulated direct PPKG output denial");
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream =
+                     TikaInputStream.get(buildWim("<wap-provisioningdoc/>"))) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> new PpkgParser().parse(
+                            stream,
+                            new UncheckedTextRejectingHandler("Source:", denial),
+                            new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void xmlEmbeddedSwallowedSaxDenialPropagates() throws Exception {
+        assertSwallowedEmbeddedOutputDenialPropagates(
+                buildWim("<wap-provisioningdoc/>"),
+                "swallowed PPKG XML output refusal");
+    }
+
+    @Test
+    public void dataAssetDirectUncheckedDenialPropagates() throws Exception {
+        assertEmbeddedUncheckedOutputDenialPropagates(
+                buildWimResource("payload.bin",
+                        "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
+                "blocked unchecked PPKG data output");
+    }
+
+    @Test
+    public void dataAssetSwallowedSaxDenialPropagates() throws Exception {
+        assertSwallowedEmbeddedOutputDenialPropagates(
+                buildWimResource("payload.bin",
+                        "ordinary embedded data".getBytes(StandardCharsets.UTF_8)),
+                "swallowed PPKG data output refusal");
+    }
+
+    @Test
     public void dataAssetMimeDetectionSecurityExceptionPropagates() {
         SecurityException denial =
                 new SecurityException("simulated MIME policy denial");
@@ -833,6 +881,74 @@ public class PpkgParserSecurityTest {
         assertSame(denial, thrown);
     }
 
+    private static void assertEmbeddedUncheckedOutputDenialPropagates(
+            byte[] wim, String rejectedText) throws Exception {
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked PPKG output denial");
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = rejectedText.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(wim)) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> new PpkgParser().parse(
+                            stream,
+                            new UncheckedTextRejectingHandler(
+                                    rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    private static void assertSwallowedEmbeddedOutputDenialPropagates(
+            byte[] wim, String rejectedText) throws Exception {
+        SAXException denial =
+                new SAXException("simulated swallowed PPKG output denial");
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                char[] chars = rejectedText.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException ignored) {
+                    // Simulate an embedded parser swallowing downstream refusal.
+                }
+            }
+        });
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(wim)) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new PpkgParser().parse(
+                            stream, new TextRejectingHandler(rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
     private static final class TextRejectingHandler extends DefaultHandler {
 
         private final String rejectedText;
@@ -846,6 +962,25 @@ public class PpkgParserSecurityTest {
         @Override
         public void characters(char[] ch, int start, int length)
                 throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
+    }
+
+    private static final class UncheckedTextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+
+        private UncheckedTextRejectingHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
             if (new String(ch, start, length).contains(rejectedText)) {
                 throw denial;
             }

@@ -102,6 +102,89 @@ public class ChmParserSecurityTest extends TikaTest {
     }
 
     @Test
+    public void testWrappedEmbeddedDownstreamSaxDenialPropagates() throws Exception {
+        String rejectedText = "blocked wrapped CHM embedded output";
+        SAXException denial =
+                new SAXException("simulated wrapped CHM output policy denial");
+        ParseContext context = wrappedEmbeddedOutputContext(rejectedText);
+        Metadata metadata = new Metadata();
+
+        SAXException thrown =
+                assertThrows(SAXException.class,
+                        () -> parse(
+                                context,
+                                new TextRejectingHandler(rejectedText, denial),
+                                metadata));
+
+        assertSame(denial, thrown);
+        assertTrue(Arrays.stream(metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .noneMatch(value -> value.startsWith(
+                        "CHM entry analysis incomplete")));
+    }
+
+    @Test
+    public void testEmbeddedDownstreamUncheckedDenialPropagates() throws Exception {
+        String rejectedText = "blocked unchecked CHM embedded output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked CHM output policy denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+        Metadata metadata = new Metadata();
+
+        IllegalStateException thrown =
+                assertThrows(IllegalStateException.class,
+                        () -> parse(
+                                context,
+                                new UncheckedTextRejectingHandler(
+                                        rejectedText, denial),
+                                metadata));
+
+        assertSame(denial, thrown);
+        assertTrue(Arrays.stream(metadata.getValues(
+                        TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .noneMatch(value -> value.startsWith(
+                        "CHM entry analysis incomplete")));
+    }
+
+    @Test
+    public void testSwallowedEmbeddedDownstreamUncheckedDenialPropagates()
+            throws Exception {
+        String rejectedText = "blocked swallowed CHM embedded output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated swallowed CHM output policy denial");
+        ParseContext context =
+                swallowingUncheckedEmbeddedOutputContext(rejectedText);
+
+        IllegalStateException thrown =
+                assertThrows(IllegalStateException.class,
+                        () -> parse(
+                                context,
+                                new UncheckedTextRejectingHandler(
+                                        rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testWrappedEmbeddedDownstreamSecurityDenialPropagatesByIdentity()
+            throws Exception {
+        String rejectedText = "blocked wrapped CHM security output";
+        SecurityException denial =
+                new SecurityException("simulated CHM security output policy denial");
+        ParseContext context =
+                securityWrappingEmbeddedOutputContext(rejectedText);
+
+        SecurityException thrown =
+                assertThrows(SecurityException.class,
+                        () -> parse(
+                                context,
+                                new UncheckedTextRejectingHandler(
+                                        rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
     public void testOrdinaryEmbeddedFailureMarksAnalysisIncomplete() throws Exception {
         Metadata metadata = parseWithEmbeddedException(
                 new IOException("simulated ordinary CHM embedded failure"));
@@ -173,6 +256,113 @@ public class ChmParserSecurityTest extends TikaTest {
         return parse(context);
     }
 
+    private static ParseContext embeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        AtomicBoolean pendingOutput = new AtomicBoolean(true);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return pendingOutput.get();
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                if (!pendingOutput.compareAndSet(true, false)) {
+                    return;
+                }
+                char[] chars = output.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        return context;
+    }
+
+    private static ParseContext wrappedEmbeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        AtomicBoolean pendingOutput = new AtomicBoolean(true);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return pendingOutput.get();
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException {
+                if (!pendingOutput.compareAndSet(true, false)) {
+                    return;
+                }
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException outputFailure) {
+                    throw new IOException("wrapped CHM output failure", outputFailure);
+                }
+            }
+        });
+        return context;
+    }
+
+    private static ParseContext swallowingUncheckedEmbeddedOutputContext(
+            String output) {
+        ParseContext context = new ParseContext();
+        AtomicBoolean pendingOutput = new AtomicBoolean(true);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return pendingOutput.get();
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                if (!pendingOutput.compareAndSet(true, false)) {
+                    return;
+                }
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException | RuntimeException ignored) {
+                    // Simulate an embedded parser swallowing downstream refusal.
+                }
+            }
+        });
+        return context;
+    }
+
+    private static ParseContext securityWrappingEmbeddedOutputContext(
+            String output) {
+        ParseContext context = new ParseContext();
+        AtomicBoolean pendingOutput = new AtomicBoolean(true);
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return pendingOutput.get();
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                if (!pendingOutput.compareAndSet(true, false)) {
+                    return;
+                }
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SecurityException outputFailure) {
+                    throw new SecurityException(
+                            "wrapped CHM security output failure", outputFailure);
+                }
+            }
+        });
+        return context;
+    }
+
     private Metadata parse(ParseContext context) throws Exception {
         return parse(context, new BodyContentHandler(-1));
     }
@@ -180,11 +370,16 @@ public class ChmParserSecurityTest extends TikaTest {
     private Metadata parse(ParseContext context, ContentHandler handler)
             throws Exception {
         Metadata metadata = new Metadata();
+        parse(context, handler, metadata);
+        return metadata;
+    }
+
+    private void parse(ParseContext context, ContentHandler handler,
+                       Metadata metadata) throws Exception {
         try (TikaInputStream stream = getResourceAsStream(CHM_FIXTURE)) {
             new ChmParser().parse(
                     stream, handler, metadata, context);
         }
-        return metadata;
     }
 
     private static final class TextRejectingHandler extends DefaultHandler {
@@ -200,6 +395,26 @@ public class ChmParserSecurityTest extends TikaTest {
         @Override
         public void characters(char[] ch, int start, int length)
                 throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
+        }
+    }
+
+    private static final class UncheckedTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+
+        private UncheckedTextRejectingHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
             if (new String(ch, start, length).contains(rejectedText)) {
                 throw denial;
             }

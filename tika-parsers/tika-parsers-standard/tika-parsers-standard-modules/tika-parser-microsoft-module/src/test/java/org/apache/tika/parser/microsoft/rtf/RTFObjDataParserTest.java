@@ -177,6 +177,65 @@ public class RTFObjDataParserTest {
     }
 
     @Test
+    public void testInlineSwallowedDownstreamSaxExceptionPropagates()
+            throws Exception {
+        SAXException failure =
+                new SAXException("simulated swallowed inline RTF output denial");
+        FailStopTextRejectingHandler handler =
+                new FailStopTextRejectingHandler(
+                        "blocked inline RTF embedded output", failure);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parseInlineWithEmbeddedOutput(
+                        buildRtf(DISTINCT_COMMAND),
+                        "blocked inline RTF embedded output", handler, true));
+
+        assertSame(failure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testInlineSwallowedDownstreamSaxStopsBeforeNextObject()
+            throws Exception {
+        SAXException failure =
+                new SAXException(
+                        "simulated swallowed RTF denial before trailing text");
+        FailStopTextRejectingHandler handler =
+                new FailStopTextRejectingHandler(
+                        "blocked inline RTF embedded output", failure);
+        byte[] rtf =
+                duplicateEmbeddedObject(buildRtf(DISTINCT_COMMAND));
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parseInlineWithEmbeddedOutput(
+                        rtf,
+                        "blocked inline RTF embedded output",
+                        handler, true));
+
+        assertSame(failure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testInlineTextExtractorSwallowedRuntimePropagates()
+            throws Exception {
+        RuntimeException failure =
+                new IllegalStateException(
+                        "simulated TextExtractor inline RTF runtime denial");
+        FailStopRuntimeTextRejectingHandler handler =
+                new FailStopRuntimeTextRejectingHandler(
+                        "blocked inline RTF embedded output", failure);
+
+        RuntimeException thrown = assertThrows(RuntimeException.class,
+                () -> parseInlineWithEmbeddedOutput(
+                        buildRtf(DISTINCT_COMMAND),
+                        "blocked inline RTF embedded output", handler, false));
+
+        assertSame(failure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     public void testEndDocumentWriteLimitPropagatesByIdentity() throws Exception {
         WriteLimitReachedException failure = new WriteLimitReachedException(7);
         ContentHandler handler = new DefaultHandler() {
@@ -419,6 +478,36 @@ public class RTFObjDataParserTest {
         }
     }
 
+    private static void parseInlineWithEmbeddedOutput(
+            byte[] rtf, String output, ContentHandler outputHandler,
+            boolean swallowCheckedFailure) throws Exception {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException failure) {
+                    if (!swallowCheckedFailure) {
+                        throw failure;
+                    }
+                }
+            }
+        });
+
+        new RTFParser().parseInline(
+                new ByteArrayInputStream(rtf), outputHandler,
+                new Metadata(), context);
+    }
+
     private static List<ExtractedDocument> parse(byte[] rtf) throws Exception {
         List<ExtractedDocument> extracted = new ArrayList<>();
         ParseContext context = new ParseContext();
@@ -469,6 +558,16 @@ public class RTFObjDataParserTest {
                 + "}"
                 + "}";
         return rtf.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] duplicateEmbeddedObject(byte[] rtf) {
+        String source =
+                new String(rtf, StandardCharsets.US_ASCII);
+        String prefix = "{\\rtf1\\ansi";
+        String embeddedObject =
+                source.substring(prefix.length(), source.length() - 1);
+        return (prefix + embeddedObject + embeddedObject + "}")
+                .getBytes(StandardCharsets.US_ASCII);
     }
 
     private static byte[] buildLinkedRtf(
@@ -629,6 +728,47 @@ public class RTFObjDataParserTest {
             if (denied) {
                 callbacksAfterDenial++;
                 throw cleanupFailure;
+            }
+        }
+    }
+
+    private static final class FailStopRuntimeTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException failure;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopRuntimeTextRejectingHandler(
+                String rejectedText, RuntimeException failure) {
+            this.rejectedText = rejectedText;
+            this.failure = failure;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            recordCallback();
+            if (!denied
+                    && new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throw failure;
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            recordCallback();
+        }
+
+        @Override
+        public void endDocument() {
+            recordCallback();
+        }
+
+        private void recordCallback() {
+            if (denied) {
+                callbacksAfterDenial++;
             }
         }
     }

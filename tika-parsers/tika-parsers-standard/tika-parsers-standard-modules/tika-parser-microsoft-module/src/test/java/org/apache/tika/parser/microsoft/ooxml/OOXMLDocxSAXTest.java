@@ -18,12 +18,16 @@ package org.apache.tika.parser.microsoft.ooxml;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -32,10 +36,14 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import javax.xml.parsers.SAXParser;
 
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.Parser;
 import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.TikaTest;
@@ -53,6 +61,7 @@ import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.PasswordProvider;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
+import org.apache.tika.utils.XMLReaderUtils;
 
 /**
  * Tests for the DOCX parser.
@@ -890,6 +899,138 @@ public class OOXMLDocxSAXTest extends TikaTest {
     }
 
     @Test
+    public void testUnreferencedCommentRuntimeDenialStopsCleanup()
+            throws Exception {
+        RuntimeException denial =
+                new IllegalStateException(
+                        "simulated unreferenced-comment runtime denial");
+        FailStopUncheckedTextHandler handler =
+                new FailStopUncheckedTextHandler(
+                        "Here is a comment", denial);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        RuntimeException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(RuntimeException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testUnreferencedCommentErrorDenialStopsCleanup()
+            throws Exception {
+        AssertionError denial =
+                new AssertionError(
+                        "simulated unreferenced-comment error denial");
+        FailStopUncheckedTextHandler handler =
+                new FailStopUncheckedTextHandler(
+                        "Here is a comment", denial);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        AssertionError thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(AssertionError.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), new ParseContext()));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testUnreferencedCommentParserErrorRemainsPrimary()
+            throws Exception {
+        AssertionError parserFailure =
+                new AssertionError(
+                        "simulated fatal unreferenced-comment parser failure");
+        SAXException cleanupFailure =
+                new SAXException(
+                        "cleanup must not replace fatal parser failure");
+        CleanupDenyingCommentHandler handler =
+                new CleanupDenyingCommentHandler(cleanupFailure);
+        MarkerControlledSaxParser saxParser =
+                MarkerControlledSaxParser.throwing(
+                        "Here is a comment", parserFailure, handler);
+        ParseContext context = new ParseContext();
+        context.set(SAXParser.class, saxParser);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        AssertionError thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(AssertionError.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), context));
+        }
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.cleanupCallbacks);
+    }
+
+    @Test
+    public void testUnreferencedCommentSwallowedRuntimeDenialPropagates()
+            throws Exception {
+        IllegalStateException denial =
+                new IllegalStateException(
+                        "simulated swallowed unreferenced-comment runtime denial");
+        FailStopUncheckedTextHandler handler =
+                new FailStopUncheckedTextHandler(
+                        "Here is a comment", denial);
+        ParseContext context = new ParseContext();
+        context.set(SAXParser.class,
+                MarkerControlledSaxParser.swallowingRuntime(
+                        "Here is a comment"));
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    public void testUnreferencedCommentParserRuntimeStillClosesCommentDiv()
+            throws Exception {
+        RuntimeException parserFailure =
+                new IllegalStateException(
+                        "simulated unreferenced-comment parser failure");
+        CommentDivTrackingHandler handler =
+                new CommentDivTrackingHandler();
+        MarkerControlledSaxParser saxParser =
+                MarkerControlledSaxParser.throwing(
+                        "Here is a comment", parserFailure, handler);
+        ParseContext context = new ParseContext();
+        context.set(SAXParser.class, saxParser);
+        byte[] docx = removeCommentReferences(
+                "/test-documents/testComment.docx");
+
+        RuntimeException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(docx)) {
+            thrown = assertThrows(RuntimeException.class,
+                    () -> new OOXMLParser().parse(
+                            stream, handler, new Metadata(), context));
+        }
+
+        assertSame(parserFailure, thrown);
+        assertEquals(1, handler.commentDivStarts);
+        assertEquals(handler.commentDivStarts, handler.commentDivEnds);
+        assertFalse(handler.commentDivOpen);
+    }
+
+    @Test
     public void testHoverAndVmlHyperlinks() throws Exception {
         List<Metadata> metadataList =
                 getRecursiveMetadata("testHoverAndVml.docx");
@@ -1130,5 +1271,243 @@ public class OOXMLDocxSAXTest extends TikaTest {
                         "callback delivered after security denial");
             }
         }
+    }
+
+    private static final class FailStopUncheckedTextHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final Throwable denial;
+        private boolean denied;
+        private int callbacksAfterDenial;
+
+        private FailStopUncheckedTextHandler(
+                String rejectedText, Throwable denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void startDocument() {
+            recordCallback();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            recordCallback();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            recordCallback();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            recordCallback();
+            if (!denied
+                    && new String(ch, start, length).contains(rejectedText)) {
+                denied = true;
+                throwUnchecked(denial);
+            }
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            recordCallback();
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) {
+            recordCallback();
+        }
+
+        @Override
+        public void endDocument() {
+            recordCallback();
+        }
+
+        private void recordCallback() {
+            if (denied) {
+                callbacksAfterDenial++;
+            }
+        }
+    }
+
+    private interface CommentDivState {
+
+        boolean isCommentDivOpen();
+    }
+
+    private static final class CommentDivTrackingHandler
+            extends DefaultHandler implements CommentDivState {
+
+        private int commentDivStarts;
+        private int commentDivEnds;
+        private boolean commentDivOpen;
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            String element = localName.isEmpty() ? qName : localName;
+            if ("div".equals(element)
+                    && "comment".equals(attributes.getValue("class"))) {
+                commentDivStarts++;
+                commentDivOpen = true;
+            }
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            String element = localName.isEmpty() ? qName : localName;
+            if ("div".equals(element) && commentDivOpen) {
+                commentDivEnds++;
+                commentDivOpen = false;
+            }
+        }
+
+        @Override
+        public boolean isCommentDivOpen() {
+            return commentDivOpen;
+        }
+    }
+
+    private static final class CleanupDenyingCommentHandler
+            extends DefaultHandler implements CommentDivState {
+
+        private final SAXException cleanupFailure;
+        private boolean commentDivOpen;
+        private int cleanupCallbacks;
+
+        private CleanupDenyingCommentHandler(
+                SAXException cleanupFailure) {
+            this.cleanupFailure = cleanupFailure;
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            String element = localName.isEmpty() ? qName : localName;
+            if ("div".equals(element)
+                    && "comment".equals(attributes.getValue("class"))) {
+                commentDivOpen = true;
+            }
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName)
+                throws SAXException {
+            String element = localName.isEmpty() ? qName : localName;
+            if ("div".equals(element) && commentDivOpen) {
+                cleanupCallbacks++;
+                throw cleanupFailure;
+            }
+        }
+
+        @Override
+        public boolean isCommentDivOpen() {
+            return commentDivOpen;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static final class MarkerControlledSaxParser extends SAXParser {
+
+        private final String marker;
+        private final Throwable failure;
+        private final CommentDivState output;
+        private final boolean swallowRuntime;
+        private final SAXParser delegate;
+
+        private static MarkerControlledSaxParser throwing(
+                String marker, Throwable failure, CommentDivState output)
+                throws TikaException {
+            return new MarkerControlledSaxParser(
+                    marker, failure, output, false);
+        }
+
+        private static MarkerControlledSaxParser swallowingRuntime(
+                String marker) throws TikaException {
+            return new MarkerControlledSaxParser(
+                    marker, null, null, true);
+        }
+
+        private MarkerControlledSaxParser(
+                String marker, Throwable failure,
+                CommentDivState output, boolean swallowRuntime)
+                throws TikaException {
+            this.marker = marker;
+            this.failure = failure;
+            this.output = output;
+            this.swallowRuntime = swallowRuntime;
+            this.delegate = XMLReaderUtils.getSAXParser();
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            byte[] bytes = input.readAllBytes();
+            boolean markerMatched =
+                    new String(bytes, UTF_8).contains(marker);
+            if (markerMatched && failure != null
+                    && output.isCommentDivOpen()) {
+                throwUnchecked(failure);
+            }
+            if (markerMatched && swallowRuntime) {
+                try {
+                    delegate.parse(
+                            new ByteArrayInputStream(bytes), handler);
+                } catch (RuntimeException ignored) {
+                    // Simulate a source parser swallowing output refusal.
+                }
+                return;
+            }
+            delegate.parse(new ByteArrayInputStream(bytes), handler);
+        }
+
+        @Override
+        @SuppressForbidden
+        public Parser getParser() throws SAXException {
+            return delegate.getParser();
+        }
+
+        @Override
+        public XMLReader getXMLReader() throws SAXException {
+            return delegate.getXMLReader();
+        }
+
+        @Override
+        public boolean isNamespaceAware() {
+            return delegate.isNamespaceAware();
+        }
+
+        @Override
+        public boolean isValidating() {
+            return delegate.isValidating();
+        }
+
+        @Override
+        public void setProperty(String name, Object value) {
+            // no-op
+        }
+
+        @Override
+        public Object getProperty(String name) {
+            return null;
+        }
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        throw (Error) failure;
     }
 }

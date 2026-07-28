@@ -122,6 +122,42 @@ class RTFRuntimeCleanupTest {
     }
 
     @Test
+    void swallowedDownstreamSaxFailsStopByIdentity() throws Exception {
+        SAXException denial =
+                new SAXException("swallowed downstream SAX denial");
+        FailStopSaxHandler handler =
+                new FailStopSaxHandler("blocked swallowed SAX output", denial);
+        RTFParser parser = new SwallowingSaxOutputFailureRTFParser();
+
+        SAXException thrown =
+                assertThrows(SAXException.class, () -> parse(
+                        parser, handler, "blocked swallowed SAX output"));
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    void swallowedSaxThenLaterIOExceptionPreservesDenial()
+            throws Exception {
+        SAXException denial =
+                new SAXException(
+                        "swallowed SAX denial before later IO failure");
+        FailStopSaxHandler handler =
+                new FailStopSaxHandler(
+                        "blocked SAX before IO", denial);
+        RTFParser parser =
+                new LaterIOExceptionAfterSaxFailureRTFParser();
+
+        SAXException thrown =
+                assertThrows(SAXException.class, () -> parse(
+                        parser, handler, "blocked SAX before IO"));
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     void ioWrappedDownstreamRuntimeFailsStopByIdentity() throws Exception {
         assertWrappedDownstreamRuntimeFailsStop(Wrapper.IO);
     }
@@ -239,6 +275,30 @@ class RTFRuntimeCleanupTest {
     }
 
     @Test
+    void unrelatedErrorRemainsAuthoritativeAfterRuntimeDenial()
+            throws Exception {
+        RuntimeException denial =
+                new IllegalStateException(
+                        "unrelated RTF runtime output denial");
+        AssertionError parserFailure =
+                new AssertionError("unrelated RTF parser Error");
+        FailStopRuntimeHandler handler =
+                new FailStopRuntimeHandler(
+                        "blocked unrelated runtime output", denial);
+        RTFParser parser =
+                new UnrelatedErrorAfterRuntimeFailureRTFParser(
+                        parserFailure);
+
+        AssertionError thrown =
+                assertThrows(AssertionError.class, () -> parse(
+                        parser, handler,
+                        "blocked unrelated runtime output"));
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     void untrackedFatalCleanupErrorSupersedesRecoverablePrimary() {
         RuntimeException primary =
                 new IllegalStateException("recoverable parser failure");
@@ -246,6 +306,40 @@ class RTFRuntimeCleanupTest {
                 new AssertionError("untracked fatal cleanup failure");
         TaggedContentHandler taggedOutput =
                 new TaggedContentHandler(new DefaultHandler());
+
+        AssertionError thrown =
+                assertThrows(
+                        AssertionError.class,
+                        () -> RTFParser.handleCleanupFailure(
+                                taggedOutput, primary, fatalCleanup));
+
+        assertSame(fatalCleanup, thrown);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(primary, thrown.getSuppressed()[0]);
+    }
+
+    @Test
+    void staleRuntimeDenialDoesNotMaskFatalCleanupError()
+            throws SAXException {
+        RuntimeException staleDenial =
+                new IllegalStateException("stale cleanup runtime denial");
+        TaggedContentHandler taggedOutput =
+                new TaggedContentHandler(new DefaultHandler() {
+                    @Override
+                    public void characters(
+                            char[] ch, int start, int length) {
+                        throw staleDenial;
+                    }
+                });
+        assertSame(staleDenial,
+                assertThrows(RuntimeException.class,
+                        () -> taggedOutput.characters(
+                                new char[]{'x'}, 0, 1)));
+
+        RuntimeException primary =
+                new IllegalStateException("recoverable parser failure");
+        AssertionError fatalCleanup =
+                new AssertionError("unrelated fatal cleanup failure");
 
         AssertionError thrown =
                 assertThrows(
@@ -388,6 +482,28 @@ class RTFRuntimeCleanupTest {
             } catch (RuntimeException swallowed) {
                 // Models an inner best-effort RTF/embedded path that catches
                 // an unchecked downstream output refusal and returns.
+            }
+        }
+    }
+
+    private static final class SwallowingSaxOutputFailureRTFParser
+            extends RTFParser {
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context)
+                throws SAXException {
+            try {
+                handler.characters(
+                        "blocked swallowed SAX output".toCharArray(),
+                        0,
+                        "blocked swallowed SAX output".length());
+            } catch (SAXException swallowed) {
+                // Models an inner best-effort path that catches a checked
+                // downstream output refusal and reports success.
             }
         }
     }
@@ -552,6 +668,57 @@ class RTFRuntimeCleanupTest {
                         "blocked unrelated SAX output".length());
             } catch (SAXException expected) {
                 throw parserFailure;
+            }
+        }
+    }
+
+    private static final class LaterIOExceptionAfterSaxFailureRTFParser
+            extends RTFParser {
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context)
+                throws IOException, SAXException {
+            try {
+                handler.characters(
+                        "blocked SAX before IO".toCharArray(),
+                        0,
+                        "blocked SAX before IO".length());
+            } catch (SAXException expected) {
+                throw new IOException(
+                        "later unrelated RTF IO failure");
+            }
+        }
+    }
+
+    private static final class UnrelatedErrorAfterRuntimeFailureRTFParser
+            extends RTFParser {
+
+        private final AssertionError parserFailure;
+
+        private UnrelatedErrorAfterRuntimeFailureRTFParser(
+                AssertionError parserFailure) {
+            this.parserFailure = parserFailure;
+        }
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context) {
+            try {
+                handler.characters(
+                        "blocked unrelated runtime output".toCharArray(),
+                        0,
+                        "blocked unrelated runtime output".length());
+            } catch (RuntimeException expected) {
+                throw parserFailure;
+            } catch (SAXException impossible) {
+                throw new AssertionError(impossible);
             }
         }
     }

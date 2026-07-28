@@ -161,6 +161,66 @@ public class ICalRdpEmbeddedSecurityTest {
     }
 
     @Test
+    public void testIcalAttachmentDirectUncheckedDenialPropagates() {
+        String rejectedText = "blocked unchecked attachment output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked attachment denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> parse(new ICalParser(), ICAL_ATTACHMENT, context,
+                        new UncheckedTextRejectingHandler(
+                                rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testIcalAttachmentSwallowedSaxDenialPropagates() {
+        String rejectedText = "swallowed attachment output refusal";
+        SAXException denial =
+                new SAXException("simulated swallowed attachment denial");
+        ParseContext context =
+                swallowingEmbeddedOutputContext(rejectedText);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(new ICalParser(), ICAL_ATTACHMENT, context,
+                        new TextRejectingHandler(rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testIcalAltDescDirectUncheckedDenialPropagates() {
+        String rejectedText = "blocked unchecked alternate description";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked alternate denial");
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> parse(new ICalParser(), ICAL_ALT_DESC, context,
+                        new UncheckedTextRejectingHandler(
+                                rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
+    public void testIcalAltDescSwallowedSaxDenialPropagates() {
+        String rejectedText = "swallowed alternate-description output refusal";
+        SAXException denial =
+                new SAXException("simulated swallowed alternate denial");
+        ParseContext context =
+                swallowingEmbeddedOutputContext(rejectedText);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(new ICalParser(), ICAL_ALT_DESC, context,
+                        new TextRejectingHandler(rejectedText, denial)));
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
     public void testIcalAttachmentParserSaxFailureRemainsBestEffort() {
         assertDoesNotThrow(
                 () -> parseWithFailure(new ICalParser(), ICAL_ATTACHMENT,
@@ -495,6 +555,29 @@ public class ICalRdpEmbeddedSecurityTest {
         return context;
     }
 
+    private static ParseContext swallowingEmbeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException ignored) {
+                    // Simulate an embedded parser swallowing downstream refusal.
+                }
+            }
+        });
+        return context;
+    }
+
     private static ParseContext noEmbeddedContext() {
         ParseContext context = new ParseContext();
         context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
@@ -544,6 +627,25 @@ public class ICalRdpEmbeddedSecurityTest {
                 throws SAXException {
             if (new String(ch, start, length).contains(rejectedText)) {
                 throw failure;
+            }
+        }
+    }
+
+    private static final class UncheckedTextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+
+        private UncheckedTextRejectingHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
             }
         }
     }

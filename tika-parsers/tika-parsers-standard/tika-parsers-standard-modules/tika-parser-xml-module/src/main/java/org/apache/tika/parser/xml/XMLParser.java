@@ -123,6 +123,12 @@ public class XMLParser implements Parser {
                             new EmbeddedContentHandler(enrichingHandler),
                     context);
             parsedSuccessfully = true;
+            SAXException saxOutputFailure = tagged.getSaxFailure();
+            if (saxOutputFailure != null) {
+                primaryFailure = saxOutputFailure;
+                outputRefused = true;
+                throw saxOutputFailure;
+            }
             Throwable outputFailure = tagged.getUncheckedFailure();
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
@@ -131,6 +137,9 @@ public class XMLParser implements Parser {
             }
         } catch (SAXException e) {
             SAXException outputFailure = findTaggedOutputFailure(tagged, e);
+            if (outputFailure == null) {
+                outputFailure = tagged.getSaxFailure();
+            }
             if (outputFailure != null) {
                 primaryFailure = outputFailure;
                 outputRefused = true;
@@ -149,6 +158,9 @@ public class XMLParser implements Parser {
         } catch (IOException | TikaException e) {
             SAXException saxOutputFailure =
                     findTaggedOutputFailure(tagged, e);
+            if (saxOutputFailure == null) {
+                saxOutputFailure = tagged.getSaxFailure();
+            }
             if (saxOutputFailure != null) {
                 primaryFailure = saxOutputFailure;
                 outputRefused = true;
@@ -163,7 +175,7 @@ public class XMLParser implements Parser {
             }
             primaryFailure = e;
             throw e;
-        } catch (RuntimeException | Error e) {
+        } catch (RuntimeException e) {
             SAXException saxOutputFailure =
                     findTaggedOutputFailure(tagged, e);
             if (saxOutputFailure != null) {
@@ -179,7 +191,24 @@ public class XMLParser implements Parser {
                 throwUnchecked(uncheckedOutputFailure);
             }
             primaryFailure = e;
-            outputRefused = e instanceof Error;
+            throw e;
+        } catch (Error e) {
+            SAXException saxOutputFailure =
+                    findTaggedOutputFailure(tagged, e);
+            if (saxOutputFailure != null) {
+                primaryFailure = saxOutputFailure;
+                outputRefused = true;
+                throw saxOutputFailure;
+            }
+            Throwable uncheckedOutputFailure =
+                    tagged.findUncheckedCause(e);
+            if (uncheckedOutputFailure != null) {
+                primaryFailure = uncheckedOutputFailure;
+                outputRefused = true;
+                throwUnchecked(uncheckedOutputFailure);
+            }
+            primaryFailure = e;
+            outputRefused = true;
             throw e;
         } finally {
             try {

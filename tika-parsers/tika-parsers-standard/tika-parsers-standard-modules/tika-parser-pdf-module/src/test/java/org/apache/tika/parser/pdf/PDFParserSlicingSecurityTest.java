@@ -169,6 +169,100 @@ public class PDFParserSlicingSecurityTest {
     }
 
     @Test
+    public void testRenderedPagesBeforeParseDirectUncheckedDenialPropagates()
+            throws Exception {
+        String rejectedText = "blocked pre-parse rendered page output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked output policy denial");
+        AtomicInteger parsedPages = new AtomicInteger();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                if (!"true".equals(metadata.get("test:rendered-page"))) {
+                    return;
+                }
+                parsedPages.incrementAndGet();
+                char[] chars = rejectedText.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        PDFParser parser = preParseRenderingParser();
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void characters(char[] ch, int start, int length) {
+                if (new String(ch, start, length).contains(rejectedText)) {
+                    throw denial;
+                }
+            }
+        };
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildPdf(2, false))) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> parser.parse(
+                            stream, handler, new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(1, parsedPages.get(),
+                "rendering must stop at the first output refusal");
+    }
+
+    @Test
+    public void testRenderedPagesBeforeParseSwallowedSaxDenialPropagates()
+            throws Exception {
+        String rejectedText = "swallowed pre-parse rendered page output";
+        SAXException denial =
+                new SAXException("simulated swallowed output policy denial");
+        AtomicInteger parsedPages = new AtomicInteger();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) {
+                if (!"true".equals(metadata.get("test:rendered-page"))) {
+                    return;
+                }
+                parsedPages.incrementAndGet();
+                char[] chars = rejectedText.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException ignored) {
+                    // Simulate an embedded parser swallowing downstream refusal.
+                }
+            }
+        });
+        PDFParser parser = preParseRenderingParser();
+        ContentHandler handler =
+                new TextRejectingHandler(rejectedText, denial);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildPdf(2, false))) {
+            thrown = assertThrows(SAXException.class,
+                    () -> parser.parse(
+                            stream, handler, new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+        assertEquals(1, parsedPages.get(),
+                "rendering must stop when an embedded parser swallows output refusal");
+    }
+
+    @Test
     public void testDefaultAnalysisPageLimitIsSecurityVisible() throws Exception {
         ParseResult result = parse(buildPdf(101, false), null);
 
@@ -274,6 +368,17 @@ public class PDFParserSlicingSecurityTest {
         }
         return new ParseResult(handler.toString(), metadata,
                 embedded.names, embedded.contentTypes);
+    }
+
+    private static PDFParser preParseRenderingParser() {
+        PDFParserConfig config = new PDFParserConfig();
+        config.setImageStrategy(
+                PDFParserConfig.IMAGE_STRATEGY.RENDER_PAGES_BEFORE_PARSE);
+        config.setCatchIntermediateIOExceptions(true);
+        config.getOcr().setStrategy(OcrConfig.Strategy.NO_OCR);
+        PDFParser parser = new PDFParser(config);
+        parser.setRenderer(new TwoPageRenderer());
+        return parser;
     }
 
     private static byte[] buildPdf(int pageCount, boolean restrictExtraction) throws IOException {
@@ -407,6 +512,50 @@ public class PDFParserSlicingSecurityTest {
                     RenderResult.STATUS.SUCCESS, 1, new byte[0],
                     renderedMetadata));
             return results;
+        }
+    }
+
+    private static class TwoPageRenderer implements Renderer {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Set<MediaType> getSupportedTypes(ParseContext context) {
+            return Set.of(MediaType.application("pdf"));
+        }
+
+        @Override
+        public RenderResults render(
+                TikaInputStream stream, Metadata metadata,
+                ParseContext context, RenderRequest... requests) {
+            RenderResults results = new RenderResults(new TemporaryResources());
+            for (int page = 1; page <= 2; page++) {
+                Metadata renderedMetadata = Metadata.newInstance(context);
+                renderedMetadata.set("test:rendered-page", "true");
+                results.add(new RenderResult(
+                        RenderResult.STATUS.SUCCESS, page, new byte[0],
+                        renderedMetadata));
+            }
+            return results;
+        }
+    }
+
+    private static class TextRejectingHandler extends DefaultHandler {
+
+        private final String rejectedText;
+        private final SAXException denial;
+
+        private TextRejectingHandler(String rejectedText, SAXException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
+            }
         }
     }
 }

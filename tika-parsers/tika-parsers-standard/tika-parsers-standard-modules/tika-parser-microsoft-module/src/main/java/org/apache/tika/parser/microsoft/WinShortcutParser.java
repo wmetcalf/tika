@@ -365,6 +365,7 @@ public class WinShortcutParser implements Parser {
             pos = parseExtraData(buf, pos, raw.length, fields, warnings, xhtml, context);
             parseAppendedData(buf, pos, raw.length, fields, warnings, xhtml, context);
         } catch (SecurityException e) {
+            throwIfRecordedOutputFailure(taggedOutput, e);
             throw e;
         } catch (SAXException e) {
             taggedOutput.throwIfCauseOf(e);
@@ -373,6 +374,7 @@ public class WinShortcutParser implements Parser {
             markAnalysisIncomplete(fields, warnings,
                     "parse-error: " + e.getMessage());
         } catch (Exception e) {
+            throwIfRecordedOutputFailure(taggedOutput, e);
             LOG.warn("Error parsing LNK file: {}", e.getMessage());
             markAnalysisIncomplete(fields, warnings,
                     "parse-error: " + e.getMessage());
@@ -2522,15 +2524,42 @@ public class WinShortcutParser implements Parser {
             if (extractor.shouldParseEmbedded(embeddedMeta)) {
                 extractor.parseEmbedded(
                         embeddedTis, taggedEmbeddedOutput, embeddedMeta, context, true);
+                throwIfRecordedOutputFailure(
+                        taggedEmbeddedOutput, null);
             }
         } catch (SecurityException e) {
+            throwIfRecordedOutputFailure(
+                    taggedEmbeddedOutput, e);
             throw e;
         } catch (SAXException e) {
-            taggedEmbeddedOutput.throwIfCauseOf(e);
+            throwIfRecordedOutputFailure(
+                    taggedEmbeddedOutput, e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             addWarning(warnings, "Appended data parse error: " + e.getMessage());
         } catch (Exception e) {
+            throwIfRecordedOutputFailure(
+                    taggedEmbeddedOutput, e);
             addWarning(warnings, "Appended data parse error: " + e.getMessage());
+        }
+    }
+
+    private static void throwIfRecordedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (uncheckedFailure instanceof Error errorFailure) {
+            throw errorFailure;
         }
     }
 

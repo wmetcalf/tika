@@ -416,19 +416,43 @@ class RTFEmbObjHandler {
                     embeddedDocumentUtil
                             .parseEmbedded(tis, new EmbeddedContentHandler(balancer), metadata,
                                     true);
+                    throwIfOutputFailure(handler, null);
                 } catch (IOException e) {
+                    throwIfOutputFailure(handler, e);
                     balancer.drainOpenElements();
                     EmbeddedDocumentUtil.recordEmbeddedStreamException(e, metadata);
                 } catch (SAXException e) {
-                    if (handler instanceof TaggedContentHandler taggedHandler
-                            && taggedHandler.isCauseOf(e)) {
-                        throw e;
-                    }
+                    throwIfOutputFailure(handler, e);
                     balancer.drainOpenElements();
                     WriteLimitReachedException.throwIfWriteLimitReached(e);
                     EmbeddedDocumentUtil.recordException(e, metadata);
                 }
             }
+        }
+    }
+
+    private static void throwIfOutputFailure(
+            ContentHandler handler, Exception failure)
+            throws SAXException {
+        if (!(handler instanceof TaggedContentHandler taggedHandler)) {
+            return;
+        }
+        if (failure != null) {
+            taggedHandler.throwIfCauseOf(failure);
+        }
+        SAXException saxFailure = taggedHandler.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                failure == null
+                        ? taggedHandler.getUncheckedFailure()
+                        : taggedHandler.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedHandler.getUncheckedFailure();
+        }
+        if (uncheckedFailure != null) {
+            RTFParser.throwUnchecked(uncheckedFailure);
         }
     }
 

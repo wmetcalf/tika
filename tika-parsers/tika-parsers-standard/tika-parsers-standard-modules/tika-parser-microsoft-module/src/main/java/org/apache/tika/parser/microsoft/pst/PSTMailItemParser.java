@@ -325,8 +325,8 @@ public class PSTMailItemParser implements Parser {
         }
     }
 
-    private static SAXException findOutputSaxFailure(
-            AttachmentTaggedContentHandler taggedOutput, Throwable failure) {
+    static SAXException findOutputSaxFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
         if (failure == null) {
             return null;
         }
@@ -335,6 +335,7 @@ public class PSTMailItemParser implements Parser {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> pending = new ArrayDeque<>();
         pending.push(failure);
+        SAXException taggedCandidate = null;
         while (!pending.isEmpty()) {
             Throwable current = pending.pop();
             if (!seen.add(current)) {
@@ -343,12 +344,13 @@ public class PSTMailItemParser implements Parser {
             if (current == recordedFailure) {
                 return recordedFailure;
             }
-            if (current instanceof SAXException saxFailure
+            if (taggedCandidate == null
+                    && current instanceof SAXException saxFailure
                     && taggedOutput.isCauseOf(saxFailure)) {
                 try {
                     taggedOutput.throwIfCauseOf(saxFailure);
                 } catch (SAXException outputFailure) {
-                    return outputFailure;
+                    taggedCandidate = outputFailure;
                 }
             }
             Throwable cause = current.getCause();
@@ -363,7 +365,7 @@ public class PSTMailItemParser implements Parser {
                 }
             }
         }
-        return null;
+        return taggedCandidate;
     }
 
     private static void throwIfSecurityException(Throwable failure) {

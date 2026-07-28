@@ -160,6 +160,72 @@ public class WinShortcutParserTest {
     }
 
     @Test
+    public void testWrappedAppendedDownstreamSaxDenialPropagatesWithoutWarning()
+            throws Exception {
+        String rejectedText = "blocked wrapped LNK appended output";
+        SAXException denial =
+                new SAXException("simulated wrapped LNK output policy denial");
+        Metadata metadata = new Metadata();
+        ParseContext context = wrappedEmbeddedOutputContext(rejectedText);
+
+        SAXException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(SAXException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream, new TextRejectingHandler(rejectedText, denial),
+                            metadata, context));
+        }
+
+        assertSame(denial, thrown);
+        assertTrue(java.util.Arrays.stream(metadata.getValues("lnk:warning"))
+                .noneMatch(value -> value.contains("Appended data parse error")));
+    }
+
+    @Test
+    public void testUncheckedAppendedDownstreamDenialPropagatesWithoutWarning()
+            throws Exception {
+        String rejectedText = "blocked unchecked LNK appended output";
+        IllegalStateException denial =
+                new IllegalStateException("simulated unchecked LNK output policy denial");
+        Metadata metadata = new Metadata();
+        ParseContext context = embeddedOutputContext(rejectedText);
+
+        IllegalStateException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(IllegalStateException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream,
+                            new UncheckedTextRejectingHandler(rejectedText, denial),
+                            metadata, context));
+        }
+
+        assertSame(denial, thrown);
+        assertTrue(java.util.Arrays.stream(metadata.getValues("lnk:warning"))
+                .noneMatch(value -> value.contains("Appended data parse error")));
+    }
+
+    @Test
+    public void testWrappedAppendedDownstreamSecurityDenialPropagatesByIdentity()
+            throws Exception {
+        String rejectedText = "blocked wrapped LNK security output";
+        SecurityException denial =
+                new SecurityException("simulated LNK security output policy denial");
+        ParseContext context =
+                securityWrappingEmbeddedOutputContext(rejectedText);
+
+        SecurityException thrown;
+        try (TikaInputStream stream = TikaInputStream.get(buildLnk())) {
+            thrown = assertThrows(SecurityException.class,
+                    () -> new WinShortcutParser().parse(
+                            stream,
+                            new UncheckedTextRejectingHandler(rejectedText, denial),
+                            new Metadata(), context));
+        }
+
+        assertSame(denial, thrown);
+    }
+
+    @Test
     public void testStartDocumentDenialIsUnwrapped() throws Exception {
         SAXException denial =
                 new SAXException("simulated LNK start-document denial");
@@ -600,6 +666,73 @@ public class WinShortcutParserTest {
         return metadata;
     }
 
+    private static ParseContext embeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                handler.characters(chars, 0, chars.length);
+            }
+        });
+        return context;
+    }
+
+    private static ParseContext wrappedEmbeddedOutputContext(String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws IOException {
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SAXException outputFailure) {
+                    throw new IOException("wrapped LNK output failure", outputFailure);
+                }
+            }
+        });
+        return context;
+    }
+
+    private static ParseContext securityWrappingEmbeddedOutputContext(
+            String output) {
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext parseContext,
+                                      boolean outputHtml) throws SAXException {
+                char[] chars = output.toCharArray();
+                try {
+                    handler.characters(chars, 0, chars.length);
+                } catch (SecurityException outputFailure) {
+                    throw new SecurityException(
+                            "wrapped LNK security output failure", outputFailure);
+                }
+            }
+        });
+        return context;
+    }
+
     private static byte[] buildLnk() throws IOException {
         byte[] header = new byte[HEADER_SIZE];
         ByteBuffer buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
@@ -993,6 +1126,26 @@ public class WinShortcutParserTest {
             if (denied) {
                 callbacksAfterDenial++;
                 throw new SAXException("callback delivered after denial");
+            }
+        }
+    }
+
+    private static final class UncheckedTextRejectingHandler
+            extends DefaultHandler {
+
+        private final String rejectedText;
+        private final RuntimeException denial;
+
+        private UncheckedTextRejectingHandler(
+                String rejectedText, RuntimeException denial) {
+            this.rejectedText = rejectedText;
+            this.denial = denial;
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (new String(ch, start, length).contains(rejectedText)) {
+                throw denial;
             }
         }
     }

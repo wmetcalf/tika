@@ -55,6 +55,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.TaggedContentHandler;
+import org.apache.tika.sax.TaggedSAXException;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -200,7 +201,10 @@ public class PpkgParser implements Parser {
         // Parse lookup table (always uncompressed)
         Map<String, ResHdr> lookupTable = parseLookupTable(raw, lookupHdr, warnings);
 
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        TaggedContentHandler taggedOutput =
+                new TaggedContentHandler(handler);
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(taggedOutput, metadata);
         xhtml.startDocument();
 
         // Identify metadata resources: the METADATA flag (0x04) marks directory trees.
@@ -241,12 +245,17 @@ public class PpkgParser implements Parser {
                     walkDirectory(metaRes, (int) childOff, raw, lookupTable, chunkSize,
                             commands, warnings, allDataRefs, pkgMeta, xhtml, context,
                             metadata, new HashSet<>(), resourceState);
+                    throwIfCurrentOutputFailure(taggedOutput, null);
                 } else if (childOff < 0 || childOff >= metaRes.length) {
                     markResourceIncomplete(warnings);
                 }
+            } catch (EmbeddedOutputRuntimeFailure e) {
+                throw e.getOutputFailure();
             } catch (SecurityException e) {
+                throwIfCurrentOutputFailure(taggedOutput, e);
                 throw e;
             } catch (RuntimeException e) {
+                throwIfCurrentOutputFailure(taggedOutput, e);
                 // A malformed metadata resource must not abort the whole package
                 // parse with an uncaught runtime exception (Tika parser contract).
                 warnings.add("Skipped malformed WIM metadata resource: " + e);
@@ -844,14 +853,21 @@ public class PpkgParser implements Parser {
                         tis, taggedEmbeddedOutput, embMeta, context, true);
             }
         } catch (SecurityException e) {
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             throw e;
         } catch (SAXException e) {
-            taggedEmbeddedOutput.throwIfCauseOf(e);
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             warnings.add("XML parse error in " + name + ": " + e.getMessage());
         } catch (Exception e) {
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             warnings.add("XML parse error in " + name + ": " + e.getMessage());
         }
+        throwIfEmbeddedOutputFailure(
+                taggedEmbeddedOutput, null);
     }
 
     private boolean emitEmbedded(byte[] raw, ResHdr rh, int chunkSize,
@@ -899,18 +915,85 @@ public class PpkgParser implements Parser {
                         tis, taggedEmbeddedOutput, embMeta, context, true);
             }
         } catch (SecurityException e) {
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             throw e;
         } catch (SAXException e) {
-            taggedEmbeddedOutput.throwIfCauseOf(e);
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         } catch (Exception e) {
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, e);
             warnings.add("Embedded parse error " + name + ": " + e.getMessage());
         }
+        throwIfEmbeddedOutputFailure(
+                taggedEmbeddedOutput, null);
 
         // ppkg:data_asset metadata is canonical; don't duplicate as
         // "DataAsset: ..." body text.
         return true;
+    }
+
+    private static void throwIfEmbeddedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw unwrapTaggedSaxFailure(saxFailure);
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeException) {
+            throw new EmbeddedOutputRuntimeFailure(runtimeException);
+        }
+        if (uncheckedFailure instanceof Error error) {
+            throw error;
+        }
+    }
+
+    private static SAXException unwrapTaggedSaxFailure(
+            SAXException failure) {
+        SAXException current = failure;
+        while (current instanceof TaggedSAXException taggedFailure
+                && taggedFailure.getCause() != current) {
+            current = taggedFailure.getCause();
+        }
+        return current;
+    }
+
+    private static void throwIfCurrentOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure) {
+        Throwable uncheckedFailure =
+                failure == null
+                        ? taggedOutput.getUncheckedFailure()
+                        : taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (uncheckedFailure instanceof Error error) {
+            throw error;
+        }
+    }
+
+    private static final class EmbeddedOutputRuntimeFailure extends SAXException {
+
+        private static final long serialVersionUID = 1L;
+
+        private final RuntimeException outputFailure;
+
+        private EmbeddedOutputRuntimeFailure(RuntimeException outputFailure) {
+            super(outputFailure);
+            this.outputFailure = outputFailure;
+        }
+
+        private RuntimeException getOutputFailure() {
+            return outputFailure;
+        }
     }
 
     private static void emitDataAssetMetadata(

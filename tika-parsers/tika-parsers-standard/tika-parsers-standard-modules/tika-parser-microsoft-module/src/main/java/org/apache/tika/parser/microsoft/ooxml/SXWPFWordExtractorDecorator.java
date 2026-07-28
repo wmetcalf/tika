@@ -382,9 +382,13 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                 continue;
             }
             Object outputTag = new Object();
+            TaggedXWPFBodyContentsHandler.UncheckedFailureTracker
+                    uncheckedOutputFailures =
+                    new TaggedXWPFBodyContentsHandler.UncheckedFailureTracker();
             XHTMLContentHandler taggedXhtml =
                     TaggedXWPFBodyContentsHandler.tagOutput(
-                            xhtml, metadata, context, outputTag);
+                            xhtml, metadata, context, outputTag,
+                            uncheckedOutputFailures);
             OOXMLTikaBodyPartHandler bodyHandler =
                     new OOXMLTikaBodyPartHandler(taggedXhtml, metadata);
             TaggedXWPFBodyContentsHandler taggedBodyHandler =
@@ -403,8 +407,31 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                                         taggedBodyHandler,
                                         entry.getValue().linkedRelationships())),
                         context);
+                Throwable outputFailure =
+                        uncheckedOutputFailures.getFailure();
+                if (outputFailure != null) {
+                    outputDenied = true;
+                    throwUnchecked(outputFailure);
+                }
             } catch (SecurityException e) {
                 outputDenied = true;
+                throw e;
+            } catch (RuntimeException e) {
+                Throwable outputFailure =
+                        findRecoverableUncheckedOutputFailure(
+                                uncheckedOutputFailures, e);
+                if (outputFailure != null) {
+                    outputDenied = true;
+                    throwUnchecked(outputFailure);
+                }
+                throw e;
+            } catch (Error e) {
+                Throwable outputFailure =
+                        uncheckedOutputFailures.findCause(e);
+                outputDenied = true;
+                if (outputFailure != null) {
+                    throwUnchecked(outputFailure);
+                }
                 throw e;
             } catch (SAXException e) {
                 try {
@@ -413,10 +440,24 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                     outputDenied = true;
                     throw denial;
                 }
+                Throwable outputFailure =
+                        findRecoverableUncheckedOutputFailure(
+                                uncheckedOutputFailures, e);
+                if (outputFailure != null) {
+                    outputDenied = true;
+                    throwUnchecked(outputFailure);
+                }
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
             } catch (TikaException | IOException e) {
+                Throwable outputFailure =
+                        findRecoverableUncheckedOutputFailure(
+                                uncheckedOutputFailures, e);
+                if (outputFailure != null) {
+                    outputDenied = true;
+                    throwUnchecked(outputFailure);
+                }
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         ExceptionUtils.getStackTrace(e));
             } finally {
@@ -440,10 +481,14 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
         Map<String, String> linkedRelationships =
                 loadLinkedRelationships(packagePart, true, metadata);
         Object outputTag = new Object();
+        TaggedXWPFBodyContentsHandler.UncheckedFailureTracker
+                uncheckedOutputFailures =
+                new TaggedXWPFBodyContentsHandler.UncheckedFailureTracker();
         OOXMLTikaBodyPartHandler bodyHandler =
                 new OOXMLTikaBodyPartHandler(
                         TaggedXWPFBodyContentsHandler.tagOutput(
-                                xhtml, metadata, context, outputTag),
+                                xhtml, metadata, context, outputTag,
+                                uncheckedOutputFailures),
                         styles, listManager, config, metadata);
         TaggedXWPFBodyContentsHandler taggedBodyHandler =
                 new TaggedXWPFBodyContentsHandler(
@@ -456,8 +501,36 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
                             linkedRelationships, config.isIncludeShapeBasedContent(),
                             config.isConcatenatePhoneticRuns(),
                             config.isPreferAlternateContentChoice())), context);
+            Throwable outputFailure =
+                    uncheckedOutputFailures.getFailure();
+            if (outputFailure != null) {
+                throwUnchecked(outputFailure);
+            }
+        } catch (SecurityException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            Throwable outputFailure =
+                    findRecoverableUncheckedOutputFailure(
+                            uncheckedOutputFailures, e);
+            if (outputFailure != null) {
+                throwUnchecked(outputFailure);
+            }
+            throw e;
+        } catch (Error e) {
+            Throwable outputFailure =
+                    uncheckedOutputFailures.findCause(e);
+            if (outputFailure != null) {
+                throwUnchecked(outputFailure);
+            }
+            throw e;
         } catch (SAXException e) {
             taggedBodyHandler.throwIfCauseOf(e);
+            Throwable outputFailure =
+                    findRecoverableUncheckedOutputFailure(
+                            uncheckedOutputFailures, e);
+            if (outputFailure != null) {
+                throwUnchecked(outputFailure);
+            }
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
@@ -467,6 +540,12 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
             // balanced spot.
             bodyHandler.closeAnyPending();
         } catch (TikaException | IOException e) {
+            Throwable outputFailure =
+                    findRecoverableUncheckedOutputFailure(
+                            uncheckedOutputFailures, e);
+            if (outputFailure != null) {
+                throwUnchecked(outputFailure);
+            }
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     ExceptionUtils.getStackTrace(e));
             bodyHandler.closeAnyPending();
@@ -475,6 +554,27 @@ public class SXWPFWordExtractorDecorator extends AbstractOOXMLExtractor {
         resolveEmfNames(packagePart, partMetadata);
         embeddedPartMetadataMap.putAll(partMetadata);
         return bodyHandler;
+    }
+
+    private static Throwable findRecoverableUncheckedOutputFailure(
+            TaggedXWPFBodyContentsHandler.UncheckedFailureTracker
+                    uncheckedOutputFailures,
+            Throwable failure) {
+        Throwable outputFailure =
+                uncheckedOutputFailures.findCause(failure);
+        return outputFailure != null
+                ? outputFailure : uncheckedOutputFailures.getFailure();
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
+        throw new IllegalArgumentException(
+                "Expected unchecked output failure", failure);
     }
 
     private void resolveEmfNames(PackagePart documentPart,

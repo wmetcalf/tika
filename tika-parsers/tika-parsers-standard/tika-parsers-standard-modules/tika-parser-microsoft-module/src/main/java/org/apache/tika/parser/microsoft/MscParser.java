@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.StringEscapeUtils;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -536,20 +537,47 @@ public class MscParser implements Parser {
                             tis, taggedEmbeddedOutput, embMeta, context, true);
                 }
             } catch (SecurityException e) {
+                throwIfEmbeddedOutputFailure(
+                        taggedEmbeddedOutput, e);
                 throw e;
             } catch (SAXException e) {
-                taggedEmbeddedOutput.throwIfCauseOf(e);
+                throwIfEmbeddedOutputFailure(
+                        taggedEmbeddedOutput, e);
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 warnings.add("Binary " + (idx - 1)
                         + " parse error: " + e.getMessage());
                 incomplete = true;
             } catch (Exception e) {
+                throwIfEmbeddedOutputFailure(
+                        taggedEmbeddedOutput, e);
                 warnings.add("Binary " + (idx - 1)
                         + " parse error: " + e.getMessage());
                 incomplete = true;
             }
+            throwIfEmbeddedOutputFailure(
+                    taggedEmbeddedOutput, null);
         }
         return incomplete;
+    }
+
+    private static void throwIfEmbeddedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (uncheckedFailure instanceof Error error) {
+            throw error;
+        }
     }
 
     private static String binaryElementNameAt(String xml, int nameStart) {
@@ -677,11 +705,9 @@ public class MscParser implements Parser {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static String cleanUrl(String url) {
-        // Strip trailing XML entities like &quot; &amp; etc.
-        int i = url.indexOf('&');
-        if (i > 0) {
-            url = url.substring(0, i);
-        }
+        // Raw XML inspection sees escaped separators while canonical SAX text
+        // sees the decoded URL. Normalize both paths before trimming delimiters.
+        url = StringEscapeUtils.unescapeXml(url);
         // Strip trailing closing tags/quotes
         int j = url.indexOf('"');
         if (j > 0) {
@@ -858,6 +884,7 @@ public class MscParser implements Parser {
                     }
                 }
             }
+            appendCanonicalSeparator();
         }
 
         private void acceptCapture(ElementCapture capture) {
@@ -952,9 +979,14 @@ public class MscParser implements Parser {
             if (remaining > 0) {
                 int copy = Math.min(length, remaining);
                 canonicalText.append(ch, start, copy);
-                if (copy < remaining) {
-                    canonicalText.append(' ');
-                }
+            }
+        }
+
+        private void appendCanonicalSeparator() {
+            int length = canonicalText.length();
+            if (length > 0 && length < MAX_CANONICAL_TEXT_CHARS
+                    && !Character.isWhitespace(canonicalText.charAt(length - 1))) {
+                canonicalText.append(' ');
             }
         }
 

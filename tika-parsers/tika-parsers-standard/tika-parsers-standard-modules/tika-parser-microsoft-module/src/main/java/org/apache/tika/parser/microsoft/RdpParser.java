@@ -443,14 +443,37 @@ public class RdpParser implements Parser {
             if (extractor.shouldParseEmbedded(embMeta)) {
                 extractor.parseEmbedded(
                         tis, taggedEmbeddedOutput, embMeta, context, true);
+                throwIfRecordedOutputFailure(
+                        taggedEmbeddedOutput, null);
             }
         } catch (Exception e) {
-            taggedEmbeddedOutput.throwIfCauseOf(e);
+            throwIfRecordedOutputFailure(
+                    taggedEmbeddedOutput, e);
             WriteLimitReachedException.throwIfWriteLimitReached(e);
             if (e instanceof SecurityException securityException) {
                 throw securityException;
             }
             rootMeta.add("rdp:pcb_warning", "embedded parse error: " + e.getMessage());
+        }
+    }
+
+    private static void throwIfRecordedOutputFailure(
+            TaggedContentHandler taggedOutput, Throwable failure)
+            throws SAXException {
+        SAXException saxFailure = taggedOutput.getSaxFailure();
+        if (saxFailure != null) {
+            throw saxFailure;
+        }
+        Throwable uncheckedFailure =
+                taggedOutput.findUncheckedCause(failure);
+        if (uncheckedFailure == null) {
+            uncheckedFailure = taggedOutput.getUncheckedFailure();
+        }
+        if (uncheckedFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (uncheckedFailure instanceof Error errorFailure) {
+            throw errorFailure;
         }
     }
 }
