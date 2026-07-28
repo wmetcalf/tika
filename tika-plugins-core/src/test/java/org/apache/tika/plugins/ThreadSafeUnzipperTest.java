@@ -170,47 +170,48 @@ public class ThreadSafeUnzipperTest {
     }
 
     @Test
-    public void testGenericMoveRaceWaitsForPublishedMarker(@TempDir Path tmp)
+    public void testGenericMoveRaceSynchronizesWithRecoveryLock(@TempDir Path tmp)
             throws Exception {
         Path zip = writeTrivialZip(tmp.resolve("plugin.zip"));
         Path destination = tmp.resolve("plugin");
+        Path lockPath = ThreadSafeUnzipper.getLockPath(destination);
         AtomicBoolean injectedRace = new AtomicBoolean();
-        AtomicBoolean publicationFailed = new AtomicBoolean();
-        CountDownLatch publicationFinished = new CountDownLatch(1);
+        CountDownLatch moveFailed = new CountDownLatch(1);
 
         ThreadSafeUnzipper.MoveOperation racingMover = (source, target, options) -> {
             if (source.getFileName().toString().contains(".tmp.")
                     && injectedRace.compareAndSet(false, true)) {
-                Thread publisher = new Thread(() -> {
-                    try {
-                        Thread.sleep(50);
-                        Files.createDirectories(target);
-                        Files.writeString(target.resolve("inside.txt"), "winner");
-                        Files.createFile(target.resolve(MARKER));
-                    } catch (InterruptedException e) {
-                        publicationFailed.set(true);
-                        Thread.currentThread().interrupt();
-                    } catch (IOException e) {
-                        publicationFailed.set(true);
-                    } finally {
-                        publicationFinished.countDown();
-                    }
-                });
-                publisher.start();
+                moveFailed.countDown();
                 throw new FileSystemException(source.toString(), target.toString(),
                         "simulated transient losing rename");
             }
             Files.move(source, target, options);
         };
 
-        try {
-            ThreadSafeUnzipper.unzipPlugin(zip, racingMover);
+        Files.createDirectories(lockPath.getParent());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE); FileLock heldLock = channel.lock()) {
+            Future<?> extraction = executor.submit(() -> {
+                ThreadSafeUnzipper.unzipPlugin(zip, racingMover);
+                return null;
+            });
+
+            assertTrue(moveFailed.await(5, TimeUnit.SECONDS),
+                    "simulated generic move failure was not reached");
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> extraction.get(1200, TimeUnit.MILLISECONDS),
+                    "generic move recovery must wait for the stable recovery lock");
+
+            Files.createDirectories(destination);
+            Files.writeString(destination.resolve("inside.txt"), "winner");
+            Files.createFile(destination.resolve(MARKER));
+            heldLock.release();
+            extraction.get(5, TimeUnit.SECONDS);
         } finally {
-            assertTrue(publicationFinished.await(5, TimeUnit.SECONDS),
-                    "simulated concurrent publisher did not finish");
+            executor.shutdownNow();
         }
 
-        assertFalse(publicationFailed.get());
         assertTrue(Files.exists(destination.resolve(MARKER)));
         assertTrue(Files.exists(destination.resolve("inside.txt")));
     }

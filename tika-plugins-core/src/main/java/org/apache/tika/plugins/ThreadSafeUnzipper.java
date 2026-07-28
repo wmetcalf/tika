@@ -64,7 +64,6 @@ public class ThreadSafeUnzipper {
     private static final String COMPLETE_MARKER = ".tika-extraction-complete";
     private static final String LOCK_DIRECTORY = "tika_lck";
     private static final String ROOT_LOCK_FILE = "root.lock";
-    private static final long GENERIC_MOVE_RACE_WAIT_MS = 1000;
 
     @FunctionalInterface
     interface MoveOperation {
@@ -135,7 +134,7 @@ public class ThreadSafeUnzipper {
             } catch (AtomicMoveNotSupportedException e) {
                 publishWithoutAtomicMove(tempDir, destination, moveOperation);
             } catch (FileSystemException e) {
-                handleGenericMoveFailure(destination, e);
+                handleGenericAtomicMoveFailure(destination, e);
             }
         } finally {
             // Clean up temp dir if it still exists (we lost the race or there was an error)
@@ -362,22 +361,29 @@ public class ThreadSafeUnzipper {
      * {@link DirectoryNotEmptyException}. Treat it as a successful concurrent extraction only
      * when the destination's completion marker proves that another process won the race.
      */
+    private static synchronized void handleGenericAtomicMoveFailure(
+            Path destination, FileSystemException exception) throws IOException {
+        try (FileChannel channel = openLockChannel(destination);
+                FileLock ignored = acquireFileLock(channel)) {
+            // A stale-destination recovery can move a completed destination out of the way
+            // briefly. Synchronizing with its stable lock gives that recovery path time to
+            // finish without relying on an arbitrary polling deadline.
+            handleGenericMoveFailure(destination, exception);
+        } catch (IOException recoveryFailure) {
+            if (recoveryFailure != exception) {
+                exception.addSuppressed(recoveryFailure);
+            }
+            throw exception;
+        }
+    }
+
     private static void handleGenericMoveFailure(Path destination, FileSystemException exception)
             throws IOException {
         if (isExtractionComplete(destination)) {
             LOG.debug("plugin already extracted by another process: {}", destination);
             return;
         }
-        try {
-            // A concurrent stale-destination quarantine can briefly move a completed
-            // destination out of the way after this rename has already lost its race.
-            // Give that publisher/recovery path a short window to restore the marker.
-            waitForExtractionComplete(destination, GENERIC_MOVE_RACE_WAIT_MS);
-        } catch (IOException waitFailure) {
-            exception.addSuppressed(waitFailure);
-            throw exception;
-        }
-        LOG.debug("plugin already extracted by another process: {}", destination);
+        throw exception;
     }
 
     private static Path getDestination(Path source) {
