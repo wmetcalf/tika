@@ -38,6 +38,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.xml.parsers.SAXParser;
 
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.ContentHandler;
@@ -626,6 +627,7 @@ public class MscParserSecurityTest {
         }
 
         @Override
+        @SuppressForbidden
         public Parser getParser() {
             throw new UnsupportedOperationException("SAX1 parser not used");
         }

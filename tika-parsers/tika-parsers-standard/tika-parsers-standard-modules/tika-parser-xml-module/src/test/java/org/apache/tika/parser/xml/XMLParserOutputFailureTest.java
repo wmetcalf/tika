@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import javax.xml.parsers.SAXParser;
 
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -673,6 +674,7 @@ class XMLParserOutputFailureTest {
         }
 
         @Override
+        @SuppressForbidden
         public org.xml.sax.Parser getParser() {
             throw new UnsupportedOperationException();
         }

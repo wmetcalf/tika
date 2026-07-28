@@ -476,7 +476,7 @@ public class TesseractOCRResourceSafetyTest {
                     new String[]{"img"},
                     new String[]{"application/x-runtime-reader"},
                     ThrowingImageReader.class.getName(),
-                    STANDARD_INPUT_TYPE,
+                    new Class<?>[]{ImageInputStream.class},
                     null, false, null, null, null, null,
                     false, null, null, null, null);
         }
@@ -552,7 +552,7 @@ public class TesseractOCRResourceSafetyTest {
                     new String[]{"img"},
                     new String[]{"application/x-cleanup-reader"},
                     CleanupThrowingImageReader.class.getName(),
-                    STANDARD_INPUT_TYPE,
+                    new Class<?>[]{ImageInputStream.class},
                     null, false, null, null, null, null,
                     false, null, null, null, null);
             this.cleanupFailure = cleanupFailure;
@@ -653,7 +653,7 @@ public class TesseractOCRResourceSafetyTest {
                     new String[]{"img"},
                     new String[]{"application/x-multiframe-reader"},
                     MultiFrameImageReader.class.getName(),
-                    STANDARD_INPUT_TYPE,
+                    new Class<?>[]{ImageInputStream.class},
                     null, false, null, null, null, null,
                     false, null, null, null, null);
         }

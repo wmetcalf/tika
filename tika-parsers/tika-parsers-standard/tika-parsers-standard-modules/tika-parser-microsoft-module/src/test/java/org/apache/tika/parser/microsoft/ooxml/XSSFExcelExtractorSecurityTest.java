@@ -24,6 +24,7 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.xml.parsers.SAXParser;
 
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.junit.jupiter.api.Test;
 import org.xml.sax.Attributes;
@@ -126,6 +127,7 @@ class XSSFExcelExtractorSecurityTest {
         }
 
         @Override
+        @SuppressForbidden
         public Parser getParser() throws SAXException {
             return delegate.getParser();
         }
