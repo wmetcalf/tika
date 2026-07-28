@@ -17,12 +17,20 @@
 package org.apache.tika.plugins;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.CopyOption;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -34,21 +42,30 @@ import org.slf4j.LoggerFactory;
 /**
  * Thread-safe and process-safe plugin unzipper using atomic rename.
  * <p>
- * This avoids file locking issues on Windows by using a simple strategy:
+ * Normal publication is lock-free:
  * <ol>
  *   <li>Check if destination directory exists with completion marker - if yes, already extracted</li>
  *   <li>Extract to a temporary directory with a unique name</li>
- *   <li>Create a completion marker file in the temp directory</li>
- *   <li>Atomically rename temp dir to final destination</li>
+ *   <li>Create a completion marker in the temp directory and atomically rename it to the final
+ *       destination</li>
  *   <li>If rename fails (another process won), clean up temp dir</li>
  * </ol>
  * <p>
- * The completion marker ensures that even if atomic move is not supported,
- * other processes won't attempt to load a partially-moved directory.
+ * A stable sibling lock file serializes only stale recovery and the non-atomic fallback. The lock
+ * file is never deleted, so OS lock ownership is released automatically on process death without
+ * introducing Windows lock-file deletion races. For a non-atomic move, the completion marker is
+ * removed from the moving tree and created at the destination only after that move succeeds, so a
+ * partially moved directory cannot appear complete.
  */
 public class ThreadSafeUnzipper {
     private static final Logger LOG = LoggerFactory.getLogger(TikaPluginManager.class);
     private static final String COMPLETE_MARKER = ".tika-extraction-complete";
+    private static final String LOCK_SUFFIX = ".tika-extraction.lock";
+
+    @FunctionalInterface
+    interface MoveOperation {
+        void move(Path source, Path destination, CopyOption... options) throws IOException;
+    }
 
     /**
      * Unzips a plugin zip file to a directory with the same name (minus .zip extension).
@@ -59,6 +76,10 @@ public class ThreadSafeUnzipper {
      * @throws IOException if extraction fails
      */
     public static void unzipPlugin(Path source) throws IOException {
+        unzipPlugin(source, Files::move);
+    }
+
+    static void unzipPlugin(Path source, MoveOperation moveOperation) throws IOException {
         if (!source.getFileName().toString().endsWith(".zip")) {
             throw new IllegalArgumentException("source file name must end in '.zip'");
         }
@@ -79,16 +100,8 @@ public class ThreadSafeUnzipper {
         // manually removes the directory. Treat the half-extracted state as
         // garbage and rebuild.
         if (Files.exists(destination)) {
-            LOG.warn("destination {} exists without a completion marker; "
-                    + "treating as stale partial extraction and removing", destination);
-            deleteRecursively(destination);
-            // deleteRecursively is best-effort and logs-but-swallows IOExceptions
-            // (e.g. Windows file locks). If anything survived, bail out now with a
-            // clear message rather than letting the caller hit a misleading
-            // "timed out waiting for extraction to complete" sixty seconds later.
-            if (Files.exists(destination)) {
-                throw new IOException("could not remove stale partial extraction at "
-                        + destination + "; remove it manually and retry");
+            if (quarantineStaleDestination(destination, moveOperation)) {
+                return;
             }
         }
 
@@ -105,22 +118,16 @@ public class ThreadSafeUnzipper {
 
             // Atomically rename to final destination
             try {
-                Files.move(tempDir, destination, StandardCopyOption.ATOMIC_MOVE);
+                moveOperation.move(tempDir, destination, StandardCopyOption.ATOMIC_MOVE);
                 LOG.debug("successfully extracted {}", destination);
             } catch (FileAlreadyExistsException | DirectoryNotEmptyException e) {
                 // Another process extracted it first - wait for completion marker
                 LOG.debug("plugin already extracted by another process: {}", destination);
                 waitForExtractionComplete(destination);
             } catch (AtomicMoveNotSupportedException e) {
-                // Filesystem doesn't support atomic move, try regular move
-                try {
-                    Files.move(tempDir, destination);
-                    LOG.debug("successfully extracted {} (non-atomic)", destination);
-                } catch (FileAlreadyExistsException | DirectoryNotEmptyException e2) {
-                    // Another process extracted it first - wait for completion marker
-                    LOG.debug("plugin already extracted by another process: {}", destination);
-                    waitForExtractionComplete(destination);
-                }
+                publishWithoutAtomicMove(tempDir, destination, moveOperation);
+            } catch (FileSystemException e) {
+                handleGenericMoveFailure(destination, e);
             }
         } finally {
             // Clean up temp dir if it still exists (we lost the race or there was an error)
@@ -128,6 +135,144 @@ public class ThreadSafeUnzipper {
                 deleteRecursively(tempDir);
             }
         }
+    }
+
+    /**
+     * Moves a stale destination to a unique quarantine path before deleting it. This prevents a
+     * cleanup process from deleting a completed extraction that another process publishes at the
+     * original destination after the stale-state check.
+     *
+     * @return {@code true} when another process completed extraction and the caller should return
+     */
+    private static synchronized boolean quarantineStaleDestination(Path destination,
+                                                                    MoveOperation moveOperation)
+            throws IOException {
+        try (FileChannel channel = openLockChannel(destination);
+                FileLock ignored = acquireFileLock(channel)) {
+            return quarantineStaleDestinationLocked(destination, moveOperation);
+        }
+    }
+
+    private static boolean quarantineStaleDestinationLocked(Path destination,
+                                                             MoveOperation moveOperation)
+            throws IOException {
+        if (isExtractionComplete(destination)) {
+            return true;
+        }
+        if (!Files.exists(destination)) {
+            return false;
+        }
+
+        Path quarantine = destination.resolveSibling(
+                destination.getFileName() + ".stale." + UUID.randomUUID());
+        try {
+            moveOperation.move(destination, quarantine, StandardCopyOption.ATOMIC_MOVE);
+        } catch (NoSuchFileException e) {
+            return isExtractionComplete(destination);
+        } catch (AtomicMoveNotSupportedException e) {
+            // The stable lock makes direct cleanup safe on filesystems that cannot atomically
+            // quarantine. Publishers on such a filesystem must acquire this same lock before
+            // exposing their destination.
+            deleteRecursively(destination);
+            if (Files.exists(destination)) {
+                throw new IOException("could not remove locked stale extraction at "
+                        + destination, e);
+            }
+            return false;
+        } catch (FileSystemException e) {
+            if (isExtractionComplete(destination)) {
+                return true;
+            }
+            throw e;
+        }
+
+        if (isExtractionComplete(quarantine)) {
+            restoreCompletedExtraction(quarantine, destination, moveOperation);
+            return true;
+        }
+
+        LOG.warn("destination {} exists without a completion marker; "
+                + "quarantined stale partial extraction at {}", destination, quarantine);
+        deleteRecursively(quarantine);
+        if (Files.exists(quarantine)) {
+            throw new IOException("could not remove quarantined stale extraction at "
+                    + quarantine + "; remove it manually and retry");
+        }
+        return false;
+    }
+
+    private static void restoreCompletedExtraction(Path quarantine, Path destination,
+                                                   MoveOperation moveOperation)
+            throws IOException {
+        try {
+            moveOperation.move(quarantine, destination, StandardCopyOption.ATOMIC_MOVE);
+        } catch (FileSystemException e) {
+            if (!isExtractionComplete(destination)) {
+                throw new IOException("could not restore completed extraction from "
+                        + quarantine + " to " + destination, e);
+            }
+            deleteRecursively(quarantine);
+            if (Files.exists(quarantine)) {
+                throw new IOException("could not remove duplicate completed extraction at "
+                        + quarantine, e);
+            }
+        }
+    }
+
+    private static synchronized void publishWithoutAtomicMove(Path tempDir, Path destination,
+                                                              MoveOperation moveOperation)
+            throws IOException {
+        try (FileChannel channel = openLockChannel(destination);
+                FileLock ignored = acquireFileLock(channel)) {
+            if (isExtractionComplete(destination)) {
+                return;
+            }
+            if (Files.exists(destination)) {
+                if (quarantineStaleDestinationLocked(destination, moveOperation)) {
+                    return;
+                }
+            }
+
+            // A non-atomic move may expose a partial destination. Keep completion out of the
+            // moving tree and publish it only after the move returns successfully.
+            Files.delete(tempDir.resolve(COMPLETE_MARKER));
+            try {
+                moveOperation.move(tempDir, destination);
+            } catch (FileAlreadyExistsException | DirectoryNotEmptyException e) {
+                waitForExtractionComplete(destination);
+                return;
+            } catch (FileSystemException e) {
+                handleGenericMoveFailure(destination, e);
+                return;
+            }
+            Files.createFile(destination.resolve(COMPLETE_MARKER));
+            LOG.debug("successfully extracted {} (non-atomic)", destination);
+        }
+    }
+
+    private static FileChannel openLockChannel(Path destination) throws IOException {
+        return FileChannel.open(getLockPath(destination), StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE);
+    }
+
+    private static FileLock acquireFileLock(FileChannel channel) throws IOException {
+        while (true) {
+            try {
+                return channel.lock();
+            } catch (OverlappingFileLockException e) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("interrupted while waiting for extraction lock",
+                            interrupted);
+                }
+            }
+        }
+    }
+
+    private static Path getLockPath(Path destination) {
+        return destination.resolveSibling(destination.getFileName() + LOCK_SUFFIX);
     }
 
     /**
@@ -163,6 +308,20 @@ public class ThreadSafeUnzipper {
         throw new IOException("timed out waiting for extraction to complete: " + destination);
     }
 
+    /**
+     * Some providers report a losing directory rename as a generic
+     * {@link FileSystemException}, rather than as {@link FileAlreadyExistsException} or
+     * {@link DirectoryNotEmptyException}. Treat it as a successful concurrent extraction only
+     * when the destination's completion marker proves that another process won the race.
+     */
+    private static void handleGenericMoveFailure(Path destination, FileSystemException exception)
+            throws IOException {
+        if (!isExtractionComplete(destination)) {
+            throw exception;
+        }
+        LOG.debug("plugin already extracted by another process: {}", destination);
+    }
+
     private static Path getDestination(Path source) {
         String fName = source.getFileName().toString();
         fName = fName.substring(0, fName.length() - 4);
@@ -179,7 +338,7 @@ public class ThreadSafeUnzipper {
                             LOG.warn("failed to delete temp file: {}", p, e);
                         }
                     });
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
             LOG.warn("failed to clean up temp directory: {}", path, e);
         }
     }
