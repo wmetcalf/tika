@@ -194,6 +194,13 @@ public class TesseractOCRConfigTest extends TikaTest {
     }
 
     @Test
+    public void testRuntimeConfigRejectsTrustedPageSeparatorAsSecurityFailure() {
+        TesseractOCRConfig config = new TesseractOCRConfig.RuntimeConfig();
+        assertThrows(SecurityException.class, () ->
+                config.setTrustedPageSeparator("${file.separator}"));
+    }
+
+    @Test
     public void testBadOtherKey() {
         TesseractOCRConfig config = new TesseractOCRConfig();
         assertThrows(IllegalArgumentException.class, () -> {

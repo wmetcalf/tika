@@ -566,10 +566,14 @@ public class RecursiveMetadataResourceTest extends CXFTestBase {
         assertEquals(200, response.getStatus());
         Reader reader = new InputStreamReader((InputStream) response.getEntity(), UTF_8);
         List<Metadata> metadataList = JsonMetadataList.fromJson(reader);
-        assertEquals(1, metadataList.size());
+        assertEquals(2, metadataList.size());
         Metadata m = metadataList.get(0);
         assertEquals("true", m.get(PDF.HAS_XFA));
         assertTrue(m.get(TikaCoreProperties.TIKA_CONTENT).contains("Young Abraham Lincoln"));
+        Metadata inlineImage = metadataList.get(1);
+        assertEquals("INLINE", inlineImage.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+        assertEquals("image-0.png", inlineImage.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+        assertEquals("image/png", inlineImage.get(Metadata.CONTENT_TYPE));
     }
 
     @Test

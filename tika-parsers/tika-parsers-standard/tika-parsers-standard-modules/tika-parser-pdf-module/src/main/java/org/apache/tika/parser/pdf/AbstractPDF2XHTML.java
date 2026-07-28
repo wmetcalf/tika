@@ -34,10 +34,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Locale;
@@ -100,6 +103,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
+import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -539,7 +543,7 @@ class AbstractPDF2XHTML extends PDFTextStripper {
 
         throwIfOutputHandlerCause(e);
 
-        if (writeLimitReached) {
+        if (writeLimitReached || isConfigurationFailure(e)) {
             throw e;
         }
 
@@ -554,6 +558,36 @@ class AbstractPDF2XHTML extends PDFTextStripper {
         } else {
             throw e;
         }
+    }
+
+    static boolean isConfigurationFailure(Throwable failure) {
+        if (failure == null) {
+            return false;
+        }
+        Set<Throwable> seen =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current instanceof TikaConfigException
+                    || current instanceof SecurityException) {
+                return true;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        return false;
     }
 
     private void throwIfOutputHandlerCause(IOException failure) throws IOException {

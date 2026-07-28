@@ -611,7 +611,8 @@ public class TesseractOCRConfig implements Serializable {
 
         @Override
         public void setTrustedPageSeparator(String pageSeparator) {
-            throw new IllegalArgumentException("Cannot use setTrustedPageSeparator at runtime. " + "Use setPageSeparator instead.");
+            throw new SecurityException("Cannot use setTrustedPageSeparator at runtime. " +
+                    "Use setPageSeparator instead.");
         }
     }
 

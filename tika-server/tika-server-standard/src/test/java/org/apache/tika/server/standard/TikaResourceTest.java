@@ -298,10 +298,13 @@ public class TikaResourceTest extends CXFTestBase {
             return;
         }
 
-        // Test no_ocr strategy - use /config/text to get plain text (no XHTML envelope)
+        // Test no_ocr strategy - use /config/text to get plain text (no XHTML envelope).
+        // This fork extracts inline images by default; disable that independent OCR path
+        // so this assertion isolates the PDF page-render OCR strategy.
         String configJson = """
                 {
                   "pdf-parser": {
+                    "extractInlineImages": false,
                     "ocr": {
                       "strategy": "NO_OCR"
                     }
