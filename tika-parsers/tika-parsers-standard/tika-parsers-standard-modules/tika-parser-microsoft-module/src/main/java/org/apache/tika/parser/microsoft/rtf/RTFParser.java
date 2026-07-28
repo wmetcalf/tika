@@ -231,25 +231,30 @@ public class RTFParser implements Parser {
 
     private static SAXException findTaggedOutputFailure(
             TaggedContentHandler taggedOutput, Throwable failure) {
+        SAXException recordedFailure = taggedOutput.getSaxFailure();
         Set<Throwable> seen =
                 Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Throwable> pending = new ArrayDeque<>();
         if (failure != null) {
             pending.push(failure);
         }
+        SAXException taggedCandidate = null;
         while (!pending.isEmpty()) {
             Throwable current = pending.pop();
             if (!seen.add(current)) {
                 continue;
             }
-            if (current instanceof SAXException saxFailure
+            if (current == recordedFailure) {
+                return recordedFailure;
+            }
+            if (taggedCandidate == null
+                    && current instanceof SAXException saxFailure
                     && taggedOutput.isCauseOf(saxFailure)) {
                 try {
                     taggedOutput.throwIfCauseOf(saxFailure);
                 } catch (SAXException outputFailure) {
-                    return outputFailure;
+                    taggedCandidate = outputFailure;
                 }
-                return null;
             }
             Throwable cause = current.getCause();
             if (cause != null && cause != current) {
@@ -263,7 +268,7 @@ public class RTFParser implements Parser {
                 }
             }
         }
-        return null;
+        return taggedCandidate;
     }
 
     private static Throwable findUncheckedOutputFailure(

@@ -184,6 +184,61 @@ class RTFRuntimeCleanupTest {
     }
 
     @Test
+    void errorCauseUnwrappedSaxDenialFailsStopByIdentity()
+            throws Exception {
+        assertRawUnwrappedSaxDenialFailsStop(
+                RawSaxWrapper.ERROR_CAUSE);
+    }
+
+    @Test
+    void errorSuppressedUnwrappedSaxDenialFailsStopByIdentity()
+            throws Exception {
+        assertRawUnwrappedSaxDenialFailsStop(
+                RawSaxWrapper.ERROR_SUPPRESSED);
+    }
+
+    @Test
+    void exactRecordedRawSaxOutranksCompetingTaggedSaxBranch()
+            throws Exception {
+        SAXException firstDenial =
+                new SAXException("first recorded raw RTF SAX denial");
+        SAXException laterDenial =
+                new SAXException("later tagged RTF SAX denial");
+        TwoStageSaxDenyingHandler handler =
+                new TwoStageSaxDenyingHandler(
+                        firstDenial, laterDenial);
+        RTFParser parser =
+                new CompetingTaggedSaxBranchRTFParser();
+
+        SAXException thrown =
+                assertThrows(SAXException.class, () -> parse(
+                        parser, handler, "competing RTF output denials"));
+
+        assertSame(firstDenial, thrown);
+        assertEquals(0, handler.callbacksAfterSecondDenial);
+    }
+
+    @Test
+    void unrelatedErrorRemainsAuthoritativeAfterSaxDenial()
+            throws Exception {
+        SAXException denial =
+                new SAXException("unrelated RTF SAX output denial");
+        AssertionError parserFailure =
+                new AssertionError("unrelated RTF parser Error");
+        FailStopSaxHandler handler =
+                new FailStopSaxHandler("blocked unrelated SAX output", denial);
+        RTFParser parser =
+                new UnrelatedErrorAfterSaxFailureRTFParser(parserFailure);
+
+        AssertionError thrown =
+                assertThrows(AssertionError.class, () -> parse(
+                        parser, handler, "blocked unrelated SAX output"));
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     void untrackedFatalCleanupErrorSupersedesRecoverablePrimary() {
         RuntimeException primary =
                 new IllegalStateException("recoverable parser failure");
@@ -232,6 +287,24 @@ class RTFRuntimeCleanupTest {
         SAXException thrown =
                 assertThrows(SAXException.class, () -> parse(
                         parser, handler, "blocked unchecked SAX output"));
+
+        assertSame(denial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    private void assertRawUnwrappedSaxDenialFailsStop(
+            RawSaxWrapper wrapper) throws Exception {
+        SAXException denial =
+                new SAXException(wrapper + " raw RTF SAX output denial");
+        FailStopSaxHandler handler =
+                new FailStopSaxHandler(
+                        "blocked raw SAX output", denial);
+        RTFParser parser =
+                new RawUnwrappedSaxFailureRTFParser(wrapper);
+
+        SAXException thrown =
+                assertThrows(SAXException.class, () -> parse(
+                        parser, handler, "blocked raw SAX output"));
 
         assertSame(denial, thrown);
         assertEquals(0, handler.callbacksAfterDenial);
@@ -418,6 +491,128 @@ class RTFRuntimeCleanupTest {
         }
     }
 
+    private static final class RawUnwrappedSaxFailureRTFParser
+            extends RTFParser {
+
+        private final RawSaxWrapper wrapper;
+
+        private RawUnwrappedSaxFailureRTFParser(
+                RawSaxWrapper wrapper) {
+            this.wrapper = wrapper;
+        }
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context)
+                throws SAXException {
+            try {
+                handler.characters(
+                        "blocked raw SAX output".toCharArray(),
+                        0,
+                        "blocked raw SAX output".length());
+            } catch (SAXException outputFailure) {
+                Throwable rawFailure = unwrapFailure(outputFailure);
+                Error parserFailure =
+                        new Error(
+                                "Error-wrapped raw RTF SAX output denial",
+                                wrapper == RawSaxWrapper.ERROR_CAUSE
+                                        ? rawFailure : null);
+                if (wrapper == RawSaxWrapper.ERROR_SUPPRESSED) {
+                    parserFailure.addSuppressed(rawFailure);
+                }
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static final class UnrelatedErrorAfterSaxFailureRTFParser
+            extends RTFParser {
+
+        private final AssertionError parserFailure;
+
+        private UnrelatedErrorAfterSaxFailureRTFParser(
+                AssertionError parserFailure) {
+            this.parserFailure = parserFailure;
+        }
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context)
+                throws SAXException {
+            try {
+                handler.characters(
+                        "blocked unrelated SAX output".toCharArray(),
+                        0,
+                        "blocked unrelated SAX output".length());
+            } catch (SAXException expected) {
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static final class CompetingTaggedSaxBranchRTFParser
+            extends RTFParser {
+
+        @Override
+        public void parseInline(
+                InputStream stream,
+                ContentHandler handler,
+                Metadata metadata,
+                ParseContext context)
+                throws SAXException {
+            Throwable firstRawFailure;
+            try {
+                char[] first = "first RTF output".toCharArray();
+                handler.characters(first, 0, first.length);
+                throw new AssertionError(
+                        "expected first RTF output denial");
+            } catch (SAXException firstTaggedFailure) {
+                firstRawFailure =
+                        unwrapFailure(firstTaggedFailure);
+            }
+
+            try {
+                char[] second = "second RTF output".toCharArray();
+                handler.characters(second, 0, second.length);
+                throw new AssertionError(
+                        "expected second RTF output denial");
+            } catch (SAXException laterTaggedFailure) {
+                Error parserFailure =
+                        new Error(
+                                "competing tagged RTF SAX branches",
+                                firstRawFailure);
+                RuntimeException cycle =
+                        new RuntimeException(
+                                "competing RTF failure graph cycle");
+                parserFailure.addSuppressed(laterTaggedFailure);
+                parserFailure.addSuppressed(cycle);
+                cycle.addSuppressed(parserFailure);
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static Throwable unwrapFailure(Throwable failure) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && seen.add(current)) {
+            Throwable cause = current.getCause();
+            if (cause == null || cause == current) {
+                return current;
+            }
+            current = cause;
+        }
+        return current;
+    }
+
     private enum Wrapper {
         IO,
         SAX,
@@ -427,6 +622,70 @@ class RTFRuntimeCleanupTest {
     private enum UncheckedSaxWrapper {
         RUNTIME,
         ERROR_SUPPRESSED
+    }
+
+    private enum RawSaxWrapper {
+        ERROR_CAUSE,
+        ERROR_SUPPRESSED
+    }
+
+    private static final class TwoStageSaxDenyingHandler
+            extends DefaultHandler {
+
+        private final SAXException firstDenial;
+        private final SAXException secondDenial;
+        private int denialCount;
+        private int callbacksAfterSecondDenial;
+
+        private TwoStageSaxDenyingHandler(
+                SAXException firstDenial,
+                SAXException secondDenial) {
+            this.firstDenial = firstDenial;
+            this.secondDenial = secondDenial;
+        }
+
+        @Override
+        public void startDocument() {
+            recordCallback();
+        }
+
+        @Override
+        public void endDocument() {
+            recordCallback();
+        }
+
+        @Override
+        public void startElement(
+                String uri, String localName, String qName,
+                org.xml.sax.Attributes attributes) {
+            recordCallback();
+        }
+
+        @Override
+        public void endElement(
+                String uri, String localName, String qName) {
+            recordCallback();
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (denialCount == 0) {
+                denialCount++;
+                throw firstDenial;
+            }
+            if (denialCount == 1) {
+                denialCount++;
+                throw secondDenial;
+            }
+            recordCallback();
+        }
+
+        private void recordCallback() {
+            if (denialCount >= 2) {
+                callbacksAfterSecondDenial++;
+            }
+        }
     }
 
     private static final class StrictRecordingHandler extends DefaultHandler {
