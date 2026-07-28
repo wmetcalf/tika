@@ -205,6 +205,57 @@ class XMLParserOutputFailureTest {
     }
 
     @Test
+    void errorCauseUnwrappedSaxCallerDenialPreservesIdentity() {
+        assertRawUnwrappedSaxDenialPreservesIdentity(
+                RawSaxWrapper.ERROR_CAUSE);
+    }
+
+    @Test
+    void errorSuppressedUnwrappedSaxCallerDenialPreservesIdentity() {
+        assertRawUnwrappedSaxDenialPreservesIdentity(
+                RawSaxWrapper.ERROR_SUPPRESSED);
+    }
+
+    @Test
+    void exactRecordedRawSaxOutranksCompetingTaggedSaxCycle() {
+        SAXException firstDenial =
+                new SAXException("first recorded raw XML SAX denial");
+        SAXException laterDenial =
+                new SAXException("later tagged XML SAX denial");
+        DenyingHandler handler =
+                new DenyingHandler(
+                        "MANTIS_XML_BODY", firstDenial, null);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(
+                                new CompetingTaggedSaxCycleParser(
+                                        laterDenial))));
+
+        assertSame(firstDenial, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
+    void unrelatedErrorRemainsAuthoritativeAfterSaxDenial() {
+        SAXException denial =
+                new SAXException("unrelated XML SAX output denial");
+        AssertionError parserFailure =
+                new AssertionError("unrelated XML parser Error");
+        DenyingHandler handler =
+                new DenyingHandler("MANTIS_XML_BODY", denial, null);
+
+        AssertionError thrown = assertThrows(AssertionError.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(
+                                new UnrelatedErrorAfterOutputSaxParser(
+                                        parserFailure))));
+
+        assertSame(parserFailure, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
+    }
+
+    @Test
     void svgOcrCallerDenialPropagatesWithExactIdentity() {
         SAXException primary = new SAXException("SVG OCR caller denial");
         DenyingHandler handler =
@@ -349,6 +400,22 @@ class XMLParserOutputFailureTest {
         assertSame(primary, thrown);
         assertEquals(0, handler.callbacksAfterDenial,
                 "SVG OCR must not emit callbacks after unchecked denial");
+    }
+
+    private static void assertRawUnwrappedSaxDenialPreservesIdentity(
+            RawSaxWrapper wrapper) {
+        SAXException primary =
+                new SAXException(wrapper + " raw XML SAX output denial");
+        DenyingHandler handler =
+                new DenyingHandler("MANTIS_XML_BODY", primary, null);
+
+        SAXException thrown = assertThrows(SAXException.class,
+                () -> parse(XML, "application/xml", handler,
+                        saxParserContext(
+                                new RawUnwrappedOutputSaxParser(wrapper))));
+
+        assertSame(primary, thrown);
+        assertEquals(0, handler.callbacksAfterDenial);
     }
 
     private static Metadata parse(
@@ -673,6 +740,164 @@ class XMLParserOutputFailureTest {
                 throw wrapper;
             }
         }
+    }
+
+    private static final class RawUnwrappedOutputSaxParser
+            extends FailingSaxParser {
+
+        private final RawSaxWrapper wrapper;
+
+        private RawUnwrappedOutputSaxParser(
+                RawSaxWrapper wrapper) {
+            super(null);
+            this.wrapper = wrapper;
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            char[] chars = "MANTIS_XML_BODY".toCharArray();
+            try {
+                handler.characters(chars, 0, chars.length);
+            } catch (SAXException outputFailure) {
+                Throwable rawFailure = unwrapFailure(outputFailure);
+                Error parserFailure =
+                        new Error(
+                                "Error-wrapped raw XML SAX output denial",
+                                wrapper == RawSaxWrapper.ERROR_CAUSE
+                                        ? rawFailure : null);
+                if (wrapper == RawSaxWrapper.ERROR_SUPPRESSED) {
+                    parserFailure.addSuppressed(rawFailure);
+                }
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static final class UnrelatedErrorAfterOutputSaxParser
+            extends FailingSaxParser {
+
+        private final AssertionError parserFailure;
+
+        private UnrelatedErrorAfterOutputSaxParser(
+                AssertionError parserFailure) {
+            super(null);
+            this.parserFailure = parserFailure;
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            char[] chars = "MANTIS_XML_BODY".toCharArray();
+            try {
+                handler.characters(chars, 0, chars.length);
+            } catch (SAXException expected) {
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static final class CompetingTaggedSaxCycleParser
+            extends FailingSaxParser {
+
+        private static final char[] OUTPUT =
+                "MANTIS_XML_BODY".toCharArray();
+
+        private final SAXException laterRawFailure;
+
+        private CompetingTaggedSaxCycleParser(
+                SAXException laterRawFailure) {
+            super(null);
+            this.laterRawFailure = laterRawFailure;
+        }
+
+        @Override
+        public void parse(InputStream input, DefaultHandler handler)
+                throws SAXException, IOException {
+            try {
+                handler.characters(OUTPUT, 0, OUTPUT.length);
+                throw new AssertionError(
+                        "expected first XML output denial");
+            } catch (SAXException firstTaggedFailure) {
+                Throwable firstRawFailure =
+                        unwrapFailure(firstTaggedFailure);
+                Object outputTag =
+                        findTaggedSaxTag(firstTaggedFailure);
+                SAXException competingTaggedFailure =
+                        new org.apache.tika.sax.TaggedSAXException(
+                                laterRawFailure, outputTag);
+                org.apache.tika.sax.TaggedContentHandler taggedOutput =
+                        (org.apache.tika.sax.TaggedContentHandler) outputTag;
+                if (taggedOutput.getSaxFailure()
+                                != firstRawFailure
+                        || !taggedOutput.isCauseOf(
+                                competingTaggedFailure)) {
+                    throw new AssertionError(
+                            "invalid competing XML tagged failure fixture");
+                }
+                Error parserFailure =
+                        new Error(
+                                "competing tagged XML SAX branches");
+                RuntimeException cycle =
+                        new RuntimeException(
+                                "competing XML failure graph cycle");
+                parserFailure.addSuppressed(
+                        competingTaggedFailure);
+                parserFailure.addSuppressed(firstRawFailure);
+                parserFailure.addSuppressed(cycle);
+                cycle.addSuppressed(parserFailure);
+                throw parserFailure;
+            }
+        }
+    }
+
+    private static Throwable unwrapFailure(Throwable failure) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && seen.add(current)) {
+            Throwable cause = current.getCause();
+            if (cause == null || cause == current) {
+                return current;
+            }
+            current = cause;
+        }
+        return current;
+    }
+
+    private static Object findTaggedSaxTag(Throwable failure) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        java.util.Deque<Throwable> pending =
+                new java.util.ArrayDeque<>();
+        pending.push(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.pop();
+            if (!seen.add(current)) {
+                continue;
+            }
+            if (current instanceof org.apache.tika.sax.TaggedSAXException tagged) {
+                return tagged.getTag();
+            }
+            Throwable cause = current.getCause();
+            if (cause != null && cause != current) {
+                pending.push(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed != null && suppressed != current) {
+                    pending.push(suppressed);
+                }
+            }
+        }
+        throw new AssertionError(
+                "expected a tagged XML output failure");
+    }
+
+    private enum RawSaxWrapper {
+        ERROR_CAUSE,
+        ERROR_SUPPRESSED
     }
 
     private static void throwUnchecked(Throwable failure) {
