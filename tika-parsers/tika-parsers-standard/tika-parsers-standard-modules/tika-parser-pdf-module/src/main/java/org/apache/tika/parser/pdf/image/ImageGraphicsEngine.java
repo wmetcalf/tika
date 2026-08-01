@@ -261,6 +261,37 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         }
     }
 
+    // Metadata key used to record (once) that per-document image processing
+    // was truncated by MAX_IMAGES_PER_DOCUMENT / PDFParserConfig#getMaxImagesPerDocument().
+    private static final String IMAGE_BUDGET_EXCEEDED_KEY =
+            "X-TIKA:PDF:image-budget-exceeded";
+
+    /**
+     * True if the per-document image-processing budget (every draw of an
+     * embedded image XObject, unique or repeated) has already been spent.
+     * Charges the attempt against {@link #imageCounter} -- which is shared
+     * across every page of the document, unlike this per-page engine
+     * instance -- so the bound holds document-wide, not per-page. Records a
+     * one-time warning on the document metadata when the bound is first hit.
+     */
+    private boolean isImageProcessingBudgetExceeded() {
+        int max = pdfParserConfig.getMaxImagesPerDocument();
+        if (max <= 0) {
+            // -1 (or any non-positive value reaching here) means "no limit"
+            return false;
+        }
+        if (imageCounter.get() < max) {
+            return false;
+        }
+        if (parentMetadata.get(IMAGE_BUDGET_EXCEEDED_KEY) == null) {
+            parentMetadata.set(IMAGE_BUDGET_EXCEEDED_KEY, "true");
+            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "PDF image extraction truncated after " + max +
+                            " embedded images processed for this document");
+        }
+        return true;
+    }
+
     @Override
     public void drawImage(PDImage pdImage) throws IOException {
         int imageNumber = 0;
@@ -276,11 +307,29 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                 // skip duplicate image
                 return;
             }
+            if (isImageProcessingBudgetExceeded()) {
+                return;
+            }
             if (cachedNumber == null) {
                 imageNumber = imageCounter.getAndIncrement();
                 processedInlineImages.put(xobject.getCOSObject(), imageNumber);
+            } else {
+                // extractUniqueInlineImagesOnly is false: this is a repeat draw
+                // of an already-seen image object. It still costs a full
+                // rasterize/color-convert/recursive-parse cycle below (that's
+                // the whole point of disabling dedup), so it must still be
+                // charged against the per-document image budget even though
+                // it doesn't consume a fresh sequence number. Without this,
+                // an adversarial PDF that redraws one tiny image XObject
+                // thousands of times pays zero budget cost per redraw while
+                // still doing full CMYK/LittleCMS conversion + QR/hash work
+                // on every single draw -- an unbounded-by-page-count cost.
+                imageCounter.incrementAndGet();
             }
         } else {
+            if (isImageProcessingBudgetExceeded()) {
+                return;
+            }
             imageNumber = imageCounter.getAndIncrement();
         }
         //TODO: should we use the hash of the PDImage to check for seen

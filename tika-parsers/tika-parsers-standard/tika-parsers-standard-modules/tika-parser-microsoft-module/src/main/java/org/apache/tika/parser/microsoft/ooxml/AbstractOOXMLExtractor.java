@@ -1109,6 +1109,24 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      *  this cap a single doc could produce unbounded link-metadata entries. */
     private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
 
+    /**
+     * Hard cap on the number of package parts {@link #createExternalReferenceBudget}
+     * will scan. That scan runs before {@link #handleMacrosEarly} / {@link #buildXHTML}
+     * emit any content, so the cumulative write-limit (WriteLimitReachedException)
+     * cannot bound it -- MAX_EXTERNAL_REFS_PER_DOC only bounds how many
+     * *matching* high-priority relationships are recorded, not how many parts
+     * are examined to find them. A package padded with a huge number of
+     * otherwise-empty parts (e.g. thousands of trivial customXml/theme/chart
+     * parts, none of which carry a high-priority relationship) would force
+     * this loop to call part.getRelationships() -- itself a relationship-XML
+     * parse -- once per part, unbounded by part count, entirely before a
+     * single character of real output is produced. Bounding the number of
+     * parts scanned (independent of how many refs were found) closes that
+     * gap without touching the existing MAX_EXTERNAL_REFS_PER_DOC relationship
+     * cap or any of the high-priority-relationship detection logic.
+     */
+    private static final int MAX_EXTERNAL_REF_PARTS_SCANNED = 5000;
+
     private void surfaceExternalRefsFromAllParts(
             XHTMLContentHandler xhtml, Metadata metadata,
             Set<String> handledRelationshipParts,
@@ -1220,8 +1238,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // best-effort
         }
         try {
+            int partsScanned = 0;
             for (PackagePart part : opcPackage.getParts()) {
                 if (part == null || part.getPartName() == null) continue;
+                if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
+                    budget.markPartScanTruncated();
+                    break;
+                }
+                partsScanned++;
                 try {
                     budget.preRecordHighPriority(
                             part.getRelationships(),
@@ -1372,6 +1396,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (truncated) {
                 OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
             }
+        }
+
+        /**
+         * Record that {@link #createExternalReferenceBudget} stopped scanning
+         * parts after hitting MAX_EXTERNAL_REF_PARTS_SCANNED, independent of
+         * whether MAX_EXTERNAL_REFS_PER_DOC high-priority refs were ever
+         * found. Surfaced through the same truncation flag as the
+         * relationship-count cap so callers see one consistent signal.
+         */
+        private void markPartScanTruncated() {
+            truncated = true;
         }
     }
 

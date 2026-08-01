@@ -41,6 +41,14 @@ public class PDFParserConfig implements Serializable {
     public static final int DEFAULT_MAX_PAGES = 100;
 
     /**
+     * Default bound on the total number of embedded images (across the whole
+     * document, unique or repeated instances of the same image object) that
+     * will be fully rasterized/color-converted/parsed per PDF. See
+     * {@link #setMaxImagesPerDocument(int)}.
+     */
+    public static final int DEFAULT_MAX_IMAGES_PER_DOCUMENT = 2000;
+
+    /**
      * Mode for checking document access permissions.
      */
     public enum AccessCheckMode {
@@ -153,6 +161,8 @@ public class PDFParserConfig implements Serializable {
 
     private int maxPages = DEFAULT_MAX_PAGES;
 
+    private int maxImagesPerDocument = DEFAULT_MAX_IMAGES_PER_DOCUMENT;
+
     private boolean throwOnEncryptedPayload = false;
 
     private void readObject(ObjectInputStream input)
@@ -160,6 +170,9 @@ public class PDFParserConfig implements Serializable {
         input.defaultReadObject();
         if (maxPages == 0) {
             maxPages = DEFAULT_MAX_PAGES;
+        }
+        if (maxImagesPerDocument == 0) {
+            maxImagesPerDocument = DEFAULT_MAX_IMAGES_PER_DOCUMENT;
         }
     }
 
@@ -692,6 +705,44 @@ public class PDFParserConfig implements Serializable {
                     "maxPages must be -1 (no limit) or >= 1, got: " + maxPages);
         }
         this.maxPages = maxPages;
+    }
+
+    /**
+     * @return maximum number of embedded images to fully process (rasterize,
+     * color-convert, hash, QR-scan, recursively parse) per document, or -1
+     * for no limit
+     */
+    public int getMaxImagesPerDocument() {
+        return maxImagesPerDocument;
+    }
+
+    /**
+     * Set the maximum number of embedded images to fully process per
+     * document. This counts every draw of an embedded image XObject, not
+     * just distinct images -- when {@link #isExtractUniqueInlineImagesOnly()}
+     * is {@code false}, a PDF that draws the same (or many different) image
+     * XObjects hundreds or thousands of times forces a full PDFBox
+     * raster + color-space conversion (including a native LittleCMS
+     * transform for CMYK images) + recursive embedded-parse for every
+     * single draw. That cost scales with the number of image draws in the
+     * content stream, not with page count, so {@link #setMaxPages(int)}
+     * does not bound it. Once the bound is reached, remaining image draws
+     * are skipped (a warning is recorded on the document metadata) rather
+     * than processed.
+     * <p>
+     * The default is {@value #DEFAULT_MAX_IMAGES_PER_DOCUMENT}; use -1 to
+     * explicitly opt into unlimited processing.
+     *
+     * @param maxImagesPerDocument must be -1 or &gt;= 1
+     * @throws IllegalArgumentException if the value is 0 or less than -1
+     */
+    public void setMaxImagesPerDocument(int maxImagesPerDocument) {
+        if (maxImagesPerDocument != -1 && maxImagesPerDocument < 1) {
+            throw new IllegalArgumentException(
+                    "maxImagesPerDocument must be -1 (no limit) or >= 1, got: " +
+                            maxImagesPerDocument);
+        }
+        this.maxImagesPerDocument = maxImagesPerDocument;
     }
 
     public void setThrowOnEncryptedPayload(boolean throwOnEncryptedPayload) {
