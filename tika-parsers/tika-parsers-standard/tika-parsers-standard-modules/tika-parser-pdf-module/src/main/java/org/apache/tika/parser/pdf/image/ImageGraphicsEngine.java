@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.io.output.UnsynchronizedByteArrayOutputStream;
@@ -95,6 +96,9 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
     protected final PDFParserConfig pdfParserConfig;
     protected final Map<COSStream, Integer> processedInlineImages;
     protected final AtomicInteger imageCounter;
+    // Shared, document-wide (not per-page, unlike this engine instance) exactly-once gate
+    // for the image-budget-exceeded warning. See isImageProcessingBudgetExceeded().
+    protected final AtomicBoolean imageBudgetWarningEmitted;
     protected final Metadata parentMetadata;
     protected final XHTMLContentHandler xhtml;
     protected final ParseContext parseContext;
@@ -108,7 +112,9 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                                   EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                   PDFParserConfig pdfParserConfig,
                                   Map<COSStream, Integer> processedInlineImages,
-                                  AtomicInteger imageCounter, XHTMLContentHandler xhtml,
+                                  AtomicInteger imageCounter,
+                                  AtomicBoolean imageBudgetWarningEmitted,
+                                  XHTMLContentHandler xhtml,
                                   Metadata parentMetadata, ParseContext parseContext) {
         super(page);
         this.pageNumber = pageNumber;
@@ -116,6 +122,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         this.pdfParserConfig = pdfParserConfig;
         this.processedInlineImages = processedInlineImages;
         this.imageCounter = imageCounter;
+        this.imageBudgetWarningEmitted = imageBudgetWarningEmitted;
         this.xhtml = xhtml;
         this.parentMetadata = parentMetadata;
         this.parseContext = parseContext;
@@ -261,11 +268,6 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         }
     }
 
-    // Metadata key used to record (once) that per-document image processing
-    // was truncated by MAX_IMAGES_PER_DOCUMENT / PDFParserConfig#getMaxImagesPerDocument().
-    private static final String IMAGE_BUDGET_EXCEEDED_KEY =
-            "X-TIKA:PDF:image-budget-exceeded";
-
     /**
      * True if the per-document image-processing budget (every draw of an
      * embedded image XObject, unique or repeated) has already been spent.
@@ -273,6 +275,24 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
      * across every page of the document, unlike this per-page engine
      * instance -- so the bound holds document-wide, not per-page. Records a
      * one-time warning on the document metadata when the bound is first hit.
+     *
+     * <p>The exactly-once dedup for that warning MUST be a plain
+     * instance-scoped flag ({@link #imageBudgetWarningEmitted}, gated with
+     * {@code compareAndSet}), not a value stashed in {@code Metadata}: a
+     * prior version used {@code parentMetadata.get(someKey) == null} as the
+     * dedup check, but the key collided with {@code TikaCoreProperties
+     * .TIKA_META_PREFIX} ("X-TIKA:"), so {@code Metadata.set(String,
+     * String)} silently dropped the write via {@code blockReservedKeyWrite}
+     * -- the dedup check was therefore always true, the warning fired on
+     * <em>every</em> excess draw, and because {@code Metadata}'s value-array
+     * append is O(N) per call, that made this "protected" path O(N^2) in the
+     * number of excess draws -- i.e. slower than having no cap at all at
+     * scale. Gating on the AtomicBoolean instead means the metadata is
+     * mutated at most once per document, and using the existing {@code
+     * TikaCoreProperties.TRUNCATED_METADATA} Property (mirroring the OOXML
+     * side's {@code ExternalReferenceBudget#markTruncation}) sidesteps the
+     * reserved-key block entirely, since {@code Metadata.set(Property, ...)}
+     * does not go through {@code blockReservedKeyWrite}.
      */
     private boolean isImageProcessingBudgetExceeded() {
         int max = pdfParserConfig.getMaxImagesPerDocument();
@@ -283,8 +303,8 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         if (imageCounter.get() < max) {
             return false;
         }
-        if (parentMetadata.get(IMAGE_BUDGET_EXCEEDED_KEY) == null) {
-            parentMetadata.set(IMAGE_BUDGET_EXCEEDED_KEY, "true");
+        if (imageBudgetWarningEmitted.compareAndSet(false, true)) {
+            parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
             parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     "PDF image extraction truncated after " + max +
                             " embedded images processed for this document");

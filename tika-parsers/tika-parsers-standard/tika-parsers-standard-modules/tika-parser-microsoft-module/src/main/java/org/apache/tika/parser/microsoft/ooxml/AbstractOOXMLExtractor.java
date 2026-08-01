@@ -187,11 +187,25 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         surfaceExternalRefsFromAllParts(xhtml, metadata, handledRelationshipParts,
                 externalReferenceBudget);
         externalReferenceBudget.markTruncation(metadata);
+        lastExternalRefPartsScannedForTesting = externalReferenceBudget.getPartsScannedForTesting();
 
         // thumbnail
         handleThumbnail(xhtml, metadata);
 
         xhtml.endDocument();
+    }
+
+    // Visible for testing only: the total number of package parts scanned by the
+    // combined createExternalReferenceBudget()/surfaceExternalRefsFromAllParts()
+    // walks during the most recent getXHTML() call. Exposed as a plain int (rather
+    // than the private ExternalReferenceBudget type) so tests can assert the shared
+    // part-scan cap actually bounds BOTH loops combined, without relying on
+    // wall-clock timing (which can't distinguish "second loop capped" from
+    // "second loop unbounded" when per-part relationship parsing is cheap).
+    private int lastExternalRefPartsScannedForTesting = -1;
+
+    int getLastExternalRefPartsScannedForTesting() {
+        return lastExternalRefPartsScannedForTesting;
     }
 
     protected Map<String, EmbeddedPartMetadata> getEmbeddedPartMetadataMap() {
@@ -1110,20 +1124,32 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
 
     /**
-     * Hard cap on the number of package parts {@link #createExternalReferenceBudget}
-     * will scan. That scan runs before {@link #handleMacrosEarly} / {@link #buildXHTML}
-     * emit any content, so the cumulative write-limit (WriteLimitReachedException)
-     * cannot bound it -- MAX_EXTERNAL_REFS_PER_DOC only bounds how many
-     * *matching* high-priority relationships are recorded, not how many parts
-     * are examined to find them. A package padded with a huge number of
-     * otherwise-empty parts (e.g. thousands of trivial customXml/theme/chart
-     * parts, none of which carry a high-priority relationship) would force
-     * this loop to call part.getRelationships() -- itself a relationship-XML
-     * parse -- once per part, unbounded by part count, entirely before a
-     * single character of real output is produced. Bounding the number of
-     * parts scanned (independent of how many refs were found) closes that
-     * gap without touching the existing MAX_EXTERNAL_REFS_PER_DOC relationship
-     * cap or any of the high-priority-relationship detection logic.
+     * Hard cap on the number of package parts scanned -- SHARED, cumulative
+     * across BOTH {@link #createExternalReferenceBudget} (the pre-pass, which
+     * runs before {@link #handleMacrosEarly} / {@link #buildXHTML} emit any
+     * content, so the cumulative write-limit / WriteLimitReachedException
+     * cannot bound it) and {@link #surfaceExternalRefsFromAllParts} (the
+     * catch-all walk that runs AFTER buildXHTML). MAX_EXTERNAL_REFS_PER_DOC
+     * only bounds how many *matching* high-priority/external relationships
+     * are recorded or emitted -- not how many parts are examined to find
+     * them. A package padded with a huge number of otherwise-empty parts
+     * (e.g. thousands of trivial customXml/theme/chart parts, none of which
+     * carry a matching relationship) would force either loop to call
+     * part.getRelationships() -- itself a relationship-XML parse -- once per
+     * part, unbounded by part count. That is a real gap in
+     * surfaceExternalRefsFromAllParts() too: once ExternalReferenceBudget
+     * #tryAcquire() stops being able to throw (MAX_EXTERNAL_REFS_PER_DOC
+     * already reserved, or -- the exact padding shape here -- a part simply
+     * has zero relationships), nothing in that loop's body can throw a
+     * write-limit SAXException, so the cumulative write-limit interlock the
+     * loop otherwise relies on to terminate early never fires, and the loop
+     * runs to O(part count) completion.
+     *
+     * <p>The cap is a SINGLE budget shared across both loops (via
+     * {@link ExternalReferenceBudget#tryScanPart()}), not one 5000 allowance
+     * per loop -- otherwise a crafted package could still force ~2x this
+     * many expensive part scans (5000 in the pre-pass, then another 5000 in
+     * the catch-all walk) before either loop's own cap engaged.</p>
      */
     private static final int MAX_EXTERNAL_REF_PARTS_SCANNED = 5000;
 
@@ -1161,6 +1187,15 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 if (part == null || part.getPartName() == null) continue;
                 String partName = part.getPartName().getName();
                 if (handledRelationshipParts.contains(partName)) continue;
+                // Shared cap with createExternalReferenceBudget()'s pre-pass loop: once
+                // the combined total of parts scanned by BOTH loops hits
+                // MAX_EXTERNAL_REF_PARTS_SCANNED, stop -- this loop is not bounded by
+                // the write-limit once tryAcquire() stops being able to throw (cap
+                // already reserved, or a part simply has zero relationships), so it
+                // needs its own explicit part-count bound.
+                if (!externalReferenceBudget.tryScanPart()) {
+                    break;
+                }
                 PackageRelationshipCollection rels;
                 try {
                     rels = part.getRelationships();
@@ -1238,14 +1273,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // best-effort
         }
         try {
-            int partsScanned = 0;
             for (PackagePart part : opcPackage.getParts()) {
                 if (part == null || part.getPartName() == null) continue;
-                if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
-                    budget.markPartScanTruncated();
+                // Shared cap with surfaceExternalRefsFromAllParts()'s catch-all loop --
+                // see MAX_EXTERNAL_REF_PARTS_SCANNED's javadoc. tryScanPart() itself
+                // marks the budget truncated once the shared cap is hit.
+                if (!budget.tryScanPart()) {
                     break;
                 }
-                partsScanned++;
                 try {
                     budget.preRecordHighPriority(
                             part.getRelationships(),
@@ -1293,6 +1328,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         private int remainingHighPriority;
         private int emitted;
         private boolean truncated;
+        // Cumulative parts scanned across BOTH createExternalReferenceBudget()'s
+        // pre-pass and surfaceExternalRefsFromAllParts()'s catch-all walk -- see
+        // MAX_EXTERNAL_REF_PARTS_SCANNED's javadoc for why this must be one shared
+        // budget rather than a separate allowance per loop.
+        private int partsScanned;
 
         private void preRecordHighPriority(
                 PackageRelationshipCollection relationships,
@@ -1399,15 +1439,37 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         }
 
         /**
-         * Record that {@link #createExternalReferenceBudget} stopped scanning
-         * parts after hitting MAX_EXTERNAL_REF_PARTS_SCANNED, independent of
-         * whether MAX_EXTERNAL_REFS_PER_DOC high-priority refs were ever
-         * found. Surfaced through the same truncation flag as the
-         * relationship-count cap so callers see one consistent signal.
+         * Charges one part-scan attempt against the shared
+         * MAX_EXTERNAL_REF_PARTS_SCANNED budget. Returns {@code false} (and
+         * marks the budget truncated) once that shared cap -- cumulative
+         * across BOTH {@link #createExternalReferenceBudget} and
+         * {@link #surfaceExternalRefsFromAllParts} -- is reached, independent
+         * of whether MAX_EXTERNAL_REFS_PER_DOC high-priority/external refs
+         * were ever found. Callers must call this BEFORE the expensive
+         * {@code part.getRelationships()} call and stop scanning (break) as
+         * soon as it returns false. Surfaced through the same truncation
+         * flag as the relationship-count cap so callers see one consistent
+         * signal.
          */
-        private void markPartScanTruncated() {
-            truncated = true;
+        private boolean tryScanPart() {
+            if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
+                truncated = true;
+                return false;
+            }
+            partsScanned++;
+            return true;
         }
+
+        /** Visible for testing: total parts scanned across both loops so far. */
+        int getPartsScannedForTesting() {
+            return partsScanned;
+        }
+    }
+
+    /** Visible for testing: package-private so tests can assert on the shared
+     *  part-scan cap without exposing it as part of the public API. */
+    static int getMaxExternalRefPartsScannedForTesting() {
+        return MAX_EXTERNAL_REF_PARTS_SCANNED;
     }
 
     private static String relationshipKey(

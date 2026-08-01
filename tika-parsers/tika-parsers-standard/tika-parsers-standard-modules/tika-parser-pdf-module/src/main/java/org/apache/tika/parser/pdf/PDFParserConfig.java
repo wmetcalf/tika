@@ -45,8 +45,49 @@ public class PDFParserConfig implements Serializable {
      * document, unique or repeated instances of the same image object) that
      * will be fully rasterized/color-converted/parsed per PDF. See
      * {@link #setMaxImagesPerDocument(int)}.
+     *
+     * <p><b>How this number was chosen</b> (round-2 correction -- the
+     * original 2000 default did not actually respect the production timeout
+     * it exists to protect): the mantis-fork-findings diagnostic measured
+     * ~13.8s of real per-image cost (PDFBox rasterization + native LittleCMS
+     * CMYK-&gt;RGB conversion + QR scan + perceptual hashing) for ~151 image
+     * draws on a real malware sample (ransomeware-guide.pdf) under the exact
+     * production config -- i.e. ~0.0914s/image observed. Naively capping at
+     * 2000 extrapolates to ~183s of worst-case processing, which is already
+     * <em>above</em> the 120s production parse-timeout SLA this budget is
+     * meant to keep documents under, before even accounting for images or
+     * sandbox environments worse than the one sample measured.
+     *
+     * <p>This default instead:
+     * <ol>
+     * <li>Assumes a real-world worst case up to 2x the observed per-image
+     *     cost (larger/higher-resolution or more complex-colorspace images
+     *     than the sample, and/or heavier per-syscall overhead in a
+     *     sandboxed production runtime than on the benchmarking machine):
+     *     ~0.0914s * 2 ~= 0.183s/image.</li>
+     * <li>Targets keeping worst-case image-processing time comfortably
+     *     under half the 120s SLA (60s) -- specifically around 1/3 of the
+     *     full SLA (~40s) -- leaving the rest of the timeout budget for the
+     *     document's other bounded work (text extraction, OCR, the separate
+     *     {@code maxPages}=100 cap, etc).</li>
+     * <li>40s / 0.183s per image ~= 218 images; rounded down to a clean 200
+     *     for extra margin.</li>
+     * </ol>
+     *
+     * <p>Net result at the shipped default of 200: worst case under the 2x
+     * pessimistic assumption is 200 * 0.183 ~= 36.6s (well under the 60s
+     * half-SLA target, and under 1/3 of the full 120s SLA); even under an
+     * even-more-pessimistic 3x-worse-than-observed per-image cost
+     * (0.274s/image) the worst case is 200 * 0.274 ~= 54.9s -- still under
+     * the 60s half-SLA floor. Under the actually-observed (non-pessimistic)
+     * cost, 200 images costs only ~18.3s. Callers with legitimate,
+     * consistently image-heavy documents that need more than 200 images
+     * processed can raise this via {@link #setMaxImagesPerDocument(int)}
+     * (or opt out of the bound entirely with {@code -1}); this default
+     * protects the common/adversarial case without requiring every caller
+     * to tune it.
      */
-    public static final int DEFAULT_MAX_IMAGES_PER_DOCUMENT = 2000;
+    public static final int DEFAULT_MAX_IMAGES_PER_DOCUMENT = 200;
 
     /**
      * Mode for checking document access permissions.

@@ -23,6 +23,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.pdfbox.cos.COSArray;
@@ -71,6 +72,13 @@ class PDF2XHTML extends AbstractPDF2XHTML {
      */
     private Map<COSStream, Integer> processedInlineImages = new HashMap<>();
     private AtomicInteger inlineImageCounter = new AtomicInteger(0);
+    // Shared per-document exactly-once gate for the "image processing budget exceeded"
+    // warning (see ImageGraphicsEngine#isImageProcessingBudgetExceeded). Must be a plain
+    // instance-scoped flag -- not something stored in Metadata -- because Metadata is not
+    // an atomic/cheap-to-mutate exactly-once gate, and a per-page ImageGraphicsEngine
+    // instance can't hold this itself since the budget (like inlineImageCounter) is
+    // document-wide, not per-page.
+    private final AtomicBoolean inlineImageBudgetWarningEmitted = new AtomicBoolean(false);
 
     PDF2XHTML(PDDocument document, ContentHandler handler, ParseContext context, Metadata metadata,
               PDFParserConfig config, Renderer renderer) throws IOException {
@@ -240,7 +248,8 @@ class PDF2XHTML extends AbstractPDF2XHTML {
         ImageGraphicsEngine engine =
                 config.getImageGraphicsEngineFactory().newEngine(
                         page, getCurrentPageNo(), embeddedDocumentExtractor, config,
-                        processedInlineImages, inlineImageCounter, xhtml, metadata, context);
+                        processedInlineImages, inlineImageCounter,
+                        inlineImageBudgetWarningEmitted, xhtml, metadata, context);
         engine.run();
         List<IOException> engineExceptions = engine.getExceptions();
         if (!engineExceptions.isEmpty()) {
