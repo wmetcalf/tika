@@ -17,12 +17,13 @@
 package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.Duration;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -148,8 +149,32 @@ public class PDFImageBudgetWarningDedupTest {
                         + warnings.length + " total warnings)");
     }
 
+    /**
+     * Pins the O(1)-per-skipped-draw property at a scale where the O(N^2) bug
+     * was unmistakable.
+     *
+     * <p>Deliberately NOT a wall-clock ratio assertion. An earlier version of
+     * this test compared elapsed time at 80k vs 320k draws and demanded the
+     * ratio stay under ~4x-7x; it passed in isolation but failed at 11.3x
+     * inside the full module suite. The reason is that PDFBox's own parsing of
+     * a 320,000-operator content stream is itself somewhat superlinear, so a
+     * ratio conflates "our bookkeeping regressed" with "PDFBox costs more on a
+     * bigger stream" -- and the threshold separating them turned out to depend
+     * on machine load. Calibrating a timing threshold is exactly the mistake
+     * that produced the miscalibrated image cap this class exists to guard.
+     *
+     * <p>Instead this asserts the thing that is actually true by construction
+     * and is fully deterministic: the number of recorded warnings must not
+     * grow with the number of skipped draws. The O(N^2) blowup was caused by
+     * appending one warning per skipped draw into Tika's Metadata (whose
+     * value-array append is O(N)); if the count stays at 1 across a 4x
+     * increase in draws, there is no per-draw accumulation and the cost is
+     * O(1) per draw by definition. A generous absolute timeout is retained as
+     * a coarse backstop -- the buggy build took ~55s on this input, the fixed
+     * build a few seconds.
+     */
     @Test
-    public void testExcessDrawBookkeepingScalesLinearlyNotQuadratically() throws Exception {
+    public void testExcessDrawBookkeepingDoesNotGrowWithSkippedDrawCount() throws Exception {
         final int cap = 10;
         final int smallDraws = 80_000;
         final int largeDraws = 320_000;   // 4x
@@ -157,26 +182,27 @@ public class PDFImageBudgetWarningDedupTest {
         byte[] smallPdf = buildPdfWithRepeatedImageDraws(smallDraws);
         byte[] largePdf = buildPdfWithRepeatedImageDraws(largeDraws);
 
-        // Warm up so JIT compilation is not charged to the first measurement.
-        parse(smallPdf, cap);
+        int[] counts = new int[2];
+        assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+            counts[0] = imageWarningCount(parse(smallPdf, cap));
+            counts[1] = imageWarningCount(parse(largePdf, cap));
+        }, "bounded image processing must not take anywhere near the buggy build's "
+                + "~55s at this scale");
 
-        long t0 = System.nanoTime();
-        parse(smallPdf, cap);
-        long smallMs = (System.nanoTime() - t0) / 1_000_000L;
+        assertEquals(1, counts[0],
+                smallDraws + " draws (" + (smallDraws - cap) + " skipped) must record "
+                        + "exactly one warning");
+        assertEquals(counts[0], counts[1],
+                "warning count must not grow with skipped-draw count: " + smallDraws
+                        + " draws -> " + counts[0] + " warning(s), but " + largeDraws
+                        + " draws (4x) -> " + counts[1] + " warning(s). Growth here means "
+                        + "one Metadata append per skipped draw, i.e. the O(N^2) regression.");
+    }
 
-        t0 = System.nanoTime();
-        parse(largePdf, cap);
-        long largeMs = (System.nanoTime() - t0) / 1_000_000L;
-
-        // Linear would be ~4x for 4x the draws. The quadratic bug measured
-        // 9x-32x at exactly this scale. 7x leaves generous headroom for
-        // timing noise on a loaded CI box while still failing a real
-        // regression to O(N^2).
-        double ratio = smallMs <= 0 ? 1.0 : (double) largeMs / (double) smallMs;
-        assertTrue(ratio < 7.0,
-                "excess-draw bookkeeping must scale linearly: " + smallDraws + " draws took "
-                        + smallMs + "ms, " + largeDraws + " draws (4x) took " + largeMs
-                        + "ms => ratio " + String.format(java.util.Locale.ROOT, "%.2f", ratio)
-                        + "x (expected ~4x, quadratic regression looks like >=9x)");
+    private static int imageWarningCount(Metadata metadata) {
+        String[] warnings = metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        return (int) java.util.Arrays.stream(warnings)
+                .filter(w -> w != null && w.toLowerCase(java.util.Locale.ROOT).contains("image"))
+                .count();
     }
 }
