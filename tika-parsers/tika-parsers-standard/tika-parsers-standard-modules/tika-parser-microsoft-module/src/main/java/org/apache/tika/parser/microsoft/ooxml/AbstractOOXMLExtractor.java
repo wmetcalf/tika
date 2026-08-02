@@ -188,6 +188,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 externalReferenceBudget);
         externalReferenceBudget.markTruncation(metadata);
         lastExternalRefPartsScannedForTesting = externalReferenceBudget.getPartsScannedForTesting();
+        lastExternalRefPartRelationshipReadsForTesting =
+                externalReferenceBudget.getPartRelationshipReadsForTesting();
 
         // thumbnail
         handleThumbnail(xhtml, metadata);
@@ -203,6 +205,16 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     // wall-clock timing (which can't distinguish "second loop capped" from
     // "second loop unbounded" when per-part relationship parsing is cheap).
     private int lastExternalRefPartsScannedForTesting = -1;
+
+    // Visible for testing only: how many times part.getRelationships() was
+    // actually invoked across BOTH external-reference walks during the most
+    // recent getXHTML(). This is the real scan cost, and unlike the
+    // tryScanPart()-driven counter it stays accurate if a guard is removed.
+    private int lastExternalRefPartRelationshipReadsForTesting = -1;
+
+    int getLastExternalRefPartRelationshipReadsForTesting() {
+        return lastExternalRefPartRelationshipReadsForTesting;
+    }
 
     int getLastExternalRefPartsScannedForTesting() {
         return lastExternalRefPartsScannedForTesting;
@@ -1198,6 +1210,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 }
                 PackageRelationshipCollection rels;
                 try {
+                    externalReferenceBudget.countPartRelationshipRead();
                     rels = part.getRelationships();
                 } catch (SecurityException e) {
                     throw e;
@@ -1282,6 +1295,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                     break;
                 }
                 try {
+                    budget.countPartRelationshipRead();
                     budget.preRecordHighPriority(
                             part.getRelationships(),
                             normalizePartName(part.getPartName().getName()),
@@ -1333,6 +1347,13 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         // MAX_EXTERNAL_REF_PARTS_SCANNED's javadoc for why this must be one shared
         // budget rather than a separate allowance per loop.
         private int partsScanned;
+        // Counts ACTUAL part.getRelationships() invocations across both walks --
+        // i.e. the real, expensive scan work, independent of whether a guard was
+        // consulted first. partsScanned only advances when tryScanPart() is
+        // called, so a regression that DELETES a tryScanPart() guard would leave
+        // partsScanned looking healthy while the relationship parsing ran
+        // unbounded. This counter is what makes that regression observable.
+        private int partRelationshipReads;
 
         private void preRecordHighPriority(
                 PackageRelationshipCollection relationships,
@@ -1451,6 +1472,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
          * flag as the relationship-count cap so callers see one consistent
          * signal.
          */
+        private void countPartRelationshipRead() {
+            partRelationshipReads++;
+        }
+
+        int getPartRelationshipReadsForTesting() {
+            return partRelationshipReads;
+        }
+
         private boolean tryScanPart() {
             if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
                 truncated = true;
