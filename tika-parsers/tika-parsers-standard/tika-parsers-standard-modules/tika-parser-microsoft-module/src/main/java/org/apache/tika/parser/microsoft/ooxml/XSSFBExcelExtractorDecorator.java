@@ -210,8 +210,13 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
 
         metadata.set("msoffice:xlsb:has-xlm-macros", "true");
+        XlmMacroEmulator.Limits xlmLimits = XlmMacroEmulator.Limits.fromConfig(
+                parseContext == null
+                        ? null
+                        : parseContext.get(
+                                org.apache.tika.parser.microsoft.OfficeParserConfig.class));
         XlmMacroEmulator.DocumentBudget documentBudget =
-                new XlmMacroEmulator.DocumentBudget(XlmMacroEmulator.Limits.DEFAULT);
+                new XlmMacroEmulator.DocumentBudget(xlmLimits);
 
         int processedMacroParts = 0;
         for (PackagePart macroPart : macroParts) {
@@ -229,7 +234,7 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             xhtml.element("h1", sheetName);
 
             XlmMacroEmulator emulator = new XlmMacroEmulator(
-                    cellValues, sheetMap, XlmMacroEmulator.Limits.DEFAULT, documentBudget);
+                    cellValues, sheetMap, xlmLimits, documentBudget);
 
             try (InputStream is = xlmInputBudget.limit(
                     macroPart.getInputStream(),

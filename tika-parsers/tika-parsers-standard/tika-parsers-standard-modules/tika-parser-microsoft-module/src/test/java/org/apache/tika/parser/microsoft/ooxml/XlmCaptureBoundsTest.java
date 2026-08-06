@@ -64,10 +64,7 @@ class XlmCaptureBoundsTest {
     private static final int INPUT_BUDGET_BYTES = 32 * 1_024 * 1_024;
     private static final int INPUT_PART_BYTES = 8 * 1_024 * 1_024;
 
-    @Test
-    void testXmlMacrosheetFormulaLengthIsBounded() throws Exception {
-        String formula = "A".repeat(
-                XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN + 1);
+    private static XlmXmlMacrosheetParser parseOneFormula(String formula) throws Exception {
         String xml = String.format(Locale.ROOT, """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
                   <sheetData><row r="1"><c r="A1"><f>%s</f></c></row></sheetData>
@@ -79,13 +76,49 @@ class XlmCaptureBoundsTest {
         XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
                 new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
                 xhtml, "Macro1", null);
-
         xhtml.startDocument();
         parser.parse();
         xhtml.endDocument();
+        return parser;
+    }
 
-        assertTrue(parser.getFormulas().get("Macro1:1:A1").length()
-                <= XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN);
+    /**
+     * A macrosheet FORMULA must not be bound by the data-sheet cell-VALUE cap.
+     *
+     * <p>Regression guard: formulas once shared {@code WORKBOOK_VALUE_MAX_LEN} (1 KB, sized
+     * for URL/IP IOC fragments) with cell values. Obfuscated XLM droppers concatenate the
+     * entire payload into ONE formula -- measured p90=2748, p95=5099 chars over the
+     * malicious-document corpus -- so that cap silently amputated 22% of macro-bearing
+     * documents mid-formula, leaving a prefix that still read as a complete formula.
+     */
+    @Test
+    void testFormulaLongerThanTheCellValueCapIsRetainedWhole() throws Exception {
+        int len = XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN * 4;
+        assertTrue(len < XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN,
+                "test fixture must sit above the value cap but below the formula cap");
+        XlmXmlMacrosheetParser parser = parseOneFormula("A".repeat(len));
+
+        assertEquals(len, parser.getFormulas().get("Macro1:1:A1").length(),
+                "a formula between the value cap and the formula cap must be kept WHOLE -- "
+                        + "truncating it here is the macro-payload-loss regression");
+        assertFalse(parser.isTruncated(),
+                "keeping a legitimate formula must not report truncation");
+    }
+
+    /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
+    @Test
+    void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {
+        XlmXmlMacrosheetParser parser = parseOneFormula(
+                "A".repeat(XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN + 1));
+
+        String recorded = parser.getFormulas().get("Macro1:1:A1");
+        assertTrue(recorded.length()
+                        <= XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN
+                        + "[...TIKA-XLM-FORMULA-TRUNCATED]".length(),
+                "the formula cap must still bound a pathological formula");
+        assertTrue(recorded.endsWith("[...TIKA-XLM-FORMULA-TRUNCATED]"),
+                "a cut formula is no longer valid syntax and a bare prefix reads as complete "
+                        + "downstream -- it MUST carry an explicit truncation marker");
         assertTrue(parser.isTruncated());
     }
 

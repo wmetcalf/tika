@@ -42,9 +42,42 @@ import java.util.Map;
 class XlmMacroEmulator {
 
     static final class Limits {
+        // maxMacroCells, maxFormulaBytes, maxIocEntries, maxIocChars,
+        // maxOperations, maxFileContentChars
+        //
+        // maxFileContentChars raised 1 MB -> 10 MB: it bounds RECONSTRUCTED FILE CONTENT,
+        // i.e. the payload a dropper assembles and writes. Silently cutting that is the
+        // same class of evidence loss as the per-formula cap that amputated 22% of
+        // macro-bearing documents. maxIocChars stays at 1 MB -- IOCs are URL/IP/path
+        // strings, and 1 MB across 4096 entries is already generous for those.
         static final Limits DEFAULT = new Limits(
                 65_536, 16L * 1024 * 1024, 4_096, 1024 * 1024,
-                1_000_000, 1024 * 1024);
+                1_000_000, 10 * 1024 * 1024);
+
+        /**
+         * Build limits from {@link org.apache.tika.parser.microsoft.OfficeParserConfig},
+         * falling back to {@link #DEFAULT} for anything left at 0/unset. Keeps these bounds
+         * tunable per deployment instead of requiring a Tika recompile.
+         */
+        static Limits fromConfig(
+                org.apache.tika.parser.microsoft.OfficeParserConfig cfg) {
+            if (cfg == null) {
+                return DEFAULT;
+            }
+            return new Limits(
+                    cfg.getXlmMaxMacroCells() > 0
+                            ? cfg.getXlmMaxMacroCells() : DEFAULT.maxMacroCells,
+                    cfg.getXlmMaxFormulaBytes() > 0L
+                            ? cfg.getXlmMaxFormulaBytes() : DEFAULT.maxFormulaBytes,
+                    cfg.getXlmMaxIocEntries() > 0
+                            ? cfg.getXlmMaxIocEntries() : DEFAULT.maxIocEntries,
+                    cfg.getXlmMaxIocChars() > 0
+                            ? cfg.getXlmMaxIocChars() : DEFAULT.maxIocChars,
+                    cfg.getXlmMaxOperations() > 0L
+                            ? cfg.getXlmMaxOperations() : DEFAULT.maxOperations,
+                    cfg.getXlmMaxFileContentChars() > 0
+                            ? cfg.getXlmMaxFileContentChars() : DEFAULT.maxFileContentChars);
+        }
 
         final int maxMacroCells;
         final long maxFormulaBytes;

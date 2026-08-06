@@ -85,6 +85,10 @@ final class XlmXmlMacrosheetParser {
     /** Constant value per cell, keyed identically. */
     private final Map<String, String> values = new LinkedHashMap<>();
     private boolean truncated;
+    /** Effective per-formula / per-value / aggregate caps (see OfficeParserConfig). */
+    private final int formulaMaxLen;
+    private final int valueMaxLen;
+    private final int formulaTotalMaxChars;
 
     XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
                            String sheetName, XSSFSharedStringsShim sharedStrings) {
@@ -96,6 +100,23 @@ final class XlmXmlMacrosheetParser {
     XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
                            String sheetName, XSSFSharedStringsShim sharedStrings,
                            int maxFormulaEntries, int maxValueEntries) {
+        this(stream, xhtml, sheetName, sharedStrings, maxFormulaEntries, maxValueEntries,
+                XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN,
+                XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN,
+                XSSFExcelExtractorDecorator.MAX_XLM_FORMULA_TOTAL_CHARS);
+    }
+
+    XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                           String sheetName, XSSFSharedStringsShim sharedStrings,
+                           int maxFormulaEntries, int maxValueEntries,
+                           int formulaMaxLen, int valueMaxLen, int formulaTotalMaxChars) {
+        this.formulaMaxLen = formulaMaxLen > 0
+                ? formulaMaxLen : XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN;
+        this.valueMaxLen = valueMaxLen > 0
+                ? valueMaxLen : XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN;
+        this.formulaTotalMaxChars = formulaTotalMaxChars > 0
+                ? formulaTotalMaxChars
+                : XSSFExcelExtractorDecorator.MAX_XLM_FORMULA_TOTAL_CHARS;
         this.stream = stream;
         this.xhtml = xhtml;
         this.sheetName = sheetName;
@@ -240,14 +261,20 @@ final class XlmXmlMacrosheetParser {
         @Override
         public void characters(char[] ch, int start, int length) {
             if (inFormula || inValue || inText) {
-                int remaining = XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN
-                        - buf.length();
+                // A formula is the payload, not an IOC fragment: it gets its own much
+                // larger budget. Sharing WORKBOOK_VALUE_MAX_LEN (1 KB) here silently
+                // amputated ~22% of macro-bearing documents mid-formula.
+                int cap = inFormula ? formulaMaxLen : valueMaxLen;
+                int remaining = cap - buf.length();
                 int retained = Math.min(length, Math.max(0, remaining));
                 if (retained > 0) {
                     buf.append(ch, start, retained);
                 }
                 if (retained < length) {
                     truncated = true;
+                    if (inFormula) {
+                        formulaWasTruncated = true;
+                    }
                 }
             }
         }
@@ -274,9 +301,7 @@ final class XlmXmlMacrosheetParser {
                         // Append this run's text to the inline-string accumulator
                         // rather than overwriting currentValueText. Rich-text
                         // inline strings with multiple <r><t> runs concatenate.
-                        int remaining =
-                                XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN
-                                        - inlineAcc.length();
+                        int remaining = valueMaxLen - inlineAcc.length();
                         int retained = Math.min(buf.length(), Math.max(0, remaining));
                         if (retained > 0) {
                             inlineAcc.append(buf, 0, retained);
@@ -306,26 +331,44 @@ final class XlmXmlMacrosheetParser {
             }
         }
 
+        /** Appended to any formula that hit XLM_FORMULA_MAX_LEN, so a cut payload is obvious. */
+        private static final String XLM_TRUNCATION_MARKER = "[...TIKA-XLM-FORMULA-TRUNCATED]";
+        /** Running total of retained formula characters; bounds heap independently of count. */
+        private int retainedFormulaChars;
+        /** Set when the current cell's formula hit the per-formula cap. */
+        private boolean formulaWasTruncated;
+
         private void flushCell() throws SAXException {
             if (currentCellRef == null) return;
             String key = sheetName + ":" + currentRow + ":" + currentCellRef;
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
-                if (formulas.size() < maxFormulaEntries || formulas.containsKey(key)) {
-                    formulas.put(key, currentFormulaText);
-                    xhtml.element("p", currentCellRef + ": " + currentFormulaText);
+                boolean roomByCount =
+                        formulas.size() < maxFormulaEntries || formulas.containsKey(key);
+                boolean roomByChars =
+                        retainedFormulaChars + currentFormulaText.length()
+                                <= formulaTotalMaxChars;
+                if (roomByCount && roomByChars) {
+                    // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
+                    // bare prefix reads as a complete formula to anything downstream. Mark it
+                    // explicitly so a partial payload can never be mistaken for a whole one.
+                    String recorded = formulaWasTruncated
+                            ? currentFormulaText + XLM_TRUNCATION_MARKER
+                            : currentFormulaText;
+                    retainedFormulaChars += recorded.length();
+                    formulas.put(key, recorded);
+                    xhtml.element("p", currentCellRef + ": " + recorded);
                 } else {
                     truncated = true;
                 }
             }
+            formulaWasTruncated = false;
             // Resolve shared-string-indexed cells (<c t="s"><v>N</v></c>) before
             // recording. Without this, droppers stashing payload fragments via
             // sharedStrings.xml in the macrosheet itself bypass the IOC scanner.
             String resolved = resolveValue(currentCellType, currentValueText);
             if (resolved != null && !resolved.isEmpty()) {
-                if (resolved.length()
-                        > XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN) {
-                    resolved = resolved.substring(
-                            0, XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN);
+                if (resolved.length() > valueMaxLen) {
+                    resolved = resolved.substring(0, valueMaxLen);
                     truncated = true;
                 }
                 if (values.size() < maxValueEntries || values.containsKey(key)) {
