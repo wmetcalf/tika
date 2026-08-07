@@ -126,7 +126,7 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
         // formula size (4 bytes) + formula bytes
         long sz = buf.readU32();
         if (sz <= 0 || sz > maxFormulaRecordBytes) {
-            // Was a silent  against a hardcoded 65536. Dropping an entire macro
+            // Was a silent return against a hardcoded 65536. Dropping an entire macro
             // formula without a trace is the same evidence-loss failure as truncating one:
             // the analyst sees a short macro and no indication anything was withheld.
             if (sz > maxFormulaRecordBytes && onRecordDropped != null) {

@@ -367,8 +367,11 @@ final class XlmXmlMacrosheetParser {
                         formulas.size() < maxFormulaEntries || formulas.containsKey(key);
                 // Gate on what will ACTUALLY be retained, marker included -- otherwise the
                 // aggregate cap is exceeded by the marker length on every truncated formula.
+                // cellFormulaTruncated, NOT formulaWasTruncated: the field was cleared at
+                // the top of this method, so reading it here always yielded false and the
+                // marker's length escaped the aggregate budget on every truncated formula.
                 int projected = currentFormulaText.length()
-                        + (formulaWasTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
+                        + (cellFormulaTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
                 boolean roomByChars =
                         retainedFormulaChars + projected <= formulaTotalMaxChars;
                 if (roomByCount && roomByChars) {

@@ -874,6 +874,15 @@ final class Biff12XlmFormulaDecoder {
             return maxFileContentChars;
         }
 
+        /**
+         * Chars still retainable as IOC text. addIoc() rejects an entry WHOLE when it
+         * exceeds this, so callers must size previews against it rather than emitting an
+         * oversized string and losing the entire entry.
+         */
+        int remainingIocChars() {
+            return Math.max(0, maxIocChars - retainedIocChars);
+        }
+
         private int retainedIocChars;
         private int retainedFileContentChars;
         private int nextHandle;
@@ -1101,10 +1110,21 @@ final class Biff12XlmFormulaDecoder {
                         // OfficeParserConfig knob) inert: retention was never the binding
                         // constraint, this emission preview was -- a dropper's URL/C2 sits
                         // past char 300 and never reached the analyst, with no limit flagged.
-                        int preview = Math.min(ctx.maxFileContentChars(), content.length());
-                        ctx.addIoc("FILE_CONTENT[" + path + "]: "
-                                + content.substring(0, preview)
-                                + (content.length() > preview ? "…" : ""));
+                        //
+                        // Size the preview to the IOC budget too. addIoc() rejects an
+                        // over-budget entry ENTIRELY rather than keeping a prefix, so with
+                        // maxFileContentChars (10 MB) above maxIocChars (1 MB) an unbounded
+                        // preview loses the whole entry -- strictly less evidence than the
+                        // old 300-char cut. Emit the largest prefix that will be retained.
+                        String head = "FILE_CONTENT[" + path + "]: ";
+                        int budget = ctx.remainingIocChars() - head.length() - 1;
+                        int preview = Math.min(
+                                Math.min(ctx.maxFileContentChars(), content.length()),
+                                Math.max(0, budget));
+                        if (preview > 0) {
+                            ctx.addIoc(head + content.substring(0, preview)
+                                    + (content.length() > preview ? "…" : ""));
+                        }
                     }
                 }
                 return 0.0;

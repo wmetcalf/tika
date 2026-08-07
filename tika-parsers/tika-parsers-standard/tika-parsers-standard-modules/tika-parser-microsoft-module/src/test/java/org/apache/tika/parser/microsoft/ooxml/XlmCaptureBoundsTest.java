@@ -184,6 +184,73 @@ class XlmCaptureBoundsTest {
         }
     }
 
+    /**
+     * The aggregate formula budget must account for the truncation marker it appends.
+     *
+     * <p>Regression guard: {@code projected} read the {@code formulaWasTruncated} FIELD,
+     * which flushCell() clears at its top, so it was always false by then. The marker's
+     * length therefore escaped the budget check and an operator-configured aggregate cap
+     * could be overrun by (marker + separator) on every truncated formula.
+     */
+    @Test
+    void testAggregateBudgetAccountsForTheAppendedTruncationMarker() throws Exception {
+        int formulaCap = XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN;
+        // budget admits the cut formula but NOT the marker the cut forces us to append
+        int aggregate = formulaCap + 4;
+        String xml = String.format(Locale.ROOT, """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1"><c r="A1"><f>%s</f></c></row></sheetData>
+                </worksheet>
+                """, "A".repeat(formulaCap + 1));
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 1_000, 1_000, 0, 0, aggregate);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        int retained = parser.getFormulas().values().stream().mapToInt(String::length).sum();
+        assertTrue(retained <= aggregate,
+                "retained formula text (" + retained + ") must not exceed the configured "
+                        + "aggregate budget (" + aggregate + ") -- the appended marker has "
+                        + "to be counted by the check that admits the formula");
+    }
+
+    /**
+     * A reconstructed-file-content preview must be cut to the IOC budget, not emitted
+     * oversized and dropped.
+     *
+     * <p>Regression guard: {@code retainIoc}/{@code addIoc} reject an over-budget entry
+     * WHOLE rather than keeping a prefix. Once maxFileContentChars (10 MB) rose above
+     * maxIocChars (1 MB), an unbounded preview lost the entire FILE_CONTENT entry --
+     * strictly LESS evidence than the hardcoded 300/8192-char cut it replaced. The point
+     * of raising the cap was more payload reaching the analyst, not none.
+     */
+    @Test
+    void testFileContentPreviewIsCutToTheIocBudgetRatherThanDropped() {
+        // file-content cap far above the IOC allowance -- the mismatch under test
+        // maxIocChars = 512 sits far below maxFileContentChars = 1_000_000 -- the mismatch
+        // under test. Payload is written through real FOPEN/FWRITE emulation.
+        XlmMacroEmulator emulator = emulatorWithLimits(
+                new XlmMacroEmulator.Limits(100, 100_000, 100, 512, 100_000, 1_000_000));
+        emulator.addMacroCell(0, fopenFormula("dropper.bin"));
+        emulator.addMacroCell(1,
+                fwriteFormula(0, "http://evil.example.com/payload.exe" + "B".repeat(2_000)));
+        emulator.emulate();
+
+        String fileContent = emulator.iocs.stream()
+                .filter(i -> i.startsWith("FILE_CONTENT"))
+                .findFirst().orElse(null);
+        assertNotNull(fileContent,
+                "an oversized reconstructed payload must still yield a bounded FILE_CONTENT "
+                        + "entry -- dropping it whole loses the dropper's URL entirely");
+        assertTrue(fileContent.contains("evil.example.com"),
+                "the retained prefix must carry the indicator at the head of the payload");
+    }
+
     /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
     @Test
     void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {

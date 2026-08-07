@@ -288,9 +288,16 @@ class XlmMacroEmulator {
             String content = entry.getValue().toString();
             if (!content.isEmpty()) {
                 String path = ctx.getFilePath(entry.getKey());
-                retainIoc("FILE_CONTENT[" + path + "]: "
-                        + content.substring(0, Math.min(fileContentEmitCap, content.length()))
-                        + (content.length() > fileContentEmitCap ? "…" : ""));
+                // retainIoc() rejects an over-budget entry WHOLE, so cut the preview to
+                // what will actually be kept instead of losing the entry outright.
+                String head = "FILE_CONTENT[" + path + "]: ";
+                int budget = remainingIocChars() - head.length() - 1;
+                int cut = Math.min(Math.min(fileContentEmitCap, content.length()),
+                        Math.max(0, budget));
+                if (cut > 0) {
+                    retainIoc(head + content.substring(0, cut)
+                            + (content.length() > cut ? "…" : ""));
+                }
             }
         }
 
@@ -436,6 +443,19 @@ class XlmMacroEmulator {
         }
         markLimit(ctx.getLimitWarning());
         emulationAborted = true;
+    }
+
+    /**
+     * Chars still retainable as IOC text, across BOTH the per-emulator and document
+     * budgets. retainIoc() rejects an over-budget entry whole, so previews are sized
+     * against this rather than emitted and dropped.
+     */
+    private int remainingIocChars() {
+        int remaining = Math.max(0, limits.maxIocChars - retainedIocChars);
+        if (documentBudget != null) {
+            remaining = Math.min(remaining, documentBudget.remainingIocChars());
+        }
+        return remaining;
     }
 
     private boolean retainIoc(String ioc) {

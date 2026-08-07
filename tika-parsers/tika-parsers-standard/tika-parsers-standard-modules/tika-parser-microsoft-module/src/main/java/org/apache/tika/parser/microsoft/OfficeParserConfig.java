@@ -458,7 +458,7 @@ public class OfficeParserConfig implements Serializable {
         this.xlmMaxOperations = xlmMaxOperations;
     }
 
-    /** Max reconstructed file-content characters. 0 = built-in default (1 MB). */
+    /** Max reconstructed file-content characters. 0 = built-in default (10 MB). */
     public int getXlmMaxFileContentChars() {
         return xlmMaxFileContentChars;
     }

@@ -504,7 +504,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         int processedMacroParts = 0;
         // Document-wide, NOT per-macrosheet: see the loop below.
-        int retainedFormulaCharsDoc = 0;
+        // long: cfgFormulaTotalMaxChars is operator-settable up to Integer.MAX_VALUE, and
+        // an int accumulator wraps negative there, defeating the document-wide cap.
+        long retainedFormulaCharsDoc = 0;
         for (PackagePart macroPart : macroParts) {
             if (xlmInputBudget.isLimitReached()) {
                 markXlmCaptureLimit("XLM input capture limit reached");
@@ -533,7 +535,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                                 cfgValuesMaxEntries - allFormulas.size(),
                                 cfgValuesMaxEntries - allValues.size(),
                                 cfgFormulaMaxLen, cfgValueMaxLen,
-                                cfgFormulaTotalMaxChars - retainedFormulaCharsDoc);
+                                (int) Math.max(0,
+                                        cfgFormulaTotalMaxChars - retainedFormulaCharsDoc));
                 parser.parse();
                 // Carry the aggregate across parts. The parser's accumulator is per-sheet,
                 // so without this the budget reset on each of up to MAX_XLM_MACRO_PARTS
