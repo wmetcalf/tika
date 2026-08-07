@@ -171,6 +171,9 @@ class XlmMacroEmulator {
     }
 
     private static final int MAX_LOOP_ITERATIONS = 65536;
+    // Retained as the floor for the emission cap. Previously this WAS the emission cap,
+    // which silently bounded reconstructed payload far below maxFileContentChars and made
+    // that budget (and its config knob) unobservable.
     private static final int MAX_FILE_CONTENT    = 8192;
 
     private final Map<String, Double> cellValues;
@@ -277,14 +280,17 @@ class XlmMacroEmulator {
             }
         }
 
-        // Emit any still-open file contents
+        // Emit any still-open file contents. The cap is driven by the configured budget
+        // (floored at the historical 8192) rather than being hardcoded to it -- otherwise
+        // raising maxFileContentChars retains payload that is never emitted.
+        int fileContentEmitCap = Math.max(MAX_FILE_CONTENT, maxFileContentChars);
         for (Map.Entry<Integer, StringBuilder> entry : ctx.fileContents.entrySet()) {
             String content = entry.getValue().toString();
             if (!content.isEmpty()) {
                 String path = ctx.getFilePath(entry.getKey());
                 retainIoc("FILE_CONTENT[" + path + "]: "
-                        + content.substring(0, Math.min(MAX_FILE_CONTENT, content.length()))
-                        + (content.length() > MAX_FILE_CONTENT ? "…" : ""));
+                        + content.substring(0, Math.min(fileContentEmitCap, content.length()))
+                        + (content.length() > fileContentEmitCap ? "…" : ""));
             }
         }
 

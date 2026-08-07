@@ -64,6 +64,8 @@ public class OfficeParserConfig implements Serializable {
     private int xlmMaxIocChars = 0;
     private long xlmMaxOperations = 0L;
     private int xlmMaxFileContentChars = 0;
+    /** Max bytes in a single XLSB BIFF12 formula record; 0 = built-in default. */
+    private int xlmMaxFormulaRecordBytes = 0;
 
     private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
@@ -459,6 +461,19 @@ public class OfficeParserConfig implements Serializable {
     /** Max reconstructed file-content characters. 0 = built-in default (1 MB). */
     public int getXlmMaxFileContentChars() {
         return xlmMaxFileContentChars;
+    }
+
+    public int getXlmMaxFormulaRecordBytes() {
+        return xlmMaxFormulaRecordBytes;
+    }
+
+    /**
+     * Max bytes in a single XLSB BIFF12 formula record. Records above this are dropped
+     * and the drop is reported via the xlm-capture-limit metadata flag. 0 = built-in
+     * default ({@code 65536}).
+     */
+    public void setXlmMaxFormulaRecordBytes(int xlmMaxFormulaRecordBytes) {
+        this.xlmMaxFormulaRecordBytes = xlmMaxFormulaRecordBytes;
     }
 
     public void setXlmMaxFileContentChars(int xlmMaxFileContentChars) {

@@ -35,6 +35,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -105,6 +106,84 @@ class XlmCaptureBoundsTest {
                 "keeping a legitimate formula must not report truncation");
     }
 
+    /**
+     * The truncation marker must NOT leak from an over-cap cell onto the NEXT cell's
+     * intact formula.
+     *
+     * <p>Regression guard for an evidence-FABRICATION bug: {@code flushCell()} reset the
+     * per-cell truncation flag AFTER an {@code if (currentCellRef == null) return;} early
+     * return. The {@code r} attribute on {@code <c>} is optional in ECMA-376 and fully
+     * attacker-controlled, so a dropper could put its over-cap formula in an r-less cell
+     * and leave the flag set -- causing the following cell's COMPLETE formula to be
+     * recorded with a truncation marker it never earned. An analyst then sees fabricated
+     * evidence loss on a formula that was captured whole.
+     */
+    @Test
+    void testTruncationMarkerDoesNotLeakFromAnRlessCellOntoTheNextFormula() throws Exception {
+        String overCap = "A".repeat(XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN + 1);
+        String intact = "=EXEC(\"calc.exe\")";
+        // first <c> deliberately has NO r attribute -- the attacker-controlled early-return path
+        String xml = String.format(Locale.ROOT, """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1">
+                    <c><f>%s</f></c>
+                    <c r="B1"><f>%s</f></c>
+                  </row></sheetData>
+                </worksheet>
+                """, overCap, intact);
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        String recorded = parser.getFormulas().get("Macro1:1:B1");
+        assertNotNull(recorded, "the second cell's formula must still be captured");
+        assertEquals(intact, recorded,
+                "B1 was captured WHOLE -- marking it truncated fabricates evidence loss "
+                        + "that never happened");
+    }
+
+    /**
+     * The truncation marker must not corrupt indicators extracted from a marked formula.
+     *
+     * <p>Regression guard: the marker was appended with no separator, and the IOC URL
+     * pattern excludes whitespace but not {@code '['} -- so a URL sitting at the cut point
+     * came out as {@code http://evil.example.com/pay[...TIKA-XLM-FORMULA-TRUNCATED]}. A
+     * blocklist or threat-intel pipeline built from that indicator can never match the
+     * real C2, and the corruption is invisible downstream.
+     */
+    @Test
+    void testTruncationMarkerIsNotAbsorbedIntoAnExtractedIndicator() throws Exception {
+        String url = "http://evil.example.com/payload.exe";
+        // The URL pattern carries a (?<![\w.]) lookbehind, so the character preceding the
+        // scheme must be a non-word one -- padding straight up against "http" matches
+        // nothing and would make the assertion below vacuous.
+        String lead = "'";
+        int pad = XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN
+                - url.length() - lead.length();
+        XlmXmlMacrosheetParser parser =
+                parseOneFormula("A".repeat(pad) + lead + url + "TRAILING");
+
+        String recorded = parser.getFormulas().get("Macro1:1:A1");
+        assertTrue(recorded.contains("[...TIKA-XLM-FORMULA-TRUNCATED]"),
+                "fixture must actually trip the formula cap");
+        List<String> iocs =
+                XlmXmlIocScanner.scan(parser.getFormulas(), parser.getValues());
+        assertTrue(iocs.stream().anyMatch(i -> i.contains("evil.example.com")),
+                "fixture must actually yield the indicator, else this test is vacuous; "
+                        + "got: " + iocs);
+        for (String ioc : iocs) {
+            assertFalse(ioc.contains("TIKA-XLM-FORMULA-TRUNCATED"),
+                    "the truncation marker must never be absorbed into an extracted "
+                            + "indicator -- got: " + ioc);
+        }
+    }
+
     /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
     @Test
     void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {
@@ -112,9 +191,11 @@ class XlmCaptureBoundsTest {
                 "A".repeat(XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN + 1));
 
         String recorded = parser.getFormulas().get("Macro1:1:A1");
+        // +1 for the space that separates the marker from the payload -- without it the
+        // marker is absorbed into any indicator sitting at the cut point.
         assertTrue(recorded.length()
                         <= XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN
-                        + "[...TIKA-XLM-FORMULA-TRUNCATED]".length(),
+                        + 1 + "[...TIKA-XLM-FORMULA-TRUNCATED]".length(),
                 "the formula cap must still bound a pathological formula");
         assertTrue(recorded.endsWith("[...TIKA-XLM-FORMULA-TRUNCATED]"),
                 "a cut formula is no longer valid syntax and a bare prefix reads as complete "
@@ -232,6 +313,51 @@ class XlmCaptureBoundsTest {
 
         assertEquals(1, emulator.iocs.size());
         assertTrue(emulator.isLimitReached());
+    }
+
+    /**
+     * An XLSB formula record dropped for exceeding the size bound must SIGNAL the drop.
+     *
+     * <p>Regression guard: the oversize branch was a bare {@code return} against a
+     * hardcoded 65536. An entire macro formula vanished with no metadata flag, no warning
+     * and no XHTML trace -- the analyst sees a short, clean macro and has no way to know
+     * the payload-bearing record was withheld. Silent evidence loss is the same defect
+     * class as silent truncation, just total rather than partial.
+     */
+    @Test
+    void testXlsbOversizeFormulaRecordDropIsReportedNotSilent() throws Exception {
+        AtomicInteger dropped = new AtomicInteger();
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        xhtml.startDocument();
+        // bound of 64 bytes so the fixture stays small; the mechanism is size-independent
+        Biff12XlmMacrosheetParser parser = new Biff12XlmMacrosheetParser(
+                new ByteArrayInputStream(new byte[0]), xhtml, null, 64,
+                dropped::incrementAndGet);
+
+        parser.handleRecord(0x0009, formulaRecord(execFormula("A".repeat(256))));
+
+        assertEquals(1, dropped.get(),
+                "an oversize formula record must report the drop -- dropping a whole "
+                        + "macro formula silently hides evidence from the analyst");
+    }
+
+    /** A record within the bound must NOT report a drop (guards against always-firing). */
+    @Test
+    void testXlsbInBoundFormulaRecordDoesNotReportADrop() throws Exception {
+        AtomicInteger dropped = new AtomicInteger();
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        xhtml.startDocument();
+        Biff12XlmMacrosheetParser parser = new Biff12XlmMacrosheetParser(
+                new ByteArrayInputStream(new byte[0]), xhtml, null, 65536,
+                dropped::incrementAndGet);
+
+        parser.handleRecord(0x0009, formulaRecord(execFormula("calc.exe")));
+
+        assertEquals(0, dropped.get(), "an in-bound record must not be reported as dropped");
     }
 
     @Test

@@ -48,8 +48,18 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
     private static final int BRT_FMLA_BOOL   = 0x000A;
     private static final int BRT_FMLA_ERROR  = 0x000B;
 
+    /**
+     * Default bound on a single BIFF12 formula record. Generous for real XLM (Excel's own
+     * formula limit is far below this); it exists to bound the attacker-controlled
+     * {@code new byte[sz]} allocation below.
+     */
+    static final int DEFAULT_MAX_FORMULA_RECORD_BYTES = 65536;
+
     private final XHTMLContentHandler xhtml;
     private final XlmMacroEmulator emulator;
+    private final int maxFormulaRecordBytes;
+    /** Invoked when a formula record is dropped for exceeding the bound. */
+    private final Runnable onRecordDropped;
     private int currentRow = -1;
 
     Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml) {
@@ -58,9 +68,18 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
 
     Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
                                XlmMacroEmulator emulator) {
+        this(stream, xhtml, emulator, 0, null);
+    }
+
+    Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                               XlmMacroEmulator emulator, int maxFormulaRecordBytes,
+                               Runnable onRecordDropped) {
         super(stream);
         this.xhtml = xhtml;
         this.emulator = emulator;
+        this.maxFormulaRecordBytes = maxFormulaRecordBytes > 0
+                ? maxFormulaRecordBytes : DEFAULT_MAX_FORMULA_RECORD_BYTES;
+        this.onRecordDropped = onRecordDropped;
     }
 
     @Override
@@ -106,7 +125,13 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
 
         // formula size (4 bytes) + formula bytes
         long sz = buf.readU32();
-        if (sz <= 0 || sz > 65536) {
+        if (sz <= 0 || sz > maxFormulaRecordBytes) {
+            // Was a silent  against a hardcoded 65536. Dropping an entire macro
+            // formula without a trace is the same evidence-loss failure as truncating one:
+            // the analyst sees a short macro and no indication anything was withheld.
+            if (sz > maxFormulaRecordBytes && onRecordDropped != null) {
+                onRecordDropped.run();
+            }
             return;
         }
         byte[] formulaBytes = new byte[(int) sz];

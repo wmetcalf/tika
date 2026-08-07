@@ -868,6 +868,12 @@ final class Biff12XlmFormulaDecoder {
         private final int maxIocEntries;
         private final int maxIocChars;
         private final int maxFileContentChars;
+
+        /** Emission cap for reconstructed file content -- same budget that bounds retention. */
+        int maxFileContentChars() {
+            return maxFileContentChars;
+        }
+
         private int retainedIocChars;
         private int retainedFileContentChars;
         private int nextHandle;
@@ -1091,7 +1097,11 @@ final class Biff12XlmFormulaDecoder {
                     String content = ctx.getFileContent(handle);
                     if (content != null && !content.isEmpty()) {
                         String path = ctx.getFilePath(handle);
-                        int preview = Math.min(300, content.length());
+                        // Was a hardcoded 300. That made maxFileContentChars (and its
+                        // OfficeParserConfig knob) inert: retention was never the binding
+                        // constraint, this emission preview was -- a dropper's URL/C2 sits
+                        // past char 300 and never reached the analyst, with no limit flagged.
+                        int preview = Math.min(ctx.maxFileContentChars(), content.length());
                         ctx.addIoc("FILE_CONTENT[" + path + "]: "
                                 + content.substring(0, preview)
                                 + (content.length() > preview ? "…" : ""));

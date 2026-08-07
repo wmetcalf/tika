@@ -125,6 +125,9 @@ final class XlmXmlMacrosheetParser {
         this.maxValueEntries = Math.max(0, maxValueEntries);
     }
 
+    /** Mirrors the inner Handler's accumulator so the caller can carry it across parts. */
+    private int handlerRetainedFormulaChars;
+
     /**
      * Parse the macrosheet XML. Failures are propagated as SAXException so the
      * caller can record them on the parent metadata as warnings — same contract
@@ -152,6 +155,16 @@ final class XlmXmlMacrosheetParser {
     }
 
     /** Formula text per cell, keyed "{sheet}:{row}:{col}". Iteration order matches sheet order. */
+    /**
+     * Formula chars retained by THIS macrosheet. The caller subtracts this from the
+     * document-wide budget before constructing the next part's parser -- the accumulator
+     * is per-Handler, so without that the cap would reset on every one of the up to
+     * {@link XSSFExcelExtractorDecorator#MAX_XLM_MACRO_PARTS} parts.
+     */
+    int getRetainedFormulaChars() {
+        return handlerRetainedFormulaChars;
+    }
+
     Map<String, String> getFormulas() {
         return formulas;
     }
@@ -334,27 +347,46 @@ final class XlmXmlMacrosheetParser {
         /** Appended to any formula that hit XLM_FORMULA_MAX_LEN, so a cut payload is obvious. */
         private static final String XLM_TRUNCATION_MARKER = "[...TIKA-XLM-FORMULA-TRUNCATED]";
         /** Running total of retained formula characters; bounds heap independently of count. */
-        private int retainedFormulaChars;
+        // long, not int: the cap is operator-raisable, and at values near Integer.MAX_VALUE
+        // an int sum wraps negative and silently defeats the bound entirely.
+        private long retainedFormulaChars;
         /** Set when the current cell's formula hit the per-formula cap. */
         private boolean formulaWasTruncated;
 
         private void flushCell() throws SAXException {
+            // Consume the per-cell truncation flag FIRST: `r` on <c> is optional in
+            // ECMA-376 and attacker-controlled, so the early return below is reachable.
+            // Leaving the flag set there carried it onto the NEXT cell and appended a
+            // truncation marker to an intact formula -- fabricated evidence loss.
+            boolean cellFormulaTruncated = formulaWasTruncated;
+            formulaWasTruncated = false;
             if (currentCellRef == null) return;
             String key = sheetName + ":" + currentRow + ":" + currentCellRef;
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
                 boolean roomByCount =
                         formulas.size() < maxFormulaEntries || formulas.containsKey(key);
+                // Gate on what will ACTUALLY be retained, marker included -- otherwise the
+                // aggregate cap is exceeded by the marker length on every truncated formula.
+                int projected = currentFormulaText.length()
+                        + (formulaWasTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
                 boolean roomByChars =
-                        retainedFormulaChars + currentFormulaText.length()
-                                <= formulaTotalMaxChars;
+                        retainedFormulaChars + projected <= formulaTotalMaxChars;
                 if (roomByCount && roomByChars) {
                     // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
                     // bare prefix reads as a complete formula to anything downstream. Mark it
                     // explicitly so a partial payload can never be mistaken for a whole one.
-                    String recorded = formulaWasTruncated
-                            ? currentFormulaText + XLM_TRUNCATION_MARKER
+                    //
+                    // The marker is SPACE-separated deliberately: XlmXmlIocScanner's URL
+                    // pattern excludes whitespace but not '[', so appending it directly
+                    // absorbed the marker into the extracted indicator
+                    // ("http://evil/x[...TIKA-XLM-FORMULA-TRUNCATED]"), yielding an IOC that
+                    // can never match the real C2. The space terminates the URL match.
+                    String recorded = cellFormulaTruncated
+                            ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
                             : currentFormulaText;
                     retainedFormulaChars += recorded.length();
+                    handlerRetainedFormulaChars = (int) Math.min(
+                            Integer.MAX_VALUE, retainedFormulaChars);
                     formulas.put(key, recorded);
                     xhtml.element("p", currentCellRef + ": " + recorded);
                 } else {

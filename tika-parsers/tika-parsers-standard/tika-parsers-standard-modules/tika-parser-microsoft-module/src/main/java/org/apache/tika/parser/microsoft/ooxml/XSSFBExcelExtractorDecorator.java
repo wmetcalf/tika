@@ -210,11 +210,12 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
 
         metadata.set("msoffice:xlsb:has-xlm-macros", "true");
-        XlmMacroEmulator.Limits xlmLimits = XlmMacroEmulator.Limits.fromConfig(
+        org.apache.tika.parser.microsoft.OfficeParserConfig xlmCfg =
                 parseContext == null
                         ? null
                         : parseContext.get(
-                                org.apache.tika.parser.microsoft.OfficeParserConfig.class));
+                                org.apache.tika.parser.microsoft.OfficeParserConfig.class);
+        XlmMacroEmulator.Limits xlmLimits = XlmMacroEmulator.Limits.fromConfig(xlmCfg);
         XlmMacroEmulator.DocumentBudget documentBudget =
                 new XlmMacroEmulator.DocumentBudget(xlmLimits);
 
@@ -241,7 +242,11 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                     () -> markXlmCaptureLimit(
                             metadata, "XLSB XLM input capture limit reached"))) {
                 Biff12XlmMacrosheetParser parser =
-                        new Biff12XlmMacrosheetParser(is, xhtml, emulator);
+                        new Biff12XlmMacrosheetParser(is, xhtml, emulator,
+                                xlmCfg == null ? 0 : xlmCfg.getXlmMaxFormulaRecordBytes(),
+                                () -> markXlmCaptureLimit(metadata,
+                                        "XLSB XLM formula record exceeded the size bound "
+                                                + "and was dropped"));
                 parser.parse();
             } catch (SecurityException e) {
                 throw e;
