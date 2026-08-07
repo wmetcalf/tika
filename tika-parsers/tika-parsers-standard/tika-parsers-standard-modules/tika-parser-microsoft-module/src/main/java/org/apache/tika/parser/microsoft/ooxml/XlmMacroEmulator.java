@@ -280,6 +280,17 @@ class XlmMacroEmulator {
             }
         }
 
+        // Order matters. EXEC/FOPEN/CALL are tens of chars and name what the macro DOES;
+        // reconstructed file content is up to megabytes of obfuscated payload. Draining
+        // file content first let one blob consume the whole IOC allowance and starve the
+        // EXEC that identifies the execution -- observed on a real sample. Emit the
+        // high-value, low-cost indicators first and give the bulk payload the remainder.
+        for (String ioc : ctx.iocs) {
+            // continue, not break: one over-budget entry must not suppress every smaller
+            // indicator behind it.
+            retainIoc(ioc);
+        }
+
         // Emit any still-open file contents. The cap is driven by the configured budget
         // (floored at the historical 8192) rather than being hardcoded to it -- otherwise
         // raising maxFileContentChars retains payload that is never emitted.
@@ -298,12 +309,6 @@ class XlmMacroEmulator {
                     retainIoc(head + content.substring(0, cut)
                             + (content.length() > cut ? "…" : ""));
                 }
-            }
-        }
-
-        for (String ioc : ctx.iocs) {
-            if (!retainIoc(ioc)) {
-                break;
             }
         }
         if (documentBudget != null) {

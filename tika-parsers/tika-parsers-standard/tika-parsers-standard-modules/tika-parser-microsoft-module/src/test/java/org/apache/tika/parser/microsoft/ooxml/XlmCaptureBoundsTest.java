@@ -251,6 +251,31 @@ class XlmCaptureBoundsTest {
                 "the retained prefix must carry the indicator at the head of the payload");
     }
 
+    /**
+     * A high-value indicator must survive a huge reconstructed payload.
+     *
+     * <p>Regression guard, found on a real sample
+     * ({@code Signature_Page.-639143_20210913.xlsb}): once file-content previews could
+     * reach megabytes, one blob consumed the whole IOC allowance and the {@code EXEC}
+     * naming what the macro actually runs was starved out. EXEC/FOPEN/CALL cost tens of
+     * chars and carry the most triage value, so they are emitted before the bulk payload.
+     */
+    @Test
+    void testExecSurvivesAHugeReconstructedFileContentPayload() {
+        XlmMacroEmulator emulator = emulatorWithLimits(
+                new XlmMacroEmulator.Limits(100, 1_000_000, 100, 20_000, 1_000_000, 1_000_000));
+        emulator.addMacroCell(0, fopenFormula("dropper.bin"));
+        emulator.addMacroCell(1, fwriteFormula(0, "P".repeat(40_000)));
+        emulator.addMacroCell(2, execFormula("powershell -enc AAAA"));
+        emulator.emulate();
+
+        assertTrue(emulator.iocs.stream().anyMatch(i -> i.startsWith("EXEC")),
+                "the EXEC indicator must not be starved out by a large FILE_CONTENT blob "
+                        + "-- it is what identifies the execution; got: "
+                        + emulator.iocs.stream().map(i -> i.substring(0,
+                                Math.min(30, i.length()))).toList());
+    }
+
     /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
     @Test
     void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {
@@ -1135,6 +1160,18 @@ class XlmCaptureBoundsTest {
                 .put((byte) 0x22)
                 .put((byte) 2)
                 .putShort((short) 0x0084)
+                .array();
+    }
+
+    /** FCLOSE(handle) -- ptgInt handle, then the FCLOSE function token (0x0085). */
+    private static byte[] fcloseFormula(int handle) {
+        return ByteBuffer.allocate(3 + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e)
+                .putShort((short) handle)
+                .put((byte) 0x22)
+                .put((byte) 1)
+                .putShort((short) 0x0085)
                 .array();
     }
 
