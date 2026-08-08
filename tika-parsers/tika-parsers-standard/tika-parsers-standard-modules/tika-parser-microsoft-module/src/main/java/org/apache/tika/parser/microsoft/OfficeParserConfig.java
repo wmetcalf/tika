@@ -66,6 +66,8 @@ public class OfficeParserConfig implements Serializable {
     private int xlmMaxFileContentChars = 0;
     /** Max bytes in a single XLSB BIFF12 formula record; 0 = built-in default. */
     private int xlmMaxFormulaRecordBytes = 0;
+    /** Max bytes in a single VBA project stream (raw or decompressed); 0 = built-in default. */
+    private int vbaMaxStreamBytes = 0;
 
     private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
@@ -461,6 +463,20 @@ public class OfficeParserConfig implements Serializable {
     /** Max reconstructed file-content characters. 0 = built-in default (10 MB). */
     public int getXlmMaxFileContentChars() {
         return xlmMaxFileContentChars;
+    }
+
+    public int getVbaMaxStreamBytes() {
+        return vbaMaxStreamBytes;
+    }
+
+    /**
+     * Max bytes in a single VBA project stream, raw or decompressed. A stream above this is
+     * dropped and a decompressed body above it is truncated; either way the loss is reported
+     * via the {@code msoffice:vba-capture-limit-reached} metadata flag. 0 = built-in default
+     * ({@code 10 MB}).
+     */
+    public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
+        this.vbaMaxStreamBytes = vbaMaxStreamBytes;
     }
 
     public int getXlmMaxFormulaRecordBytes() {

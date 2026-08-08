@@ -1362,7 +1362,7 @@ public class AbstractOOXMLExtractorSecurityTest {
 
         @Override
         void handleMacros(
-                PackagePart macroPart, ContentHandler handler) {
+                PackagePart macroPart, ContentHandler handler, Metadata metadata) {
             macroPartNames.add(macroPart.getPartName().getName());
         }
     }

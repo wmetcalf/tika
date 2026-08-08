@@ -426,7 +426,8 @@ public class HSLFExtractor extends AbstractPOIFSExtractor {
                         objData.getInputStream())) {
                     try {
                         OfficeParser.extractMacros(poifsFileSystem, xhtml,
-                                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context);
+                                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context),
+                                context, parentMetadata);
                     } catch (IOException | SAXException | TikaException inner) {
                         EmbeddedDocumentUtil.recordException(inner, parentMetadata);
                     }

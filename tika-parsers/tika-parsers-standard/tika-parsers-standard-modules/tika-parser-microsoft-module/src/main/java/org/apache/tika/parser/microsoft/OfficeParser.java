@@ -115,9 +115,26 @@ public class OfficeParser extends AbstractOfficeParser {
                                      EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                      ParseContext context)
             throws IOException, SAXException, TikaException {
+        extractMacros(fs, xhtml, embeddedDocumentExtractor, context, null);
+    }
+
+    /**
+     * As above, but records on {@code parentMetadata} when a VBA size bound discarded or
+     * truncated macro source. Pass the parent metadata wherever it is available: without it
+     * the loss is invisible, and a caller cannot distinguish a 40-line macro from a 12 MB
+     * module that was dropped whole.
+     */
+    public static void extractMacros(POIFSFileSystem fs, ContentHandler xhtml,
+                                     EmbeddedDocumentExtractor embeddedDocumentExtractor,
+                                     ParseContext context, Metadata parentMetadata)
+            throws IOException, SAXException, TikaException {
 
         VBAMacroReader reader = null;
         Map<String, String> macros = null;
+        // Shared across BOTH lenient-reader attempts below so a bound that fires in either
+        // one is reported once on the parent metadata.
+        LenientVBAReader.Bounds vbaBounds = LenientVBAReader.Bounds.fromConfig(
+                context.get(OfficeParserConfig.class));
         try {
             reader = new VBAMacroReader(fs);
             macros = reader.readMacros();
@@ -128,7 +145,7 @@ public class OfficeParser extends AbstractOfficeParser {
             // those authored by Mac Word, which writes non-standard record IDs in the dir
             // stream).  Fall back to our lenient reader before giving up.
             try {
-                macros = LenientVBAReader.readMacros(fs);
+                macros = LenientVBAReader.readMacros(fs, vbaBounds);
             } catch (Exception ignore) {
                 macros = null;
             }
@@ -153,13 +170,22 @@ public class OfficeParser extends AbstractOfficeParser {
         // falls back to scanning every raw directory entry for the orphaned dir + module streams.
         if (macros == null || macros.isEmpty()) {
             try {
-                Map<String, String> recovered = LenientVBAReader.readMacros(fs);
+                Map<String, String> recovered =
+                        LenientVBAReader.readMacros(fs, vbaBounds);
                 if (recovered != null && !recovered.isEmpty()) {
                     macros = recovered;
                 }
             } catch (Exception ignore) {
                 // recovery is best-effort
             }
+        }
+        if (vbaBounds.isLimitReached() && parentMetadata != null) {
+            // Mirrors markXlmCaptureLimit: a dedicated flag, TRUNCATED_METADATA so generic
+            // consumers see it, and the detail as a warning.
+            parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
+            parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    vbaBounds.getLimitDetail());
         }
         if (macros == null) {
             return;
@@ -252,7 +278,8 @@ public class OfficeParser extends AbstractOfficeParser {
                 // if the "root" is a directory node, we assume that the macros have already
                 // been extracted from the parent's fileSystem -- TIKA-4116
                 extractMacros(root.getFileSystem(), xhtml,
-                        EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context);
+                        EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context,
+                        metadata);
             }
 
             parse(root, context, metadata, xhtml, tis);
