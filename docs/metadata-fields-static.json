@@ -1,11 +1,11 @@
 {
-  "scanned_at": "2026-07-28T07:12:50.808070+00:00",
-  "tika_root": "/home/coz/.config/superpowers/worktrees/tika/mantis-fork-findings",
+  "scanned_at": "2026-08-08T17:22:07.284932+00:00",
+  "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
     "property_declarations": 718,
     "parsers_emitting_fields": 199,
-    "undeclared_string_fields": 280,
+    "undeclared_string_fields": 281,
     "templated_patterns": 118
   },
   "properties": {
@@ -956,6 +956,7 @@
         "org.apache.tika.parser.image.BarcodeMetadataUtil",
         "org.apache.tika.parser.microsoft.ICalParser",
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil",
+        "org.apache.tika.parser.microsoft.OfficeParser",
         "org.apache.tika.parser.microsoft.chm.ChmParser",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLTikaBodyPartHandler",
@@ -1016,6 +1017,7 @@
         "org.apache.tika.parser.image.BarcodeMetadataUtil",
         "org.apache.tika.parser.microsoft.ICalParser",
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil",
+        "org.apache.tika.parser.microsoft.OfficeParser",
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLTikaBodyPartHandler",
         "org.apache.tika.parser.microsoft.ooxml.SXWPFWordExtractorDecorator",
@@ -6359,7 +6361,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
-          "line": 1569
+          "line": 1570
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
@@ -6379,12 +6381,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFBExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFBExcelExtractorDecorator.java",
-          "line": 331
+          "line": 341
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 522
+          "line": 616
         },
         {
           "class": "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
@@ -7920,17 +7922,26 @@
         }
       ]
     },
+    "msoffice:vba-capture-limit-reached": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.OfficeParser",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OfficeParser.java",
+          "line": 185
+        }
+      ]
+    },
     "msoffice:xlm-capture-limit-reached": {
       "emitted_by": [
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFBExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFBExcelExtractorDecorator.java",
-          "line": 327
+          "line": 337
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 518
+          "line": 612
         }
       ]
     },
@@ -7948,7 +7959,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 412
+          "line": 491
         }
       ]
     },
@@ -11205,7 +11216,10 @@
     },
     "org.apache.tika.parser.microsoft.OfficeParser": {
       "emits": [
-        "Content-Type"
+        "Content-Type",
+        "X-TIKA:EXCEPTION:warn",
+        "X-TIKA:WARN:truncated_metadata",
+        "msoffice:vba-capture-limit-reached"
       ]
     },
     "org.apache.tika.parser.microsoft.OutlookExtractor": {
