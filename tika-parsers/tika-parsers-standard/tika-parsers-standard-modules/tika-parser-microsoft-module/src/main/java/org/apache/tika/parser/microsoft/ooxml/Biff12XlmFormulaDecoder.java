@@ -868,6 +868,21 @@ final class Biff12XlmFormulaDecoder {
         private final int maxIocEntries;
         private final int maxIocChars;
         private final int maxFileContentChars;
+
+        /** Emission cap for reconstructed file content -- same budget that bounds retention. */
+        int maxFileContentChars() {
+            return maxFileContentChars;
+        }
+
+        /**
+         * Chars still retainable as IOC text. addIoc() rejects an entry WHOLE when it
+         * exceeds this, so callers must size previews against it rather than emitting an
+         * oversized string and losing the entire entry.
+         */
+        int remainingIocChars() {
+            return Math.max(0, maxIocChars - retainedIocChars);
+        }
+
         private int retainedIocChars;
         private int retainedFileContentChars;
         private int nextHandle;
@@ -1091,10 +1106,25 @@ final class Biff12XlmFormulaDecoder {
                     String content = ctx.getFileContent(handle);
                     if (content != null && !content.isEmpty()) {
                         String path = ctx.getFilePath(handle);
-                        int preview = Math.min(300, content.length());
-                        ctx.addIoc("FILE_CONTENT[" + path + "]: "
-                                + content.substring(0, preview)
-                                + (content.length() > preview ? "…" : ""));
+                        // Was a hardcoded 300. That made maxFileContentChars (and its
+                        // OfficeParserConfig knob) inert: retention was never the binding
+                        // constraint, this emission preview was -- a dropper's URL/C2 sits
+                        // past char 300 and never reached the analyst, with no limit flagged.
+                        //
+                        // Size the preview to the IOC budget too. addIoc() rejects an
+                        // over-budget entry ENTIRELY rather than keeping a prefix, so with
+                        // maxFileContentChars (10 MB) above maxIocChars (1 MB) an unbounded
+                        // preview loses the whole entry -- strictly less evidence than the
+                        // old 300-char cut. Emit the largest prefix that will be retained.
+                        String head = "FILE_CONTENT[" + path + "]: ";
+                        int budget = ctx.remainingIocChars() - head.length() - 1;
+                        int preview = Math.min(
+                                Math.min(ctx.maxFileContentChars(), content.length()),
+                                Math.max(0, budget));
+                        if (preview > 0) {
+                            ctx.addIoc(head + content.substring(0, preview)
+                                    + (content.length() > preview ? "…" : ""));
+                        }
                     }
                 }
                 return 0.0;

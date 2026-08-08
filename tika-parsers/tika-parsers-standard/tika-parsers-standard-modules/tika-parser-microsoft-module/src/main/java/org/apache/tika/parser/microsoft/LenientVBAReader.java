@@ -50,7 +50,54 @@ public final class LenientVBAReader {
     private static final int REC_MODULES           = 0x000F; // start of modules section
     private static final int REC_MODULECOUNT       = 0x0029;
 
-    private static final int MAX_STREAM_BYTES = 10 * 1024 * 1024; // 10 MB guard
+    static final int MAX_STREAM_BYTES = 10 * 1024 * 1024; // 10 MB default guard
+
+    /**
+     * Per-document stream bound plus the signal that it fired.
+     *
+     * <p>Exists because every bound in this reader used to fail SILENTLY: an over-cap module
+     * stream returned {@code null} and its entire source vanished, and the decompressor
+     * {@code break}s mid-stream leaving a partial macro body. Either way the caller received
+     * a short-but-plausible macro with no indication that evidence had been withheld -- the
+     * same defect class as the XLM capture caps, on the VBA path.
+     */
+    public static final class Bounds {
+        private final int maxStreamBytes;
+        private boolean limitReached;
+        private String limitDetail;
+
+        public Bounds() {
+            this(0);
+        }
+
+        public Bounds(int maxStreamBytes) {
+            this.maxStreamBytes = maxStreamBytes > 0 ? maxStreamBytes : MAX_STREAM_BYTES;
+        }
+
+        /** 0 / null config means the built-in default. */
+        public static Bounds fromConfig(OfficeParserConfig config) {
+            return new Bounds(config == null ? 0 : config.getVbaMaxStreamBytes());
+        }
+
+        int max() {
+            return maxStreamBytes;
+        }
+
+        void mark(String detail) {
+            if (!limitReached) {
+                limitReached = true;
+                limitDetail = detail;
+            }
+        }
+
+        public boolean isLimitReached() {
+            return limitReached;
+        }
+
+        public String getLimitDetail() {
+            return limitDetail;
+        }
+    }
 
     private LenientVBAReader() {}
 
@@ -60,7 +107,13 @@ public final class LenientVBAReader {
      * @return map of module-name → source text; empty if nothing could be extracted
      */
     public static Map<String, String> readMacros(POIFSFileSystem fs) throws IOException {
-        Map<String, String> viaTree = readMacros(fs.getRoot());
+        return readMacros(fs, new Bounds());
+    }
+
+    /** As {@link #readMacros(POIFSFileSystem)}, but reports whether a bound fired. */
+    public static Map<String, String> readMacros(POIFSFileSystem fs, Bounds bounds)
+            throws IOException {
+        Map<String, String> viaTree = readMacros(fs.getRoot(), bounds);
         if (!viaTree.isEmpty()) {
             return viaTree;
         }
@@ -69,7 +122,7 @@ public final class LenientVBAReader {
         // so POI's tree-walking readers (incl. findVBADir above) can't see it, even though
         // Excel and olevba still run the macro by enumerating ALL raw directory entries.
         // Recover the same way: scan every property, then reuse the dir/module decompression.
-        return readMacrosFromOrphans(fs);
+        return readMacrosFromOrphans(fs, bounds);
     }
 
     /**
@@ -80,6 +133,10 @@ public final class LenientVBAReader {
      * to pull each module's source. Best-effort: any failure yields an empty map.
      */
     static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs) {
+        return readMacrosFromOrphans(fs, new Bounds());
+    }
+
+    static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs, Bounds bounds) {
         Map<String, String> result = new LinkedHashMap<>();
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
         DocumentProperty dirProp = streams.get("dir"); // map is lower-cased; "dir" is already lc
@@ -87,11 +144,11 @@ public final class LenientVBAReader {
             return result;
         }
         try {
-            byte[] dirRaw = readPropBytes(fs, dirProp);
+            byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
             if (dirRaw == null) {
                 return result;
             }
-            Map<String, Integer> moduleOffsets = parseDir(decompress(dirRaw));
+            Map<String, Integer> moduleOffsets = parseDir(decompress(dirRaw, 0, bounds));
             Charset charset = Charset.forName("windows-1252");
             for (Map.Entry<String, Integer> e : moduleOffsets.entrySet()) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
@@ -101,12 +158,12 @@ public final class LenientVBAReader {
                     continue;
                 }
                 try {
-                    byte[] raw = readPropBytes(fs, modProp);
+                    byte[] raw = readPropBytes(fs, modProp, bounds);
                     int offset = e.getValue();
                     if (raw == null || offset < 3 || offset >= raw.length) {
                         continue;
                     }
-                    String text = new String(decompress(raw, offset), charset);
+                    String text = new String(decompress(raw, offset, bounds), charset);
                     if (!text.isBlank()) {
                         result.put(e.getKey(), text);
                     }
@@ -165,10 +222,15 @@ public final class LenientVBAReader {
 
     /** Read a stream's bytes directly from its property (start block + size), bypassing the
      *  directory tree, so an orphaned stream is still readable. */
-    private static byte[] readPropBytes(POIFSFileSystem fs, DocumentProperty prop) {
+    private static byte[] readPropBytes(POIFSFileSystem fs, DocumentProperty prop,
+                                       Bounds bounds) {
         try {
             int size = prop.getSize();
-            if (size < 0 || size > MAX_STREAM_BYTES) {
+            if (size < 0 || size > bounds.max()) {
+                // Dropping the stream discards the WHOLE module source. Say so.
+                if (size > bounds.max()) {
+                    bounds.mark("VBA stream exceeded the size bound and was dropped");
+                }
                 return null;
             }
             POIFSDocument doc = new POIFSDocument(prop, fs);
@@ -188,6 +250,11 @@ public final class LenientVBAReader {
     }
 
     public static Map<String, String> readMacros(DirectoryNode root) throws IOException {
+        return readMacros(root, new Bounds());
+    }
+
+    public static Map<String, String> readMacros(DirectoryNode root, Bounds bounds)
+            throws IOException {
         // Locate the VBA storage
         DirectoryNode vbaDir = findVBADir(root);
         if (vbaDir == null) {
@@ -195,11 +262,11 @@ public final class LenientVBAReader {
         }
 
         // Decompress the dir stream
-        byte[] dirRaw = readStream(vbaDir, "dir");
+        byte[] dirRaw = readStream(vbaDir, "dir", bounds);
         if (dirRaw == null) {
             return new LinkedHashMap<>();
         }
-        byte[] dirDecompressed = decompress(dirRaw);
+        byte[] dirDecompressed = decompress(dirRaw, 0, bounds);
 
         // Parse module names + offsets from dir stream
         Map<String, Integer> moduleOffsets = parseDir(dirDecompressed);
@@ -211,11 +278,11 @@ public final class LenientVBAReader {
             String name = entry.getKey();
             int offset = entry.getValue();
             try {
-                byte[] raw = readStream(vbaDir, name);
+                byte[] raw = readStream(vbaDir, name, bounds);
                 if (raw == null || offset < 3 || offset >= raw.length) {
                     continue;
                 }
-                byte[] src = decompress(raw, offset);
+                byte[] src = decompress(raw, offset, bounds);
                 String text = new String(src, charset);
                 if (!text.isBlank()) {
                     result.put(name, text);
@@ -282,7 +349,7 @@ public final class LenientVBAReader {
 
     /** Decompress from the beginning of {@code compressed}. */
     public static byte[] decompress(byte[] compressed) throws IOException {
-        return decompress(compressed, 0);
+        return decompress(compressed, 0, new Bounds());
     }
 
     /**
@@ -290,6 +357,11 @@ public final class LenientVBAReader {
      * The byte at {@code startOffset} must be {@code 0x01} (signature).
      */
     static byte[] decompress(byte[] compressed, int startOffset) throws IOException {
+        return decompress(compressed, startOffset, new Bounds());
+    }
+
+    static byte[] decompress(byte[] compressed, int startOffset, Bounds bounds)
+            throws IOException {
         if (compressed == null || compressed.length <= startOffset) {
             return new byte[0];
         }
@@ -378,8 +450,11 @@ public final class LenientVBAReader {
                 i = chunkEnd; // ensure we move past the chunk
             }
 
-            if (out.size() > MAX_STREAM_BYTES) {
-                break; // guard against malformed data
+            if (out.size() > bounds.max()) {
+                // Cutting here leaves a PARTIAL macro body that still reads as complete.
+                bounds.mark("VBA decompressed stream exceeded the size bound "
+                        + "and was truncated");
+                break;
             }
         }
         return out.toByteArray();
@@ -407,10 +482,12 @@ public final class LenientVBAReader {
         return null;
     }
 
-    private static byte[] readStream(DirectoryNode dir, String name) {
+    private static byte[] readStream(DirectoryNode dir, String name, Bounds bounds) {
         try {
             DocumentEntry de = (DocumentEntry) dir.getEntry(name);
-            if (de.getSize() > MAX_STREAM_BYTES) {
+            if (de.getSize() > bounds.max()) {
+                bounds.mark("VBA stream '" + name
+                        + "' exceeded the size bound and was dropped");
                 return null;
             }
             byte[] data = new byte[de.getSize()];

@@ -44,6 +44,31 @@ public class OfficeParserConfig implements Serializable {
      */
     private int rtfEmbeddedMaxBytesInKb = 2 * 1024 * 1024; // 2 GB
 
+    // ---- XLM (Excel 4.0) macro capture bounds -------------------------------------
+    // These were hardcoded static finals, so tuning them required recompiling Tika.
+    // For malicious-document triage the right values are deployment-specific: a
+    // forensics pipeline wants generous bounds (losing macro payload is worse than
+    // spending memory), while a general-purpose extractor may want tight ones.
+    // 0 or negative means "use the built-in default" (see the XSSF decorator).
+    private int xlmFormulaMaxLen = 0;
+    private int xlmFormulaTotalMaxChars = 0;
+    private int xlmMacroTextMaxChars = 0;
+    private int xlmWorkbookValueMaxLen = 0;
+    private int xlmWorkbookValuesMaxEntries = 0;
+    private long xlmMaxInputBytes = 0L;
+    // XLM macro EMULATOR bounds (the xlsb/Biff12 evaluation path). Same rationale as the
+    // capture bounds above: policy, not a compile-time constant. 0 = built-in default.
+    private int xlmMaxMacroCells = 0;
+    private long xlmMaxFormulaBytes = 0L;
+    private int xlmMaxIocEntries = 0;
+    private int xlmMaxIocChars = 0;
+    private long xlmMaxOperations = 0L;
+    private int xlmMaxFileContentChars = 0;
+    /** Max bytes in a single XLSB BIFF12 formula record; 0 = built-in default. */
+    private int xlmMaxFormulaRecordBytes = 0;
+    /** Max bytes in a single VBA project stream (raw or decompressed); 0 = built-in default. */
+    private int vbaMaxStreamBytes = 0;
+
     private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
     private int maxOverride = 0;//ignore
@@ -315,5 +340,159 @@ public class OfficeParserConfig implements Serializable {
 
     public void setRtfEmbeddedMaxBytesInKb(int rtfEmbeddedMaxBytesInKb) {
         this.rtfEmbeddedMaxBytesInKb = rtfEmbeddedMaxBytesInKb;
+    }
+
+    /**
+     * Per-formula character cap for XLM macrosheet formulas. A single obfuscated XLM
+     * dropper routinely concatenates its whole payload into one formula, so this must
+     * be far larger than the per-cell VALUE cap. 0 = built-in default (16384).
+     */
+    public int getXlmFormulaMaxLen() {
+        return xlmFormulaMaxLen;
+    }
+
+    public void setXlmFormulaMaxLen(int xlmFormulaMaxLen) {
+        this.xlmFormulaMaxLen = xlmFormulaMaxLen;
+    }
+
+    /**
+     * Aggregate cap on retained macrosheet formula text (characters). This, not the
+     * per-formula cap, is what bounds heap. 0 = built-in default (10 MB).
+     */
+    public int getXlmFormulaTotalMaxChars() {
+        return xlmFormulaTotalMaxChars;
+    }
+
+    public void setXlmFormulaTotalMaxChars(int xlmFormulaTotalMaxChars) {
+        this.xlmFormulaTotalMaxChars = xlmFormulaTotalMaxChars;
+    }
+
+    /**
+     * Aggregate cap on macro text emitted as a MACRO entry (characters).
+     * 0 = built-in default (10 MB).
+     */
+    public int getXlmMacroTextMaxChars() {
+        return xlmMacroTextMaxChars;
+    }
+
+    public void setXlmMacroTextMaxChars(int xlmMacroTextMaxChars) {
+        this.xlmMacroTextMaxChars = xlmMacroTextMaxChars;
+    }
+
+    /**
+     * Per-cell cap for DATA-SHEET cell values captured for IOC resolution. Distinct
+     * from {@link #getXlmFormulaMaxLen()}: these are URL/IP/path fragments, not
+     * payload. 0 = built-in default (1024).
+     */
+    public int getXlmWorkbookValueMaxLen() {
+        return xlmWorkbookValueMaxLen;
+    }
+
+    public void setXlmWorkbookValueMaxLen(int xlmWorkbookValueMaxLen) {
+        this.xlmWorkbookValueMaxLen = xlmWorkbookValueMaxLen;
+    }
+
+    /**
+     * Max number of captured workbook cell-value / formula entries.
+     * 0 = built-in default (200000).
+     */
+    public int getXlmWorkbookValuesMaxEntries() {
+        return xlmWorkbookValuesMaxEntries;
+    }
+
+    public void setXlmWorkbookValuesMaxEntries(int xlmWorkbookValuesMaxEntries) {
+        this.xlmWorkbookValuesMaxEntries = xlmWorkbookValuesMaxEntries;
+    }
+
+    /**
+     * Max bytes of macrosheet input read per workbook. 0 = built-in default (32 MB).
+     */
+    public long getXlmMaxInputBytes() {
+        return xlmMaxInputBytes;
+    }
+
+    public void setXlmMaxInputBytes(long xlmMaxInputBytes) {
+        this.xlmMaxInputBytes = xlmMaxInputBytes;
+    }
+
+    /** Max XLM macro cells the emulator will evaluate. 0 = built-in default (65536). */
+    public int getXlmMaxMacroCells() {
+        return xlmMaxMacroCells;
+    }
+
+    public void setXlmMaxMacroCells(int xlmMaxMacroCells) {
+        this.xlmMaxMacroCells = xlmMaxMacroCells;
+    }
+
+    /** Max formula bytes the emulator will read. 0 = built-in default (16 MB). */
+    public long getXlmMaxFormulaBytes() {
+        return xlmMaxFormulaBytes;
+    }
+
+    public void setXlmMaxFormulaBytes(long xlmMaxFormulaBytes) {
+        this.xlmMaxFormulaBytes = xlmMaxFormulaBytes;
+    }
+
+    /** Max IOC entries the emulator will record. 0 = built-in default (4096). */
+    public int getXlmMaxIocEntries() {
+        return xlmMaxIocEntries;
+    }
+
+    public void setXlmMaxIocEntries(int xlmMaxIocEntries) {
+        this.xlmMaxIocEntries = xlmMaxIocEntries;
+    }
+
+    /** Max IOC characters the emulator will record. 0 = built-in default (1 MB). */
+    public int getXlmMaxIocChars() {
+        return xlmMaxIocChars;
+    }
+
+    public void setXlmMaxIocChars(int xlmMaxIocChars) {
+        this.xlmMaxIocChars = xlmMaxIocChars;
+    }
+
+    /** Max emulator operations (DoS bound on evaluation). 0 = built-in default (1000000). */
+    public long getXlmMaxOperations() {
+        return xlmMaxOperations;
+    }
+
+    public void setXlmMaxOperations(long xlmMaxOperations) {
+        this.xlmMaxOperations = xlmMaxOperations;
+    }
+
+    /** Max reconstructed file-content characters. 0 = built-in default (10 MB). */
+    public int getXlmMaxFileContentChars() {
+        return xlmMaxFileContentChars;
+    }
+
+    public int getVbaMaxStreamBytes() {
+        return vbaMaxStreamBytes;
+    }
+
+    /**
+     * Max bytes in a single VBA project stream, raw or decompressed. A stream above this is
+     * dropped and a decompressed body above it is truncated; either way the loss is reported
+     * via the {@code msoffice:vba-capture-limit-reached} metadata flag. 0 = built-in default
+     * ({@code 10 MB}).
+     */
+    public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
+        this.vbaMaxStreamBytes = vbaMaxStreamBytes;
+    }
+
+    public int getXlmMaxFormulaRecordBytes() {
+        return xlmMaxFormulaRecordBytes;
+    }
+
+    /**
+     * Max bytes in a single XLSB BIFF12 formula record. Records above this are dropped
+     * and the drop is reported via the xlm-capture-limit metadata flag. 0 = built-in
+     * default ({@code 65536}).
+     */
+    public void setXlmMaxFormulaRecordBytes(int xlmMaxFormulaRecordBytes) {
+        this.xlmMaxFormulaRecordBytes = xlmMaxFormulaRecordBytes;
+    }
+
+    public void setXlmMaxFileContentChars(int xlmMaxFileContentChars) {
+        this.xlmMaxFileContentChars = xlmMaxFileContentChars;
     }
 }

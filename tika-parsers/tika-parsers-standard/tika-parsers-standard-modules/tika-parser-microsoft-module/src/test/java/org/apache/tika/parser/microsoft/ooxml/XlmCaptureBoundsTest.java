@@ -35,6 +35,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -64,10 +65,7 @@ class XlmCaptureBoundsTest {
     private static final int INPUT_BUDGET_BYTES = 32 * 1_024 * 1_024;
     private static final int INPUT_PART_BYTES = 8 * 1_024 * 1_024;
 
-    @Test
-    void testXmlMacrosheetFormulaLengthIsBounded() throws Exception {
-        String formula = "A".repeat(
-                XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN + 1);
+    private static XlmXmlMacrosheetParser parseOneFormula(String formula) throws Exception {
         String xml = String.format(Locale.ROOT, """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
                   <sheetData><row r="1"><c r="A1"><f>%s</f></c></row></sheetData>
@@ -79,13 +77,221 @@ class XlmCaptureBoundsTest {
         XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
                 new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
                 xhtml, "Macro1", null);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+        return parser;
+    }
 
+    /**
+     * A macrosheet FORMULA must not be bound by the data-sheet cell-VALUE cap.
+     *
+     * <p>Regression guard: formulas once shared {@code WORKBOOK_VALUE_MAX_LEN} (1 KB, sized
+     * for URL/IP IOC fragments) with cell values. Obfuscated XLM droppers concatenate the
+     * entire payload into ONE formula -- measured p90=2748, p95=5099 chars over the
+     * malicious-document corpus -- so that cap silently amputated 22% of macro-bearing
+     * documents mid-formula, leaving a prefix that still read as a complete formula.
+     */
+    @Test
+    void testFormulaLongerThanTheCellValueCapIsRetainedWhole() throws Exception {
+        int len = XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN * 4;
+        assertTrue(len < XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN,
+                "test fixture must sit above the value cap but below the formula cap");
+        XlmXmlMacrosheetParser parser = parseOneFormula("A".repeat(len));
+
+        assertEquals(len, parser.getFormulas().get("Macro1:1:A1").length(),
+                "a formula between the value cap and the formula cap must be kept WHOLE -- "
+                        + "truncating it here is the macro-payload-loss regression");
+        assertFalse(parser.isTruncated(),
+                "keeping a legitimate formula must not report truncation");
+    }
+
+    /**
+     * The truncation marker must NOT leak from an over-cap cell onto the NEXT cell's
+     * intact formula.
+     *
+     * <p>Regression guard for an evidence-FABRICATION bug: {@code flushCell()} reset the
+     * per-cell truncation flag AFTER an {@code if (currentCellRef == null) return;} early
+     * return. The {@code r} attribute on {@code <c>} is optional in ECMA-376 and fully
+     * attacker-controlled, so a dropper could put its over-cap formula in an r-less cell
+     * and leave the flag set -- causing the following cell's COMPLETE formula to be
+     * recorded with a truncation marker it never earned. An analyst then sees fabricated
+     * evidence loss on a formula that was captured whole.
+     */
+    @Test
+    void testTruncationMarkerDoesNotLeakFromAnRlessCellOntoTheNextFormula() throws Exception {
+        String overCap = "A".repeat(XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN + 1);
+        String intact = "=EXEC(\"calc.exe\")";
+        // first <c> deliberately has NO r attribute -- the attacker-controlled early-return path
+        String xml = String.format(Locale.ROOT, """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1">
+                    <c><f>%s</f></c>
+                    <c r="B1"><f>%s</f></c>
+                  </row></sheetData>
+                </worksheet>
+                """, overCap, intact);
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null);
         xhtml.startDocument();
         parser.parse();
         xhtml.endDocument();
 
-        assertTrue(parser.getFormulas().get("Macro1:1:A1").length()
-                <= XSSFExcelExtractorDecorator.WORKBOOK_VALUE_MAX_LEN);
+        String recorded = parser.getFormulas().get("Macro1:1:B1");
+        assertNotNull(recorded, "the second cell's formula must still be captured");
+        assertEquals(intact, recorded,
+                "B1 was captured WHOLE -- marking it truncated fabricates evidence loss "
+                        + "that never happened");
+    }
+
+    /**
+     * The truncation marker must not corrupt indicators extracted from a marked formula.
+     *
+     * <p>Regression guard: the marker was appended with no separator, and the IOC URL
+     * pattern excludes whitespace but not {@code '['} -- so a URL sitting at the cut point
+     * came out as {@code http://evil.example.com/pay[...TIKA-XLM-FORMULA-TRUNCATED]}. A
+     * blocklist or threat-intel pipeline built from that indicator can never match the
+     * real C2, and the corruption is invisible downstream.
+     */
+    @Test
+    void testTruncationMarkerIsNotAbsorbedIntoAnExtractedIndicator() throws Exception {
+        String url = "http://evil.example.com/payload.exe";
+        // The URL pattern carries a (?<![\w.]) lookbehind, so the character preceding the
+        // scheme must be a non-word one -- padding straight up against "http" matches
+        // nothing and would make the assertion below vacuous.
+        String lead = "'";
+        int pad = XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN
+                - url.length() - lead.length();
+        XlmXmlMacrosheetParser parser =
+                parseOneFormula("A".repeat(pad) + lead + url + "TRAILING");
+
+        String recorded = parser.getFormulas().get("Macro1:1:A1");
+        assertTrue(recorded.contains("[...TIKA-XLM-FORMULA-TRUNCATED]"),
+                "fixture must actually trip the formula cap");
+        List<String> iocs =
+                XlmXmlIocScanner.scan(parser.getFormulas(), parser.getValues());
+        assertTrue(iocs.stream().anyMatch(i -> i.contains("evil.example.com")),
+                "fixture must actually yield the indicator, else this test is vacuous; "
+                        + "got: " + iocs);
+        for (String ioc : iocs) {
+            assertFalse(ioc.contains("TIKA-XLM-FORMULA-TRUNCATED"),
+                    "the truncation marker must never be absorbed into an extracted "
+                            + "indicator -- got: " + ioc);
+        }
+    }
+
+    /**
+     * The aggregate formula budget must account for the truncation marker it appends.
+     *
+     * <p>Regression guard: {@code projected} read the {@code formulaWasTruncated} FIELD,
+     * which flushCell() clears at its top, so it was always false by then. The marker's
+     * length therefore escaped the budget check and an operator-configured aggregate cap
+     * could be overrun by (marker + separator) on every truncated formula.
+     */
+    @Test
+    void testAggregateBudgetAccountsForTheAppendedTruncationMarker() throws Exception {
+        int formulaCap = XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN;
+        // budget admits the cut formula but NOT the marker the cut forces us to append
+        int aggregate = formulaCap + 4;
+        String xml = String.format(Locale.ROOT, """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1"><c r="A1"><f>%s</f></c></row></sheetData>
+                </worksheet>
+                """, "A".repeat(formulaCap + 1));
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 1_000, 1_000, 0, 0, aggregate);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        int retained = parser.getFormulas().values().stream().mapToInt(String::length).sum();
+        assertTrue(retained <= aggregate,
+                "retained formula text (" + retained + ") must not exceed the configured "
+                        + "aggregate budget (" + aggregate + ") -- the appended marker has "
+                        + "to be counted by the check that admits the formula");
+    }
+
+    /**
+     * A reconstructed-file-content preview must be cut to the IOC budget, not emitted
+     * oversized and dropped.
+     *
+     * <p>Regression guard: {@code retainIoc}/{@code addIoc} reject an over-budget entry
+     * WHOLE rather than keeping a prefix. Once maxFileContentChars (10 MB) rose above
+     * maxIocChars (1 MB), an unbounded preview lost the entire FILE_CONTENT entry --
+     * strictly LESS evidence than the hardcoded 300/8192-char cut it replaced. The point
+     * of raising the cap was more payload reaching the analyst, not none.
+     */
+    @Test
+    void testFileContentPreviewIsCutToTheIocBudgetRatherThanDropped() {
+        // file-content cap far above the IOC allowance -- the mismatch under test
+        // maxIocChars = 512 sits far below maxFileContentChars = 1_000_000 -- the mismatch
+        // under test. Payload is written through real FOPEN/FWRITE emulation.
+        XlmMacroEmulator emulator = emulatorWithLimits(
+                new XlmMacroEmulator.Limits(100, 100_000, 100, 512, 100_000, 1_000_000));
+        emulator.addMacroCell(0, fopenFormula("dropper.bin"));
+        emulator.addMacroCell(1,
+                fwriteFormula(0, "http://evil.example.com/payload.exe" + "B".repeat(2_000)));
+        emulator.emulate();
+
+        String fileContent = emulator.iocs.stream()
+                .filter(i -> i.startsWith("FILE_CONTENT"))
+                .findFirst().orElse(null);
+        assertNotNull(fileContent,
+                "an oversized reconstructed payload must still yield a bounded FILE_CONTENT "
+                        + "entry -- dropping it whole loses the dropper's URL entirely");
+        assertTrue(fileContent.contains("evil.example.com"),
+                "the retained prefix must carry the indicator at the head of the payload");
+    }
+
+    /**
+     * A high-value indicator must survive a huge reconstructed payload.
+     *
+     * <p>Regression guard, found on a real sample
+     * ({@code Signature_Page.-639143_20210913.xlsb}): once file-content previews could
+     * reach megabytes, one blob consumed the whole IOC allowance and the {@code EXEC}
+     * naming what the macro actually runs was starved out. EXEC/FOPEN/CALL cost tens of
+     * chars and carry the most triage value, so they are emitted before the bulk payload.
+     */
+    @Test
+    void testExecSurvivesAHugeReconstructedFileContentPayload() {
+        XlmMacroEmulator emulator = emulatorWithLimits(
+                new XlmMacroEmulator.Limits(100, 1_000_000, 100, 20_000, 1_000_000, 1_000_000));
+        emulator.addMacroCell(0, fopenFormula("dropper.bin"));
+        emulator.addMacroCell(1, fwriteFormula(0, "P".repeat(40_000)));
+        emulator.addMacroCell(2, execFormula("powershell -enc AAAA"));
+        emulator.emulate();
+
+        assertTrue(emulator.iocs.stream().anyMatch(i -> i.startsWith("EXEC")),
+                "the EXEC indicator must not be starved out by a large FILE_CONTENT blob "
+                        + "-- it is what identifies the execution; got: "
+                        + emulator.iocs.stream().map(i -> i.substring(0,
+                                Math.min(30, i.length()))).toList());
+    }
+
+    /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
+    @Test
+    void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {
+        XlmXmlMacrosheetParser parser = parseOneFormula(
+                "A".repeat(XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN + 1));
+
+        String recorded = parser.getFormulas().get("Macro1:1:A1");
+        // +1 for the space that separates the marker from the payload -- without it the
+        // marker is absorbed into any indicator sitting at the cut point.
+        assertTrue(recorded.length()
+                        <= XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN
+                        + 1 + "[...TIKA-XLM-FORMULA-TRUNCATED]".length(),
+                "the formula cap must still bound a pathological formula");
+        assertTrue(recorded.endsWith("[...TIKA-XLM-FORMULA-TRUNCATED]"),
+                "a cut formula is no longer valid syntax and a bare prefix reads as complete "
+                        + "downstream -- it MUST carry an explicit truncation marker");
         assertTrue(parser.isTruncated());
     }
 
@@ -199,6 +405,51 @@ class XlmCaptureBoundsTest {
 
         assertEquals(1, emulator.iocs.size());
         assertTrue(emulator.isLimitReached());
+    }
+
+    /**
+     * An XLSB formula record dropped for exceeding the size bound must SIGNAL the drop.
+     *
+     * <p>Regression guard: the oversize branch was a bare {@code return} against a
+     * hardcoded 65536. An entire macro formula vanished with no metadata flag, no warning
+     * and no XHTML trace -- the analyst sees a short, clean macro and has no way to know
+     * the payload-bearing record was withheld. Silent evidence loss is the same defect
+     * class as silent truncation, just total rather than partial.
+     */
+    @Test
+    void testXlsbOversizeFormulaRecordDropIsReportedNotSilent() throws Exception {
+        AtomicInteger dropped = new AtomicInteger();
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        xhtml.startDocument();
+        // bound of 64 bytes so the fixture stays small; the mechanism is size-independent
+        Biff12XlmMacrosheetParser parser = new Biff12XlmMacrosheetParser(
+                new ByteArrayInputStream(new byte[0]), xhtml, null, 64,
+                dropped::incrementAndGet);
+
+        parser.handleRecord(0x0009, formulaRecord(execFormula("A".repeat(256))));
+
+        assertEquals(1, dropped.get(),
+                "an oversize formula record must report the drop -- dropping a whole "
+                        + "macro formula silently hides evidence from the analyst");
+    }
+
+    /** A record within the bound must NOT report a drop (guards against always-firing). */
+    @Test
+    void testXlsbInBoundFormulaRecordDoesNotReportADrop() throws Exception {
+        AtomicInteger dropped = new AtomicInteger();
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        xhtml.startDocument();
+        Biff12XlmMacrosheetParser parser = new Biff12XlmMacrosheetParser(
+                new ByteArrayInputStream(new byte[0]), xhtml, null, 65536,
+                dropped::incrementAndGet);
+
+        parser.handleRecord(0x0009, formulaRecord(execFormula("calc.exe")));
+
+        assertEquals(0, dropped.get(), "an in-bound record must not be reported as dropped");
     }
 
     @Test
@@ -909,6 +1160,18 @@ class XlmCaptureBoundsTest {
                 .put((byte) 0x22)
                 .put((byte) 2)
                 .putShort((short) 0x0084)
+                .array();
+    }
+
+    /** FCLOSE(handle) -- ptgInt handle, then the FCLOSE function token (0x0085). */
+    private static byte[] fcloseFormula(int handle) {
+        return ByteBuffer.allocate(3 + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e)
+                .putShort((short) handle)
+                .put((byte) 0x22)
+                .put((byte) 1)
+                .putShort((short) 0x0085)
                 .array();
     }
 

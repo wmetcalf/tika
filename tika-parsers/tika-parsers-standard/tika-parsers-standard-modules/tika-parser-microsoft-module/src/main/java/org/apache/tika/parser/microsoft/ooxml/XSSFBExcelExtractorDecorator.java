@@ -210,8 +210,14 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
         }
 
         metadata.set("msoffice:xlsb:has-xlm-macros", "true");
+        org.apache.tika.parser.microsoft.OfficeParserConfig xlmCfg =
+                parseContext == null
+                        ? null
+                        : parseContext.get(
+                                org.apache.tika.parser.microsoft.OfficeParserConfig.class);
+        XlmMacroEmulator.Limits xlmLimits = XlmMacroEmulator.Limits.fromConfig(xlmCfg);
         XlmMacroEmulator.DocumentBudget documentBudget =
-                new XlmMacroEmulator.DocumentBudget(XlmMacroEmulator.Limits.DEFAULT);
+                new XlmMacroEmulator.DocumentBudget(xlmLimits);
 
         int processedMacroParts = 0;
         for (PackagePart macroPart : macroParts) {
@@ -229,14 +235,18 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
             xhtml.element("h1", sheetName);
 
             XlmMacroEmulator emulator = new XlmMacroEmulator(
-                    cellValues, sheetMap, XlmMacroEmulator.Limits.DEFAULT, documentBudget);
+                    cellValues, sheetMap, xlmLimits, documentBudget);
 
             try (InputStream is = xlmInputBudget.limit(
                     macroPart.getInputStream(),
                     () -> markXlmCaptureLimit(
                             metadata, "XLSB XLM input capture limit reached"))) {
                 Biff12XlmMacrosheetParser parser =
-                        new Biff12XlmMacrosheetParser(is, xhtml, emulator);
+                        new Biff12XlmMacrosheetParser(is, xhtml, emulator,
+                                xlmCfg == null ? 0 : xlmCfg.getXlmMaxFormulaRecordBytes(),
+                                () -> markXlmCaptureLimit(metadata,
+                                        "XLSB XLM formula record exceeded the size bound "
+                                                + "and was dropped"));
                 parser.parse();
             } catch (SecurityException e) {
                 throw e;

@@ -95,14 +95,61 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     // an IOC; the prior 4 KB cap × 200k entries = ~825 MB worst case, which is
     // ~20% of a typical worker JVM heap from a single optional capture map.
     // Drop to 1 KB → ~200 MB worst case.
+    // Bounds DATA-SHEET CELL VALUES (IOC fragments) only -- the reasoning above holds
+    // for those. It must NOT be applied to macrosheet FORMULAS: see XLM_FORMULA_MAX_LEN.
     static final int WORKBOOK_VALUE_MAX_LEN = 1024;
+    /**
+     * Per-formula character cap for XLM macrosheet formulas.
+     *
+     * <p>Formulas are not IOC fragments and must not share
+     * {@link #WORKBOOK_VALUE_MAX_LEN}'s 1 KB budget. The canonical XLM dropper builds
+     * its payload as ONE enormous concatenated FORMULA(a&amp;b&amp;c...) expression --
+     * length is the signature, not an anomaly -- so the shared 1 KB cap amputated
+     * exactly the documents that matter most, mid-formula, leaving a prefix that still
+     * looked like a complete formula.
+     *
+     * <p>Measured over 250 macro-bearing workbooks from the malicious-document corpus:
+     * max-formula-length p50=256, p90=2748, p95=5099, max observed=5099, and 22% of
+     * those documents had at least one formula over 1 KB (215 formulas truncated).
+     * 16 KB gives roughly 3x headroom over the observed ceiling.
+     *
+     * <p>Worst-case heap is bounded by {@link #MAX_XLM_FORMULA_TOTAL_CHARS}, NOT by
+     * this value times the entry count: 200k entries at 16 KB would be 3.2 GB.
+     */
+    static final int XLM_FORMULA_MAX_LEN = 16_384;
+    /**
+     * Aggregate cap on retained macrosheet formula text, in characters.
+     *
+     * <p>Enforced DOCUMENT-WIDE by the macro-part loop, which carries the running total
+     * across parts. That carry is load-bearing: the accumulator itself lives on the
+     * per-macrosheet parser, so without it the budget resets on each of up to
+     * {@link #MAX_XLM_MACRO_PARTS} parts and the real document-wide ceiling is 128x this.
+     *
+     * <p>This is a heap bound of last resort, not the primary one. The primary bound is
+     * {@link #MAX_XLM_INPUT_BYTES}, which caps how much macrosheet input is read at all --
+     * note that raising THAT knob raises the achievable retained total independently of
+     * this one. Sized to hold any realistic dropper whole while still refusing an
+     * attacker-crafted workbook that tries to pin the heap.
+     */
+    static final int MAX_XLM_FORMULA_TOTAL_CHARS = 10 * 1024 * 1024;
     static final int MAX_XLM_MACRO_PARTS = 128;
     static final long MAX_XLM_INPUT_BYTES = 32L * 1_024 * 1_024;
-    private static final int MAX_XLM_MACRO_TEXT_CHARS = 1024 * 1024;
+    // Aggregate cap on macro text EMITTED as a MACRO entry. Raised from 1 MiB: a triage
+    // tool must not silently drop macro payload, and MAX_XLM_INPUT_BYTES already bounds
+    // how much can be fed in.
+    private static final int MAX_XLM_MACRO_TEXT_CHARS = 10 * 1024 * 1024;
     private final java.util.Map<String, String> workbookCellValues =
             new java.util.HashMap<>();
-    protected final XlmInputBudget xlmInputBudget =
-            new XlmInputBudget(MAX_XLM_INPUT_BYTES);
+    // Assigned in the constructor: the effective bound comes from OfficeParserConfig
+    // (falling back to MAX_XLM_INPUT_BYTES), which is not available at field-init time.
+    protected final XlmInputBudget xlmInputBudget;
+    // Effective XLM capture bounds: OfficeParserConfig value when set (> 0), else the
+    // built-in default. Resolved once per document in the constructor.
+    private final int cfgFormulaMaxLen;
+    private final int cfgFormulaTotalMaxChars;
+    private final int cfgMacroTextMaxChars;
+    private final int cfgValueMaxLen;
+    private final int cfgValuesMaxEntries;
     private static final String QUERY_TABLE_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/queryTable";
     private static final String PIVOT_CACHE_DEFINITION_RELATION =
@@ -162,6 +209,37 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             ((TikaExcelDataFormatter) formatter)
                     .setDateFormatOverride(officeParserConfig.getDateFormatOverride());
         }
+        // XLM capture bounds are deployment policy, not a compile-time constant: a
+        // forensics pipeline wants generous limits (losing macro payload is worse than
+        // spending memory) while a general extractor may want tight ones. 0/unset keeps
+        // the built-in default, so behaviour is unchanged for callers that set nothing.
+        this.cfgFormulaMaxLen = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmFormulaMaxLen(),
+                XLM_FORMULA_MAX_LEN);
+        this.cfgFormulaTotalMaxChars = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmFormulaTotalMaxChars(),
+                MAX_XLM_FORMULA_TOTAL_CHARS);
+        this.cfgMacroTextMaxChars = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmMacroTextMaxChars(),
+                MAX_XLM_MACRO_TEXT_CHARS);
+        this.cfgValueMaxLen = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmWorkbookValueMaxLen(),
+                WORKBOOK_VALUE_MAX_LEN);
+        this.cfgValuesMaxEntries = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmWorkbookValuesMaxEntries(),
+                WORKBOOK_VALUES_MAX_ENTRIES);
+        long inputBytes = officeParserConfig == null ? 0L : officeParserConfig.getXlmMaxInputBytes();
+        this.xlmInputBudget = new XlmInputBudget(
+                inputBytes > 0L ? inputBytes : MAX_XLM_INPUT_BYTES);
+    }
+
+    private static int positiveOr(int configured, int builtInDefault) {
+        return configured > 0 ? configured : builtInDefault;
+    }
+
+    /** Effective per-formula cap; visible to the macrosheet parser. */
+    int getXlmFormulaMaxLen() {
+        return cfgFormulaMaxLen;
     }
 
     @Override
@@ -264,6 +342,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // called before next(), so this MUST come after the try-with
                 // takes ownership of nextStream.
                 if (captureXlmValues) {
+                    sheetExtractor.setCellValueBounds(cfgValuesMaxEntries, cfgValueMaxLen);
                     sheetExtractor.setCellValueCapture(
                             workbookCellValues, iter.getSheetName(),
                             () -> markXlmCaptureLimit(
@@ -424,9 +503,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         Map<String, String> allValues = new HashMap<>(workbookCellValues);
 
         int processedMacroParts = 0;
+        // Document-wide, NOT per-macrosheet: see the loop below.
+        // long: cfgFormulaTotalMaxChars is operator-settable up to Integer.MAX_VALUE, and
+        // an int accumulator wraps negative there, defeating the document-wide cap.
+        long retainedFormulaCharsDoc = 0;
         for (PackagePart macroPart : macroParts) {
             if (xlmInputBudget.isLimitReached()) {
                 markXlmCaptureLimit("XLM input capture limit reached");
+                break;
+            }
+            if (retainedFormulaCharsDoc >= cfgFormulaTotalMaxChars) {
+                markXlmCaptureLimit("XLM document-wide formula capture limit reached");
                 break;
             }
             if (processedMacroParts >= MAX_XLM_MACRO_PARTS) {
@@ -445,9 +532,16 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 XlmXmlMacrosheetParser parser =
                         new XlmXmlMacrosheetParser(
                                 is, xhtml, sheetName, sharedStrings,
-                                WORKBOOK_VALUES_MAX_ENTRIES - allFormulas.size(),
-                                WORKBOOK_VALUES_MAX_ENTRIES - allValues.size());
+                                cfgValuesMaxEntries - allFormulas.size(),
+                                cfgValuesMaxEntries - allValues.size(),
+                                cfgFormulaMaxLen, cfgValueMaxLen,
+                                (int) Math.max(0,
+                                        cfgFormulaTotalMaxChars - retainedFormulaCharsDoc));
                 parser.parse();
+                // Carry the aggregate across parts. The parser's accumulator is per-sheet,
+                // so without this the budget reset on each of up to MAX_XLM_MACRO_PARTS
+                // parts and the document-wide total was 128x the documented bound.
+                retainedFormulaCharsDoc += parser.getRetainedFormulaChars();
                 allFormulas.putAll(parser.getFormulas());
                 allValues.putAll(parser.getValues());
                 if (parser.isTruncated()) {
@@ -491,7 +585,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         StringBuilder text = new StringBuilder();
         for (String formula : formulas) {
             int separator = text.length() == 0 ? 0 : 1;
-            int remaining = MAX_XLM_MACRO_TEXT_CHARS - text.length() - separator;
+            int remaining = cfgMacroTextMaxChars - text.length() - separator;
             if (remaining <= 0) {
                 markXlmCaptureLimit("XLM macro text retention limit reached");
                 break;
@@ -1495,6 +1589,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             this.cellValueCaptureAllowed = captureAllowed;
         }
 
+        // This is a STATIC nested class, so it cannot read the decorator's per-document
+        // effective caps; the enclosing instance pushes them in. Defaults keep existing
+        // callers (and tests that construct this directly) behaving as before.
+        private int valuesMaxEntries = WORKBOOK_VALUES_MAX_ENTRIES;
+        private int valueMaxLen = WORKBOOK_VALUE_MAX_LEN;
+
+        protected void setCellValueBounds(int valuesMaxEntries, int valueMaxLen) {
+            if (valuesMaxEntries > 0) {
+                this.valuesMaxEntries = valuesMaxEntries;
+            }
+            if (valueMaxLen > 0) {
+                this.valueMaxLen = valueMaxLen;
+            }
+        }
+
         public void startRow(int rowNum) {
             try {
                 // Missing rows, if desired, with a single empty row
@@ -1575,15 +1684,15 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         && cellRef != null && formattedValue != null && !formattedValue.isEmpty()) {
                     String key =
                             captureSheetName + ":" + currentRowForCapture + ":" + cellRef;
-                    if (cellValueSink.size() >= WORKBOOK_VALUES_MAX_ENTRIES
+                    if (cellValueSink.size() >= valuesMaxEntries
                             && !cellValueSink.containsKey(key)) {
                         signalCellValueCaptureLimit();
                     } else {
-                        if (formattedValue.length() > WORKBOOK_VALUE_MAX_LEN) {
+                        if (formattedValue.length() > valueMaxLen) {
                             signalCellValueCaptureLimit();
                         }
-                        String v = formattedValue.length() > WORKBOOK_VALUE_MAX_LEN
-                                ? formattedValue.substring(0, WORKBOOK_VALUE_MAX_LEN)
+                        String v = formattedValue.length() > valueMaxLen
+                                ? formattedValue.substring(0, valueMaxLen)
                                 : formattedValue;
                         cellValueSink.put(key, v);
                     }

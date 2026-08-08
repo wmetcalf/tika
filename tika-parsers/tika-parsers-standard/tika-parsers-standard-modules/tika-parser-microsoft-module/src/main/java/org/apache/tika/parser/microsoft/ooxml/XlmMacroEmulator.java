@@ -42,9 +42,42 @@ import java.util.Map;
 class XlmMacroEmulator {
 
     static final class Limits {
+        // maxMacroCells, maxFormulaBytes, maxIocEntries, maxIocChars,
+        // maxOperations, maxFileContentChars
+        //
+        // maxFileContentChars raised 1 MB -> 10 MB: it bounds RECONSTRUCTED FILE CONTENT,
+        // i.e. the payload a dropper assembles and writes. Silently cutting that is the
+        // same class of evidence loss as the per-formula cap that amputated 22% of
+        // macro-bearing documents. maxIocChars stays at 1 MB -- IOCs are URL/IP/path
+        // strings, and 1 MB across 4096 entries is already generous for those.
         static final Limits DEFAULT = new Limits(
                 65_536, 16L * 1024 * 1024, 4_096, 1024 * 1024,
-                1_000_000, 1024 * 1024);
+                1_000_000, 10 * 1024 * 1024);
+
+        /**
+         * Build limits from {@link org.apache.tika.parser.microsoft.OfficeParserConfig},
+         * falling back to {@link #DEFAULT} for anything left at 0/unset. Keeps these bounds
+         * tunable per deployment instead of requiring a Tika recompile.
+         */
+        static Limits fromConfig(
+                org.apache.tika.parser.microsoft.OfficeParserConfig cfg) {
+            if (cfg == null) {
+                return DEFAULT;
+            }
+            return new Limits(
+                    cfg.getXlmMaxMacroCells() > 0
+                            ? cfg.getXlmMaxMacroCells() : DEFAULT.maxMacroCells,
+                    cfg.getXlmMaxFormulaBytes() > 0L
+                            ? cfg.getXlmMaxFormulaBytes() : DEFAULT.maxFormulaBytes,
+                    cfg.getXlmMaxIocEntries() > 0
+                            ? cfg.getXlmMaxIocEntries() : DEFAULT.maxIocEntries,
+                    cfg.getXlmMaxIocChars() > 0
+                            ? cfg.getXlmMaxIocChars() : DEFAULT.maxIocChars,
+                    cfg.getXlmMaxOperations() > 0L
+                            ? cfg.getXlmMaxOperations() : DEFAULT.maxOperations,
+                    cfg.getXlmMaxFileContentChars() > 0
+                            ? cfg.getXlmMaxFileContentChars() : DEFAULT.maxFileContentChars);
+        }
 
         final int maxMacroCells;
         final long maxFormulaBytes;
@@ -138,6 +171,9 @@ class XlmMacroEmulator {
     }
 
     private static final int MAX_LOOP_ITERATIONS = 65536;
+    // Retained as the floor for the emission cap. Previously this WAS the emission cap,
+    // which silently bounded reconstructed payload far below maxFileContentChars and made
+    // that budget (and its config knob) unobservable.
     private static final int MAX_FILE_CONTENT    = 8192;
 
     private final Map<String, Double> cellValues;
@@ -244,20 +280,35 @@ class XlmMacroEmulator {
             }
         }
 
-        // Emit any still-open file contents
+        // Order matters. EXEC/FOPEN/CALL are tens of chars and name what the macro DOES;
+        // reconstructed file content is up to megabytes of obfuscated payload. Draining
+        // file content first let one blob consume the whole IOC allowance and starve the
+        // EXEC that identifies the execution -- observed on a real sample. Emit the
+        // high-value, low-cost indicators first and give the bulk payload the remainder.
+        for (String ioc : ctx.iocs) {
+            // continue, not break: one over-budget entry must not suppress every smaller
+            // indicator behind it.
+            retainIoc(ioc);
+        }
+
+        // Emit any still-open file contents. The cap is driven by the configured budget
+        // (floored at the historical 8192) rather than being hardcoded to it -- otherwise
+        // raising maxFileContentChars retains payload that is never emitted.
+        int fileContentEmitCap = Math.max(MAX_FILE_CONTENT, maxFileContentChars);
         for (Map.Entry<Integer, StringBuilder> entry : ctx.fileContents.entrySet()) {
             String content = entry.getValue().toString();
             if (!content.isEmpty()) {
                 String path = ctx.getFilePath(entry.getKey());
-                retainIoc("FILE_CONTENT[" + path + "]: "
-                        + content.substring(0, Math.min(MAX_FILE_CONTENT, content.length()))
-                        + (content.length() > MAX_FILE_CONTENT ? "…" : ""));
-            }
-        }
-
-        for (String ioc : ctx.iocs) {
-            if (!retainIoc(ioc)) {
-                break;
+                // retainIoc() rejects an over-budget entry WHOLE, so cut the preview to
+                // what will actually be kept instead of losing the entry outright.
+                String head = "FILE_CONTENT[" + path + "]: ";
+                int budget = remainingIocChars() - head.length() - 1;
+                int cut = Math.min(Math.min(fileContentEmitCap, content.length()),
+                        Math.max(0, budget));
+                if (cut > 0) {
+                    retainIoc(head + content.substring(0, cut)
+                            + (content.length() > cut ? "…" : ""));
+                }
             }
         }
         if (documentBudget != null) {
@@ -397,6 +448,19 @@ class XlmMacroEmulator {
         }
         markLimit(ctx.getLimitWarning());
         emulationAborted = true;
+    }
+
+    /**
+     * Chars still retainable as IOC text, across BOTH the per-emulator and document
+     * budgets. retainIoc() rejects an over-budget entry whole, so previews are sized
+     * against this rather than emitted and dropped.
+     */
+    private int remainingIocChars() {
+        int remaining = Math.max(0, limits.maxIocChars - retainedIocChars);
+        if (documentBudget != null) {
+            remaining = Math.min(remaining, documentBudget.remainingIocChars());
+        }
+        return remaining;
     }
 
     private boolean retainIoc(String ioc) {

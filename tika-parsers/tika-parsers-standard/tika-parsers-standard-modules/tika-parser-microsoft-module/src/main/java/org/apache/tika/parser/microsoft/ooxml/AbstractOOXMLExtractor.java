@@ -385,7 +385,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                         if (!macroTargetsHandledEarly.add(targetPartName)) {
                             continue;
                         }
-                        handleMacros(target, xhtml);
+                        handleMacros(target, xhtml, metadata);
                     } catch (SAXException | SecurityException e) {
                         throw e;
                     } catch (Exception e) {
@@ -512,7 +512,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             // Skip if handleMacrosEarly() already emitted this macro part (it runs before
             // buildXHTML so the VBA source survives the cumulative write-limit).
             if (!macroTargetsHandledEarly.contains(targetPartName)) {
-                handleMacros(target, xhtml);
+                handleMacros(target, xhtml, parentMetadata);
             }
             handledInternalPartNames.add(targetPartName);
         } else if (RELATION_ALTERNATE_FORMAT_CHUNK.equals(type)) {
@@ -1452,7 +1452,7 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     protected abstract List<PackagePart> getMainDocumentParts() throws TikaException;
 
 
-    void handleMacros(PackagePart macroPart, ContentHandler handler)
+    void handleMacros(PackagePart macroPart, ContentHandler handler, Metadata metadata)
             throws TikaException, SAXException {
         OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
 
@@ -1460,7 +1460,8 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             try (InputStream is = macroPart.getInputStream()) {
                 try (POIFSFileSystem poifs = new POIFSFileSystem(is)) {
                     //Macro reading exceptions are already swallowed here
-                    OfficeParser.extractMacros(poifs, handler, embeddedExtractor, context);
+                    OfficeParser.extractMacros(poifs, handler, embeddedExtractor, context,
+                            metadata);
                 }
             } catch (IOException e) {
                 throw new TikaException("Broken OOXML file", e);
