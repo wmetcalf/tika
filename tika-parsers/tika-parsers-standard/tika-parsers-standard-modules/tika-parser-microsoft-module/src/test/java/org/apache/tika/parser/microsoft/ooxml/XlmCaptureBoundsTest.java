@@ -276,6 +276,108 @@ class XlmCaptureBoundsTest {
                                 Math.min(30, i.length()))).toList());
     }
 
+    /**
+     * The cell-value map needs an AGGREGATE char cap, not just count x per-entry.
+     *
+     * <p>Its ceiling used to be the product of those two -- 200,000 x 1,024 == ~200 MiB,
+     * an order of magnitude above the formula aggregate -- and both factors became
+     * operator-settable, so there was effectively no ceiling. A shared-string reference
+     * costs ~32 bytes of budgeted input per 1,024 retained chars, a ~32x amplification
+     * against the input budget, so this is reachable from a small file.
+     */
+    @Test
+    void testCellValueAggregateCapBoundsRetainedValueText() throws Exception {
+        StringBuilder cells = new StringBuilder();
+        for (int i = 1; i <= 200; i++) {
+            cells.append("<c r=\"A").append(i).append("\"><v>")
+                    .append("V".repeat(500)).append("</v></c>");
+        }
+        String xml = String.format(Locale.ROOT, """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData><row r="1">%s</row></sheetData>
+                </worksheet>
+                """, cells);
+        int aggregate = 10_000; // admits ~20 of the 200 values
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 10_000, 10_000, 0, 0, 0,
+                new XSSFExcelExtractorDecorator.ValueCharBudget(aggregate));
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        int retained = parser.getValues().values().stream().mapToInt(String::length).sum();
+        assertTrue(retained > 0, "fixture must retain something, else this test is vacuous");
+        assertTrue(retained <= aggregate,
+                "retained cell-value text (" + retained + ") must not exceed the configured "
+                        + "aggregate (" + aggregate + ") -- count x per-entry is not a ceiling");
+        assertTrue(parser.isTruncated(),
+                "hitting the aggregate must be reported, not silent");
+    }
+
+    /**
+     * The value budget must be DOCUMENT-scoped, not per-sheet.
+     *
+     * <p>Regression guard for the scope bug the formula aggregate already shipped once: its
+     * accumulator lived on a per-sheet object, so it reset on every sheet and the real
+     * document ceiling was N_sheets x the cap. A single shared budget must be spent down by
+     * successive sheets.
+     */
+    @Test
+    void testValueBudgetIsSharedAcrossSheetsNotResetPerSheet() throws Exception {
+        XSSFExcelExtractorDecorator.ValueCharBudget shared =
+                new XSSFExcelExtractorDecorator.ValueCharBudget(6_000);
+        int totalRetained = 0;
+        for (int sheet = 0; sheet < 3; sheet++) {
+            StringBuilder cells = new StringBuilder();
+            for (int i = 1; i <= 20; i++) {
+                cells.append("<c r=\"A").append(i).append("\"><v>")
+                        .append("W".repeat(200)).append("</v></c>");
+            }
+            String xml = String.format(Locale.ROOT, """
+                    <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                      <sheetData><row r="1">%s</row></sheetData>
+                    </worksheet>
+                    """, cells);
+            Metadata metadata = new Metadata();
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                    new ToXMLContentHandler(), metadata, new ParseContext());
+            XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                    new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                    xhtml, "Macro" + sheet, null, 10_000, 10_000, 0, 0, 0, shared);
+            xhtml.startDocument();
+            parser.parse();
+            xhtml.endDocument();
+            totalRetained += parser.getValues().values().stream()
+                    .mapToInt(String::length).sum();
+        }
+        assertTrue(totalRetained <= 6_000,
+                "3 sheets x 4,000 chars each must be bounded by the ONE 6,000-char document "
+                        + "budget, not by 6,000 per sheet; got " + totalRetained);
+    }
+
+    /** 0 and negative must select the built-in default, never disable the bound. */
+    @Test
+    void testValueAggregateZeroAndNegativeSelectTheDefault() {
+        assertTrue(new XSSFExcelExtractorDecorator.ValueCharBudget(0)
+                        .tryRetain(XSSFExcelExtractorDecorator.MAX_XLM_VALUE_TOTAL_CHARS),
+                "0 must select the built-in default");
+        assertFalse(new XSSFExcelExtractorDecorator.ValueCharBudget(0)
+                        .tryRetain(XSSFExcelExtractorDecorator.MAX_XLM_VALUE_TOTAL_CHARS + 1),
+                "the default must still be a bound");
+        assertFalse(new XSSFExcelExtractorDecorator.ValueCharBudget(-1)
+                        .tryRetain(XSSFExcelExtractorDecorator.MAX_XLM_VALUE_TOTAL_CHARS + 1),
+                "a negative value must not disable or invert the bound");
+
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        assertEquals(0, cfg.getXlmValueTotalMaxChars(), "unset means 0 means default");
+        cfg.setXlmValueTotalMaxChars(4096);
+        assertEquals(4096, cfg.getXlmValueTotalMaxChars());
+    }
+
     /** The formula cap still bounds a pathological formula -- and says so unmistakably. */
     @Test
     void testFormulaOverTheFormulaCapIsBoundedAndExplicitlyMarked() throws Exception {

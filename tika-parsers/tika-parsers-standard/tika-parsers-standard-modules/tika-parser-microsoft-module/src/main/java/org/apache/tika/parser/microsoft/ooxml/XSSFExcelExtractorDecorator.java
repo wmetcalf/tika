@@ -132,6 +132,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
      * attacker-crafted workbook that tries to pin the heap.
      */
     static final int MAX_XLM_FORMULA_TOTAL_CHARS = 10 * 1024 * 1024;
+    /**
+     * Aggregate cap on retained cell-VALUE text, in characters, document-wide.
+     *
+     * <p>The value map previously had only a count cap and a per-entry cap, so its ceiling
+     * was their product -- 200,000 x 1,024 == ~200 MiB, an order of magnitude above the
+     * formula aggregate, and unbounded in the direction that matters because BOTH factors
+     * became operator-settable. Raising the per-value cap to match the formula cap (16,384)
+     * for symmetry would have allowed ~3.2 GiB from a few MB of input, since a shared-string
+     * reference costs ~32 bytes of input per 1,024 retained chars.
+     *
+     * <p>Sized as a DoS backstop, not a content limit: far above any legitimate workbook
+     * (see the corpus check on this commit) so it cannot amputate real evidence, which is
+     * the failure this branch exists to fix.
+     */
+    static final int MAX_XLM_VALUE_TOTAL_CHARS = 32 * 1024 * 1024;
     static final int MAX_XLM_MACRO_PARTS = 128;
     static final long MAX_XLM_INPUT_BYTES = 32L * 1_024 * 1_024;
     // Aggregate cap on macro text EMITTED as a MACRO entry. Raised from 1 MiB: a triage
@@ -149,6 +164,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     private final int cfgFormulaTotalMaxChars;
     private final int cfgMacroTextMaxChars;
     private final int cfgValueMaxLen;
+    private final int cfgValueTotalMaxChars;
     private final int cfgValuesMaxEntries;
     private static final String QUERY_TABLE_RELATION =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/queryTable";
@@ -228,6 +244,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         this.cfgValuesMaxEntries = positiveOr(
                 officeParserConfig == null ? 0 : officeParserConfig.getXlmWorkbookValuesMaxEntries(),
                 WORKBOOK_VALUES_MAX_ENTRIES);
+        this.cfgValueTotalMaxChars = positiveOr(
+                officeParserConfig == null ? 0 : officeParserConfig.getXlmValueTotalMaxChars(),
+                MAX_XLM_VALUE_TOTAL_CHARS);
         long inputBytes = officeParserConfig == null ? 0L : officeParserConfig.getXlmMaxInputBytes();
         this.xlmInputBudget = new XlmInputBudget(
                 inputBytes > 0L ? inputBytes : MAX_XLM_INPUT_BYTES);
@@ -343,6 +362,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 // takes ownership of nextStream.
                 if (captureXlmValues) {
                     sheetExtractor.setCellValueBounds(cfgValuesMaxEntries, cfgValueMaxLen);
+                    if (valueCharBudget == null) {
+                        valueCharBudget = new ValueCharBudget(cfgValueTotalMaxChars);
+                    }
+                    sheetExtractor.setValueCharBudget(valueCharBudget);
                     sheetExtractor.setCellValueCapture(
                             workbookCellValues, iter.getSheetName(),
                             () -> markXlmCaptureLimit(
@@ -536,7 +559,10 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                                 cfgValuesMaxEntries - allValues.size(),
                                 cfgFormulaMaxLen, cfgValueMaxLen,
                                 (int) Math.max(0,
-                                        cfgFormulaTotalMaxChars - retainedFormulaCharsDoc));
+                                        cfgFormulaTotalMaxChars - retainedFormulaCharsDoc),
+                                valueCharBudget != null ? valueCharBudget
+                                        : (valueCharBudget =
+                                                new ValueCharBudget(cfgValueTotalMaxChars)));
                 parser.parse();
                 // Carry the aggregate across parts. The parser's accumulator is per-sheet,
                 // so without this the budget reset on each of up to MAX_XLM_MACRO_PARTS
@@ -602,6 +628,35 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         }
         return text.toString();
     }
+
+    /**
+     * Document-scoped counter for retained cell-value chars.
+     *
+     * <p>Deliberately NOT a field on {@link SheetTextAsHTML}: that handler is constructed
+     * fresh for every sheet, so a per-instance counter would reset each sheet and the real
+     * document-wide ceiling would be N_sheets x the cap. That is precisely the scope bug
+     * the formula aggregate shipped with and had to be corrected for.
+     */
+    static final class ValueCharBudget {
+        private final int max;
+        private int retained;
+
+        ValueCharBudget(int max) {
+            this.max = max > 0 ? max : MAX_XLM_VALUE_TOTAL_CHARS;
+        }
+
+        /** @return true if {@code len} chars were charged; false if that would exceed the cap. */
+        boolean tryRetain(int len) {
+            if (retained + (long) len > max) {
+                return false;
+            }
+            retained += len;
+            return true;
+        }
+    }
+
+    /** One per document; see {@link ValueCharBudget} for why this cannot live per-sheet. */
+    private ValueCharBudget valueCharBudget;
 
     private void markXlmCaptureLimit(String warning) {
         if (metadata == null
@@ -1592,8 +1647,14 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         // This is a STATIC nested class, so it cannot read the decorator's per-document
         // effective caps; the enclosing instance pushes them in. Defaults keep existing
         // callers (and tests that construct this directly) behaving as before.
+        private ValueCharBudget valueCharBudget;
         private int valuesMaxEntries = WORKBOOK_VALUES_MAX_ENTRIES;
         private int valueMaxLen = WORKBOOK_VALUE_MAX_LEN;
+
+        /** Shared, document-scoped -- see {@link ValueCharBudget}. */
+        protected void setValueCharBudget(ValueCharBudget budget) {
+            this.valueCharBudget = budget;
+        }
 
         protected void setCellValueBounds(int valuesMaxEntries, int valueMaxLen) {
             if (valuesMaxEntries > 0) {
@@ -1694,7 +1755,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                         String v = formattedValue.length() > valueMaxLen
                                 ? formattedValue.substring(0, valueMaxLen)
                                 : formattedValue;
-                        cellValueSink.put(key, v);
+                        // Aggregate guard. Without it the ceiling was entries x per-entry,
+                        // both of which are operator-settable, so there was no ceiling.
+                        if (valueCharBudget != null && !valueCharBudget.tryRetain(v.length())) {
+                            signalCellValueCaptureLimit();
+                        } else {
+                            cellValueSink.put(key, v);
+                        }
                     }
                 }
 

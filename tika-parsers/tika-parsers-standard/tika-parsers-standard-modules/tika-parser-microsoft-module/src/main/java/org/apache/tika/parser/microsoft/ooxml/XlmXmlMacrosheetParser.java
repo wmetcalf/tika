@@ -110,6 +110,16 @@ final class XlmXmlMacrosheetParser {
                            String sheetName, XSSFSharedStringsShim sharedStrings,
                            int maxFormulaEntries, int maxValueEntries,
                            int formulaMaxLen, int valueMaxLen, int formulaTotalMaxChars) {
+        this(stream, xhtml, sheetName, sharedStrings, maxFormulaEntries, maxValueEntries,
+                formulaMaxLen, valueMaxLen, formulaTotalMaxChars, null);
+    }
+
+    XlmXmlMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                           String sheetName, XSSFSharedStringsShim sharedStrings,
+                           int maxFormulaEntries, int maxValueEntries,
+                           int formulaMaxLen, int valueMaxLen, int formulaTotalMaxChars,
+                           XSSFExcelExtractorDecorator.ValueCharBudget valueCharBudget) {
+        this.valueCharBudget = valueCharBudget;
         this.formulaMaxLen = formulaMaxLen > 0
                 ? formulaMaxLen : XSSFExcelExtractorDecorator.XLM_FORMULA_MAX_LEN;
         this.valueMaxLen = valueMaxLen > 0
@@ -127,6 +137,8 @@ final class XlmXmlMacrosheetParser {
 
     /** Mirrors the inner Handler's accumulator so the caller can carry it across parts. */
     private int handlerRetainedFormulaChars;
+    /** Document-scoped; shared with the worksheet capture path. May be null in unit tests. */
+    private final XSSFExcelExtractorDecorator.ValueCharBudget valueCharBudget;
 
     /**
      * Parse the macrosheet XML. Failures are propagated as SAXException so the
@@ -407,7 +419,13 @@ final class XlmXmlMacrosheetParser {
                     truncated = true;
                 }
                 if (values.size() < maxValueEntries || values.containsKey(key)) {
-                    values.put(key, resolved);
+                    // Aggregate guard, shared document-wide with the worksheet path.
+                    if (valueCharBudget != null
+                            && !valueCharBudget.tryRetain(resolved.length())) {
+                        truncated = true;
+                    } else {
+                        values.put(key, resolved);
+                    }
                 } else {
                     truncated = true;
                 }

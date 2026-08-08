@@ -66,6 +66,8 @@ public class OfficeParserConfig implements Serializable {
     private int xlmMaxFileContentChars = 0;
     /** Max bytes in a single XLSB BIFF12 formula record; 0 = built-in default. */
     private int xlmMaxFormulaRecordBytes = 0;
+    /** Aggregate cap on retained cell-value chars per document; 0 = built-in default. */
+    private int xlmValueTotalMaxChars = 0;
     /** Max bytes in a single VBA project stream (raw or decompressed); 0 = built-in default. */
     private int vbaMaxStreamBytes = 0;
 
@@ -463,6 +465,19 @@ public class OfficeParserConfig implements Serializable {
     /** Max reconstructed file-content characters. 0 = built-in default (10 MB). */
     public int getXlmMaxFileContentChars() {
         return xlmMaxFileContentChars;
+    }
+
+    public int getXlmValueTotalMaxChars() {
+        return xlmValueTotalMaxChars;
+    }
+
+    /**
+     * Aggregate cap on retained cell-value text per document, in characters. Guards the
+     * product of the entry count and per-entry caps, which are both settable and so
+     * previously had no combined ceiling. 0 = built-in default ({@code 32 MB}).
+     */
+    public void setXlmValueTotalMaxChars(int xlmValueTotalMaxChars) {
+        this.xlmValueTotalMaxChars = xlmValueTotalMaxChars;
     }
 
     public int getVbaMaxStreamBytes() {
