@@ -29,6 +29,23 @@ import sys
 from pathlib import Path
 
 
+def _site_of(sites):
+    """Render the first emit site, tolerating entries that have no file/line.
+
+    Prefixes auto-registered from a constant carry only
+    {"class": ..., "auto_registered_from_constant": True} -- no file or line. Indexing
+    ['file'] unconditionally crashed the drift check outright (KeyError), which reads as
+    a CI failure with no diff rather than as a tooling bug.
+    """
+    if not sites:
+        return "?"
+    s0 = sites[0]
+    if "file" in s0 and "line" in s0:
+        return f"{s0['file']}:{s0['line']}"
+    if s0.get("auto_registered_from_constant"):
+        return f"{s0.get('class', '?')} (auto-registered from constant)"
+    return str(s0.get("class", "?"))
+
 def diff_inventories(baseline: dict, current: dict) -> list[str]:
     """Return a list of human-readable diff lines. Empty list = clean."""
     lines: list[str] = []
@@ -52,7 +69,7 @@ def diff_inventories(baseline: dict, current: dict) -> list[str]:
     removed_lit = sorted(base_undecl - cur_undecl)
     for f in added_lit:
         sites = current["undeclared_string_fields"][f]["emitted_by"]
-        site = f"{sites[0]['file']}:{sites[0]['line']}" if sites else "?"
+        site = _site_of(sites)
         lines.append(f"+ ADDED undeclared field `{f}`  (emitted at {site})")
     for f in removed_lit:
         lines.append(f"- REMOVED undeclared field `{f}`")
@@ -62,7 +79,7 @@ def diff_inventories(baseline: dict, current: dict) -> list[str]:
     cur_tpl = set(current.get("templated_fields", {}).keys())
     for f in sorted(cur_tpl - base_tpl):
         sites = current["templated_fields"][f]["emitted_by"]
-        site = f"{sites[0]['file']}:{sites[0]['line']}" if sites else "?"
+        site = _site_of(sites)
         lines.append(f"+ ADDED templated pattern `{f}`  (emitted at {site})")
     for f in sorted(base_tpl - cur_tpl):
         lines.append(f"- REMOVED templated pattern `{f}`")
