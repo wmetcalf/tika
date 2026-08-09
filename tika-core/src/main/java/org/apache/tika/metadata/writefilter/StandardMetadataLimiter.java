@@ -149,9 +149,9 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
                     "ppkg:embedded_file_mime"));
 
     static {
-        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH);
-        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_TYPE);
-        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_ENCODING);
+        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_LENGTH.getName());
+        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_TYPE.getName());
+        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_ENCODING.getName());
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.CONTENT_TYPE_USER_OVERRIDE.getName());
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE.getName());
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.CONTENT_TYPE_HINT.getName());
@@ -159,7 +159,7 @@ public class StandardMetadataLimiter implements MetadataWriteLimiter, Serializab
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.RESOURCE_NAME_KEY.getName());
         ALWAYS_SET_FIELDS.add(AccessPermissions.EXTRACT_CONTENT.getName());
         ALWAYS_SET_FIELDS.add(AccessPermissions.EXTRACT_FOR_ACCESSIBILITY.getName());
-        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_DISPOSITION);
+        ALWAYS_SET_FIELDS.add(Metadata.CONTENT_DISPOSITION.getName());
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.CONTAINER_EXCEPTION.getName());
         ALWAYS_SET_FIELDS.add(TikaCoreProperties.EMBEDDED_EXCEPTION.getName());
         //Metadata.CONTENT_LOCATION? used by the html parser

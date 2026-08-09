@@ -102,7 +102,6 @@ public class Metadata
 
 
     private MetadataWriteLimiter writeLimiter = ACCEPT_ALL;
-    private transient boolean trusted;
     /**
      * Constructs a new, empty metadata.
      */
@@ -322,29 +321,22 @@ public class Metadata
         if (blockReservedKeyWrite(name)) {
             return;
         }
-        addUnchecked(name, value);
-    }
-
-    /** Trusted add, bypassing the reserved-key guard. */
-    private void addUnchecked(final String name, final String value) {
-        writeLimiter.add(name, value, metadata);
+        addTrusted(name, value);
     }
 
     /**
-     * Mark this Metadata as a trusted transformation target (e.g. a metadata filter), letting
-     * String writes reach reserved {@code X-TIKA:} keys. Reset when the transformation is done.
+     * Trusted add, bypassing the reserved-key guard: writes reach reserved Tika-native
+     * ({@code tk:}) keys directly. For internal/known-trusted writers (metadata filters,
+     * clone/merge/deserialize, emit-time enrichment) that legitimately need to assert a
+     * reserved key by name rather than by its {@link Property}.
      */
-    public void setTrusted(boolean trusted) {
-        this.trusted = trusted;
+    public void addTrusted(final String name, final String value) {
+        writeLimiter.add(name, value, metadata);
     }
 
-    public boolean isTrusted() {
-        return trusted;
-    }
-
-    /** Drop String writes to reserved {@code X-TIKA:} keys unless trusted; use their Property. */
+    /** Drop String writes to reserved Tika-native keys; use their Property or {@link #addTrusted}/{@link #setTrusted(String, String)}. */
     private boolean blockReservedKeyWrite(String name) {
-        if (!trusted && name != null && name.startsWith(TikaCoreProperties.TIKA_META_PREFIX)) {
+        if (ReservedNamespaces.isTikaNative(name)) {
             LOG.debug("Dropping String write to reserved metadata key '{}'; use its Property.", name);
             return true;
         }
@@ -357,7 +349,7 @@ public class Metadata
      * @param append add rather than set
      */
     public void reconstruct(String name, String value, boolean append) {
-        if (name != null && name.startsWith(TikaCoreProperties.TIKA_META_PREFIX)) {
+        if (ReservedNamespaces.isTikaNative(name)) {
             Property property = Property.get(name);
             if (property != null) {
                 if (append) {
@@ -366,9 +358,9 @@ public class Metadata
                     set(property, value);
                 }
             } else if (append) {
-                addUnchecked(name, value);
+                addTrusted(name, value);
             } else {
-                setUnchecked(name, value);
+                setTrusted(name, value);
             }
             return;
         }
@@ -392,7 +384,7 @@ public class Metadata
             set(name, newValues);
         } else {
             for (String val : newValues) {
-                addUnchecked(name, val);
+                addTrusted(name, val);
             }
         }
     }
@@ -422,8 +414,11 @@ public class Metadata
             if (values == null) {
                 writeLimiter.addFirst(property.getName(), value, metadata);
             } else if (property.isMultiValuePermitted()) {
-                addUnchecked(property.getName(), value);
+                addTrusted(property.getName(), value);
             } else {
+                // NB upstream re-checks isMultiValuePermitted() here and calls addTrusted.
+                // That is unreachable in this fork: the multi-value case is handled one
+                // branch above via addUnchecked, so this is the else of that same condition.
                 throw new PropertyTypeException(
                         property.getName() + " : " + property.getPropertyType());
             }
@@ -457,15 +452,20 @@ public class Metadata
         if (blockReservedKeyWrite(name)) {
             return;
         }
-        setUnchecked(name, value);
+        setTrusted(name, value);
     }
 
-    /** Trusted set, bypassing the reserved-key guard. */
-    private void setUnchecked(String name, String value) {
+    /**
+     * Trusted set, bypassing the reserved-key guard: writes reach reserved Tika-native
+     * ({@code tk:}) keys directly. See {@link #addTrusted}.
+     */
+    public void setTrusted(String name, String value) {
         writeLimiter.set(name, value, metadata);
     }
 
     protected void set(String name, String[] values) {
+        // Deliberately NOT upstream's inline remove+addTrusted loop: that bypasses the
+        // write limiter, dropping this fork's metadata write bounds on this path.
         writeLimiter.replace(name, values, metadata);
     }
 
@@ -488,7 +488,7 @@ public class Metadata
                 }
             }
         } else {
-            setUnchecked(property.getName(), value);
+            setTrusted(property.getName(), value);
         }
     }
 
@@ -726,6 +726,15 @@ public class Metadata
      */
     public void remove(String name) {
         writeLimiter.remove(name, metadata);
+    }
+
+    /**
+     * Remove a metadata property and all its associated values.
+     *
+     * @param property metadata property to remove
+     */
+    public void remove(Property property) {
+        remove(property.getName());
     }
 
     /**

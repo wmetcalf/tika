@@ -334,7 +334,7 @@ class RTFEmbObjHandler {
     }
 
     private void surfaceLinkedObject(Metadata linkedMetadata) {
-        String topic = linkedMetadata.get(RTFMetadata.EMB_TOPIC);
+        String topic = linkedMetadata.get(RTFMetadata.EMBEDDED_TOPIC);
         String networkName = linkedMetadata.get(RTFMetadata.EMB_NETWORK_NAME);
         if ((topic == null || topic.isBlank())
                 && (networkName == null || networkName.isBlank())) {
@@ -352,8 +352,8 @@ class RTFEmbObjHandler {
             return;
         }
         OfficeLinkMetadataUtil.addLink(parentMetadata, "linked_ole_object", target,
-                linkedMetadata.get(RTFMetadata.EMB_ITEM), null, "rtf", "ole1",
-                linkedMetadata.get(RTFMetadata.EMB_CLASS), "", "", "external_url");
+                linkedMetadata.get(RTFMetadata.EMBEDDED_ITEM), null, "rtf", "ole1",
+                linkedMetadata.get(RTFMetadata.EMBEDDED_CLASS), "", "", "external_url");
     }
 
     private void recordAnalysisFailure(Throwable failure) {

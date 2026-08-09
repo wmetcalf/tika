@@ -396,7 +396,7 @@ class MailContentHandler implements ContentHandler {
                     metadata.set(Message.MULTIPART_BOUNDARY,
                             contentType.getParameters().get("boundary"));
                 } else {
-                    metadata.add(Metadata.MESSAGE_RAW_HEADER_PREFIX + parsedField.getName(),
+                    metadata.add(Message.RAW_HEADER.key(parsedField.getName()),
                             field.getBody());
                 }
             } else if (fieldname.equalsIgnoreCase("Date")) {
@@ -411,7 +411,7 @@ class MailContentHandler implements ContentHandler {
                     //swallow
                 }
             } else {
-                metadata.add(Metadata.MESSAGE_RAW_HEADER_PREFIX + parsedField.getName(),
+                metadata.add(Message.RAW_HEADER.key(parsedField.getName()),
                         field.getBody());
             }
         } catch (RuntimeException me) {
@@ -421,7 +421,7 @@ class MailContentHandler implements ContentHandler {
         }
     }
 
-    private void processAddressList(ParsedField field, String addressListType, String metadataField)
+    private void processAddressList(ParsedField field, String addressListType, Property metadataField)
             throws MimeException {
         AddressListField toField = (AddressListField) field;
         if (toField.isValidField()) {

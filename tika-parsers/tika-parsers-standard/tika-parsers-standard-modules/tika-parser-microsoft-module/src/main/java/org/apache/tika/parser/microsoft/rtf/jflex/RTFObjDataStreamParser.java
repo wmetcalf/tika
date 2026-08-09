@@ -247,15 +247,15 @@ public class RTFObjDataStreamParser implements Closeable {
             analysisFailure = new TikaException(
                     "Truncated OLE1 object data while reading " + currentField);
         }
-        metadata.add(RTFMetadata.EMB_APP_VERSION, Long.toString(version));
+        metadata.add(RTFMetadata.EMBEDDED_APP_VERSION, Long.toString(version));
         if (className != null && !className.isEmpty()) {
-            metadata.add(RTFMetadata.EMB_CLASS, className);
+            metadata.add(RTFMetadata.EMBEDDED_CLASS, className);
         }
         if (topicName != null && !topicName.isEmpty()) {
-            metadata.add(RTFMetadata.EMB_TOPIC, topicName);
+            metadata.add(RTFMetadata.EMBEDDED_TOPIC, topicName);
         }
         if (itemName != null && !itemName.isEmpty()) {
-            metadata.add(RTFMetadata.EMB_ITEM, itemName);
+            metadata.add(RTFMetadata.EMBEDDED_ITEM, itemName);
         }
         if (networkName != null && !networkName.isEmpty()) {
             metadata.add(RTFMetadata.EMB_NETWORK_NAME, networkName);

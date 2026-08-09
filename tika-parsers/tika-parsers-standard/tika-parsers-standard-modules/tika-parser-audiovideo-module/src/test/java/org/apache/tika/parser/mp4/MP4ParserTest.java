@@ -46,6 +46,7 @@ import org.apache.tika.metadata.Audio;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.QuickTime;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.Video;
 import org.apache.tika.metadata.XMP;
 import org.apache.tika.metadata.XMPDM;
 import org.apache.tika.parser.ParseContext;
@@ -64,16 +65,16 @@ public class MP4ParserTest extends TikaTest {
     @Before
     public void setUp() {
 
-        skipKeysB.add("X-TIKA:Parsed-By");
-        skipKeysA.add("X-TIKA:parse_time_millis");
-        skipKeysB.add("X-TIKA:content_handler");
-        skipKeysA.add("X-TIKA:content_handler");
-        skipKeysB.add("X-TIKA:parse_time_millis");
+        skipKeysB.add("tk:parsed-by");
+        skipKeysA.add("tk:parse-time-millis");
+        skipKeysB.add("tk:content-handler");
+        skipKeysA.add("tk:content-handler");
+        skipKeysB.add("tk:parse-time-millis");
         skipKeysB.add("xmpDM:videoCompressor");
         //skipKeysB.add("xmpDM:audioChannelType");
         //skipKeysB.add("xmpDM:audioChannelType");
-        skipKeysA.add("X-TIKA:content");
-        skipKeysB.add("X-TIKA:content");
+        skipKeysA.add("tk:content");
+        skipKeysB.add("tk:content");
         skipKeysB.add("xmpDM:copyright");
     }*/
     /**
@@ -108,6 +109,9 @@ public class MP4ParserTest extends TikaTest {
         assertEquals("Test Genre", metadata.get(XMPDM.GENRE));
         assertEquals("Test Comments", metadata.get(XMPDM.LOG_COMMENT.getName()));
         assertEquals("1", metadata.get(XMPDM.TRACK_NUMBER));
+        //average bitrate from the esds elementary stream descriptor
+        assertEquals("256000", metadata.get(Audio.BITRATE));
+        assertNull(metadata.get(Audio.HAS_DRM));
         //the totals from the trkn/disk atoms were previously read and discarded
         assertEquals("42", metadata.get(Audio.TRACK_COUNT));
         assertEquals("Test Album Artist", metadata.get(XMPDM.ALBUM_ARTIST));
@@ -118,6 +122,8 @@ public class MP4ParserTest extends TikaTest {
 
         assertEquals("44100", metadata.get(XMPDM.AUDIO_SAMPLE_RATE));
         assertEquals("Stereo", metadata.get(XMPDM.AUDIO_CHANNEL_TYPE));
+        assertEquals("2", metadata.get(Audio.CHANNELS));
+        assertEquals("16", metadata.get(Audio.BITS_PER_SAMPLE));
         assertEquals("M4A", metadata.get(XMPDM.AUDIO_COMPRESSOR));
         assertEquals("0.07", metadata.get(XMPDM.DURATION));
 
@@ -139,8 +145,54 @@ public class MP4ParserTest extends TikaTest {
         //TODO: why don't we check the output here?
     }
 
-    // TODO Test a MP4 Video file
+    /**
+     * Test that cover art in the covr atom becomes an embedded document,
+     * with no extra metadata on the audio document itself
+     */
+    @Test
+    public void testMP4CoverArt() throws Exception {
+        List<Metadata> metadataList = getRecursiveMetadata("testMP4_coverArt.m4a");
+
+        assertEquals(2, metadataList.size());
+        assertEquals("audio/mp4", metadataList.get(0).get(Metadata.CONTENT_TYPE));
+
+        Metadata pictureMetadata = metadataList.get(1);
+        assertEquals("image/png", pictureMetadata.get(Metadata.CONTENT_TYPE));
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                pictureMetadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+    }
+
+    /**
+     * Test that a covr entry with several data atoms, one image each,
+     * yields one embedded document per image, in file order
+     */
+    @Test
+    public void testMP4MultipleCovers() throws Exception {
+        List<Metadata> metadataList = getRecursiveMetadata("testMP4_twoCovers.m4a");
+
+        assertEquals(3, metadataList.size());
+        //a png data atom (well-known type 14) followed by a jpeg one (13)
+        Metadata front = metadataList.get(1);
+        assertEquals("image/png", front.get(Metadata.CONTENT_TYPE));
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                front.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+        Metadata back = metadataList.get(2);
+        assertEquals("image/jpeg", back.get(Metadata.CONTENT_TYPE));
+        assertEquals(TikaCoreProperties.EmbeddedResourceType.INLINE.toString(),
+                back.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+    }
+
     // TODO Test an old QuickTime Video File
+    @Test
+    public void testVideoFrameRate() throws Exception {
+        // a 10 fps H.264 clip generated with ffmpeg (color source, 16x16, 1s);
+        // libx264 also writes the average bitrate into the btrt BitRateBox
+        XMLResult r = getXML("testMP4Video.mp4");
+        assertEquals("video/mp4", r.metadata.get(Metadata.CONTENT_TYPE));
+        assertEquals("10.0", r.metadata.get(Video.FRAME_RATE));
+        assertEquals("6536", r.metadata.get(Video.BITRATE));
+    }
+
     @Test
     @Timeout(30000)
     public void testInfiniteLoop() throws Exception {
@@ -291,6 +343,25 @@ public class MP4ParserTest extends TikaTest {
         }
         return vals;
     } */
+
+    @Test
+    public void testDrmProtectedM4a() throws Exception {
+        //the sample description declares a protected 'drms' sample entry
+        Metadata metadata = new Metadata();
+        getText("testMP4_drm.m4a", metadata);
+        assertEquals("true", metadata.get(Audio.HAS_DRM));
+    }
+
+    @Test
+    public void testEsdsWithDescriptorFlags() throws Exception {
+        //the ES descriptor declares the optional stream dependence, URL and
+        //OCR fields, which shift the DecoderConfigDescriptor; the URL string
+        //deliberately reads "sinf" so a raw fourcc scan would misreport DRM
+        Metadata metadata = new Metadata();
+        getText("testMP4_esdsFlags.m4a", metadata);
+        assertEquals("96000", metadata.get(Audio.BITRATE));
+        assertNull(metadata.get(Audio.HAS_DRM));
+    }
 
     @Test
     public void testQuickTimeMetadataKeys() throws Exception {

@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Date;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
@@ -189,9 +190,17 @@ public class PSTMailItemParser implements Parser {
         metadata.set(TikaCoreProperties.SUBJECT, pstMail.getSubject());
         metadata.set(Metadata.MESSAGE_FROM, pstMail.getSenderName());
         metadata.set(TikaCoreProperties.CREATOR, pstMail.getSenderName());
-        metadata.set(TikaCoreProperties.CREATED, pstMail.getCreationTime());
-        metadata.set(MAPI.SUBMISSION_ACCEPTED_AT_TIME, pstMail.getClientSubmitTime());
-        metadata.set(TikaCoreProperties.MODIFIED, pstMail.getLastModificationTime());
+        //creation/last-modification are storage timestamps, not content dates (TIKA-4798)
+        Date messageDate = pstMail.getClientSubmitTime();
+        if (messageDate == null) {
+            messageDate = pstMail.getMessageDeliveryTime();
+        }
+        metadata.set(TikaCoreProperties.CREATED, messageDate);
+        metadata.set(TikaCoreProperties.MODIFIED, messageDate);
+        metadata.set(MAPI.CLIENT_SUBMIT_TIME, pstMail.getClientSubmitTime());
+        metadata.set(MAPI.MESSAGE_DELIVERY_TIME, pstMail.getMessageDeliveryTime());
+        metadata.set(MAPI.CREATION_TIME, pstMail.getCreationTime());
+        metadata.set(MAPI.LAST_MODIFICATION_TIME, pstMail.getLastModificationTime());
         metadata.set(TikaCoreProperties.COMMENTS, pstMail.getComment());
         metadata.set(PST.DESCRIPTOR_NODE_ID, valueOf(pstMail.getDescriptorNodeId()));
         metadata.set(Message.MESSAGE_FROM_EMAIL, pstMail.getSenderEmailAddress());

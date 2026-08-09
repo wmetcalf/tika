@@ -21,7 +21,7 @@
 
 == Overview
 
-Tika Server 4.x introduces pipes-based parsing for the main content-extraction endpoints (`/tika`, `/rmeta`, `/unpack`), which provides process isolation for those operations. This improves stability and resource management but introduces some breaking changes. A few endpoints (notably `/meta`) still parse in-process in the request-handling JVM.
+Tika Server 4.x introduces pipes-based parsing for the main content-extraction endpoints (`/tika`, `/rmeta`, `/unpack`, `/meta`), which provides process isolation for those operations. This improves stability and resource management but introduces some breaking changes.
 
 == New `/tika` Endpoint Structure
 
@@ -112,6 +112,29 @@ The HTTP status codes are also more precise:
 that branch only on HTTP status code are unaffected unless they were treating
 `UNSPECIFIED_CRASH` as a `500`.
 
+=== `/meta` Is Now Pipes-Backed
+
+`/meta` previously parsed in-process, in the request-handling JVM, with no crash
+isolation and its own ad hoc error handling (`500` for most parse failures, `400`
+for a field that couldn't be extracted from an incompletely-parsed document). It
+now shares the same pipes-backed `PipesParser` as `/tika`, `/rmeta`, and `/unpack`
+(see
+xref:using-tika/server/index.adoc#_endpoints_and_forked_process_groups[Endpoints
+and Forked-Process Groups]), with the same crash isolation and the same
+per-document exception handling as those endpoints (see
+xref:using-tika/server/index.adoc#_error_responses[Error Responses]):
+
+* `/meta`, `/meta/form`, `/meta/config` now return `200 OK` with the exception
+  embedded in `tk:exception:container-exception`, instead of `500`.
+* `/meta/\{field}` now returns `422 Unprocessable Entity` for a genuine parse
+  exception, instead of `500` or `400`.
+
+**Migration:** clients that treated any non-`200` from `/meta` as "parse failed"
+should check the new status codes above. Clients that inspected the response body
+for error text should check `tk:exception:container-exception` (full-object
+endpoints) or the `422` body (`/meta/\{field}`, populated only when
+`returnStackTrace=true`).
+
 === Accept Header Routing Removed
 
 The `/tika` endpoint no longer routes based on `Accept` headers. Use explicit paths instead:
@@ -181,6 +204,24 @@ All tika-server configurations must now include a `pipes` section and a `file-sy
   "plugin-roots": "path/to/plugins"
 }
 ----
+
+[IMPORTANT]
+====
+`numClients` is not boilerplate to copy unchanged from this example. In 3.x,
+`/tika`, `/rmeta`, and `/unpack` parsed in-process, in the request-handling
+JVM — no forked processes, no fixed concurrency limit. In 4.x, these same
+default-on endpoints *always* fork `numClients` child JVMs and share a fixed
+pool of that many concurrent workers. Size it too low for your request volume
+and callers start getting `429 CLIENT_UNAVAILABLE_WITHIN_MS` under load that
+used to just queue up on request threads instead (this is deliberate
+backpressure, not a bug — see
+xref:using-tika/server/index.adoc#_endpoints_and_forked_process_groups[Endpoints
+and Forked-Process Groups]). Size it too high for your host's core count, and
+the forked workers individually starve each other of CPU (see
+xref:pipes/cpu-sizing.adoc[Forked-JVM CPU Sizing]). Neither failure mode
+throws an error pointing at `numClients` as the cause — size it deliberately
+before deploying, not from this example.
+====
 
 == New Features
 

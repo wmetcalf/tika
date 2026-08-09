@@ -57,9 +57,10 @@ public class WARCParserTest extends TikaTest {
                 BasicContentHandlerFactory.HANDLER_TYPE.TEXT);
 
         Set<String> fieldsToIgnore = new HashSet<>();
-        fieldsToIgnore.add("X-TIKA:parse_time_millis");
+        fieldsToIgnore.add("tk:parse-time-millis");
         fieldsToIgnore.add("Content-Type");
-        fieldsToIgnore.add("Content-Type-Magic-Detected");
+        // upstream renamed this key; the img: fields are fork-only (image hashing)
+        fieldsToIgnore.add("tk:content-type-magic-detected");
         fieldsToIgnore.add("img:File Name");
         fieldsToIgnore.add("img:File Modified Date");
         assertMetadataListEquals(metadataList, gzMetadataList, fieldsToIgnore);

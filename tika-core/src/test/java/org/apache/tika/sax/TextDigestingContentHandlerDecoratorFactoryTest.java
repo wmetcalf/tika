@@ -32,6 +32,9 @@ import org.apache.tika.digest.DigestDef;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 
+// NB upstream moved the Tika-native prefix: TIKA_META_PREFIX is now "tk:" and
+// "X-TIKA:" became LEGACY_TIKA_META_PREFIX. The production code builds keys from
+// the constant, so only these literals needed updating.
 public class TextDigestingContentHandlerDecoratorFactoryTest {
 
     @Test
@@ -52,13 +55,13 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
         handler.endDocument();
 
         assertEquals("5eb63bbbe01eeed093cb22bb8f5acdc3",
-                metadata.get("X-TIKA:digest:text:MD5"));
+                metadata.get("tk:digest:text:MD5"));
         assertEquals("2aae6c35c94fcfb415dbe95f408b9ce91ee846ed",
-                metadata.get("X-TIKA:digest:text:SHA1"));
+                metadata.get("tk:digest:text:SHA1"));
         assertEquals("b94d27b9934d3e08a52e52d7da7dabfac484efe" +
                         "37a5380ee9088f7ace2efcde9",
-                metadata.get("X-TIKA:digest:text:SHA256"));
-        assertNull(metadata.get("X-TIKA:digest:MD5"));
+                metadata.get("tk:digest:text:SHA256"));
+        assertNull(metadata.get("tk:digest:MD5"));
     }
 
     @Test
@@ -74,12 +77,12 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
         handler.endDocument();
 
         assertEquals("900150983cd24fb0d6963f7d28e17f72",
-                metadata.get("X-TIKA:digest:text:MD5"));
+                metadata.get("tk:digest:text:MD5"));
         assertEquals("a9993e364706816aba3e25717850c26c9cd0d89d",
-                metadata.get("X-TIKA:digest:text:SHA1"));
+                metadata.get("tk:digest:text:SHA1"));
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a3" +
                         "96177a9cb410ff61f20015ad",
-                metadata.get("X-TIKA:digest:text:SHA256"));
+                metadata.get("tk:digest:text:SHA256"));
     }
 
     @Test
@@ -97,7 +100,7 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
         handler.endDocument();
 
         assertEquals("186ca4f1a2d2ac0d5381177c6719713b",
-                metadata.get("X-TIKA:digest:text:MD5"));
+                metadata.get("tk:digest:text:MD5"));
     }
 
     @Test
@@ -129,7 +132,7 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
         String expected = HexFormat.of().formatHex(
                 MessageDigest.getInstance("MD5").digest(
                         expectedText.toString().getBytes(StandardCharsets.UTF_8)));
-        assertEquals(expected, metadata.get("X-TIKA:digest:text:MD5"));
+        assertEquals(expected, metadata.get("tk:digest:text:MD5"));
     }
 
     @Test
@@ -148,6 +151,6 @@ public class TextDigestingContentHandlerDecoratorFactoryTest {
         handler.endDocument();
 
         assertEquals("0cc9cd4dd26c5137b675a0d819cb9ab0",
-                metadata.get("X-TIKA:digest:text:MD5"));
+                metadata.get("tk:digest:text:MD5"));
     }
 }
