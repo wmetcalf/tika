@@ -145,49 +145,9 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
     }
 
     @Test
-    public void testOOMWithPipes() throws Exception {
-        // With pipes-based parsing, OOM in a child process should NOT crash the server
-        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
-
-        awaitServerStartup();
-
-        Response response = WebClient
-                .create(endPoint + RMETA_PATH)
-                .accept("application/json")
-                .put(ClassLoader.getSystemResourceAsStream(TEST_OOM));
-
-        // Server should return 503 (Service Unavailable) for OOM, not crash
-        assertEquals(503, response.getStatus());
-        assertErrorResponseStatus(response, "OOM");
-
-        // Server should still be running - verify with a successful request
-        testBaseline();
-    }
-
-    @Test
     public void testSystemExit() throws Exception {
         // With pipes-based parsing, System.exit in a child process should NOT crash the server
         startProcess(new String[]{"-config", getConfig("tika-config-server-basic.json")});
-
-        awaitServerStartup();
-
-        Response response = WebClient
-                .create(endPoint + RMETA_PATH)
-                .accept("application/json")
-                .put(ClassLoader.getSystemResourceAsStream(TEST_SYSTEM_EXIT));
-
-        // UNSPECIFIED_CRASH is a transient process failure — 503, same category as OOM/TIMEOUT
-        assertEquals(503, response.getStatus());
-        assertErrorResponseStatus(response, "UNSPECIFIED_CRASH");
-
-        // Server should still be running - verify with a successful request
-        testBaseline();
-    }
-
-    @Test
-    public void testSystemExitWithPipes() throws Exception {
-        // With pipes-based parsing, System.exit in a child process should NOT crash the server
-        startProcess(new String[]{"-config", getConfig("tika-config-server-pipes-basic.json")});
 
         awaitServerStartup();
 
@@ -279,7 +239,7 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
         assertEquals(1, metadataList.size());
         assertContains("quick brown fox", metadataList
                 .get(0)
-                .get("X-TIKA:content"));
+                .get("tk:content"));
         testBaseline();
 
     }
@@ -312,7 +272,7 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
                 .get("author"));
         assertContains("hello world", metadataList
                 .get(0)
-                .get("X-TIKA:content"));
+                .get("tk:content"));
 
         //now test no tls config
         webClient = WebClient.create(httpsEndpoint + RMETA_PATH);
@@ -355,7 +315,7 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
                 .get("author"));
         assertContains("hello world", metadataList
                 .get(0)
-                .get("X-TIKA:content"));
+                .get("tk:content"));
 
         //now test that no tls config fails
         webClient = WebClient.create(httpsEndpoint + RMETA_PATH);
@@ -453,7 +413,7 @@ public class TikaServerIntegrationTest extends IntegrationTestBase {
                     .get("author"));
             assertContains("hello world", metadataList
                     .get(0)
-                    .get("X-TIKA:content"));
+                    .get("tk:content"));
             return;
         }
         fail("should have completed within 3 tries");

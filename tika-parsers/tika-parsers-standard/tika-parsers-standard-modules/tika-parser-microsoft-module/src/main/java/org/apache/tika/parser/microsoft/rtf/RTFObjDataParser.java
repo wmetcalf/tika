@@ -87,7 +87,7 @@ class RTFObjDataParser {
             throws IOException, TikaException {
         UnsynchronizedByteArrayInputStream is = UnsynchronizedByteArrayInputStream.builder().setByteArray(bytes).get();
         long version = readUInt(is);
-        metadata.add(RTFMetadata.EMB_APP_VERSION, Long.toString(version));
+        metadata.add(RTFMetadata.EMBEDDED_APP_VERSION, Long.toString(version));
 
         long formatId = readUInt(is);
         // 2 is an embedded object. 1 is a link. Both carry the three
@@ -103,14 +103,16 @@ class RTFObjDataParser {
         String itemName = readLengthPrefixedAnsiString(is).trim().replace("\u0000", "");
 
         if (className.length() > 0) {
-            metadata.add(RTFMetadata.EMB_CLASS, className);
+            // upstream renamed the constant; checkClassNameObfuscation is fork-only
+            // hardening and must survive the rename.
+            metadata.add(RTFMetadata.EMBEDDED_CLASS, className);
             checkClassNameObfuscation(className, metadata);
         }
         if (topicName.length() > 0) {
-            metadata.add(RTFMetadata.EMB_TOPIC, topicName);
+            metadata.add(RTFMetadata.EMBEDDED_TOPIC, topicName);
         }
         if (itemName.length() > 0) {
-            metadata.add(RTFMetadata.EMB_ITEM, itemName);
+            metadata.add(RTFMetadata.EMBEDDED_ITEM, itemName);
         }
         if (linkedObject) {
             String networkName = readBoundedLinkedNetworkName(is)
