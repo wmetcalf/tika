@@ -305,10 +305,13 @@ class XlmMacroEmulator {
                 int budget = remainingIocChars() - head.length() - 1;
                 int cut = Math.min(Math.min(fileContentEmitCap, content.length()),
                         Math.max(0, budget));
-                if (cut > 0) {
-                    retainIoc(head + content.substring(0, cut)
-                            + (content.length() > cut ? "…" : ""));
-                }
+                // Unconditional: retainIoc() marks the limit when it refuses, so skipping the call
+                // on a zero-length cut (which happens whenever the header alone exceeds the
+                // remaining allowance -- an attacker-chosen long FOPEN path makes that easy)
+                // converted a REPORTED drop into a silent one. This is the drain, emitted after the
+                // high-value indicators, so a greedy cut here cannot starve them.
+                retainIoc(head + content.substring(0, cut)
+                        + (content.length() > cut ? "…" : ""));
             }
         }
         if (documentBudget != null) {

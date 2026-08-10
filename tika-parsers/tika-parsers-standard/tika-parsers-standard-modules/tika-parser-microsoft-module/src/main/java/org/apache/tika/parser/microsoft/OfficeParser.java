@@ -124,6 +124,25 @@ public class OfficeParser extends AbstractOfficeParser {
      * the loss is invisible, and a caller cannot distinguish a 40-line macro from a 12 MB
      * module that was dropped whole.
      */
+    /**
+     * Surface a fired VBA size bound on the parent metadata.
+     *
+     * <p>MUST be called on EVERY exit from {@link #extractMacros}. The reporting used to sit only at
+     * the end, AFTER the early {@code return} taken when the lenient reader recovered nothing -- which
+     * is the PRIMARY lenient-reader path (the catch around POI's reader, the whole reason
+     * LenientVBAReader exists) and precisely the case a fired bound produces. A document whose VBA
+     * stream exceeded the bound was therefore reported as "no recoverable macros" with no truncation
+     * flag at all.
+     */
+    private static void reportVbaBounds(LenientVBAReader.Bounds bounds, Metadata parentMetadata) {
+        if (bounds == null || !bounds.isLimitReached() || parentMetadata == null) {
+            return;
+        }
+        parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
+        parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, bounds.getLimitDetail());
+    }
+
     public static void extractMacros(POIFSFileSystem fs, ContentHandler xhtml,
                                      EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                      ParseContext context, Metadata parentMetadata)
@@ -160,6 +179,8 @@ public class OfficeParser extends AbstractOfficeParser {
                             //pass in space character so that we don't trigger a zero-byte exception
                             TikaInputStream.get(new byte[]{'\u0020'}), xhtml, m, context, true);
                 }
+                // Report BEFORE returning: this is the path a fired bound actually takes.
+                reportVbaBounds(vbaBounds, parentMetadata);
                 return;
             }
         }
@@ -179,14 +200,7 @@ public class OfficeParser extends AbstractOfficeParser {
                 // recovery is best-effort
             }
         }
-        if (vbaBounds.isLimitReached() && parentMetadata != null) {
-            // Mirrors markXlmCaptureLimit: a dedicated flag, TRUNCATED_METADATA so generic
-            // consumers see it, and the detail as a warning.
-            parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
-            parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                    vbaBounds.getLimitDetail());
-        }
+        reportVbaBounds(vbaBounds, parentMetadata);
         if (macros == null) {
             return;
         }

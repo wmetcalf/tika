@@ -41,6 +41,12 @@ import java.util.stream.Collectors;
  */
 final class Biff12XlmFormulaDecoder {
 
+    /**
+     * Fixed slice of a reconstructed file emitted at FCLOSE time. Deliberately NOT budget-derived:
+     * FCLOSE is evaluated mid-macro, so a greedy preview starves every indicator after it.
+     */
+    private static final int FCLOSE_PREVIEW_CHARS = 8192;
+
     // ── Ptg type IDs (MS-XLSB §2.5.97) ────────────────────────────────────
     private static final int PTG_EXP          = 0x01;
     private static final int PTG_TABLE        = 0x02;
@@ -1106,25 +1112,31 @@ final class Biff12XlmFormulaDecoder {
                     String content = ctx.getFileContent(handle);
                     if (content != null && !content.isEmpty()) {
                         String path = ctx.getFilePath(handle);
-                        // Was a hardcoded 300. That made maxFileContentChars (and its
-                        // OfficeParserConfig knob) inert: retention was never the binding
-                        // constraint, this emission preview was -- a dropper's URL/C2 sits
-                        // past char 300 and never reached the analyst, with no limit flagged.
+                        // This runs DURING evaluation, so whatever it takes is denied to every
+                        // EXEC/CALL/FOPEN evaluated later. It must therefore be a FIXED, modest
+                        // slice -- never derived from the remaining IOC budget.
                         //
-                        // Size the preview to the IOC budget too. addIoc() rejects an
-                        // over-budget entry ENTIRELY rather than keeping a prefix, so with
-                        // maxFileContentChars (10 MB) above maxIocChars (1 MB) an unbounded
-                        // preview loses the whole entry -- strictly less evidence than the
-                        // old 300-char cut. Emit the largest prefix that will be retained.
-                        String head = "FILE_CONTENT[" + path + "]: ";
-                        int budget = ctx.remainingIocChars() - head.length() - 1;
-                        int preview = Math.min(
-                                Math.min(ctx.maxFileContentChars(), content.length()),
-                                Math.max(0, budget));
-                        if (preview > 0) {
-                            ctx.addIoc(head + content.substring(0, preview)
-                                    + (content.length() > preview ? "…" : ""));
-                        }
+                        // A budget-derived preview (min(fileContentCap, len, remaining - head - 1))
+                        // was tried and is strictly worse than the 300-char cut it replaced: it
+                        // claims ALL remaining chars, so at DEFAULT limits (maxIocChars 1 MB) a
+                        // >1 MB reconstructed payload consumed the entire allowance, every later
+                        // EXEC/CALL was rejected, and because rejection calls markLimit ->
+                        // stopOnContextLimit, emulation ABORTED at that point. Measured: preview
+                        // 1,048,549 chars and no EXEC at all, on an ordinary
+                        // FOPEN/FWRITE*/FCLOSE/EXEC dropper. The EXEC command line is the single
+                        // most valuable indicator in that document.
+                        //
+                        // FCLOSE_PREVIEW_CHARS is 8192, matching the drain path's historical cut:
+                        // 27x more payload than the old 300 while, at a 1 MB allowance, leaving
+                        // room for ~128 such previews plus every short indicator. Bounded by
+                        // maxFileContentChars when an operator lowers it.
+                        int preview = Math.min(FCLOSE_PREVIEW_CHARS,
+                                Math.min(ctx.maxFileContentChars(), content.length()));
+                        // Unconditional addIoc: it marks the limit when it refuses, and skipping
+                        // the call on a zero-length preview turned a REPORTED drop into a silent
+                        // one.
+                        ctx.addIoc("FILE_CONTENT[" + path + "]: " + content.substring(0, preview)
+                                + (content.length() > preview ? "…" : ""));
                     }
                 }
                 return 0.0;

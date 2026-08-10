@@ -252,6 +252,41 @@ class XlmCaptureBoundsTest {
     }
 
     /**
+     * EXEC must survive a huge payload closed with FCLOSE, at DEFAULT limits.
+     *
+     * <p>The existing sibling test drives the END-OF-EMULATE DRAIN path, which is emitted after the
+     * high-value indicators and so cannot starve them. FCLOSE is different: it emits DURING
+     * evaluation, so a budget-derived preview there claims every remaining IOC char and every later
+     * EXEC/CALL is refused -- and because refusal marks the limit, which stopOnContextLimit turns
+     * into emulationAborted, evaluation stops dead. Measured on the shipped code: preview 1,048,549
+     * chars, no EXEC. That was a regression against the fixed 300-char cut it replaced, which is why
+     * the FCLOSE preview is now a fixed slice.
+     */
+    @Test
+    void testExecSurvivesAnFcloseFlushedPayloadAtDefaultLimits() {
+        // DEFAULT production limits -- no tuning. maxIocChars 1 MB, maxFileContentChars 10 MB.
+        XlmMacroEmulator emulator = emulatorWithLimits(
+                new XlmMacroEmulator.Limits(1000, 20_000_000, 10_000, 1_048_576, 10_000_000,
+                        10_485_760));
+        emulator.addMacroCell(0, fopenFormula("dropper.bin"));
+        // >1 MB of payload, i.e. more than the whole IOC allowance
+        for (int i = 0; i < 40; i++) {
+            emulator.addMacroCell(1 + i, fwriteFormula(0, "P".repeat(30_000)));
+        }
+        emulator.addMacroCell(100, fcloseFormula(0));
+        emulator.addMacroCell(101, execFormula("powershell -w hidden -enc AAAA"));
+        emulator.emulate();
+
+        assertTrue(emulator.iocs.stream().anyMatch(i -> i.startsWith("EXEC")),
+                "EXEC evaluated AFTER an FCLOSE that flushed a >1 MB payload must still be emitted "
+                        + "-- it is the single most valuable indicator in a dropper, and an FCLOSE "
+                        + "preview sized from the remaining budget consumes the whole allowance and "
+                        + "aborts emulation; got: "
+                        + emulator.iocs.stream().map(i -> i.substring(0, Math.min(28, i.length())))
+                                .toList());
+    }
+
+    /**
      * A high-value indicator must survive a huge reconstructed payload.
      *
      * <p>Regression guard, found on a real sample
