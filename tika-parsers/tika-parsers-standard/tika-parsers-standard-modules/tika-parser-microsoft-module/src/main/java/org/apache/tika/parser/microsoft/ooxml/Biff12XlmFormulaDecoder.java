@@ -965,7 +965,7 @@ final class Biff12XlmFormulaDecoder {
                 retainedFileContentChars += retained;
             }
             if (retained < text.length()) {
-                markLimit("XLSB XLM reconstructed file-content retention limit reached");
+                markNonFatal("XLSB XLM reconstructed file-content retention limit reached");
             }
         }
 
@@ -1016,6 +1016,14 @@ final class Biff12XlmFormulaDecoder {
         private final java.util.LinkedHashSet<String> nonFatalWarnings =
                 new java.util.LinkedHashSet<>();
 
+        /**
+         * NOTE for the file-content writer: it reports truncation through markNonFatal, NOT
+         * markLimit. markLimit sets limitWarning, isLimitReached() is `limitWarning != null`, and
+         * XlmMacroEmulator.stopOnContextLimit turns that into emulationAborted -- so an oversized
+         * FWRITE aborted every LATER macro cell and the EXEC command line was never evaluated
+         * (measured with xlmMaxFileContentChars=2000: execEmitted=false). Same "report, do not
+         * abort" defect already fixed in FCLOSE two methods away, left in the writer.
+         */
         void markNonFatal(String warning) {
             if (warning != null && nonFatalWarnings.size() < 32) {
                 nonFatalWarnings.add(warning);
@@ -1205,9 +1213,21 @@ final class Biff12XlmFormulaDecoder {
                         int preview = Math.min(
                                 Math.min(ctx.maxFileContentChars(), content.length()),
                                 Math.max(0, spendable));
-                        if (preview > 0) {
-                            ctx.addIoc(head + content.substring(0, preview)
-                                    + (content.length() > preview ? "…" : ""));
+                        if (preview >= content.length()) {
+                            // Complete: emit here and close, so the drain cannot duplicate it.
+                            ctx.addIoc(head + content);
+                        } else if (preview > 0) {
+                            // CUT. Do not emit the prefix: the post-loop drain restarts at offset
+                            // 0, so the two emissions overlap completely on the shorter one and the
+                            // budget pays twice for the same bytes while the payload TAIL is lost.
+                            // Measured at xlmMaxIocChars=6096: two entries spending 6,043 chars to
+                            // cover 4,043 unique chars of a 5,016-char payload, second C2 URL never
+                            // emitted. The drain runs after the high-value indicators are secured
+                            // and may spend the whole remainder, so it is strictly the better
+                            // emitter here -- leave the content to it.
+                            ctx.markNonFatal("XLSB XLM reconstructed file content deferred at "
+                                    + "FCLOSE: emitted by the post-loop drain with a larger "
+                                    + "budget.");
                         } else {
                             // Do NOT emit a content-free "FILE_CONTENT[path]: …". It carries zero
                             // evidence, spends budget on an attacker-chosen path string, and when

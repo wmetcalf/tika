@@ -227,6 +227,8 @@ final class XlmXmlMacrosheetParser {
         // string, "inlineStr", "str", "b", or null for numeric). Preserved across
         // the <c>...</c> span.
         /** True between <c> and its </c>, so a nested <c> is detectable. */
+        /** Monotonic suffix source for duplicated cell keys; never restarts, so linear. */
+        private int duplicateKeySeq;
         private boolean cellOpen;
         /** 1-based column implied by document order, for cells with no @r (legal per ECMA-376). */
         private int impliedCol;
@@ -334,6 +336,18 @@ final class XlmXmlMacrosheetParser {
                     // FIRST so its capture survives, then start the inner one.
                     if (cellOpen) {
                         structuralAnomaly = true;
+                        // Commit an in-flight inline string BEFORE flushing. inlineAcc is only
+                        // moved to currentValueText on </is>, which has not happened yet, and
+                        // flushCell() clears it -- so the guard whose job is "flush the outer cell
+                        // so its capture survives" DISCARDED the value of a t="inlineStr" cell
+                        // entirely. Measured: <c r="A1" t="inlineStr"><is><t>powershell -enc
+                        // PAYLOAD</t><c r="B1"><v>0</v></c></is></c> stored only B1, and the
+                        // payload appeared nowhere in the output (macrosheet values are not
+                        // emitted to XHTML) -- an inline string is a documented payload stash spot.
+                        if (inInlineString && inlineAcc.length() > 0
+                                && (currentValueText == null || currentValueText.isEmpty())) {
+                            currentValueText = inlineAcc.toString();
+                        }
                         flushCell();
                     }
                     cellOpen = true;
@@ -437,18 +451,83 @@ final class XlmXmlMacrosheetParser {
          * either order). Seeding preserves both; the per-element cap in characters() still
          * applies to the combined length, so this cannot escape the budget.
          */
+        /** Prior text from a duplicated <f> in this cell, recorded alongside the later one. */
+        private String pendingDuplicateFormula;
+
+
+        /**
+         * The ONE place a formula becomes a retained entry.
+         *
+         * <p>Every caller -- the cell flush, and a duplicated {@code <f>} inside one cell -- goes
+         * through here, so the caps and the charge-equals-stored invariant cannot diverge between
+         * paths. Divergence between "the gate" and "the charge" has been the recurring defect in
+         * this method across several review rounds.
+         */
+        private void recordFormula(String baseKey, String text, boolean wasTruncated)
+                throws SAXException {
+            int projected = text.length()
+                    + (wasTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
+
+            // A repeated cell key means a duplicated <c r="...">/<row r="...">, or a duplicated
+            // <f> within one cell. put() used to REPLACE, so a benign decoy at the same ref
+            // DELETED the payload from `formulas` -- and `formulas` is what feeds the IOC scanner
+            // and the MACRO entry, so the payload vanished from every structured output with no
+            // flag. Keep every occurrence under a distinct key instead.
+            //
+            // Two earlier attempts failed here and are worth not repeating: REPLACE was the
+            // last-wins evasion; CONCATENATE was quadratic in CPU and emitted output (6.4 GB of
+            // text from 3.1 MB of XML, OOM of a 512 MiB heap from 368 KB, isTruncated() false
+            // throughout) and could fabricate an IOC across the join.
+            String key = baseKey;
+            if (formulas.containsKey(key)) {
+                structuralAnomaly = true;
+                // MONOTONIC suffix, never restarted: probing from #2 per duplicate was O(N^2)
+                // (100,000 cells named A1 => ~5 billion containsKey calls) and the entry cap only
+                // applies after it. Forward-only, so it cannot spin, and the guard still handles a
+                // document that supplies `A1#7` itself.
+                String base = key;
+                do {
+                    key = base + "#" + (++duplicateKeySeq);
+                } while (formulas.containsKey(key));
+            }
+            if (formulas.size() >= maxFormulaEntries
+                    || retainedFormulaChars + projected > formulaTotalMaxChars) {
+                truncated = true;
+                return;
+            }
+            // A formula cut at the per-formula cap is no longer valid syntax, and a bare prefix
+            // reads as complete to anything downstream, so mark it. SPACE-separated deliberately:
+            // the scanner's URL pattern excludes whitespace but not '[', so appending directly
+            // absorbed the marker into the extracted indicator and yielded an IOC that can never
+            // match the real C2.
+            //
+            // NOTE a document CAN embed a copy of this marker in its own text, so a consumer must
+            // not treat it as proof of truncation -- msoffice:xlm-capture-limit-reached is the
+            // authority, and a document cannot set that. A defangMarker() rewrite was tried and
+            // REVERTED: it expanded the text AFTER the gate measured it, overshooting the cap by
+            // up to 78%.
+            String recorded = wasTruncated ? text + " " + XLM_TRUNCATION_MARKER : text;
+            formulas.put(key, recorded);
+            retainedFormulaChars += recorded.length();
+            handlerRetainedFormulaChars =
+                    (int) Math.min(Integer.MAX_VALUE, retainedFormulaChars);
+            xhtml.element("p", currentCellRef + ": " + recorded);
+        }
+
         private void beginCapture(String priorText) {
             buf.setLength(0);
             if (priorText != null) {
                 structuralAnomaly = true;
-                // Separate with a marker, NOT a bare space. XlmXmlIocScanner's function patterns
-                // are `\bEXEC\(\s*"` and friends, so `\s*` spanned a space separator and two
-                // halves that match NOTHING alone became a full indicator when joined: measured,
-                // <f>=EXEC(</f><f>"powershell -enc EVIL")</f> yielded [EXEC: powershell -enc EVIL]
-                // from a workbook that executes nothing. That lets a document inject an
-                // attacker-chosen command line into authoritative IOC output. '[' cannot appear
-                // between `EXEC(` and the opening quote, so this separator cannot bridge.
-                buf.append(priorText).append(SPLIT_MARKER);
+                // Record the PRIOR text as its own entry; do NOT seed it back into buf.
+                //
+                // Seeding was both a cap bypass and quadratic: the copy happened before any
+                // formulaMaxLen check, so 1,000 repeated <f/> elements retained 17,982 chars
+                // against the 16,384 cap with isTruncated() FALSE, and each duplicate recopied the
+                // whole accumulated buffer. Recording each occurrence separately is O(1) per <f>,
+                // keeps every occurrence (a decoy still cannot delete the payload), respects the
+                // per-formula cap, and needs no separator -- so it also cannot bridge an IOC
+                // pattern the way a joined string could.
+                pendingDuplicateFormula = priorText;
             }
         }
 
@@ -579,84 +658,36 @@ final class XlmXmlMacrosheetParser {
             boolean cellFormulaTruncated = formulaWasTruncated;
             formulaWasTruncated = false;
             if (currentCellRef == null) return;
-            String key = sheetName + ":" + currentRow + ":" + currentCellRef;
+            // UPPER-CASE the ref in the key. The IOC scanner upper-cases when building its
+            // resolution index, but the maps were keyed on the RAW @r -- so "A1" and "a1" were
+            // distinct map keys (containsKey never fired, no anomaly recorded) that collapsed to
+            // ONE index entry where the later writer won. Measured: A1=payload then a1=0 with
+            // =EXEC(A1) gave iocs=[EXEC: 0], hasStructuralAnomaly()=false, isTruncated()=false --
+            // a clean-looking result whose single authoritative indicator is the attacker's decoy.
+            // Normalizing here makes the duplicate visible to the uniquify guard below.
+            // SANITIZE the ref before it becomes part of a key. The scanner's resolution index is
+            // keyed on the text after the LAST ':' of `sheet:row:ref`, and @r is arbitrary
+            // attacker text -- so r="Z:A1" produced key `Macro1:1:Z:A1` whose trailing segment is
+            // "A1", overwriting the REAL A1's index entry with no duplicate map key and therefore
+            // no anomaly flag. Measured: A1=calc.exe plus Z:A1=powershell -enc PAYLOAD made
+            // =EXEC(A1) report the attacker's text as A1's content, hasStructuralAnomaly()=false.
+            // '#' is stripped for the same reason -- it is this class's duplicate-key separator.
+            String normalizedRef = currentCellRef.toUpperCase(java.util.Locale.ROOT)
+                    .replace(':', '_').replace('#', '_');
+            String key = sheetName + ":" + currentRow + ":" + normalizedRef;
             // The formula branch below may uniquify `key`; the value branch needs its own copy so
             // the two maps stay independently keyed.
             String valueKey = key;
+            // Record the prior text of a duplicated <f> FIRST, then this cell's own formula. Both
+            // go through the SAME single recording path, so the charge-equals-stored invariant and
+            // the caps apply identically however the duplicate arrived.
+            String duplicated = pendingDuplicateFormula;
+            pendingDuplicateFormula = null;
+            if (duplicated != null && !duplicated.isEmpty()) {
+                recordFormula(key, duplicated, false);
+            }
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
-                // Gate on what will ACTUALLY be retained, marker included -- otherwise the
-                // aggregate cap is exceeded by the marker length on every truncated formula.
-                // cellFormulaTruncated, NOT formulaWasTruncated: the field was cleared at the top
-                // of this method, so reading it here always yielded false and the marker's length
-                // escaped the aggregate budget on every truncated formula.
-                int projected = currentFormulaText.length()
-                        + (cellFormulaTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
-
-                // A REPEATED cell key means a duplicated <c r="..."> or <row r="...">, which
-                // SpreadsheetML never emits. put() used to REPLACE, so a benign decoy at the same
-                // ref DELETED the payload from `formulas` -- and `formulas` is what feeds the IOC
-                // scanner and the MACRO entry, so the payload vanished from every structured
-                // output with no flag.
-                //
-                // Keep every occurrence under a DISTINCT key. A previous attempt CONCATENATED
-                // onto the existing entry, and that was quadratic in CPU *and* in emitted output
-                // -- rebuilding the accumulated string per repetition and re-emitting all of it.
-                // Measured 4x output growth per input doubling, OOM-ing a 512 MiB heap from
-                // 368 KB of macrosheet XML with isTruncated() still false; and OutOfMemoryError
-                // is an Error, so the decorator's per-part recovery does not catch it. Distinct
-                // keys are O(1) per cell, bounded by maxFormulaEntries below, and cannot
-                // fabricate an indicator by joining two formulas across a boundary.
-                if (formulas.containsKey(key)) {
-                    structuralAnomaly = true;
-                    String base = key;
-                    for (int dup = 2; formulas.containsKey(key); dup++) {
-                        key = base + "#" + dup;
-                    }
-                }
-                // Keys are always fresh now, so there is nothing to credit back and the count
-                // gate needs no containsKey exception.
-                boolean roomByCount = formulas.size() < maxFormulaEntries;
-                boolean roomByChars =
-                        retainedFormulaChars + projected <= formulaTotalMaxChars;
-                if (roomByCount && roomByChars) {
-                    // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
-                    // bare prefix reads as a complete formula to anything downstream. Mark it
-                    // explicitly so a partial payload can never be mistaken for a whole one.
-                    //
-                    // The marker is SPACE-separated deliberately: XlmXmlIocScanner's URL
-                    // pattern excludes whitespace but not '[', so appending it directly
-                    // absorbed the marker into the extracted indicator
-                    // ("http://evil/x[...TIKA-XLM-FORMULA-TRUNCATED]"), yielding an IOC that
-                    // can never match the real C2. The space terminates the URL match.
-                    // NOTE: a document CAN embed a copy of XLM_TRUNCATION_MARKER in its own
-                    // formula text, so a consumer must not treat the inline marker as proof of
-                    // truncation -- the authoritative signal is
-                    // msoffice:xlm-capture-limit-reached, which a document cannot set.
-                    //
-                    // A defangMarker() rewrite was tried here and REVERTED: rewriting the
-                    // 9-char sentinel to a 16-char one expanded the text AFTER `projected`
-                    // above had gated on the pre-rewrite length, so the document-wide formula
-                    // cap was overshot by up to 78% (measured: 641 chars retained against a
-                    // 400-char cap, isTruncated() false). It also covered only this one path,
-                    // not cell values or the IOC scanner's output, so the guarantee it appeared
-                    // to give was not one it delivered. Trading a real budget escape for a
-                    // cosmetic defence of a non-authoritative marker is the wrong trade.
-                    String recorded = cellFormulaTruncated
-                            ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
-                            : currentFormulaText;
-                    // Charge only the NET change. `formulas` is keyed by cell ref, so a
-                    // repeated ref REPLACES the previous entry -- but the budget used to be
-                    // charged the full length every time, so a sheet repeating one cell ref
-                    // burned the document-wide formula budget on content that was never
-                    // retained, cutting capture short for later sheets that had real payload.
-                    formulas.put(key, recorded);
-                    retainedFormulaChars += recorded.length();
-                    handlerRetainedFormulaChars = (int) Math.min(
-                            Integer.MAX_VALUE, retainedFormulaChars);
-                    xhtml.element("p", currentCellRef + ": " + recorded);
-                } else {
-                    truncated = true;
-                }
+                recordFormula(key, currentFormulaText, cellFormulaTruncated);
             }
             formulaWasTruncated = false;
             // Resolve shared-string-indexed cells (<c t="s"><v>N</v></c>) before
@@ -676,10 +707,11 @@ final class XlmXmlMacrosheetParser {
                 // on this path until the key was uniquified here too.
                 if (values.containsKey(valueKey)) {
                     structuralAnomaly = true;
+                    // Monotonic, same reasoning as the formula path above.
                     String vbase = valueKey;
-                    for (int dup = 2; values.containsKey(valueKey); dup++) {
-                        valueKey = vbase + "#" + dup;
-                    }
+                    do {
+                        valueKey = vbase + "#" + (++duplicateKeySeq);
+                    } while (values.containsKey(valueKey));
                 }
                 if (values.size() < maxValueEntries) {
                     // Aggregate guard, shared document-wide with the worksheet path.

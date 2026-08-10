@@ -264,8 +264,13 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 // the case where "no XLM IOCs found" must not be trusted, and a truncated
                 // .bin part is trivially attacker-supplied.
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
-                markXlmCaptureLimit(metadata, "XLSB XLM macrosheet parse error: "
-                        + e.getMessage());
+                // CONSTANT text, matching the XML path. Embedding e.getMessage() let 128 macro
+                // parts mint 128 distinct warnings and fill the 16-slot gate with decoys, so a
+                // genuine undecoded-Ptg diagnosis was crowded out -- measured, 16 truncated .bin
+                // parts suppressed it entirely. The per-part detail is already in the text.
+                markXlmCaptureLimit(metadata, "XLSB XLM macrosheet parse error: at least one "
+                        + "macro part could not be parsed (see xlm-parse-error entries in the "
+                        + "text)");
             }
             if (emulator.isLimitReached()) {
                 for (String w : emulator.getLimitWarnings()) {

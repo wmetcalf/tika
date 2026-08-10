@@ -537,7 +537,24 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         int processedMacroParts = 0;
         // Guards against two macro parts reducing to the same cell-key namespace; see below.
+        // TWO sets, because the two collisions mean different things.
+        //
+        // Macro-part vs macro-part: SpreadsheetML never emits it, so it is an anomaly worth
+        // flagging. Macro-part vs WORKSHEET name: entirely NORMAL -- measured on 66 of 1,961 real
+        // xlsm documents, where a macro part and a worksheet legitimately share "sheet1". Both
+        // still need a distinct key namespace, because worksheet cell values are keyed on the
+        // worksheet's declared name and allValues.putAll() would otherwise let the macro part
+        // overwrite the worksheet's values (exactly where split-URL fragments live). So rename in
+        // both cases, but only FLAG the malformed one -- an anomaly signal that fires on ordinary
+        // documents is worse than none, and a first version of this reported all 66 as malformed.
         java.util.Set<String> usedMacroSheetNames = new java.util.HashSet<>();
+        java.util.Set<String> worksheetNames = new java.util.HashSet<>();
+        for (String worksheetKey : workbookCellValues.keySet()) {
+            int firstColon = worksheetKey.indexOf(':');
+            if (firstColon > 0) {
+                worksheetNames.add(worksheetKey.substring(0, firstColon));
+            }
+        }
         // Document-wide, NOT per-macrosheet: see the loop below.
         // long: cfgFormulaTotalMaxChars is operator-settable up to Integer.MAX_VALUE, and
         // an int accumulator wraps negative there, defeating the document-wide cap.
@@ -563,14 +580,19 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             // no flag. Uniquify ONLY on an actual collision, so the ordinary case keeps its
             // human-readable heading and byte-identical keys.
             String sheetName = sheetNameFromPart(macroPart);
-            if (!usedMacroSheetNames.add(sheetName)) {
+            boolean macroCollision = !usedMacroSheetNames.add(sheetName);
+            boolean worksheetCollision = worksheetNames.contains(sheetName);
+            if (macroCollision || worksheetCollision) {
                 String disambiguated = sheetName;
-                for (int dup = 2; !usedMacroSheetNames.add(disambiguated); dup++) {
+                for (int dup = 2; !usedMacroSheetNames.add(disambiguated)
+                        || worksheetNames.contains(disambiguated); dup++) {
                     disambiguated = sheetName + "#" + dup;
                 }
-                markXlmStructuralAnomaly("Two XLM macro parts share the basename \""
-                        + sheetName + "\"; SpreadsheetML does not produce this. Renamed to \""
-                        + disambiguated + "\" so neither part's cells are overwritten.");
+                if (macroCollision) {
+                    markXlmStructuralAnomaly("Two XLM macro parts share the basename \""
+                            + sheetName + "\"; SpreadsheetML does not produce this. Renamed to \""
+                            + disambiguated + "\" so neither part's cells are overwritten.");
+                }
                 sheetName = disambiguated;
             }
             xhtml.startElement("div", "class", "xlm-macrosheet");
@@ -817,12 +839,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
      * signal that drives re-analysis. This is an evasion tell, not a capture shortfall.
      */
     private void markXlmStructuralAnomaly(String detail) {
-        if (metadata == null
-                || Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly"))) {
+        if (metadata == null) {
             return;
         }
-        metadata.set("msoffice:xlm-structural-anomaly", "true");
-        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, detail);
+        // Flag idempotent, DETAILS accumulate -- the same shape already fixed in
+        // markXlmCaptureLimit and XlmMacroEmulator.markLimit, missed here. Returning early once
+        // the flag was set meant only the FIRST anomaly's text was ever published, so a
+        // basename-collision anomaly in part 1 hid the per-sheet nested-element detail for every
+        // later part. Shares reportedXlmWarnings, so the total warning count stays bounded.
+        if (!Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly"))) {
+            metadata.set("msoffice:xlm-structural-anomaly", "true");
+        }
+        if (detail != null && reportedXlmWarnings.size() < MAX_XLM_WARNINGS
+                && reportedXlmWarnings.add(detail)) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, detail);
+        }
     }
 
     /** Distinct warnings already published, so each diagnosis is reported once and only once. */

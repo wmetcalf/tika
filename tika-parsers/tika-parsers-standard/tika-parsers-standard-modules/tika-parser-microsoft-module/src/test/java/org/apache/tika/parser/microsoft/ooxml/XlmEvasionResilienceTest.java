@@ -60,6 +60,8 @@ import org.apache.tika.sax.XHTMLContentHandler;
 class XlmEvasionResilienceTest {
 
     private static final String PAYLOAD = "powershell -enc AAAA";
+    /** " " + "[...TIKA-XLM-FORMULA-TRUNCATED]" */
+    private static final int XLM_TRUNCATION_MARKER_LEN = 32;
 
     // ── 1. A child element inside <f> replaced the whole formula ─────────────
 
@@ -113,18 +115,19 @@ class XlmEvasionResilienceTest {
      */
     @Test
     void testDuplicateFormulaElementKeepsBothNotJustTheLast() throws Exception {
+        // Each <f> is retained as its own entry (not joined -- joining was quadratic and could
+        // fabricate an IOC across the seam), so assert across ALL entries.
         XlmXmlMacrosheetParser decoyFirst = parseCellXml(
                 "<f>=1+1</f><f>=EXEC(\"" + PAYLOAD + "\")</f>");
-        assertTrue(onlyFormula(decoyFirst).contains(PAYLOAD),
-                "payload-last must survive: " + onlyFormula(decoyFirst));
-        assertTrue(onlyFormula(decoyFirst).contains("1+1"),
-                "the first <f> must not be discarded either: " + onlyFormula(decoyFirst));
+        String df = String.join(" | ", decoyFirst.getFormulaList());
+        assertTrue(df.contains(PAYLOAD), "payload-last must survive: " + df);
+        assertTrue(df.contains("1+1"), "the first <f> must not be discarded either: " + df);
 
         XlmXmlMacrosheetParser payloadFirst = parseCellXml(
                 "<f>=EXEC(\"" + PAYLOAD + "\")</f><f>=1+1</f>");
-        assertTrue(onlyFormula(payloadFirst).contains(PAYLOAD),
-                "payload-first must survive last-wins overwrite: "
-                        + onlyFormula(payloadFirst));
+        String pf = String.join(" | ", payloadFirst.getFormulaList());
+        assertTrue(pf.contains(PAYLOAD),
+                "payload-first must survive last-wins overwrite: " + pf);
         assertTrue(payloadFirst.hasStructuralAnomaly());
     }
 
@@ -862,9 +865,11 @@ class XlmEvasionResilienceTest {
         XlmXmlMacrosheetParser parser = parseCellXml(
                 "<f>=EXEC(</f><f>\"" + PAYLOAD + "\")</f>");
 
-        String formula = onlyFormula(parser);
+        String formula = String.join(" | ", parser.getFormulaList());
         assertTrue(formula.contains("EXEC(") && formula.contains(PAYLOAD),
-                "both halves are retained as evidence; got: " + formula);
+                "both halves are retained as evidence, as separate entries; got: " + formula);
+        assertEquals(2, parser.getFormulas().size(),
+                "each <f> is its own entry, never joined; got: " + parser.getFormulas());
 
         List<String> iocs = XlmXmlIocScanner.scan(parser.getFormulas(), Map.of());
         assertTrue(iocs.stream().noneMatch(s -> s.startsWith("EXEC:")),
@@ -986,6 +991,420 @@ class XlmEvasionResilienceTest {
         assertEquals(2, parser.getValues().size(),
                 "each occurrence gets its own key; got: " + parser.getValues().keySet());
         assertTrue(parser.hasStructuralAnomaly(), "and the duplication is flagged");
+    }
+
+    // ── 11. Round-4 review: my round-3 fixes, four of them defective ─────────
+
+    /**
+     * Duplicated {@code <f>} elements must not bypass the per-formula cap, and must not cost
+     * quadratic work. Seeding the prior text back into the buffer did both: the copy happened
+     * BEFORE any {@code formulaMaxLen} check, so 1,000 repeated {@code <f/>} retained 17,982 chars
+     * against a 16,384 cap with {@code isTruncated()} FALSE, and each duplicate recopied the whole
+     * accumulated buffer.
+     */
+    @Test
+    void testManyDuplicateFormulaElementsRespectTheCapAndStayLinear() throws Exception {
+        int n = 1000;
+        StringBuilder cell = new StringBuilder("<c r=\"A1\">");
+        for (int i = 0; i < n; i++) {
+            cell.append("<f>=").append("Y".repeat(40)).append("</f>");
+        }
+        cell.append("</c>");
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">" + cell + "</row></sheetData></worksheet>";
+        // Per-formula cap 64, aggregate 4096: no single entry may exceed 64, and the total is
+        // capped regardless of how many duplicates the document supplies.
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 4096, 4096, 64, 64, 4096);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        for (String f : parser.getFormulaList()) {
+            assertTrue(f.length() <= 64 + XLM_TRUNCATION_MARKER_LEN,
+                    "no entry may exceed the per-formula cap; got " + f.length() + " chars");
+        }
+        int stored = parser.getFormulaList().stream().mapToInt(String::length).sum();
+        assertEquals(stored, parser.getRetainedFormulaChars(), "charge must equal stored");
+        assertTrue(parser.getRetainedFormulaChars() <= 4096,
+                "the aggregate cap must hold across duplicates; charged "
+                        + parser.getRetainedFormulaChars());
+    }
+
+    /**
+     * Duplicate-key suffixing must be LINEAR. Probing from {@code #2} for every duplicate was
+     * O(N^2) -- 100,000 cells named A1 costing ~5 billion {@code containsKey} calls -- and the
+     * entry-limit check only ran AFTER that loop, so the cap could not stop it. A monotonic
+     * counter never revisits a suffix.
+     */
+    @Test
+    void testDuplicateKeySuffixingIsLinear() throws Exception {
+        int n = 20000;
+        StringBuilder row = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            row.append("<c r=\"A1\" t=\"str\"><v>v</v></c>");
+        }
+        long start = System.nanoTime();
+        XlmXmlMacrosheetParser parser = parseRowXml(row.toString());
+        long ms = (System.nanoTime() - start) / 1_000_000;
+
+        // Quadratic suffix probing on 20k duplicates is ~200M map lookups; linear is ~20k.
+        // A generous ceiling still separates the two by orders of magnitude.
+        assertTrue(ms < 20_000, n + " duplicate refs took " + ms + " ms -- suffixing is not linear");
+        assertTrue(parser.getValues().size() > 1,
+                "and every occurrence is still retained: " + parser.getValues().size());
+    }
+
+    /**
+     * {@code EXEC(A1)} must resolve EVERY candidate value for that ref. Duplicates are retained
+     * under {@code A1#2} keys, but the resolver indexed the RAW trailing segment, so the payload
+     * was retained somewhere the resolver never looked: measured, A1="0" then
+     * A1="powershell -enc PAYLOAD" with {@code =EXEC(A1)} emitted ONLY {@code EXEC: 0}. Preserving
+     * the value did nothing for detection.
+     */
+    @Test
+    void testExecCellRefResolvesEveryCandidateValueIncludingDuplicates() {
+        Map<String, String> formulas = Map.of("Macro1:1:B1", "=EXEC(A1)");
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        values.put("Macro1:1:A1", "0");
+        values.put("Macro1:1:A1#7", "powershell -enc PAYLOAD");
+
+        List<String> iocs = XlmXmlIocScanner.scan(formulas, values);
+
+        assertTrue(iocs.stream().anyMatch(s -> s.contains("powershell -enc PAYLOAD")),
+                "the duplicate's payload must be resolved, not just the decoy; got: " + iocs);
+        assertTrue(iocs.stream().anyMatch(s -> s.equals("EXEC: 0")),
+                "and the decoy is still reported -- we cannot know which Excel honours; got: "
+                        + iocs);
+    }
+
+    /**
+     * A REJECTED indicator must not be retained in the dedupe set. Adding to {@code seen} before
+     * knowing whether the sink accepted meant every distinct rejected entry stayed retained, and a
+     * rejection on the CHAR budget leaves both counters below their caps so scanning continued --
+     * measured, {@code seen} grew to 200,000 strings with {@code maxIocChars=1}. Bounding by
+     * ACCEPTANCE bounds it by {@code maxIocEntries}.
+     */
+    @Test
+    void testRejectedIndicatorsAreNotRetainedAndTheLimitIsReported() {
+        Map<String, String> formulas = Map.of("Macro1:1:A1", "=1+1");
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 5000; i++) {
+            values.put("Sheet1:1:A" + i, "http://evil.example/" + i);
+        }
+        int[] limited = new int[1];
+        // maxIocChars=1: nothing can fit, so every candidate is rejected.
+        List<String> out = XlmXmlIocScanner.scan(formulas, values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1, () -> limited[0]++);
+
+        assertTrue(out.isEmpty(), "nothing fits a 1-char budget; got " + out.size());
+        assertEquals(1, limited[0],
+                "and dropping every indicator must be REPORTED -- a rejection on the char budget "
+                        + "leaves the counters below their caps, which used to read as not-full");
+    }
+
+    /**
+     * With a budget that nothing can fit, the scan must STOP instead of walking the whole corpus
+     * building candidates it will reject.
+     *
+     * <p>Measured by COUNTING VALUES VISITED, not by heap. A heap-delta version of this test was
+     * written first and was unreliable in a shared-JVM suite run (it passed in isolation and failed
+     * at 92 MB inside the full suite, because other tests' retained objects land in the same
+     * measurement). Counting iteration of the input map is exact and deterministic.
+     *
+     * <p>The defects it pins have no output-visible effect -- adding to the dedupe set before
+     * knowing whether the sink accepted, and an {@code isFull()} that ignored a char-budget refusal
+     * -- so an output-only assertion passes against both, verified by mutation.
+     */
+    @Test
+    void testAnUnfittableBudgetStopsScanningInsteadOfBuildingRejects() {
+        int n = 20_000;
+        final int[] visited = new int[1];
+        Map<String, String> backing = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            backing.put("Sheet1:1:A" + i, "http://evil.example/" + i);
+        }
+        // A view that counts how many values the scan actually pulls.
+        Map<String, String> counted = new java.util.AbstractMap<String, String>() {
+            @Override
+            public java.util.Set<Map.Entry<String, String>> entrySet() {
+                return backing.entrySet();
+            }
+
+            @Override
+            public java.util.Collection<String> values() {
+                java.util.List<String> out = new java.util.ArrayList<>();
+                for (String v : backing.values()) {
+                    out.add(v);
+                }
+                return new java.util.AbstractList<String>() {
+                    @Override
+                    public String get(int i) {
+                        return out.get(i);
+                    }
+
+                    @Override
+                    public int size() {
+                        return out.size();
+                    }
+
+                    @Override
+                    public java.util.Iterator<String> iterator() {
+                        java.util.Iterator<String> it = out.iterator();
+                        return new java.util.Iterator<String>() {
+                            @Override
+                            public boolean hasNext() {
+                                return it.hasNext();
+                            }
+
+                            @Override
+                            public String next() {
+                                visited[0]++;
+                                return it.next();
+                            }
+                        };
+                    }
+                };
+            }
+        };
+
+        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), counted,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1, null);
+
+        assertTrue(out.isEmpty(), "nothing fits a 1-char budget; got " + out.size());
+        assertTrue(visited[0] < 100,
+                "the scan must stop once nothing can be accepted, not walk all " + n
+                        + " values building rejects; visited " + visited[0]);
+    }
+
+    /** Exactly filling the entry cap must still report the limit, not drop silently. */
+    @Test
+    void testFillingTheEntryCapExactlyStillReportsTheLimit() {
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 50; i++) {
+            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(\"cmd" + i + "\")");
+        }
+        int[] limited = new int[1];
+        List<String> out = XlmXmlIocScanner.scan(formulas, Map.of(),
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 5, 1 << 20, () -> limited[0]++);
+
+        assertEquals(5, out.size(), "the entry cap holds");
+        assertEquals(1, limited[0], "and the drop is reported");
+    }
+
+    /**
+     * A one-character case change in {@code @r} must not bypass duplicate detection. The scanner
+     * upper-cases when building its resolution index but the maps were keyed on the RAW {@code @r},
+     * so {@code A1} and {@code a1} were distinct map keys -- no {@code containsKey} hit, no anomaly
+     * -- that collapsed to ONE index entry where the later writer won. Measured: A1=payload then
+     * a1=0 with {@code =EXEC(A1)} gave {@code [EXEC: 0]} and a clean-looking result.
+     */
+    @Test
+    void testCaseVariedCellRefIsStillDetectedAsADuplicate() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\" t=\"str\"><v>powershell -enc PAYLOAD</v></c>"
+                        + "<c r=\"a1\" t=\"str\"><v>0</v></c>");
+
+        assertTrue(parser.hasStructuralAnomaly(),
+                "a case-varied duplicate ref is still a duplicate; got keys "
+                        + parser.getValues().keySet());
+        List<String> iocs = XlmXmlIocScanner.scan(
+                Map.of("Macro1:1:B1", "=EXEC(A1)"), parser.getValues());
+        assertTrue(iocs.stream().anyMatch(s -> s.contains("powershell -enc PAYLOAD")),
+                "and the payload must still resolve, not just the decoy; got: " + iocs);
+    }
+
+    /**
+     * One cell packed with high-value matches must not consume the whole entry budget and starve a
+     * LATER cell's EXEC. The two passes separate CATEGORIES, not cells, and the emitters did not
+     * consult the sink -- measured, a cell with 6,000 {@code =EXEC("jN")} calls emitted j0..j4095
+     * and a second cell's real payload was never recovered. Fourth instance of this class.
+     */
+    @Test
+    void testOneCellCannotStarveAnotherCellsExec() {
+        StringBuilder packed = new StringBuilder("=");
+        for (int i = 0; i < 300; i++) {
+            packed.append("EXEC(\"j").append(i).append("\")&");
+        }
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        formulas.put("Macro1:1:A1", packed.toString());
+        formulas.put("Macro1:2:A2", "=EXEC(\"powershell -enc REALPAYLOAD\")");
+
+        // Entry budget smaller than the packed cell's match count, so pass 0 must not spend it all
+        // inside the first cell.
+        List<String> iocs = XlmXmlIocScanner.scan(formulas, Map.of(),
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 100, 1 << 20, null);
+
+        assertTrue(iocs.size() <= 100, "the entry budget still holds; got " + iocs.size());
+        assertTrue(iocs.stream().anyMatch(s -> s.contains("REALPAYLOAD")),
+                "the second cell's EXEC must not be starved by the first cell's volume; got "
+                        + iocs.size() + " entries, first=" + (iocs.isEmpty() ? "-" : iocs.get(0)));
+    }
+
+    /** Reporting a limit when nothing was dropped puts TRUNCATED_METADATA on a clean extraction. */
+    @Test
+    void testNoLimitIsReportedWhenNothingWasDropped() {
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        values.put("Sheet1:1:A1", "http://a.example/1");
+        values.put("Sheet1:1:A2", "http://a.example/2");
+
+        int[] limited = new int[1];
+        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 2, 1 << 20, () -> limited[0]++);
+
+        assertEquals(2, out.size(), "both indicators fit exactly");
+        assertEquals(0, limited[0],
+                "nothing was refused, so no shortfall may be reported -- `limited` must mean "
+                        + "REFUSED, not merely saturated");
+    }
+
+    /**
+     * A {@code <c>} opening inside an OPEN {@code <is>} must not discard the inline string.
+     * {@code inlineAcc} is only committed to {@code currentValueText} on {@code </is>}, and the
+     * nested-cell guard's {@code flushCell()} cleared it -- so the guard whose stated job is
+     * "flush the outer cell so its capture survives" lost the value of a {@code t="inlineStr"}
+     * cell entirely. Macrosheet values are not emitted to XHTML, so the payload appeared NOWHERE.
+     */
+    @Test
+    void testNestedCellInsideAnOpenInlineStringKeepsTheValue() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\" t=\"inlineStr\"><is><t>powershell -enc PAYLOAD</t>"
+                        + "<c r=\"B1\"><v>0</v></c></is></c>");
+
+        String values = String.join(" | ", parser.getValues().values());
+        assertTrue(values.contains("powershell -enc PAYLOAD"),
+                "the inline-string value must survive the nested <c>; got: "
+                        + parser.getValues());
+        assertTrue(parser.hasStructuralAnomaly());
+    }
+
+    /**
+     * A colon in {@code @r} poisoned the scanner's resolution index, which keys on the text after
+     * the LAST {@code ':'} of {@code sheet:row:ref}. {@code r="Z:A1"} therefore produced a trailing
+     * segment of {@code A1} and overwrote the real A1's entry -- with no duplicate map key, so no
+     * anomaly. Measured: A1=calc.exe plus Z:A1=payload made {@code =EXEC(A1)} attribute the
+     * attacker's text to A1.
+     */
+    @Test
+    void testColonInCellRefCannotPoisonRefResolution() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\" t=\"str\"><v>calc.exe</v></c>"
+                        + "<c r=\"Z:A1\" t=\"str\"><v>powershell -enc PAYLOAD</v></c>");
+
+        List<String> iocs = XlmXmlIocScanner.scan(
+                Map.of("Macro1:1:B1", "=EXEC(A1)"), parser.getValues());
+        assertTrue(iocs.contains("EXEC: calc.exe"),
+                "A1's REAL content must be what EXEC(A1) reports; got: " + iocs);
+        assertTrue(iocs.stream().noneMatch(s -> s.contains("powershell -enc PAYLOAD")),
+                "and a differently-named cell must not be attributed to A1; got: " + iocs);
+        assertTrue(parser.getValues().keySet().stream().noneMatch(k -> k.endsWith(":A1")
+                        && k.contains("Z")),
+                "the sanitized key must not end in a colon-delimited A1; got: "
+                        + parser.getValues().keySet());
+    }
+
+    /**
+     * An oversized FWRITE must not abort emulation. {@code writeToFile}'s truncation used
+     * {@code markLimit}, which {@code stopOnContextLimit} turns into {@code emulationAborted}, so
+     * the EXEC after it was never evaluated -- the same "report, do not abort" defect fixed in
+     * FCLOSE two methods away, left in the writer.
+     */
+    @Test
+    void testOversizedFileWriteDoesNotAbortLaterCells() {
+        XlmMacroEmulator emulator = new XlmMacroEmulator(new HashMap<>(),
+                XlmWorkbookSheetMap.empty(),
+                new XlmMacroEmulator.Limits(65_536, 16L * 1024 * 1024, 4_096, 1024 * 1024,
+                        1_000_000, /* maxFileContentChars */ 64));
+        emulator.addMacroCell(0, fopenFormula("C:\\Users\\Public\\p.exe"));
+        emulator.addMacroCell(1, fwriteFormula(1, "A".repeat(4096)));
+        emulator.addMacroCell(2, fcloseFormula(1));
+        emulator.addMacroCell(3, execFormula("powershell -enc AAAA"));
+
+        emulator.emulate();
+
+        assertTrue(emulator.iocs.stream().anyMatch(s -> s.startsWith("EXEC:")),
+                "the EXEC after an oversized FWRITE must still be evaluated; got "
+                        + emulator.iocs);
+        assertTrue(emulator.isLimitReached(),
+                "and the truncation must still be reported");
+    }
+
+    // ── The settled retention semantics, in ONE place ────────────────────────
+
+    /**
+     * THE INVARIANT: {@code getRetainedFormulaChars()} equals the sum of the lengths of everything
+     * in {@code getFormulas()}, on every path.
+     *
+     * <p>This exists as ONE table-driven test on purpose. The retention policy for duplicated cell
+     * refs was changed three times across review rounds -- replace (a last-wins evasion), then
+     * concatenate (quadratic, OOM), then distinct keys -- and each change silently invalidated
+     * per-shape assertions written for the previous one, costing five test rewrites. An invariant
+     * survives a policy change; "retained <= 500" does not. Anything that alters retention must
+     * satisfy THIS, and if it cannot, that is the design discussion the change needs.
+     *
+     * <p>It catches both directions: gross charging (billing for content not kept) and
+     * under-charging (keeping content that was never billed, i.e. a budget escape).
+     */
+    @Test
+    void testChargeEqualsStoredAcrossEveryRetentionPath() throws Exception {
+        String[][] shapes = {
+            {"single formula", "<c r=\"A1\"><f>=EXEC(\"a\")</f></c>"},
+            {"duplicate ref", "<c r=\"A1\"><f>=EXEC(\"a\")</f></c><c r=\"A1\"><f>=1+1</f></c>"},
+            {"triplicate ref", "<c r=\"A1\"><f>=A</f></c><c r=\"A1\"><f>=B</f></c>"
+                    + "<c r=\"A1\"><f>=C</f></c>"},
+            {"nested cell", "<c r=\"A1\"><f>=EXEC(\"a\")</f><c r=\"B1\"><f>=b</f></c></c>"},
+            {"no @r", "<c><f>=EXEC(\"a\")</f></c><c><f>=EXEC(\"b\")</f></c>"},
+            {"duplicate <f> in one cell", "<c r=\"A1\"><f>=EXEC(\"a\")</f><f>=1+1</f></c>"},
+            {"nested <v> suppressed", "<c r=\"A1\"><f>=EXEC(\"a\")<v>0</v></f></c>"},
+            {"empty formula", "<c r=\"A1\"><f></f></c>"},
+            {"document-supplied #2 key", "<c r=\"A1#2\"><f>=x</f></c><c r=\"A1\"><f>=y</f></c>"
+                    + "<c r=\"A1\"><f>=z</f></c>"},
+            {"value only", "<c r=\"A1\" t=\"str\"><v>plain</v></c>"},
+        };
+        for (String[] shape : shapes) {
+            XlmXmlMacrosheetParser parser = parseRowXml(shape[1]);
+            int stored = parser.getFormulaList().stream().mapToInt(String::length).sum();
+            assertEquals(stored, parser.getRetainedFormulaChars(),
+                    "CHARGE != STORED for shape '" + shape[0] + "': charged "
+                            + parser.getRetainedFormulaChars() + ", stored " + stored
+                            + ", entries " + parser.getFormulas());
+        }
+    }
+
+    /** The same invariant when the caps BITE -- refusals must not be charged. */
+    @Test
+    void testChargeEqualsStoredWhenCapsRefuseEntries() throws Exception {
+        // Aggregate cap admits some entries and refuses later ones; per-formula cap forces the
+        // truncation marker onto what is admitted. Both must be accounted exactly.
+        StringBuilder row = new StringBuilder();
+        for (int i = 1; i <= 40; i++) {
+            row.append("<c r=\"A").append(i).append("\"><f>=").append("Z".repeat(120))
+                    .append("</f></c>");
+        }
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">" + row + "</row></sheetData></worksheet>";
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 10, 10, 64, 64, 500);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        int stored = parser.getFormulaList().stream().mapToInt(String::length).sum();
+        assertEquals(stored, parser.getRetainedFormulaChars(),
+                "refused and truncated entries must be accounted exactly; charged "
+                        + parser.getRetainedFormulaChars() + ", stored " + stored);
+        assertTrue(parser.getRetainedFormulaChars() <= 500,
+                "and the aggregate cap must hold; charged " + parser.getRetainedFormulaChars());
+        assertTrue(parser.isTruncated(), "evidence WAS withheld here, so it must be reported");
+        assertTrue(parser.getFormulas().size() <= 10, "and the entry cap must hold");
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
@@ -1124,6 +1543,45 @@ class XlmEvasionResilienceTest {
             xhtml.endDocument();
         }
         return output.toString();
+    }
+
+    private static byte[] fopenFormula(String path) {
+        byte[] pathBytes = path.getBytes(StandardCharsets.UTF_16LE);
+        return ByteBuffer.allocate(1 + 2 + pathBytes.length + 3 + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x17)
+                .putShort((short) path.length())
+                .put(pathBytes)
+                .put((byte) 0x1e)
+                .putShort((short) 3)
+                .put((byte) 0x22)
+                .put((byte) 2)
+                .putShort((short) 0x0084)
+                .array();
+    }
+    private static byte[] fcloseFormula(int handle) {
+        return ByteBuffer.allocate(3 + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e)
+                .putShort((short) handle)
+                .put((byte) 0x22)
+                .put((byte) 1)
+                .putShort((short) 0x0085)
+                .array();
+    }
+    private static byte[] fwriteFormula(int handle, String text) {
+        byte[] textBytes = text.getBytes(StandardCharsets.UTF_16LE);
+        return ByteBuffer.allocate(3 + 1 + 2 + textBytes.length + 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e)
+                .putShort((short) handle)
+                .put((byte) 0x17)
+                .putShort((short) text.length())
+                .put(textBytes)
+                .put((byte) 0x22)
+                .put((byte) 2)
+                .putShort((short) 0x008a)
+                .array();
     }
 
     /** PtgStr(command) + PtgFuncVar(argc=1, EXEC). Mirrors XlmCaptureBoundsTest. */
