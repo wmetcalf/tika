@@ -1000,6 +1000,32 @@ final class Biff12XlmFormulaDecoder {
             return limitWarning != null;
         }
 
+        /**
+         * Problems affecting ONE cell, which must be reported but must NOT stop emulation.
+         *
+         * <p>Deliberately separate from {@link #isLimitReached()}. That one means "a budget is
+         * spent, further work is wasted", and {@code XlmMacroEmulator.stopOnContextLimit}
+         * turns it into {@code emulationAborted}. Routing a per-cell problem through it made
+         * one bad formula suppress every LATER cell's IOCs -- measured: 3 EXEC indicators
+         * dropped to zero from a single spliced byte. Per-cell problems are independent;
+         * the remaining cells must still be emulated.
+         *
+         * <p>A list, not a flag, because {@code markLimit} keeps only the FIRST warning and
+         * these are materially different diagnoses an analyst needs to tell apart.
+         */
+        private final java.util.LinkedHashSet<String> nonFatalWarnings =
+                new java.util.LinkedHashSet<>();
+
+        void markNonFatal(String warning) {
+            if (warning != null && nonFatalWarnings.size() < 32) {
+                nonFatalWarnings.add(warning);
+            }
+        }
+
+        java.util.Collection<String> getNonFatalWarnings() {
+            return nonFatalWarnings;
+        }
+
         String getLimitWarning() {
             return limitWarning;
         }
@@ -1046,9 +1072,22 @@ final class Biff12XlmFormulaDecoder {
             TokenStream ts = parseTokens(data);
             if (ts.incomplete && ctx != null) {
                 // Emulating a PREFIX of a formula yields IOCs for an expression the document
-                // does not contain. Flag it so the result is not read as authoritative.
-                ctx.markLimit("XLSB XLM formula only partially decodable: unknown Ptg opcode "
-                        + "or truncated operand; emulated result is incomplete");
+                // does not contain, so it must be reported -- but NOT through markLimit().
+                // markLimit() sets limitWarning, isLimitReached() is `limitWarning != null`,
+                // and XlmMacroEmulator.stopOnContextLimit turns that into
+                // emulationAborted = true. Routing a PER-FORMULA decode failure through it
+                // therefore aborted evaluation of every REMAINING macro cell: measured, one
+                // spliced junk byte took a macrosheet from 3 EXEC IOCs to zero. That is the
+                // same one-part kill switch this branch removed from the XML path, and the
+                // corpus could not catch it because no sample hits an unknown Ptg.
+                //
+                // A budget being exhausted means "stop, further work is wasted". One
+                // undecodable formula means "this cell is untrustworthy"; the other cells are
+                // independent and must still be emulated. Different conditions, different
+                // signals.
+                ctx.markNonFatal("XLSB XLM formula only partially decodable: unknown Ptg "
+                        + "opcode or truncated operand; that cell's emulated result is a "
+                        + "prefix. Other cells were still emulated.");
             }
             Deque<Object> stack = new ArrayDeque<>();
             for (PtgNode node : ts.tokens) {
@@ -1151,21 +1190,31 @@ final class Biff12XlmFormulaDecoder {
                         // FOPEN/FWRITE*/FCLOSE/EXEC dropper. The EXEC command line is the single
                         // most valuable indicator in that document.
                         //
-                        // FCLOSE_PREVIEW_CHARS is 8192, matching the drain path's historical cut:
-                        // 27x more payload than the old 300 while, at a 1 MB allowance, leaving
-                        // room for ~128 such previews plus every short indicator. Bounded by
-                        // maxFileContentChars when an operator lowers it.
+                        // So the preview is bounded by a RESERVE: it may spend what is left MINUS
+                        // FCLOSE_IOC_RESERVE_CHARS, keeping that much guaranteed room for the
+                        // short high-value indicators (EXEC/CALL/FOPEN) evaluated afterwards.
+                        // Bounded by maxFileContentChars when an operator lowers it.
                         String head = "FILE_CONTENT[" + path + "]: ";
                         int spendable = ctx.remainingIocChars()
                                 - FCLOSE_IOC_RESERVE_CHARS - head.length() - 1;
                         int preview = Math.min(
                                 Math.min(ctx.maxFileContentChars(), content.length()),
                                 Math.max(0, spendable));
-                        // Unconditional addIoc: it marks the limit when it refuses, and skipping
-                        // the call on a zero-length preview turned a REPORTED drop into a silent
-                        // one.
-                        ctx.addIoc(head + content.substring(0, preview)
-                                + (content.length() > preview ? "…" : ""));
+                        if (preview > 0) {
+                            ctx.addIoc(head + content.substring(0, preview)
+                                    + (content.length() > preview ? "…" : ""));
+                        } else {
+                            // Do NOT emit a content-free "FILE_CONTENT[path]: …". It carries zero
+                            // evidence, spends budget on an attacker-chosen path string, and when
+                            // it is REFUSED addIoc calls markLimit -> stopOnContextLimit, so
+                            // emulation aborted here and the later EXEC command line -- the single
+                            // most valuable indicator in a dropper -- was never evaluated. This is
+                            // the same content-free-entry defect already removed from the drain
+                            // path in XlmMacroEmulator; it was left here. Report, do not abort.
+                            ctx.markNonFatal("XLSB XLM reconstructed file content dropped at "
+                                    + "FCLOSE: IOC budget exhausted. Other indicators were "
+                                    + "still emulated.");
+                        }
                     }
                 }
                 return 0.0;
@@ -1368,12 +1417,6 @@ final class Biff12XlmFormulaDecoder {
                 return null;
             }
             String text = top.stringify(stack);
-            // Defang a DOCUMENT-supplied copy of the sentinel so an emitted marker is always
-            // one WE added; a consumer grepping for it must not be fed a forged one. Only the
-            // recognisable core is rewritten, so payload bytes survive intact.
-            if (text != null && text.contains("TIKA-XLM-")) {
-                text = text.replace("TIKA-XLM-", "TIKA_XLM_FORGED-");
-            }
             if (ts.incomplete && text != null) {
                 // Append, do not prepend: downstream IOC regexes anchor on the formula's
                 // leading function name.

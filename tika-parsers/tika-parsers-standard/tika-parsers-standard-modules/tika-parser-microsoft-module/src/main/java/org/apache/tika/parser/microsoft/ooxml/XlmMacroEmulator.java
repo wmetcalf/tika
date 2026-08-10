@@ -291,6 +291,19 @@ class XlmMacroEmulator {
             retainIoc(ioc);
         }
 
+        // Per-cell problems, reported AFTER the loop so they can never abort it -- that abort
+        // was the regression this replaces.
+        //
+        // KNOWN RESIDUAL, pre-existing and deliberately not fixed here: markLimit keeps only
+        // the FIRST warning, and markXlmCaptureLimit downstream does the same, so if a budget
+        // already fired only that earlier reason reaches metadata. Carrying every distinct
+        // diagnosis through would mean changing this class's warning API and both decorators;
+        // that is a separate change. What matters for correctness is above -- emulation is no
+        // longer aborted, so the IOCs themselves survive either way.
+        for (String warning : ctx.getNonFatalWarnings()) {
+            markLimit(warning);
+        }
+
         // Emit any still-open file contents. The cap is driven by the configured budget
         // (floored at the historical 8192) rather than being hardcoded to it -- otherwise
         // raising maxFileContentChars retains payload that is never emitted.

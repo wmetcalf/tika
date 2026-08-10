@@ -550,8 +550,14 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             xhtml.element("h1", sheetName);
 
             // Declared outside the try so a mid-part failure can still harvest the cells
-            // that completed before it. See the SAXParseException arm.
+            // that completed before it. See the recovery arm below.
             XlmXmlMacrosheetParser parser = null;
+            // A separate BOOLEAN, not just the message: gating the report on
+            // `parseError != null` meant an exception whose getMessage() is null (plenty of
+            // message-less RuntimeExceptions come out of JAXP/POI stream code) aborted the
+            // part's capture with no xlm-parse-error text and NO metadata flag -- a clean-looking
+            // parse again. The error indicator must not be a message string.
+            boolean parseFailed = false;
             String parseError = null;
             try (InputStream is = xlmInputBudget.limit(
                     macroPart.getInputStream(),
@@ -571,24 +577,41 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             } catch (SecurityException e) {
                 throw e;
             } catch (SAXParseException e) {
-                // ONE malformed macrosheet must not destroy the WHOLE workbook's results.
-                // This used to land in the `catch (SAXException) { throw e; }` arm below,
-                // aborting the method and thereby skipping the cross-sheet IOC scan at the
-                // bottom, embedded-part extraction, and endDocument(). Probe: sheet1 holding
-                // =EXEC("powershell -enc EVIL") plus a sheet2 truncated mid-tag reported NO
-                // exec IOC and no flag at all -- strictly worse than reporting nothing,
-                // because a silent empty result reads as a clean parse. A part truncated
-                // mid-tag is trivially attacker-supplied, so this was a one-sheet kill
-                // switch on XLM analysis for the entire workbook.
+                // MALFORMED CONTENT. One unreadable macrosheet must not destroy the WHOLE
+                // workbook's results. This used to rethrow, aborting the method and thereby
+                // skipping the cross-sheet IOC scan at the bottom, embedded-part extraction and
+                // endDocument(). Probe: sheet1 holding =EXEC("powershell -enc EVIL") plus a
+                // sheet2 truncated mid-tag reported NO exec IOC and no flag at all -- strictly
+                // worse than reporting nothing, because a silent empty result reads as a clean
+                // parse. A part truncated mid-tag is trivially attacker-supplied, so this was a
+                // one-sheet kill switch on XLM analysis for the entire workbook.
+                //
+                // MUST stay above the SAXException arm: SAXParseException is a subclass, so the
+                // order is what decides recover-vs-rethrow.
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseFailed = true;
                 parseError = e.getMessage();
             } catch (SAXException e) {
-                // NOT a content problem: a plain SAXException here comes from our own
-                // ContentHandler (i.e. the output pipe), so continuing is pointless.
+                // OUR OWN ContentHandler aborting -- a write limit, or a consumer refusing
+                // content. It must propagate unchanged, and a test pins the exact instance
+                // reaching the caller.
+                //
+                // This arm is narrower than it used to be. Its old justification, "a plain
+                // SAXException comes from our own ContentHandler", was FALSE: parse() wrapped
+                // ParserConfigurationException in a plain SAXException and setFeature /
+                // getXMLReader throw SAXNotRecognized/SAXNotSupportedException straight from
+                // JAXP, before any content is read -- so on a JAXP that does not recognise
+                // disallow-doctype-decl this arm silently killed the IOC scan for EVERY
+                // macro-bearing document in the deployment. parse() now reports setup failure
+                // as IOException, which lands in the recovery arm below, so the justification
+                // is finally true of what this arm actually catches.
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
                 throw e;
             } catch (Exception e) {
+                // Everything else, including the IOException parse() now uses for factory-setup
+                // failure: per-part recovery, same as malformed content.
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseFailed = true;
                 parseError = e.getMessage();
             }
             if (parser != null) {
@@ -620,10 +643,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     xhtml.element("p", "xlm-macro-emit-error: " + e.getMessage());
                 }
             }
-            if (parseError != null) {
-                xhtml.element("p", "xlm-parse-error: " + parseError);
+            if (parseFailed) {
+                String detail = parseError != null ? parseError : "no message";
+                xhtml.element("p", "xlm-parse-error: " + detail);
                 markXlmCaptureLimit("XLM macrosheet XML parse error in " + sheetName
-                        + ": " + parseError);
+                        + ": " + detail);
             }
 
             xhtml.endElement("div");

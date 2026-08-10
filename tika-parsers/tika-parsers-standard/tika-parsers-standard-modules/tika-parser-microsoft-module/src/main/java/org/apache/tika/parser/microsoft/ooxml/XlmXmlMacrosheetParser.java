@@ -151,6 +151,7 @@ final class XlmXmlMacrosheetParser {
         // SAX walk that doesn't recurse into Tika sub-parsers. Disabling
         // external entity resolution keeps this safe against XXE on the
         // (untrusted) macrosheet XML.
+        XMLReader reader;
         try {
             SAXParserFactory spf = SAXParserFactory.newInstance();
             spf.setNamespaceAware(true);
@@ -158,12 +159,23 @@ final class XlmXmlMacrosheetParser {
             spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
             spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             SAXParser sp = spf.newSAXParser();
-            XMLReader reader = sp.getXMLReader();
-            reader.setContentHandler(new Handler());
-            reader.parse(new InputSource(stream));
-        } catch (javax.xml.parsers.ParserConfigurationException e) {
-            throw new SAXException(e);
+            reader = sp.getXMLReader();
+        } catch (javax.xml.parsers.ParserConfigurationException | SAXException e) {
+            // Factory SETUP failure, reported as IOException rather than SAXException on
+            // purpose. It used to surface as a plain SAXException, indistinguishable from one
+            // thrown by our own ContentHandler -- and the caller must treat those oppositely: a
+            // handler abort has to propagate (a write limit or a refusing consumer), while a
+            // JAXP that cannot be configured is a per-part failure the caller should recover
+            // from and carry on. Conflating them meant that on a JAXP not recognising
+            // disallow-doctype-decl, EVERY macro-bearing document in the deployment silently
+            // lost its whole cross-sheet IOC scan. Nothing has been read at this point, so
+            // there is no handler state to preserve.
+            throw new IOException("XLM macrosheet SAX parser could not be configured", e);
         }
+        // OUTSIDE the try: a SAXException from here is the ContentHandler aborting, and it must
+        // reach the caller unchanged rather than being folded into the setup case above.
+        reader.setContentHandler(new Handler());
+        reader.parse(new InputSource(stream));
     }
 
     /** Formula text per cell, keyed "{sheet}:{row}:{col}". Iteration order matches sheet order. */
@@ -242,6 +254,25 @@ final class XlmXmlMacrosheetParser {
         @Override
         public void startElement(String uri, String local, String qName, Attributes atts)
                 throws SAXException {
+            // ANY child element inside an open <f>/<v>/<t> is malformed: all three are
+            // TEXT-ONLY in SpreadsheetML, so a nested element never occurs legitimately.
+            // Suppress the whole subtree, whatever it is called and whatever namespace it is
+            // in, and count EVERY element so the depth is symmetric with endElement below.
+            //
+            // The previous version keyed suppression on the element NAME (only f/v/t could
+            // enter it) and that was doubly broken, both measured:
+            //   <f>=EXEC("...")<t>DECOY</t></f>   -- a <t> outside <is> never entered
+            //     suppression at all, so DECOY was appended to the formula and no anomaly
+            //     was flagged.
+            //   <f>=EXEC("...")<v><t/>DECOY2</v></f>  -- endElement decremented on a </t>
+            //     whose start had not incremented, lifting suppression of the still-open <v>
+            //     so DECOY2 landed in the formula.
+            // Counting every element makes the invariant "suppressDepth == depth below the
+            // capture element" actually true, which is what the guard's correctness rests on.
+            if (suppressDepth > 0 || isCapturing()) {
+                enterSuppressed();
+                return;
+            }
             if (!NS_SHEETML.equals(uri) && !uri.isEmpty()) return;
             String name = !local.isEmpty() ? local : stripPrefix(qName);
             switch (name) {
@@ -374,15 +405,23 @@ final class XlmXmlMacrosheetParser {
 
         @Override
         public void endElement(String uri, String local, String qName) throws SAXException {
-            if (!NS_SHEETML.equals(uri) && !uri.isEmpty()) return;
-            String name = !local.isEmpty() ? local : stripPrefix(qName);
-            // Close out a malformed nested capture element without flushing anything: the
-            // enclosing element is still mid-capture and owns buf.
-            if (suppressDepth > 0
-                    && ("f".equals(name) || "v".equals(name) || "t".equals(name))) {
+            // NOTE: the namespace check must come AFTER the suppressDepth decrement, not before.
+            // startElement increments for a foreign-namespace child too (it has to -- such a
+            // child still contaminates the enclosing text), so if the close were filtered out
+            // by namespace first, the depth would never come back down and every remaining
+            // element on the sheet would be silently swallowed.
+            // Close out a suppressed element without flushing anything: the enclosing capture
+            // element is still mid-capture and owns buf. Decrement for EVERY element, matching
+            // startElement's increment exactly -- the old name-gated version decremented on
+            // f/v/t closes that had never incremented, which let a <t/> lift the suppression of
+            // an enclosing <v>. Placed before the namespace check for the same reason: the
+            // increment above ignores namespace, so the decrement must too.
+            if (suppressDepth > 0) {
                 suppressDepth--;
                 return;
             }
+            if (!NS_SHEETML.equals(uri) && !uri.isEmpty()) return;
+            String name = !local.isEmpty() ? local : stripPrefix(qName);
             switch (name) {
                 case "f":
                     if (inFormula) {
@@ -434,18 +473,6 @@ final class XlmXmlMacrosheetParser {
         /** Appended to any formula that hit XLM_FORMULA_MAX_LEN, so a cut payload is obvious. */
         private static final String XLM_TRUNCATION_MARKER = "[...TIKA-XLM-FORMULA-TRUNCATED]";
 
-        /**
-         * Neutralize a document-supplied copy of our truncation marker so an emitted marker
-         * is always one WE added. Only the sentinel's recognisable core is altered, keeping
-         * the surrounding payload byte-for-byte intact -- this is an evidence path, so the
-         * defang must not eat content.
-         */
-        private static String defangMarker(String s) {
-            if (s == null || s.indexOf("TIKA-XLM-") < 0) {
-                return s;
-            }
-            return s.replace("TIKA-XLM-", "TIKA_XLM_FORGED-");
-        }
         /** Running total of retained formula characters; bounds heap independently of count. */
         // long, not int: the cap is operator-raisable, and at values near Integer.MAX_VALUE
         // an int sum wraps negative and silently defeats the bound entirely.
@@ -472,8 +499,20 @@ final class XlmXmlMacrosheetParser {
                 // marker's length escaped the aggregate budget on every truncated formula.
                 int projected = currentFormulaText.length()
                         + (cellFormulaTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
-                boolean roomByChars =
-                        retainedFormulaChars + projected <= formulaTotalMaxChars;
+                // Credit back the entry this one REPLACES, exactly as the charge below does.
+                // The charge was changed to net but this gate was left gross, so a replacement
+                // was tested against a total that already counted the old value -- the same
+                // double-count, moved from the accumulator into the admission check. A
+                // replacement that genuinely fits was then REFUSED and truncated=true set,
+                // fabricating an evidence loss. Reachable on purpose: put a benign short decoy
+                // at a cell ref, then the payload at the SAME ref once the budget is nearly
+                // spent, and the payload is the one that gets dropped.
+                // roomByCount already credits the replacement (`|| containsKey`); these two
+                // gates must agree.
+                String existing = formulas.get(key);
+                long creditedTotal =
+                        retainedFormulaChars - (existing == null ? 0 : existing.length());
+                boolean roomByChars = creditedTotal + projected <= formulaTotalMaxChars;
                 if (roomByCount && roomByChars) {
                     // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
                     // bare prefix reads as a complete formula to anything downstream. Mark it
@@ -484,16 +523,22 @@ final class XlmXmlMacrosheetParser {
                     // absorbed the marker into the extracted indicator
                     // ("http://evil/x[...TIKA-XLM-FORMULA-TRUNCATED]"), yielding an IOC that
                     // can never match the real C2. The space terminates the URL match.
-                    // Defang any copy of the marker the DOCUMENT supplied before we append
-                    // our own. The marker is only a human convenience -- the authoritative
-                    // signal is msoffice:xlm-capture-limit-reached -- but a consumer that
-                    // greps output for it could otherwise be fed a forged one: claiming
-                    // truncation that did not happen, or (worse) making a genuinely truncated
-                    // formula indistinguishable from a decoy carrying the same string.
-                    String body = defangMarker(currentFormulaText);
+                    // NOTE: a document CAN embed a copy of XLM_TRUNCATION_MARKER in its own
+                    // formula text, so a consumer must not treat the inline marker as proof of
+                    // truncation -- the authoritative signal is
+                    // msoffice:xlm-capture-limit-reached, which a document cannot set.
+                    //
+                    // A defangMarker() rewrite was tried here and REVERTED: rewriting the
+                    // 9-char sentinel to a 16-char one expanded the text AFTER `projected`
+                    // above had gated on the pre-rewrite length, so the document-wide formula
+                    // cap was overshot by up to 78% (measured: 641 chars retained against a
+                    // 400-char cap, isTruncated() false). It also covered only this one path,
+                    // not cell values or the IOC scanner's output, so the guarantee it appeared
+                    // to give was not one it delivered. Trading a real budget escape for a
+                    // cosmetic defence of a non-authoritative marker is the wrong trade.
                     String recorded = cellFormulaTruncated
-                            ? body + " " + XLM_TRUNCATION_MARKER
-                            : body;
+                            ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
+                            : currentFormulaText;
                     // Charge only the NET change. `formulas` is keyed by cell ref, so a
                     // repeated ref REPLACES the previous entry -- but the budget used to be
                     // charged the full length every time, so a sheet repeating one cell ref

