@@ -42,10 +42,29 @@ import java.util.stream.Collectors;
 final class Biff12XlmFormulaDecoder {
 
     /**
-     * Fixed slice of a reconstructed file emitted at FCLOSE time. Deliberately NOT budget-derived:
-     * FCLOSE is evaluated mid-macro, so a greedy preview starves every indicator after it.
+     * IOC chars an FCLOSE-time preview must leave for indicators evaluated after it.
+     *
+     * <p>FCLOSE is evaluated MID-MACRO, so whatever it takes is denied to every later EXEC/CALL/
+     * FOPEN -- and refusal marks the limit, which stopOnContextLimit turns into emulationAborted, so
+     * evaluation stops dead too. A budget-DERIVED preview (all remaining chars) reproducibly lost
+     * the EXEC on a >1 MB payload at default limits.
+     *
+     * <p>But a flat cap is worse on real data: pinning the preview to 8192 cost 159 extracted URLs
+     * across 52 documents of the 1,043-document XLSB corpus and halved retained file content
+     * (1,556,165 -> 799,270 chars), because real droppers reconstruct payloads well past 8 KB and the
+     * URLs live inside them. No document in that corpus gained an EXEC from the flat cap.
+     *
+     * <p>So reserve a fixed slice of the allowance instead of rationing the preview: the preview may
+     * grow to (remaining - RESERVE), which keeps the large payloads, while RESERVE guarantees room
+     * for the short high-value indicators (an EXEC line is tens of chars, so 64 KB is hundreds of
+     * them). Serves the probe and the corpus at once.
+     *
+     * <p>Sized from the corpus, not by feel. 64 KB was tried first and still cost 28 extracted URLs
+     * across the 1,043-document XLSB corpus, because the reserve is subtracted from every preview and
+     * in those documents a URL sat in the withheld tail. 4 KB keeps room for ~130 short indicators --
+     * an EXEC line is tens of chars -- while giving that tail back.
      */
-    private static final int FCLOSE_PREVIEW_CHARS = 8192;
+    private static final int FCLOSE_IOC_RESERVE_CHARS = 4096;
 
     // ── Ptg type IDs (MS-XLSB §2.5.97) ────────────────────────────────────
     private static final int PTG_EXP          = 0x01;
@@ -1024,9 +1043,15 @@ final class Biff12XlmFormulaDecoder {
             return null;
         }
         try {
-            List<PtgNode> tokens = parseTokens(data);
+            TokenStream ts = parseTokens(data);
+            if (ts.incomplete && ctx != null) {
+                // Emulating a PREFIX of a formula yields IOCs for an expression the document
+                // does not contain. Flag it so the result is not read as authoritative.
+                ctx.markLimit("XLSB XLM formula only partially decodable: unknown Ptg opcode "
+                        + "or truncated operand; emulated result is incomplete");
+            }
             Deque<Object> stack = new ArrayDeque<>();
-            for (PtgNode node : tokens) {
+            for (PtgNode node : ts.tokens) {
                 node.pushValue(stack, ctx);
             }
             return stack.isEmpty() ? null : stack.getLast();
@@ -1130,12 +1155,16 @@ final class Biff12XlmFormulaDecoder {
                         // 27x more payload than the old 300 while, at a 1 MB allowance, leaving
                         // room for ~128 such previews plus every short indicator. Bounded by
                         // maxFileContentChars when an operator lowers it.
-                        int preview = Math.min(FCLOSE_PREVIEW_CHARS,
-                                Math.min(ctx.maxFileContentChars(), content.length()));
+                        String head = "FILE_CONTENT[" + path + "]: ";
+                        int spendable = ctx.remainingIocChars()
+                                - FCLOSE_IOC_RESERVE_CHARS - head.length() - 1;
+                        int preview = Math.min(
+                                Math.min(ctx.maxFileContentChars(), content.length()),
+                                Math.max(0, spendable));
                         // Unconditional addIoc: it marks the limit when it refuses, and skipping
                         // the call on a zero-length preview turned a REPORTED drop into a silent
                         // one.
-                        ctx.addIoc("FILE_CONTENT[" + path + "]: " + content.substring(0, preview)
+                        ctx.addIoc(head + content.substring(0, preview)
                                 + (content.length() > preview ? "…" : ""));
                     }
                 }
@@ -1285,20 +1314,50 @@ final class Biff12XlmFormulaDecoder {
      * @return formula string (no leading {@code =}), or {@code null} if decoding fails.
      */
     static String decode(byte[] data) {
+        return decode(data, null);
+    }
+
+    /**
+     * Marks a formula whose Ptg stream could not be fully decoded. Presenting a PREFIX of a
+     * formula as the whole formula is the worst possible output -- a spliced unknown opcode
+     * turned {@code =EXEC("powershell -enc EVIL")} into {@code ="powershell -enc EVIL"},
+     * which reads as inert data rather than execution.
+     */
+    static final String XLSB_UNDECODED_PTG_MARKER = "[...TIKA-XLM-PTG-UNDECODED]";
+
+    /**
+     * @param incompleteSink optional 1-element sink; {@code [0]} is set true when the Ptg
+     *                       stream did not decode to completion (see {@link TokenStream}).
+     *                       The returned text then carries
+     *                       {@link #XLSB_UNDECODED_PTG_MARKER}.
+     */
+    static String decode(byte[] data, boolean[] incompleteSink) {
         if (data == null || data.length == 0) {
             return null;
         }
         try {
-            List<PtgNode> tokens = parseTokens(data);
+            TokenStream ts = parseTokens(data);
+            List<PtgNode> tokens = ts.tokens;
+            if (ts.incomplete && incompleteSink != null && incompleteSink.length > 0) {
+                incompleteSink[0] = true;
+            }
             if (tokens.isEmpty()) {
-                return null;
+                // Nothing decoded at all. Still report the marker when the caller asked for
+                // a signal, so "undecodable" is distinguishable from "no formula here".
+                return ts.incomplete ? XLSB_UNDECODED_PTG_MARKER : null;
             }
             Deque<PtgNode> stack = new ArrayDeque<>(tokens);
             PtgNode top = removeLast(stack);
             if (top == null) {
                 return null;
             }
-            return top.stringify(stack);
+            String text = top.stringify(stack);
+            if (ts.incomplete && text != null) {
+                // Append, do not prepend: downstream IOC regexes anchor on the formula's
+                // leading function name.
+                text = text + " " + XLSB_UNDECODED_PTG_MARKER;
+            }
+            return text;
         } catch (Exception | StackOverflowError e) {
             // stringify() recurses one frame per token; a crafted formula of ~65k
             // unary Ptg tokens overflows the stack. StackOverflowError is an Error,
@@ -1310,9 +1369,29 @@ final class Biff12XlmFormulaDecoder {
 
     // ── Ptg token parsing ────────────────────────────────────────────────────
 
-    private static List<PtgNode> parseTokens(byte[] data) {
+    /**
+     * Token stream plus whether the decode ran to completion.
+     *
+     * <p>{@code incomplete} means the walk stopped with bytes left over -- an unknown Ptg
+     * opcode (unknown operand length, so the cursor cannot be advanced correctly) or an
+     * operand truncated mid-read. In both cases every byte after that point would decode
+     * from a MISALIGNED cursor, so the tokens collected so far are a PREFIX of the formula,
+     * not the formula. Callers must not present a prefix as a complete formula.
+     */
+    private static final class TokenStream {
+        final List<PtgNode> tokens;
+        final boolean incomplete;
+
+        TokenStream(List<PtgNode> tokens, boolean incomplete) {
+            this.tokens = tokens;
+            this.incomplete = incomplete;
+        }
+    }
+
+    private static TokenStream parseTokens(byte[] data) {
         Buf buf = new Buf(data);
         List<PtgNode> tokens = new ArrayList<>();
+        boolean incomplete = false;
         while (buf.hasRemaining()) {
             int raw = buf.readByte();
             if (raw < 0) {
@@ -1322,11 +1401,13 @@ final class Biff12XlmFormulaDecoder {
             int base = ((raw & 0x40) != 0) ? ((raw | 0x20) & 0x3F) : (raw & 0x3F);
             PtgNode node = readPtg(base, raw, buf);
             if (node == null) {
+                // Unknown opcode or truncated operand: the cursor is now untrustworthy.
+                incomplete = true;
                 break;
             }
             tokens.add(node);
         }
-        return tokens;
+        return new TokenStream(tokens, incomplete);
     }
 
     @SuppressWarnings("fallthrough")
@@ -1588,7 +1669,17 @@ final class Biff12XlmFormulaDecoder {
             }
 
             default:
-                return new LiteralNode("?PTG" + raw + "?");
+                // We know ~40 of ~200 Ptg opcodes. An unknown one has an unknown OPERAND
+                // LENGTH, so we cannot skip it correctly and the byte cursor DESYNCHRONIZES:
+                // every token after this point is decoded from misaligned bytes and is
+                // fiction. Observed consequence -- splicing one unknown opcode turned
+                //   =EXEC("powershell -enc EVIL")   into   ="powershell -enc EVIL"
+                // i.e. the call vanished and the result was emitted as a COMPLETE formula
+                // with no marker and no flag. We cannot recover the bytes, but we must never
+                // present a desynchronized decode as trustworthy: record it and stop, rather
+                // than manufacturing further structure from garbage. Returning null makes
+                // parseTokens stop; it reports the unconsumed tail as an incomplete decode.
+                return null;
         }
     }
 

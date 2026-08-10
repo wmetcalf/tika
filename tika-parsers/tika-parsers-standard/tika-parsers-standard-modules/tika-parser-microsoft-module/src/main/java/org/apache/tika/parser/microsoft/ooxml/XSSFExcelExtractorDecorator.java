@@ -51,6 +51,7 @@ import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.RuntimeSAXException;
@@ -548,12 +549,15 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
             xhtml.startElement("div", "class", "xlm-macrosheet");
             xhtml.element("h1", sheetName);
 
+            // Declared outside the try so a mid-part failure can still harvest the cells
+            // that completed before it. See the SAXParseException arm.
+            XlmXmlMacrosheetParser parser = null;
+            String parseError = null;
             try (InputStream is = xlmInputBudget.limit(
                     macroPart.getInputStream(),
                     () -> markXlmCaptureLimit(
                             "XLM input capture limit reached"))) {
-                XlmXmlMacrosheetParser parser =
-                        new XlmXmlMacrosheetParser(
+                parser = new XlmXmlMacrosheetParser(
                                 is, xhtml, sheetName, sharedStrings,
                                 cfgValuesMaxEntries - allFormulas.size(),
                                 cfgValuesMaxEntries - allValues.size(),
@@ -564,6 +568,32 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                                         : (valueCharBudget =
                                                 new ValueCharBudget(cfgValueTotalMaxChars)));
                 parser.parse();
+            } catch (SecurityException e) {
+                throw e;
+            } catch (SAXParseException e) {
+                // ONE malformed macrosheet must not destroy the WHOLE workbook's results.
+                // This used to land in the `catch (SAXException) { throw e; }` arm below,
+                // aborting the method and thereby skipping the cross-sheet IOC scan at the
+                // bottom, embedded-part extraction, and endDocument(). Probe: sheet1 holding
+                // =EXEC("powershell -enc EVIL") plus a sheet2 truncated mid-tag reported NO
+                // exec IOC and no flag at all -- strictly worse than reporting nothing,
+                // because a silent empty result reads as a clean parse. A part truncated
+                // mid-tag is trivially attacker-supplied, so this was a one-sheet kill
+                // switch on XLM analysis for the entire workbook.
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseError = e.getMessage();
+            } catch (SAXException e) {
+                // NOT a content problem: a plain SAXException here comes from our own
+                // ContentHandler (i.e. the output pipe), so continuing is pointless.
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                throw e;
+            } catch (Exception e) {
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseError = e.getMessage();
+            }
+            if (parser != null) {
+                // Harvest unconditionally -- including after a parse error, where the cells
+                // completed before the malformation are exactly the evidence we want.
                 // Carry the aggregate across parts. The parser's accumulator is per-sheet,
                 // so without this the budget reset on each of up to MAX_XLM_MACRO_PARTS
                 // parts and the document-wide total was 128x the documented bound.
@@ -574,18 +604,26 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     markXlmCaptureLimit(
                             "XLM macrosheet formula or value capture limit reached");
                 }
+                if (parser.hasStructuralAnomaly()) {
+                    markXlmStructuralAnomaly("XLM macrosheet " + sheetName + ": nested or "
+                            + "duplicated <f>/<v>/<t> element; SpreadsheetML does not "
+                            + "produce this. Content preserved.");
+                }
                 // Parity with VBA: surface this macro sheet as a first-class MACRO
                 // entry (embeddedResourceType=MACRO) carrying its formula text.
-                emitMacroText(sheetName, "text/x-excel-macro",
-                        boundedMacroText(parser.getFormulas().values()), xhtml);
-            } catch (SecurityException e) {
-                throw e;
-            } catch (SAXException e) {
-                WriteLimitReachedException.throwIfWriteLimitReached(e);
-                throw e;
-            } catch (Exception e) {
-                WriteLimitReachedException.throwIfWriteLimitReached(e);
-                xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+                // Kept non-fatal, as it was when this lived inside the parse try/catch:
+                // failing to surface the MACRO entry must not cost us the IOC scan below.
+                try {
+                    emitMacroText(sheetName, "text/x-excel-macro",
+                            boundedMacroText(parser.getFormulas().values()), xhtml);
+                } catch (TikaException e) {
+                    xhtml.element("p", "xlm-macro-emit-error: " + e.getMessage());
+                }
+            }
+            if (parseError != null) {
+                xhtml.element("p", "xlm-parse-error: " + parseError);
+                markXlmCaptureLimit("XLM macrosheet XML parse error in " + sheetName
+                        + ": " + parseError);
             }
 
             xhtml.endElement("div");
@@ -657,6 +695,21 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
     /** One per document; see {@link ValueCharBudget} for why this cannot live per-sheet. */
     private ValueCharBudget valueCharBudget;
+
+    /**
+     * Structural anomaly in the macrosheet XML: something SpreadsheetML never emits, so the
+     * document was hand-built. Deliberately does NOT set TRUNCATED_METADATA or the
+     * capture-limit flag -- nothing was withheld, so claiming truncation would inflate the
+     * signal that drives re-analysis. This is an evasion tell, not a capture shortfall.
+     */
+    private void markXlmStructuralAnomaly(String detail) {
+        if (metadata == null
+                || Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly"))) {
+            return;
+        }
+        metadata.set("msoffice:xlm-structural-anomaly", "true");
+        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, detail);
+    }
 
     private void markXlmCaptureLimit(String warning) {
         if (metadata == null

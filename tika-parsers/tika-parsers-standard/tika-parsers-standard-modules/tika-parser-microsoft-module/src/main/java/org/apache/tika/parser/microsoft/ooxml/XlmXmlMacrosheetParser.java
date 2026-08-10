@@ -195,6 +195,19 @@ final class XlmXmlMacrosheetParser {
         return truncated;
     }
 
+    /**
+     * True when the macrosheet XML nested or duplicated an {@code <f>}/{@code <v>}/{@code <t>}
+     * element in a way SpreadsheetML never produces. Distinct from {@link #isTruncated()}:
+     * nothing was amputated by a budget, the DOCUMENT was malformed — which in this corpus
+     * means hand-crafted, i.e. a deliberate attempt to steer the capture. The payload is
+     * preserved either way; this only says the input was anomalous.
+     */
+    boolean hasStructuralAnomaly() {
+        return structuralAnomaly;
+    }
+
+    private boolean structuralAnomaly;
+
     private final class Handler extends DefaultHandler {
         private static final String NS_SHEETML = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 
@@ -248,12 +261,27 @@ final class XlmXmlMacrosheetParser {
                     currentValueText = null;
                     break;
                 case "f":
-                    inFormula = true;
-                    buf.setLength(0);
+                    if (isCapturing()) {
+                        // MALFORMED: <f>/<v>/<t> nested inside another. SpreadsheetML makes
+                        // them siblings inside <c>, never nested. Unguarded, the inner
+                        // element's buf.setLength(0) WIPED the outer element's text, so
+                        //   <f>=EXEC("powershell -enc AAAA")<v>0</v></f>
+                        // yielded formula="0", isTruncated()=false, IOCs=[] -- a one-element
+                        // evasion that made a live dropper triage as a clean macro workbook.
+                        // Suppress the inner element entirely and keep capturing the outer.
+                        enterSuppressed();
+                    } else {
+                        inFormula = true;
+                        beginCapture(currentFormulaText);
+                    }
                     break;
                 case "v":
-                    inValue = true;
-                    buf.setLength(0);
+                    if (isCapturing()) {
+                        enterSuppressed();
+                    } else {
+                        inValue = true;
+                        beginCapture(currentValueText);
+                    }
                     break;
                 case "is":
                     // Guard against malformed XML with nested <is> — only the
@@ -274,8 +302,14 @@ final class XlmXmlMacrosheetParser {
                     // and NOT in a phonetic-run subtree. <t> also appears inside
                     // formula-result string elements — those aren't payload either.
                     if (inInlineString && !inPhoneticRun) {
-                        inText = true;
-                        buf.setLength(0);
+                        if (isCapturing()) {
+                            enterSuppressed();
+                        } else {
+                            inText = true;
+                            // No dedupe seed: sibling <t> runs inside one <is> legitimately
+                            // repeat (rich text) and are concatenated into inlineAcc on </t>.
+                            buf.setLength(0);
+                        }
                     }
                     break;
                 default:
@@ -283,9 +317,43 @@ final class XlmXmlMacrosheetParser {
             }
         }
 
+        /** Nesting depth of malformed-nested capture elements whose content we discard. */
+        private int suppressDepth;
+
+        private boolean isCapturing() {
+            return inFormula || inValue || inText;
+        }
+
+        /**
+         * Enter a malformed nested capture element: record the anomaly and swallow its
+         * content so it cannot contaminate the enclosing element's text.
+         */
+        private void enterSuppressed() {
+            structuralAnomaly = true;
+            suppressDepth++;
+        }
+
+        /**
+         * Start capturing into {@code buf}. When {@code priorText} is non-null this is a
+         * SECOND <f> (or <v>) inside one <c> — also malformed. Last-wins silently dropped
+         * the first one, so a dropper could hide the payload behind a benign decoy (in
+         * either order). Seeding preserves both; the per-element cap in characters() still
+         * applies to the combined length, so this cannot escape the budget.
+         */
+        private void beginCapture(String priorText) {
+            buf.setLength(0);
+            if (priorText != null) {
+                structuralAnomaly = true;
+                buf.append(priorText).append(' ');
+            }
+        }
+
         @Override
         public void characters(char[] ch, int start, int length) {
-            if (inFormula || inValue || inText) {
+            if (suppressDepth > 0) {
+                return;
+            }
+            if (isCapturing()) {
                 // A formula is the payload, not an IOC fragment: it gets its own much
                 // larger budget. Sharing WORKBOOK_VALUE_MAX_LEN (1 KB) here silently
                 // amputated ~22% of macro-bearing documents mid-formula.
@@ -308,6 +376,13 @@ final class XlmXmlMacrosheetParser {
         public void endElement(String uri, String local, String qName) throws SAXException {
             if (!NS_SHEETML.equals(uri) && !uri.isEmpty()) return;
             String name = !local.isEmpty() ? local : stripPrefix(qName);
+            // Close out a malformed nested capture element without flushing anything: the
+            // enclosing element is still mid-capture and owns buf.
+            if (suppressDepth > 0
+                    && ("f".equals(name) || "v".equals(name) || "t".equals(name))) {
+                suppressDepth--;
+                return;
+            }
             switch (name) {
                 case "f":
                     if (inFormula) {
@@ -446,6 +521,7 @@ final class XlmXmlMacrosheetParser {
             inText = false;
             inFormula = false;
             inValue = false;
+            suppressDepth = 0;
             inlineAcc.setLength(0);
             buf.setLength(0);
         }

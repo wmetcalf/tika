@@ -246,7 +246,13 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                                 xlmCfg == null ? 0 : xlmCfg.getXlmMaxFormulaRecordBytes(),
                                 () -> markXlmCaptureLimit(metadata,
                                         "XLSB XLM formula record exceeded the size bound "
-                                                + "and was dropped"));
+                                                + "and was dropped"),
+                                () -> markXlmCaptureLimit(metadata,
+                                        "XLSB XLM formula only partially decoded: unknown "
+                                                + "Ptg opcode or truncated operand, so the "
+                                                + "emitted formula is a PREFIX. A spliced "
+                                                + "unknown opcode can strip the function "
+                                                + "call and leave only its argument"));
                 parser.parse();
             } catch (SecurityException e) {
                 throw e;
