@@ -298,13 +298,13 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
     /**
      * True if the per-document image-processing budget (every draw of an
      * embedded image XObject, unique or repeated) has already been spent.
-     * Charges the attempt against {@link #imageCounter} -- which is shared
+     * Reports whether the document-wide image budget is exhausted (charging is done by {@link #chargeImage()} at the call sites) -- which is shared
      * across every page of the document, unlike this per-page engine
      * instance -- so the bound holds document-wide, not per-page. Records a
      * one-time warning on the document metadata when the bound is first hit.
      *
      * <p>The exactly-once dedup for that warning MUST be a plain
-     * instance-scoped flag ({@link #imageBudgetWarningEmitted}, gated with
+     * instance-scoped flag (the document-wide budget's exactly-once gate, gated with
      * {@code compareAndSet}), not a value stashed in {@code Metadata}: a
      * prior version used {@code parentMetadata.get(someKey) == null} as the
      * dedup check, but the key collided with {@code TikaCoreProperties
@@ -321,6 +321,20 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
      * reserved-key block entirely, since {@code Metadata.set(Property, ...)}
      * does not go through {@code blockReservedKeyWrite}.
      */
+    /**
+     * Charge one processed image against the document-wide budget.
+     *
+     * <p>Protected because {@link #isImageProcessingBudgetExceeded()} alone is useless to a
+     * subclass that overrides {@link #drawImage}: charging happens inside the base
+     * drawImage, which such a subclass replaces, so without this the guard would return
+     * false forever and the configured bound would be silently inert for that engine.
+     * Override drawImage -&gt; call isImageProcessingBudgetExceeded(), then chargeImage() for
+     * each draw actually processed.
+     */
+    protected void chargeImage() {
+        documentImageBudget.imagesProcessed.incrementAndGet();
+    }
+
     protected boolean isImageProcessingBudgetExceeded() {
         int max = pdfParserConfig.getMaxImagesPerDocument();
         if (max <= 0) {
@@ -359,7 +373,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
             }
             if (cachedNumber == null) {
                 imageNumber = imageCounter.getAndIncrement();
-                documentImageBudget.imagesProcessed.incrementAndGet();
+                chargeImage();
                 processedInlineImages.put(xobject.getCOSObject(), imageNumber);
             } else {
                 // extractUniqueInlineImagesOnly is false: a repeat draw of an
@@ -375,7 +389,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                 // sparse -- image-0/image-3/image-6 instead of image-0/image-1/image-2 --
                 // and did so even with the budget DISABLED (-1, the default), i.e. an
                 // opt-in feature silently changed default-path output.
-                documentImageBudget.imagesProcessed.incrementAndGet();
+                chargeImage();
                 // Reuse the name this object was first published under, rather than
                 // leaving imageNumber at 0: that cross-labelled every repeat draw as
                 // image-0, so <img src="embedded:image-0.png"> pointed at a DIFFERENT
@@ -387,7 +401,7 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                 return;
             }
             imageNumber = imageCounter.getAndIncrement();
-            documentImageBudget.imagesProcessed.incrementAndGet();
+            chargeImage();
         }
         //TODO: should we use the hash of the PDImage to check for seen
         //For now, we're relying on the cosobject, but this could lead to

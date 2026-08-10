@@ -148,6 +148,56 @@ public class PDFImageProcessingBudgetTest {
         return context;
     }
 
+    private static byte[] buildMultiPagePdf(int pages, int drawsPerPage) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            BufferedImage img = new BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB);
+            img.setRGB(0, 0, 0xFF0000);
+            for (int p = 0; p < pages; p++) {
+                PDPage page = new PDPage();
+                doc.addPage(page);
+                PDImageXObject xobject = LosslessFactory.createFromImage(doc, img);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    for (int i = 0; i < drawsPerPage; i++) {
+                        cs.drawImage(xobject, 10 + (i % 40), 10 + (i % 40), 4, 4);
+                    }
+                }
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            doc.save(bos);
+            return bos.toByteArray();
+        }
+    }
+
+    /**
+     * The image budget must be DOCUMENT-wide, not per page.
+     *
+     * <p>Regression guard with teeth: the engine is constructed per PAGE, so the budget
+     * lives on a separate document-scoped object wired up by the caller. Every other test
+     * here builds a SINGLE page, which cannot tell a per-document bound from a per-page
+     * one -- deleting the wiring left all of them green while 200 images were processed
+     * against a cap of 50. This case is multi-page precisely so that deletion fails.
+     */
+    @Test
+    public void testImageBudgetIsDocumentWideNotPerPage() throws Exception {
+        int pages = 5;
+        int drawsPerPage = 40;
+        int cap = 50;
+        CountingEmbeddedDocumentExtractor extractor =
+                new CountingEmbeddedDocumentExtractor(0);
+        byte[] pdf = buildMultiPagePdf(pages, drawsPerPage);
+
+        try (TikaInputStream tis = TikaInputStream.get(new ByteArrayInputStream(pdf))) {
+            new AutoDetectParser().parse(tis, new BodyContentHandler(-1), new Metadata(),
+                    contextFor(cap, extractor));
+        }
+
+        assertTrue(extractor.processedCount() <= cap,
+                "a cap of " + cap + " must bound the WHOLE document, but " + pages
+                        + " pages x " + drawsPerPage + " draws processed "
+                        + extractor.processedCount()
+                        + " images -- a per-page budget would allow " + (pages * drawsPerPage));
+    }
+
     /** Collects the RESOURCE_NAME_KEY of every extracted image, in order. */
     private static class NameCollectingExtractor implements EmbeddedDocumentExtractor {
         private final java.util.List<String> names = new java.util.ArrayList<>();

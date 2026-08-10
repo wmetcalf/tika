@@ -225,6 +225,17 @@ public class AbstractOOXMLExternalRefPartScanBoundTest {
 
         runExtractor(pkg, metadata);
 
+        // The old signal must be GONE, not merely joined by a new one. Asserting only the
+        // new key's presence is what let the half-fix through: tryScanPart still set the
+        // link-limit flag, so a package with ZERO links reported "additional links were
+        // skipped" plus an ExploitClass stamp.
+        for (String name : metadata.names()) {
+            for (String v : metadata.getValues(name)) {
+                assertFalse(v != null && v.contains("Office link metadata limit reached"),
+                        "a pure part-scan truncation must NOT report a link-volume limit "
+                                + "(found on '" + name + "'): this package has no links");
+            }
+        }
         assertEquals("true",
                 metadata.get("msoffice:external-ref-part-scan-limit-reached"),
                 "exceeding the part-scan bound must set its OWN flag -- reusing the link "

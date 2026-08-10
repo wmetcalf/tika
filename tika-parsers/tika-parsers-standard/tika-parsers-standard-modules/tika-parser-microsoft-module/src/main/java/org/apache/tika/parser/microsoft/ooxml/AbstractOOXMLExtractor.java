@@ -1494,6 +1494,9 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             return partRelationshipReads;
         }
 
+        /** Part names already charged, so the two passes cannot double-bill one part. */
+        private final Set<String> scannedPartNames = new HashSet<>();
+
         /**
          * Charge a part against the shared scan budget, ONCE PER DISTINCT PART.
          *
@@ -1509,9 +1512,6 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
          * <p>Callers must still call this BEFORE {@code part.getRelationships()} and break
          * as soon as it returns false.
          */
-        /** Part names already charged, so the two passes cannot double-bill one part. */
-        private final Set<String> scannedPartNames = new HashSet<>();
-
         private boolean tryScanPart(PackagePart part) {
             String key = part == null || part.getPartName() == null
                     ? null : part.getPartName().getName();
@@ -1521,7 +1521,11 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 return true;
             }
             if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
-                truncated = true;
+                // Deliberately does NOT set : that keys the link-limit warning
+                // ("additional links were skipped") plus an ExploitClass stamp, which is
+                // the misattribution this signal exists to replace. Setting both meant a
+                // 5,001-part package with ZERO links still reported a link-volume
+                // truncation. Part-scan truncation reports only its own flag.
                 markPartScanTruncation();
                 return false;
             }
