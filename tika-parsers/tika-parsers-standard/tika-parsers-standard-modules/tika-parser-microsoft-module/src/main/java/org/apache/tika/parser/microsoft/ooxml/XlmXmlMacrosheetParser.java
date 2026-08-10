@@ -433,6 +433,19 @@ final class XlmXmlMacrosheetParser {
 
         /** Appended to any formula that hit XLM_FORMULA_MAX_LEN, so a cut payload is obvious. */
         private static final String XLM_TRUNCATION_MARKER = "[...TIKA-XLM-FORMULA-TRUNCATED]";
+
+        /**
+         * Neutralize a document-supplied copy of our truncation marker so an emitted marker
+         * is always one WE added. Only the sentinel's recognisable core is altered, keeping
+         * the surrounding payload byte-for-byte intact -- this is an evidence path, so the
+         * defang must not eat content.
+         */
+        private static String defangMarker(String s) {
+            if (s == null || s.indexOf("TIKA-XLM-") < 0) {
+                return s;
+            }
+            return s.replace("TIKA-XLM-", "TIKA_XLM_FORGED-");
+        }
         /** Running total of retained formula characters; bounds heap independently of count. */
         // long, not int: the cap is operator-raisable, and at values near Integer.MAX_VALUE
         // an int sum wraps negative and silently defeats the bound entirely.
@@ -471,9 +484,16 @@ final class XlmXmlMacrosheetParser {
                     // absorbed the marker into the extracted indicator
                     // ("http://evil/x[...TIKA-XLM-FORMULA-TRUNCATED]"), yielding an IOC that
                     // can never match the real C2. The space terminates the URL match.
+                    // Defang any copy of the marker the DOCUMENT supplied before we append
+                    // our own. The marker is only a human convenience -- the authoritative
+                    // signal is msoffice:xlm-capture-limit-reached -- but a consumer that
+                    // greps output for it could otherwise be fed a forged one: claiming
+                    // truncation that did not happen, or (worse) making a genuinely truncated
+                    // formula indistinguishable from a decoy carrying the same string.
+                    String body = defangMarker(currentFormulaText);
                     String recorded = cellFormulaTruncated
-                            ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
-                            : currentFormulaText;
+                            ? body + " " + XLM_TRUNCATION_MARKER
+                            : body;
                     retainedFormulaChars += recorded.length();
                     handlerRetainedFormulaChars = (int) Math.min(
                             Integer.MAX_VALUE, retainedFormulaChars);

@@ -1,5 +1,5 @@
 {
-  "scanned_at": "2026-08-10T16:43:37.381882+00:00",
+  "scanned_at": "2026-08-10T18:10:33.952831+00:00",
   "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
@@ -6364,7 +6364,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 724
+          "line": 731
         },
         {
           "class": "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
@@ -7878,7 +7878,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 720
+          "line": 727
         }
       ]
     },
@@ -7887,7 +7887,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 710
+          "line": 717
         }
       ]
     },

@@ -143,6 +143,18 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
             }
             return;
         }
+        // Bound the allocation by what the record ACTUALLY holds, not just by the knob.
+        // sz is attacker-controlled and maxFormulaRecordBytes is operator-settable up to
+        // Integer.MAX_VALUE, so a 22-byte record declaring sz=514MiB used to allocate 514MiB
+        // before readBytes noticed the shortfall and discarded the formula anyway -- pure
+        // amplification, paid per record. If sz exceeds what is left, the record is lying and
+        // the formula is unrecoverable either way; report the drop instead of allocating.
+        if (sz > buf.remaining()) {
+            if (onRecordDropped != null) {
+                onRecordDropped.run();
+            }
+            return;
+        }
         byte[] formulaBytes = new byte[(int) sz];
         if (buf.readBytes(formulaBytes) < (int) sz) {
             return;

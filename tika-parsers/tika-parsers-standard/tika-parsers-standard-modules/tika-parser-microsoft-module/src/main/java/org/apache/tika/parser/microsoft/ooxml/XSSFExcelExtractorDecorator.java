@@ -634,7 +634,14 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         // Pattern-scan everything once we've seen all sheets. Cross-sheet
         // EXEC(Sheet1!A1) lookups resolve here.
-        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues);
+        // Scan ceiling tracks the effective CAPTURE cap: a formula we retained in full must be
+        // inspected in full, else raising xlmFormulaMaxLen for forensics silently narrows
+        // detection to the first 64 KB of each formula -- worse detection from the knob whose
+        // whole purpose is more.
+        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues,
+                Math.max(cfgFormulaMaxLen, XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN),
+                () -> markXlmCaptureLimit("XLM IOC scan input truncated: a formula exceeded "
+                        + "the scan ceiling, so IOCs in its tail were not extracted"));
         if (!iocs.isEmpty()) {
             xhtml.startElement("div", "class", "xlm-iocs");
             xhtml.element("h2", "XLM Emulation");

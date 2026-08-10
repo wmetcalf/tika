@@ -61,7 +61,15 @@ final class XlmXmlIocScanner {
     // Per-cell scan length cap: even with linear-time regex, a multi-MB formula
     // would still be measurable scan cost. 64 KB is far past any legitimate XLM
     // formula size while bounding pathological worst case.
-    private static final int MAX_FORMULA_SCAN_LEN = 64 * 1024;
+    //
+    // DEFAULT ONLY -- callers should pass the effective formula CAPTURE cap instead. This
+    // constant used to be the sole ceiling, decoupled from the operator-settable
+    // xlmFormulaMaxLen. At the 16 KB default capture cap it is unreachable, so it looked
+    // harmless; but an operator who raised xlmFormulaMaxLen to 1 MB for forensics still had
+    // only the first 64 KB of each formula SCANNED, silently. Raising the knob to see more
+    // therefore made detection strictly worse for the payloads that motivated raising it,
+    // with nothing in the output saying so.
+    static final int MAX_FORMULA_SCAN_LEN = 64 * 1024;
     // TIME_GATE IOC carries the formula text. Cap so a megabyte-long crafted
     // formula doesn't bloat the link-metadata index / extracted text.
     private static final int MAX_TIME_GATE_LEN = 4096;
@@ -136,6 +144,21 @@ final class XlmXmlIocScanner {
      *                    Pass an empty map if none are available.
      */
     static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues) {
+        return scan(formulas, cellValues, MAX_FORMULA_SCAN_LEN, null);
+    }
+
+    /**
+     * @param maxScanLen       per-formula scan ceiling. Pass the EFFECTIVE formula capture cap
+     *                         so scanning tracks capture: a formula we bothered to retain in
+     *                         full must be inspected in full, or raising the capture knob
+     *                         silently degrades detection.
+     * @param onScanTruncated  invoked when a formula was too long to scan entirely. Truncating
+     *                         the scan input means IOCs may exist in the unscanned tail, so
+     *                         this must never be silent.
+     */
+    static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues,
+                             int maxScanLen, Runnable onScanTruncated) {
+        int scanLen = maxScanLen > 0 ? maxScanLen : MAX_FORMULA_SCAN_LEN;
         List<String> iocs = new ArrayList<>();
         if (formulas == null || formulas.isEmpty()) return iocs;
         // Build a "{cellRef}" → value index so cellref-only lookups work
@@ -157,12 +180,16 @@ final class XlmXmlIocScanner {
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
             String formula = entry.getValue();
             if (formula == null || formula.isEmpty()) continue;
-            if (formula.length() > MAX_FORMULA_SCAN_LEN) {
-                // Truncate the scan input for this cell. We still see most of the
-                // payload (legitimate XLM lines are tiny; only attacker-padded
-                // formulas exceed the cap), and the formula text was already
-                // emitted in full to the XHTML stream by XlmXmlMacrosheetParser.
-                formula = formula.substring(0, MAX_FORMULA_SCAN_LEN);
+            if (formula.length() > scanLen) {
+                // Truncate the scan input for this cell. The formula text was already
+                // emitted in full to the XHTML stream by XlmXmlMacrosheetParser, but any
+                // IOC living past this point will NOT be extracted -- and an IOC that was
+                // never extracted is invisible to everything downstream that consumes the
+                // IOC list rather than re-reading the formula. So report it.
+                formula = formula.substring(0, scanLen);
+                if (onScanTruncated != null) {
+                    onScanTruncated.run();
+                }
             }
             // NFKC-normalize so fullwidth-letter obfuscation (ＥＸＥＣ → EXEC),
             // ligatures, and other compatibility variants collapse to the ASCII

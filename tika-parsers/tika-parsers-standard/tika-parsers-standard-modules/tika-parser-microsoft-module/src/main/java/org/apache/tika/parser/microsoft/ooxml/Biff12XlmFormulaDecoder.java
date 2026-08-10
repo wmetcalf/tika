@@ -1248,14 +1248,11 @@ final class Biff12XlmFormulaDecoder {
                 // lets time-gate comparisons in droppers actually resolve.
                 // Surface to IOCs so analysts notice the time-gated logic even
                 // when the comparison happens to be true at parse time.
-                //
-                // UTC because forbiddenapis blocks the default-timezone form;
-                // Excel's display timezone is irrelevant when comparing serials.
                 if (ctx != null) ctx.addIoc("TIME_GATE: NOW()");
-                return excelSerialDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+                return EMULATION_CLOCK_SERIAL;
             case "TODAY":
                 if (ctx != null) ctx.addIoc("TIME_GATE: TODAY()");
-                return (double) excelSerialDay(java.time.LocalDate.now(java.time.ZoneOffset.UTC));
+                return (double) (long) EMULATION_CLOCK_SERIAL;
             case "DATE": {
                 // DATE(year, month, day) → Excel serial. Pure constructor, no
                 // IOC — but the resolved serial enables `=IF(NOW()>DATE(2023,1,1), …)`
@@ -1294,17 +1291,36 @@ final class Biff12XlmFormulaDecoder {
      * 1899-12-30 rather than 1900-01-01 cancels the offset for any date
      * past March 1900, which covers every conceivable modern dropper.
      */
+    /**
+     * Fixed clock for emulated {@code NOW()}/{@code TODAY()}: Excel serial for
+     * 2100-01-01T00:00:00Z.
+     *
+     * <p>These used to read the WALL CLOCK, which put the parse timestamp into the extracted
+     * TEXT -- a {@code REGISTER: 46244.7446875} line whose value changed on every parse.
+     * Measured directly: two runs of the same binary over the same 1,123-document XLSB corpus
+     * disagreed on 47 documents. That makes extraction irreproducible, so anything keyed on
+     * the extracted text (dedup, caches, "did this build change detection?" A/B runs) is
+     * unreliable, and the differing value is analyst-irrelevant noise -- the actionable signal
+     * is the {@code TIME_GATE} IOC, which still fires.
+     *
+     * <p>A FAR-FUTURE instant is the conservative choice: real droppers gate on
+     * {@code NOW() > <some past date>} to stop detonating after a campaign window, so a late
+     * clock takes the same branch the wall clock took, preserving the emulation's reach.
+     */
+    static final double EMULATION_CLOCK_SERIAL =
+            excelSerialDay(java.time.LocalDate.of(2100, 1, 1));
+
     private static int excelSerialDay(java.time.LocalDate date) {
         java.time.LocalDate epoch = java.time.LocalDate.of(1899, 12, 30);
         return (int) java.time.temporal.ChronoUnit.DAYS.between(epoch, date);
     }
 
-    /** Excel serial date with fractional day for the time component. */
-    private static double excelSerialDate(java.time.LocalDateTime dt) {
-        double day = excelSerialDay(dt.toLocalDate());
-        double fraction = dt.toLocalTime().toSecondOfDay() / 86400.0;
-        return day + fraction;
-    }
+    // excelSerialDate(LocalDateTime) was removed along with the wall-clock NOW(), which was
+    // its only caller. Worth recording WHY: its resolution was toSecondOfDay(), so repeated
+    // NOW() calls inside the same second returned an IDENTICAL double. A "call it twice and
+    // compare" test therefore could not detect the wall-clock read at all -- it passed against
+    // the bug. See EMULATION_CLOCK_SERIAL and the test that asserts NOW() is nowhere near
+    // today's serial instead.
 
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -1352,6 +1368,12 @@ final class Biff12XlmFormulaDecoder {
                 return null;
             }
             String text = top.stringify(stack);
+            // Defang a DOCUMENT-supplied copy of the sentinel so an emitted marker is always
+            // one WE added; a consumer grepping for it must not be fed a forged one. Only the
+            // recognisable core is rewritten, so payload bytes survive intact.
+            if (text != null && text.contains("TIKA-XLM-")) {
+                text = text.replace("TIKA-XLM-", "TIKA_XLM_FORGED-");
+            }
             if (ts.incomplete && text != null) {
                 // Append, do not prepend: downstream IOC regexes anchor on the formula's
                 // leading function name.
@@ -1977,6 +1999,11 @@ final class Biff12XlmFormulaDecoder {
 
         boolean hasRemaining() {
             return b.hasRemaining();
+        }
+
+        /** Bytes actually left in this record -- the real ceiling on any length field. */
+        int remaining() {
+            return b.remaining();
         }
 
         /** Read 1 unsigned byte; returns -1 if buffer exhausted. */
