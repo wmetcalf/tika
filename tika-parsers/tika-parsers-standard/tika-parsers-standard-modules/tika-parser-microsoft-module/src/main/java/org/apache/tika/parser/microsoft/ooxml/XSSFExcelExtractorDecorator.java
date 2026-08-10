@@ -655,9 +655,17 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                             "XLM macrosheet formula or value capture limit reached");
                 }
                 if (parser.hasStructuralAnomaly()) {
+                    // Do NOT assert "Content preserved." -- the anomaly flag is also set on cells
+                    // whose formula was then refused by the aggregate cap, so the old text stated
+                    // content was preserved on the very documents where the payload was dropped.
+                    // isTruncated() is the authority on whether anything was withheld; say which.
                     markXlmStructuralAnomaly("XLM macrosheet " + sheetName + ": nested or "
-                            + "duplicated <f>/<v>/<t> element; SpreadsheetML does not "
-                            + "produce this. Content preserved.");
+                            + "duplicated <f>/<v>/<t>/<c> element; SpreadsheetML does not produce "
+                            + "this. All occurrences retained"
+                            + (parser.isTruncated()
+                                    ? ", EXCEPT where a capture limit also fired -- see "
+                                            + "msoffice:xlm-capture-limit-reached."
+                                    : "."));
                 }
                 // Parity with VBA: surface this macro sheet as a first-class MACRO
                 // entry (embeddedResourceType=MACRO) carrying its formula text.
@@ -666,15 +674,25 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 try {
                     emitMacroText(sheetName, "text/x-excel-macro",
                             boundedMacroText(parser.getFormulas().values()), xhtml);
-                } catch (TikaException e) {
+                } catch (TikaException | IOException e) {
+                    // IOException too: emitMacroText writes to an embedded-document extractor, and
+                    // letting that abort the method would cost the cross-sheet IOC scan below --
+                    // the same whole-workbook loss this branch removed from the parse path.
                     xhtml.element("p", "xlm-macro-emit-error: " + e.getMessage());
                 }
             }
             if (parseFailed) {
                 String detail = parseError != null ? parseError : "no message";
                 xhtml.element("p", "xlm-parse-error: " + detail);
-                markXlmCaptureLimit("XLM macrosheet XML parse error in " + sheetName
-                        + ": " + detail);
+                // Deliberately does NOT include sheetName or the SAX detail: those vary per part,
+                // so with 128 macro parts allowed an attacker could mint 128 DISTINCT warnings and
+                // fill the 16-slot cap with decoy parse errors, crowding out the later IOC-scan and
+                // IOC-output diagnoses -- reproducing, with 16 cheap tricks instead of one, exactly
+                // the "attacker picks which diagnosis is seen" defect the accumulate change fixed.
+                // A constant string dedupes to one slot; the per-part detail is already emitted
+                // into the extracted text immediately above.
+                markXlmCaptureLimit("XLM macrosheet XML parse error: at least one macro part "
+                        + "could not be parsed (see xlm-parse-error entries in the text)");
             }
 
             xhtml.endElement("div");
@@ -830,6 +848,8 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 && reportedXlmWarnings.add(warning)) {
             metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
         }
+        // ExploitClass is a single-valued triage bucket, so first-wins is correct for IT -- but the
+        // full reason list above is what carries the detail, which is why the warnings accumulate.
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "XLM analysis incomplete; macro content may not have been analyzed");

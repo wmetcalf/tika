@@ -1030,6 +1030,11 @@ final class Biff12XlmFormulaDecoder {
             return limitWarning;
         }
 
+        /** Drop a handle's reconstructed content once it has been emitted, so it is not re-emitted. */
+        void closeFileHandle(int handle) {
+            fileContents.remove(handle);
+        }
+
         private void markLimit(String warning) {
             if (limitWarning == null) {
                 limitWarning = warning;
@@ -1208,12 +1213,30 @@ final class Biff12XlmFormulaDecoder {
                             // evidence, spends budget on an attacker-chosen path string, and when
                             // it is REFUSED addIoc calls markLimit -> stopOnContextLimit, so
                             // emulation aborted here and the later EXEC command line -- the single
-                            // most valuable indicator in a dropper -- was never evaluated. This is
-                            // the same content-free-entry defect already removed from the drain
-                            // path in XlmMacroEmulator; it was left here. Report, do not abort.
+                            // most valuable indicator in a dropper -- was never evaluated. Report,
+                            // do not abort.
                             ctx.markNonFatal("XLSB XLM reconstructed file content dropped at "
                                     + "FCLOSE: IOC budget exhausted. Other indicators were "
                                     + "still emulated.");
+                        }
+                        // Close the handle ONLY when this emission was COMPLETE.
+                        //
+                        // The handle used to stay open unconditionally, so the post-loop drain in
+                        // XlmMacroEmulator re-emitted the same payload -- measured as two
+                        // byte-identical 480,040-char entries eating 91% of the 1 MiB IOC
+                        // allowance for one file. But closing it unconditionally was WORSE, and
+                        // the corpus proved it: FILE_CONTENT across 1,123 XLSB documents fell from
+                        // 1,556,505 chars to 779,927 (-207 IOC lines, -142 URLs on 30 documents).
+                        // The two emitters are NOT equivalent -- this one is capped by
+                        // FCLOSE_IOC_RESERVE_CHARS so it can be CUT, while the drain runs after
+                        // the high-value indicators are secured and may spend the whole remainder.
+                        // A synthetic probe showed them identical; real droppers write payloads
+                        // large enough that only the drain gets it all.
+                        //
+                        // So: if we emitted the content in full, closing removes a pure duplicate.
+                        // If we cut it, leave the handle open so the drain can do better.
+                        if (preview >= content.length()) {
+                            ctx.closeFileHandle(handle);
                         }
                     }
                 }

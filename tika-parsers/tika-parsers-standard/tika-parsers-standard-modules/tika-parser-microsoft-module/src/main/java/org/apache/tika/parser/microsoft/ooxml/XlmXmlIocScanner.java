@@ -198,6 +198,15 @@ final class XlmXmlIocScanner {
         boolean isLimited() {
             return limited;
         }
+
+        /**
+         * True once nothing further can be accepted. Lets callers STOP SCANNING rather than keep
+         * building strings the sink will refuse -- the difference between bounding emission and
+         * bounding allocation, and the whole point of this class.
+         */
+        boolean isFull() {
+            return out.size() >= maxEntries || chars >= maxChars;
+        }
     }
 
     /**
@@ -235,7 +244,22 @@ final class XlmXmlIocScanner {
             }
         }
 
+        // TWO PASSES over the formulas, high-value categories first.
+        //
+        // Priority ordering previously existed only WITHIN one formula (EXEC before URL), so a
+        // bulk emitter in an earlier-iterated cell could exhaust the whole entry budget before the
+        // cell holding EXEC was reached -- and `allFormulas` is a HashMap keyed on
+        // attacker-chosen sheet/row/ref, so the attacker picks which cell is scanned last.
+        // Measured: 47 KB of formulas across 4 cells, three packed with short URLs, one holding
+        // =EXEC("powershell -enc ..."), gave EXEC_recovered=0. That was the THIRD instance of the
+        // starvation defect the XLSB side already fixed twice by priority-ordering; the fix is the
+        // same one -- name what the macro DOES before the bulk it references.
+        for (int pass = 0; pass < 2; pass++) {
+            boolean highValuePass = pass == 0;
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
+            if (sink.isFull()) {
+                break;
+            }
             String formula = entry.getValue();
             if (formula == null || formula.isEmpty()) continue;
             if (formula.length() > scanLen) {
@@ -245,7 +269,9 @@ final class XlmXmlIocScanner {
                 // never extracted is invisible to everything downstream that consumes the
                 // IOC list rather than re-reading the formula. So report it.
                 formula = formula.substring(0, scanLen);
-                if (onScanTruncated != null) {
+                // Report ONCE: the second pass re-walks the same formulas, so reporting in both
+                // would double-count and, worse, spend a warning slot per pass.
+                if (highValuePass && onScanTruncated != null) {
                     onScanTruncated.run();
                 }
             }
@@ -257,6 +283,8 @@ final class XlmXmlIocScanner {
             // round-trip-lossy fold.
             formula = java.text.Normalizer.normalize(formula, java.text.Normalizer.Form.NFKC);
 
+            // HIGH-VALUE: what the macro DOES. Emitted for every cell before any bulk.
+            if (highValuePass) {
             // EXEC("cmd …")
             addAll(sink, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXECUTE("…") — used by Excel for DDE-style command exec
@@ -267,20 +295,25 @@ final class XlmXmlIocScanner {
                 String resolved = shortRef.get(ref);
                 sink.add("EXEC: " + (resolved != null ? unq(resolved) : "<ref " + ref + ">"));
             }
+            // CALL("dll", "fn", …)
+            addAll(sink, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
+            // REGISTER("dll", ...) — DLL function binding
+            addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // FOPEN("path", mode)
             for (Matcher m = FOPEN.matcher(formula); m.find(); ) {
                 String path = unq(m.group(1));
                 String mode = m.group(2) != null ? m.group(2) : "?";
                 sink.add("FOPEN: " + path + " (mode " + mode + ")");
             }
+            }
+            if (highValuePass) {
+                continue;
+            }
+            // BULK: volume, and only meaningful once the above are secured.
             // FWRITE / FWRITELN (numeric-handle form)
             addAll(sink, FWRITE.matcher(formula), m -> "FWRITE: " + unq(m.group(1)));
-            // CALL("dll", "fn", …)
-            addAll(sink, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
             // ALERT("msg") — sometimes the only sign of a live macro
             addAll(sink, ALERT.matcher(formula), m -> "ALERT: " + unq(m.group(1)));
-            // REGISTER("dll", ...) — DLL function binding
-            addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // GOTO(A1) — control flow, useful for tracing macro layout
             for (Matcher m = GOTO_REF.matcher(formula); m.find(); ) {
                 sink.add("GOTO: " + m.group(2).toUpperCase(java.util.Locale.ROOT));
@@ -299,6 +332,7 @@ final class XlmXmlIocScanner {
                 sink.add("TIME_GATE: " + sanitizeForIoc(formula));
             }
         }
+        }
 
         // Also surface URL / IPv4 host / drop-path fragments that appear in
         // *cell values* (constants) — XLM droppers commonly split a URL
@@ -306,24 +340,42 @@ final class XlmXmlIocScanner {
         // statically reconstruct the joined URL without a formula evaluator
         // but the fragments themselves are forensically actionable.
         if (cellValues != null && !cellValues.isEmpty()) {
+            // Dedupe set bounded by the sink: once the sink is full we stop scanning entirely.
+            // Previously every URL/IPV4/DROP_PATH match across ALL cell values accumulated into an
+            // unbounded LinkedHashSet and was only offered to the sink AFTER the loop, so the
+            // bound applied to EMISSION but not to PEAK HEAP -- measured OOM at -Xmx256m from
+            // 31 MiB of legal cell values even with maxIocEntries=1, which defeated the entire
+            // purpose of this budget.
+            // Feed the sink DURING iteration and stop as soon as it is full.
+            //
+            // The previous version accumulated every URL/IPV4/DROP_PATH match across ALL cell
+            // values into an unbounded LinkedHashSet and only offered it to the sink AFTER the
+            // loop. That bounded EMISSION but not PEAK HEAP: measured OOM at -Xmx256m from 31 MiB
+            // of entirely legal cell values (200k entries, 1 KB each -- every documented cap
+            // respected) even with maxIocEntries=1, which defeated the whole purpose of this
+            // budget. The dedupe set is now bounded by the sink, because we stop scanning once
+            // the sink cannot accept anything further.
             java.util.Set<String> seen = new java.util.LinkedHashSet<>();
             for (String val : cellValues.values()) {
+                if (sink.isFull()) {
+                    break;
+                }
                 if (val == null || val.isEmpty()) continue;
                 Matcher m;
-                for (m = URL.matcher(val); m.find(); ) seen.add("URL: " + m.group(0));
-                // IP_HOST already requires 4 dotted octets in its main pattern,
-                // so every match is shape-valid by construction; no second-pass
-                // filter needed (the prior "skip 3-octet versions" check was
-                // tautological — the regex never produced 3-octet hits).
-                for (m = IP_HOST.matcher(val); m.find(); ) {
-                    seen.add("IPV4: " + m.group(0));
+                for (m = URL.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "URL: " + m.group(0));
                 }
-                for (m = DROP_PATH.matcher(val); m.find(); ) seen.add("DROP_PATH: " + m.group(0));
+                // IP_HOST already requires 4 dotted octets in its main pattern, so every match is
+                // shape-valid by construction; no second-pass filter needed.
+                for (m = IP_HOST.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "IPV4: " + m.group(0));
+                }
+                for (m = DROP_PATH.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "DROP_PATH: " + m.group(0));
+                }
             }
-            // Drain through the SINK, not addAll: these are the split URL/IP/path
-            // fragments and they must be bounded like everything else.
-            for (String v : seen) {
-                sink.add(v);
+            if (sink.isFull()) {
+                sink.limited = true;
             }
         }
         if (sink.isLimited() && onIocLimit != null) {
@@ -385,6 +437,13 @@ final class XlmXmlIocScanner {
 
     @FunctionalInterface
     private interface Fmt { String apply(Matcher m); }
+
+    /** Dedupe then emit. The set is bounded by the sink: scanning stops when it is full. */
+    private static void emitOnce(IocSink sink, java.util.Set<String> seen, String ioc) {
+        if (seen.add(ioc)) {
+            sink.add(ioc);
+        }
+    }
 
     private static void addAll(IocSink sink, Matcher m, Fmt fmt) {
         while (m.find()) {

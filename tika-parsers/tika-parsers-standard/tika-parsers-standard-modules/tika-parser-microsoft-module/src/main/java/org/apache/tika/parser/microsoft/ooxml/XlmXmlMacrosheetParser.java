@@ -226,6 +226,36 @@ final class XlmXmlMacrosheetParser {
         // Current cell reference (e.g. "A1") and OOXML cell type ("s" for shared
         // string, "inlineStr", "str", "b", or null for numeric). Preserved across
         // the <c>...</c> span.
+        /** True between <c> and its </c>, so a nested <c> is detectable. */
+        private boolean cellOpen;
+        /** 1-based column implied by document order, for cells with no @r (legal per ECMA-376). */
+        private int impliedCol;
+
+        /** Column letters for a 1-based column index: 1 -> A, 27 -> AA. */
+        private static String impliedCellRef(int col) {
+            StringBuilder sb = new StringBuilder();
+            for (int n = Math.max(1, col); n > 0; n = (n - 1) / 26) {
+                sb.insert(0, (char) ('A' + (n - 1) % 26));
+            }
+            return sb.toString();
+        }
+
+        /** 1-based column index from an A1-style ref, or null when it does not parse. */
+        private static Integer colFromRef(String ref) {
+            int col = 0;
+            for (int i = 0; i < ref.length(); i++) {
+                char c = Character.toUpperCase(ref.charAt(i));
+                if (c >= 'A' && c <= 'Z') {
+                    col = col * 26 + (c - 'A' + 1);
+                } else if (c >= '0' && c <= '9') {
+                    return col > 0 ? col : null;
+                } else {
+                    return null;
+                }
+            }
+            return col > 0 ? col : null;
+        }
+
         private String currentCellRef;
         private String currentCellType;
         private int currentRow;
@@ -245,7 +275,12 @@ final class XlmXmlMacrosheetParser {
         // <is> alongside the real <t> runs but are NOT part of the cell value.
         // Mixing them into inlineAcc would noise up the IOC scanner with
         // pronunciation glyphs that look like split-payload fragments.
-        private boolean inPhoneticRun;
+        // DEPTH, not a boolean: `inPhoneticRun = false` on the close of an INNER <rPh>
+        // lifted suppression while the outer one was still open, so attacker text from
+        // a furigana subtree Excel never displays was injected into the cell value that
+        // feeds the IOC scanner -- a fabricated indicator, unflagged. Measured with
+        // <is><rPh><rPh/><t>http://inject/1</t></rPh><t>real</t></is>.
+        private int phoneticDepth;
         private final StringBuilder inlineAcc = new StringBuilder();
 
         private String currentFormulaText;
@@ -284,9 +319,40 @@ final class XlmXmlMacrosheetParser {
                     } else {
                         currentRow++;
                     }
+                    // Implied column restarts at each row, per ECMA-376's document-order rule.
+                    impliedCol = 0;
                     break;
                 case "c":
+                    // A <c> opening while another <c> is still open is malformed, and this used
+                    // to WIPE the enclosing cell: currentFormulaText was reset to null, and the
+                    // inner </c> then hit flushCell()'s `currentCellRef == null` early return, so
+                    // nothing was stored and nothing was flagged. Measured end-to-end, the
+                    // resulting metadata was character-for-character identical to a clean macro
+                    // workbook's while =EXEC(...) vanished from the text. Note the guard above
+                    // only covers a <c> arriving while still INSIDE <f>/<v>/<t>; this is the
+                    // post-</f> case, which is the one that was reported. Flush the outer cell
+                    // FIRST so its capture survives, then start the inner one.
+                    if (cellOpen) {
+                        structuralAnomaly = true;
+                        flushCell();
+                    }
+                    cellOpen = true;
                     currentCellRef = atts.getValue("r");
+                    // @r is OPTIONAL in ECMA-376 -- position is implied by document order -- so a
+                    // workbook without it is VALID and Excel runs it. flushCell() used to discard
+                    // such a cell's formula and value outright, with no flag, which made a legal
+                    // document a total-loss evasion. Synthesize the implied reference instead of
+                    // dropping the cell. NOT flagged as an anomaly: this shape is legitimate, and
+                    // flagging it would fire on ordinary files.
+                    impliedCol++;
+                    if (currentCellRef == null) {
+                        currentCellRef = impliedCellRef(impliedCol) + currentRow;
+                    } else {
+                        Integer parsedCol = colFromRef(currentCellRef);
+                        if (parsedCol != null) {
+                            impliedCol = parsedCol;
+                        }
+                    }
                     currentCellType = atts.getValue("t");
                     currentFormulaText = null;
                     currentValueText = null;
@@ -326,13 +392,13 @@ final class XlmXmlMacrosheetParser {
                     break;
                 case "rPh":
                     // Phonetic-run wrapper: any <t> within is furigana, not value.
-                    inPhoneticRun = true;
+                    phoneticDepth++;
                     break;
                 case "t":
                     // Only treat <t> as inline-string text when we're inside <is>
                     // and NOT in a phonetic-run subtree. <t> also appears inside
                     // formula-result string elements — those aren't payload either.
-                    if (inInlineString && !inPhoneticRun) {
+                    if (inInlineString && phoneticDepth == 0) {
                         if (isCapturing()) {
                             enterSuppressed();
                         } else {
@@ -375,7 +441,14 @@ final class XlmXmlMacrosheetParser {
             buf.setLength(0);
             if (priorText != null) {
                 structuralAnomaly = true;
-                buf.append(priorText).append(' ');
+                // Separate with a marker, NOT a bare space. XlmXmlIocScanner's function patterns
+                // are `\bEXEC\(\s*"` and friends, so `\s*` spanned a space separator and two
+                // halves that match NOTHING alone became a full indicator when joined: measured,
+                // <f>=EXEC(</f><f>"powershell -enc EVIL")</f> yielded [EXEC: powershell -enc EVIL]
+                // from a workbook that executes nothing. That lets a document inject an
+                // attacker-chosen command line into authoritative IOC output. '[' cannot appear
+                // between `EXEC(` and the opening quote, so this separator cannot bridge.
+                buf.append(priorText).append(SPLIT_MARKER);
             }
         }
 
@@ -454,13 +527,28 @@ final class XlmXmlMacrosheetParser {
                 case "is":
                     if (inInlineString) {
                         if (inlineAcc.length() > 0) {
-                            currentValueText = inlineAcc.toString();
+                            // Do NOT overwrite: a duplicated <is>, or a <v> followed by an <is>,
+                            // silently DELETED the first value -- and cell values are what the
+                            // IOC scanner uses to resolve EXEC(cellref) and to rejoin split
+                            // URL/IP fragments, so a dropped value is a dropped indicator. This
+                            // writer was the only one still doing last-wins after the <f>/<v> and
+                            // duplicate-cell-ref fixes; the reverse order already kept both,
+                            // which is what made the asymmetry a tell.
+                            if (currentValueText == null || currentValueText.isEmpty()) {
+                                currentValueText = inlineAcc.toString();
+                            } else {
+                                structuralAnomaly = true;
+                                currentValueText =
+                                        currentValueText + SPLIT_MARKER + inlineAcc;
+                            }
                         }
                         inInlineString = false;
                     }
                     break;
                 case "rPh":
-                    inPhoneticRun = false;
+                    if (phoneticDepth > 0) {
+                        phoneticDepth--;
+                    }
                     break;
                 case "c":
                     flushCell();
@@ -469,6 +557,9 @@ final class XlmXmlMacrosheetParser {
                     // nothing
             }
         }
+
+        /** Joins content the document duplicated. Chosen so it cannot bridge an IOC regex. */
+        private static final String SPLIT_MARKER = " [TIKA-XLM-SPLIT] ";
 
         /** Appended to any formula that hit XLM_FORMULA_MAX_LEN, so a cut payload is obvious. */
         private static final String XLM_TRUNCATION_MARKER = "[...TIKA-XLM-FORMULA-TRUNCATED]";
@@ -489,43 +580,44 @@ final class XlmXmlMacrosheetParser {
             formulaWasTruncated = false;
             if (currentCellRef == null) return;
             String key = sheetName + ":" + currentRow + ":" + currentCellRef;
+            // The formula branch below may uniquify `key`; the value branch needs its own copy so
+            // the two maps stay independently keyed.
+            String valueKey = key;
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
-                boolean roomByCount =
-                        formulas.size() < maxFormulaEntries || formulas.containsKey(key);
                 // Gate on what will ACTUALLY be retained, marker included -- otherwise the
                 // aggregate cap is exceeded by the marker length on every truncated formula.
-                // cellFormulaTruncated, NOT formulaWasTruncated: the field was cleared at
-                // the top of this method, so reading it here always yielded false and the
-                // marker's length escaped the aggregate budget on every truncated formula.
+                // cellFormulaTruncated, NOT formulaWasTruncated: the field was cleared at the top
+                // of this method, so reading it here always yielded false and the marker's length
+                // escaped the aggregate budget on every truncated formula.
                 int projected = currentFormulaText.length()
                         + (cellFormulaTruncated ? XLM_TRUNCATION_MARKER.length() + 1 : 0);
-                // Credit back the entry this one REPLACES, exactly as the charge below does.
-                // The charge was changed to net but this gate was left gross, so a replacement
-                // was tested against a total that already counted the old value -- the same
-                // double-count, moved from the accumulator into the admission check. A
-                // replacement that genuinely fits was then REFUSED and truncated=true set,
-                // fabricating an evidence loss. Reachable on purpose: put a benign short decoy
-                // at a cell ref, then the payload at the SAME ref once the budget is nearly
-                // spent, and the payload is the one that gets dropped.
-                // roomByCount already credits the replacement (`|| containsKey`); these two
-                // gates must agree.
-                String existing = formulas.get(key);
-                long creditedTotal =
-                        retainedFormulaChars - (existing == null ? 0 : existing.length());
+
                 // A REPEATED cell key means a duplicated <c r="..."> or <row r="...">, which
-                // SpreadsheetML never emits. put() replaced the earlier entry, so a benign decoy
-                // at the same ref DELETED the payload from `formulas` -- and `formulas` is what
-                // feeds the IOC scanner and the MACRO entry, so the payload vanished from every
-                // structured output with no flag. Exactly the last-wins evasion already fixed
-                // one level down for a duplicated <f> inside one <c>, left live at the cell and
-                // row level. Keep BOTH, in either order, since we cannot know which Excel would
-                // honour; the aggregate gate below still bounds the combined length.
-                int combinedExtra = existing == null ? 0 : existing.length() + 1;
-                boolean roomByChars =
-                        creditedTotal + combinedExtra + projected <= formulaTotalMaxChars;
-                if (existing != null) {
+                // SpreadsheetML never emits. put() used to REPLACE, so a benign decoy at the same
+                // ref DELETED the payload from `formulas` -- and `formulas` is what feeds the IOC
+                // scanner and the MACRO entry, so the payload vanished from every structured
+                // output with no flag.
+                //
+                // Keep every occurrence under a DISTINCT key. A previous attempt CONCATENATED
+                // onto the existing entry, and that was quadratic in CPU *and* in emitted output
+                // -- rebuilding the accumulated string per repetition and re-emitting all of it.
+                // Measured 4x output growth per input doubling, OOM-ing a 512 MiB heap from
+                // 368 KB of macrosheet XML with isTruncated() still false; and OutOfMemoryError
+                // is an Error, so the decorator's per-part recovery does not catch it. Distinct
+                // keys are O(1) per cell, bounded by maxFormulaEntries below, and cannot
+                // fabricate an indicator by joining two formulas across a boundary.
+                if (formulas.containsKey(key)) {
                     structuralAnomaly = true;
+                    String base = key;
+                    for (int dup = 2; formulas.containsKey(key); dup++) {
+                        key = base + "#" + dup;
+                    }
                 }
+                // Keys are always fresh now, so there is nothing to credit back and the count
+                // gate needs no containsKey exception.
+                boolean roomByCount = formulas.size() < maxFormulaEntries;
+                boolean roomByChars =
+                        retainedFormulaChars + projected <= formulaTotalMaxChars;
                 if (roomByCount && roomByChars) {
                     // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
                     // bare prefix reads as a complete formula to anything downstream. Mark it
@@ -549,17 +641,16 @@ final class XlmXmlMacrosheetParser {
                     // not cell values or the IOC scanner's output, so the guarantee it appeared
                     // to give was not one it delivered. Trading a real budget escape for a
                     // cosmetic defence of a non-authoritative marker is the wrong trade.
-                    String base = cellFormulaTruncated
+                    String recorded = cellFormulaTruncated
                             ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
                             : currentFormulaText;
-                    String recorded = existing == null ? base : existing + " " + base;
                     // Charge only the NET change. `formulas` is keyed by cell ref, so a
                     // repeated ref REPLACES the previous entry -- but the budget used to be
                     // charged the full length every time, so a sheet repeating one cell ref
                     // burned the document-wide formula budget on content that was never
                     // retained, cutting capture short for later sheets that had real payload.
                     formulas.put(key, recorded);
-                    retainedFormulaChars = creditedTotal + recorded.length();
+                    retainedFormulaChars += recorded.length();
                     handlerRetainedFormulaChars = (int) Math.min(
                             Integer.MAX_VALUE, retainedFormulaChars);
                     xhtml.element("p", currentCellRef + ": " + recorded);
@@ -577,17 +668,30 @@ final class XlmXmlMacrosheetParser {
                     resolved = resolved.substring(0, valueMaxLen);
                     truncated = true;
                 }
-                if (values.size() < maxValueEntries || values.containsKey(key)) {
+                // Same distinct-key treatment the formula branch gets. values.put() REPLACED on
+                // a duplicated cell ref, so a decoy `<c r="A1"><v>0</v></c>` after
+                // `<c r="A1"><v>powershell -enc PAYLOAD</v></c>` erased the payload and
+                // `=EXEC(A1)` then resolved to "0" -- with no capture-limit and no anomaly flag.
+                // The net-credit accounting made the decoy FIT, so that change helped the attacker
+                // on this path until the key was uniquified here too.
+                if (values.containsKey(valueKey)) {
+                    structuralAnomaly = true;
+                    String vbase = valueKey;
+                    for (int dup = 2; values.containsKey(valueKey); dup++) {
+                        valueKey = vbase + "#" + dup;
+                    }
+                }
+                if (values.size() < maxValueEntries) {
                     // Aggregate guard, shared document-wide with the worksheet path.
                     // Credit the entry this replaces: values.put() overwrites on a repeated
                     // cell ref, so charging gross billed the document budget per repetition.
-                    String priorValue = values.get(key);
+                    String priorValue = values.get(valueKey);
                     if (valueCharBudget != null
                             && !valueCharBudget.tryRetain(resolved.length(),
                                     priorValue == null ? 0 : priorValue.length())) {
                         truncated = true;
                     } else {
-                        values.put(key, resolved);
+                        values.put(valueKey, resolved);
                     }
                 } else {
                     truncated = true;
@@ -604,11 +708,12 @@ final class XlmXmlMacrosheetParser {
             // true after an unclosed </rPh>, killing every subsequent <t> on
             // the sheet). Cell boundaries are well-defined; intra-cell open
             // state never legitimately survives </c>.
-            inPhoneticRun = false;
+            phoneticDepth = 0;
             inInlineString = false;
             inText = false;
             inFormula = false;
             inValue = false;
+            cellOpen = false;
             suppressDepth = 0;
             inlineAcc.setLength(0);
             buf.setLength(0);

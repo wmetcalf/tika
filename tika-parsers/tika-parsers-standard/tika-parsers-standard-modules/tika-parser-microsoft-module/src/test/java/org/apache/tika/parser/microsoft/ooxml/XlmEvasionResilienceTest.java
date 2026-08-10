@@ -574,14 +574,15 @@ class XlmEvasionResilienceTest {
 
         // Both are kept (see testDuplicateCellRefKeepsBothAndIsFlagged): a duplicated ref is
         // malformed and we cannot know which one Excel honours, so neither may be discarded.
-        String kept = onlyFormula(parser);
+        String kept = String.join(" | ", parser.getFormulaList());
         assertTrue(kept.contains(PAYLOAD),
                 "the payload must survive a decoy at the same cell ref; got: " + kept);
         assertTrue(kept.contains("DDD"), "and the decoy is kept too; got: " + kept);
         assertFalse(parser.isTruncated(),
                 "the combined text fit the aggregate cap, so no truncation may be reported -- "
                         + "reporting one here fabricates an evidence loss");
-        assertEquals(kept.length(), parser.getRetainedFormulaChars(),
+        assertEquals(parser.getFormulaList().stream().mapToInt(String::length).sum(),
+                parser.getRetainedFormulaChars(),
                 "THE INVARIANT: the budget charge must equal exactly what is stored. This is "
                         + "what catches both gross charging (billing per overwrite) and under-"
                         + "charging (storing more than was billed).");
@@ -614,20 +615,26 @@ class XlmEvasionResilienceTest {
         parser.parse();
         xhtml.endDocument();
 
-        assertEquals(1, parser.getFormulas().size(),
-                "one cell ref stays ONE map entry, however many times it is repeated");
+        // Each repetition gets its own key rather than overwriting, and the AGGREGATE cap is
+        // what bounds how many are kept: 4 x 401 = 1604 fits under 2000, the 5th would not.
+        assertEquals(4, parser.getFormulas().size(),
+                "repetitions are retained under distinct keys, bounded by the aggregate cap; "
+                        + "got: " + parser.getFormulas().size());
+        assertTrue(parser.isTruncated(),
+                "and refusing the later repetitions must be reported, since evidence WAS "
+                        + "withheld once the cap bit");
         // Repetitions are CONCATENATED rather than dropped, so the charge grows with what is
         // actually stored -- and that is the invariant worth pinning. The earlier version of
         // this test asserted a fixed ceiling (~500), which encoded the old replace-and-discard
         // behaviour and would have to be edited every time the retention policy changed.
-        int stored = onlyFormula(parser).length();
+        int stored = parser.getFormulaList().stream().mapToInt(String::length).sum();
         assertEquals(stored, parser.getRetainedFormulaChars(),
-                "THE INVARIANT: charged must equal stored. Gross charging billed 20x for one "
-                        + "retained copy; charged " + parser.getRetainedFormulaChars()
-                        + " for " + stored + " stored chars");
+                "THE INVARIANT: charged must equal stored, summed over ALL retained entries. "
+                        + "Gross charging billed per overwrite for content never kept; charged "
+                        + parser.getRetainedFormulaChars() + " for " + stored + " stored chars");
         assertTrue(parser.getRetainedFormulaChars() <= 2000,
-                "and the aggregate cap still bounds the total; charged "
-                        + parser.getRetainedFormulaChars());
+                "the aggregate cap bounds the total, so a repeated ref cannot grow without "
+                        + "limit; charged " + parser.getRetainedFormulaChars());
     }
 
     // ── 9. Residuals from the review, now fixed ──────────────────────────────
@@ -693,11 +700,14 @@ class XlmEvasionResilienceTest {
         parser.parse();
         xhtml.endDocument();
 
-        String formula = onlyFormula(parser);
-        assertTrue(formula.contains(PAYLOAD),
-                "the payload must not be deleted by a later decoy at the same ref; got: "
-                        + formula);
-        assertTrue(formula.contains("1+1"), "and the decoy is kept too; got: " + formula);
+        // Kept as SEPARATE entries under distinct keys, not concatenated -- concatenation was
+        // quadratic and could fabricate an IOC across the join.
+        String all = String.join(" | ", parser.getFormulaList());
+        assertTrue(all.contains(PAYLOAD),
+                "the payload must not be deleted by a later decoy at the same ref; got: " + all);
+        assertTrue(all.contains("1+1"), "and the decoy is kept too; got: " + all);
+        assertEquals(2, parser.getFormulas().size(),
+                "each occurrence gets its own key; got: " + parser.getFormulas().keySet());
         assertTrue(parser.hasStructuralAnomaly(),
                 "a duplicated cell ref is not something Excel emits");
     }
@@ -731,27 +741,271 @@ class XlmEvasionResilienceTest {
     @Test
     void testDistinctCaptureWarningsAllReachMetadata() throws Exception {
         Metadata metadata = new Metadata();
-        // TWO unparseable parts, so BOTH warnings come from markXlmCaptureLimit itself. An
-        // earlier version of this test paired a parse error with a structural anomaly -- but the
-        // anomaly is published by a DIFFERENT method that always adds, so the assertion passed
-        // whether or not markXlmCaptureLimit accumulated. Mutation caught that.
-        processMacroSheets(metadata, new String[] {"aa-broken", "bb-alsobroken"},
-                new String[] {"   not xml at all", "<worksheet><sheetData><c"});
+        // A broken part AND an over-long formula: two DIFFERENT diagnoses, both of which must
+        // reach metadata. Per-part parse errors deliberately collapse to ONE constant slot (see
+        // testDecoyPartsCannotCrowdOutLaterDiagnoses -- naming the part made the warning
+        // attacker-multipliable), so the thing to pin is that distinct KINDS accumulate.
+        processMacroSheets(metadata, new String[] {"aa-broken", "bb-payload"},
+                new String[] {
+                    "   not xml at all",
+                    cellXmlDoc("<f>=EXEC(\"" + PAYLOAD + "\")<v>0</v></f>", null),
+                });
 
         String[] warnings = metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
-        long parseErrors = java.util.Arrays.stream(warnings)
-                .filter(w -> w.contains("parse error")).count();
-        assertEquals(2, parseErrors,
-                "BOTH parts' parse errors must be recorded -- keeping only the first lets an "
-                        + "attacker choose which diagnosis an analyst sees. Got: "
-                        + java.util.Arrays.toString(warnings));
-        assertTrue(java.util.Arrays.stream(warnings).anyMatch(w -> w.contains("aa-broken"))
-                        && java.util.Arrays.stream(warnings).anyMatch(w -> w.contains("bb-")),
-                "each warning must name its own part; got: "
+        assertTrue(java.util.Arrays.stream(warnings).anyMatch(w -> w.contains("parse error")),
+                "the parse error must be recorded; got: " + java.util.Arrays.toString(warnings));
+        assertTrue(java.util.Arrays.stream(warnings)
+                        .anyMatch(w -> w.contains("duplicated") || w.contains("nested")),
+                "and the structural anomaly must not be crowded out by it; got: "
                         + java.util.Arrays.toString(warnings));
     }
 
+    // ── 10. Round-3 review: three measured OOM/total-loss, two more last-wins ──
+
+    /**
+     * A {@code <c>} opening while another is still open used to WIPE the enclosing cell: the
+     * inner start reset {@code currentFormulaText}, and the inner {@code </c>} then hit
+     * {@code flushCell()}'s {@code currentCellRef == null} early return, so nothing was stored
+     * and nothing flagged. Measured end-to-end, the metadata came out character-for-character
+     * identical to a clean macro workbook's while {@code =EXEC(...)} vanished from the text.
+     */
+    @Test
+    void testNestedCellElementCannotEraseTheEnclosingCell() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\"><f>=EXEC(\"" + PAYLOAD + "\")</f><c/></c>");
+
+        assertTrue(parser.getFormulaList().stream().anyMatch(f -> f.contains(PAYLOAD)),
+                "the outer cell's formula must survive a nested <c>; got: "
+                        + parser.getFormulas());
+        assertTrue(parser.hasStructuralAnomaly(), "and the nesting must be flagged");
+    }
+
+    /** The decoy variant: an inner cell must not displace the outer one. */
+    @Test
+    void testNestedCellWithItsOwnFormulaKeepsBoth() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\"><f>=EXEC(\"" + PAYLOAD + "\")</f>"
+                        + "<c r=\"B1\"><f>=DECOY()</f></c></c>");
+
+        String all = String.join(" | ", parser.getFormulaList());
+        assertTrue(all.contains(PAYLOAD), "payload must survive; got: " + all);
+        assertTrue(all.contains("DECOY"), "and the inner cell is kept too; got: " + all);
+        assertTrue(parser.hasStructuralAnomaly());
+    }
+
+    /**
+     * {@code @r} on {@code <c>} is OPTIONAL in ECMA-376 -- position is implied by document order
+     * -- so a workbook without it is VALID and Excel runs it. {@code flushCell()} discarded such
+     * a cell's formula and value outright with no flag, making a LEGAL document a total-loss
+     * evasion. The implied ref is synthesized; because the shape is legitimate it must NOT be
+     * flagged as an anomaly.
+     */
+    @Test
+    void testCellWithNoRefAttributeIsCapturedNotDropped() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c><f>=EXEC(\"" + PAYLOAD + "\")</f></c>");
+
+        assertTrue(parser.getFormulaList().stream().anyMatch(f -> f.contains(PAYLOAD)),
+                "a cell with no @r is legal and must be captured; got: " + parser.getFormulas());
+        assertFalse(parser.hasStructuralAnomaly(),
+                "omitting @r is LEGAL per ECMA-376, so flagging it would fire on ordinary "
+                        + "workbooks and devalue the anomaly signal");
+    }
+
+    /** Implied position follows document order, so refs stay distinct. */
+    @Test
+    void testImpliedCellRefsFollowDocumentOrder() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c><f>=EXEC(\"first\")</f></c><c><f>=EXEC(\"second\")</f></c>");
+
+        assertEquals(2, parser.getFormulas().size(),
+                "two @r-less cells must not collapse onto one key; got: " + parser.getFormulas());
+        assertTrue(parser.getFormulas().containsKey("Macro1:1:A1")
+                        && parser.getFormulas().containsKey("Macro1:1:B1"),
+                "implied refs should be A1 then B1; got: " + parser.getFormulas().keySet());
+    }
+
+    /**
+     * Retention of a repeated cell ref must be LINEAR. The first attempt concatenated onto the
+     * existing entry and re-emitted the whole accumulation per repetition -- quadratic in CPU and
+     * in emitted characters. Two reviewers measured it independently: 6.4 GB of extracted text
+     * from 3.1 MB of XML, and an OOM of a 512 MiB heap from 368 KB, with isTruncated() false
+     * throughout. OutOfMemoryError is an Error, so the per-part recovery would not catch it.
+     */
+    @Test
+    void testRepeatedCellRefRetentionIsLinearNotQuadratic() throws Exception {
+        int n = 4000;
+        StringBuilder row = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            row.append("<c r=\"A1\"><f>=X</f></c>");
+        }
+        XlmXmlMacrosheetParser parser = parseRowXml(row.toString());
+
+        int storedChars = parser.getFormulaList().stream().mapToInt(String::length).sum();
+        // Linear: n entries of ~2 chars. Quadratic accumulation would be ~n^2/2 = 8,000,000.
+        assertTrue(storedChars < 20 * n,
+                "retention must be linear in the repetition count; " + n + " repetitions stored "
+                        + storedChars + " chars");
+        assertEquals(storedChars, parser.getRetainedFormulaChars(),
+                "and the charge must still equal exactly what is stored");
+        assertTrue(parser.hasStructuralAnomaly(), "duplicated refs are still flagged");
+    }
+
+    /**
+     * Joining duplicated content with a bare SPACE let two halves that match nothing alone become
+     * a full indicator: the scanner's patterns are {@code \bEXEC\(\s*"} and {@code \s*} spanned
+     * the separator. That injects an attacker-chosen command line into authoritative IOC output
+     * from a workbook that executes nothing.
+     */
+    @Test
+    void testSplitHalvesCannotBeJoinedIntoAFabricatedIoc() throws Exception {
+        XlmXmlMacrosheetParser parser = parseCellXml(
+                "<f>=EXEC(</f><f>\"" + PAYLOAD + "\")</f>");
+
+        String formula = onlyFormula(parser);
+        assertTrue(formula.contains("EXEC(") && formula.contains(PAYLOAD),
+                "both halves are retained as evidence; got: " + formula);
+
+        List<String> iocs = XlmXmlIocScanner.scan(parser.getFormulas(), Map.of());
+        assertTrue(iocs.stream().noneMatch(s -> s.startsWith("EXEC:")),
+                "but they must NOT be joined into an EXEC indicator the document never "
+                        + "contained; got: " + iocs);
+    }
+
+    /**
+     * A duplicated {@code <is>} silently deleted the first value. Cell values resolve
+     * {@code EXEC(cellref)} and rejoin split URL fragments, so a dropped value is a dropped
+     * indicator. The reverse order already kept both -- that asymmetry was the tell.
+     */
+    @Test
+    void testDuplicateInlineStringKeepsBothValues() throws Exception {
+        XlmXmlMacrosheetParser parser = parseCellXml(
+                "<is><t>http://evil.example/PAYLOAD</t></is><is><t>benign</t></is>", "inlineStr");
+
+        String value = parser.getValues().values().stream().findFirst().orElse("");
+        assertTrue(value.contains("http://evil.example/PAYLOAD"),
+                "the first value must not be deleted by a later one; got: " + value);
+        assertTrue(value.contains("benign"), "and the second is kept; got: " + value);
+        assertTrue(parser.hasStructuralAnomaly());
+    }
+
+    /**
+     * A nested {@code <rPh>} lifted phonetic suppression, so text from a furigana subtree Excel
+     * never displays was injected into the cell value feeding the IOC scanner -- a fabricated
+     * indicator, unflagged. Depth must be tracked, not a boolean.
+     */
+    @Test
+    void testNestedPhoneticRunCannotInjectIntoTheCellValue() throws Exception {
+        XlmXmlMacrosheetParser parser = parseCellXml(
+                "<is><rPh><rPh/><t>http://inject.example/1</t></rPh><t>real</t></is>",
+                "inlineStr");
+
+        String value = parser.getValues().values().stream().findFirst().orElse("");
+        assertFalse(value.contains("inject.example"),
+                "furigana text must never enter the cell value; got: " + value);
+        assertEquals("real", value, "only the real run is the value; got: " + value);
+    }
+
+    /** Legitimate single-level furigana must still be excluded, and not flagged. */
+    @Test
+    void testSingleLevelPhoneticRunStillExcludedAndNotFlagged() throws Exception {
+        XlmXmlMacrosheetParser parser = parseCellXml(
+                "<is><t>real</t><rPh sb=\"0\" eb=\"2\"><t>furi</t></rPh></is>", "inlineStr");
+        assertEquals("real", parser.getValues().values().stream().findFirst().orElse(""));
+        assertFalse(parser.hasStructuralAnomaly(), "ordinary furigana is not an anomaly");
+    }
+
+    /**
+     * Per-part parse-error warnings must not be attacker-multipliable. Each carried the sheet
+     * name, so with up to 128 macro parts a document could mint 128 DISTINCT warnings and fill
+     * the 16-slot cap with decoys, crowding out later diagnoses -- the same
+     * attacker-picks-the-diagnosis defect, needing 16 cheap tricks instead of one.
+     */
+    @Test
+    void testDecoyPartsCannotCrowdOutLaterDiagnoses() throws Exception {
+        String[] names = new String[20];
+        String[] xml = new String[20];
+        for (int i = 0; i < 19; i++) {
+            names[i] = String.format(Locale.ROOT, "decoy%02d", i);
+            xml[i] = "<worksheet><sheetData><c";
+        }
+        names[19] = "zz-payload";
+        xml[19] = cellXmlDoc("<f>=EXEC(\"" + PAYLOAD + "\")</f>", null);
+
+        Metadata metadata = new Metadata();
+        processMacroSheets(metadata, names, xml);
+
+        String[] warnings = metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        long parseErrorSlots = java.util.Arrays.stream(warnings)
+                .filter(w -> w.contains("parse error")).count();
+        assertEquals(1, parseErrorSlots,
+                "19 decoy parts must collapse to ONE parse-error slot, leaving room for other "
+                        + "diagnoses; got: " + java.util.Arrays.toString(warnings));
+        assertTrue(warnings.length < 16,
+                "and the cap must not be near exhausted; got " + warnings.length);
+    }
+
+    /**
+     * Two macro parts sharing a basename reduce to one cell-key namespace: both charged, one
+     * silently dropped by putAll. That fix shipped in the previous commit with NO test, which
+     * review flagged -- so here it is.
+     */
+    @Test
+    void testTwoMacroPartsSharingABasenameBothSurvive() throws Exception {
+        Metadata metadata = new Metadata();
+        String out = processMacroSheetsAtPaths(metadata,
+                new String[] {"/xl/macrosheets/m.xml", "/xl/other/m.xml"},
+                new String[] {
+                    cellXmlDoc("<f>=EXEC(\"" + PAYLOAD + "\")</f>", null),
+                    cellXmlDoc("<f>=EXEC(\"second-part\")</f>", null),
+                });
+
+        assertTrue(out.contains("EXEC: " + PAYLOAD),
+                "the first part's payload must not be overwritten by the second. Got:\n" + out);
+        assertTrue(out.contains("EXEC: second-part"), "and the second part's must survive");
+        assertTrue(Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly")),
+                "a basename collision is not something Excel produces");
+    }
+
+    /**
+     * The VALUE path had the same last-wins hole as the formula path: {@code values.put()}
+     * replaced on a duplicated cell ref, so a decoy value erased the payload and
+     * {@code =EXEC(A1)} then resolved to the decoy -- with no capture-limit and no anomaly flag.
+     * The net-credit accounting even made the decoy FIT, so that fix helped the attacker here
+     * until the key was uniquified on this path too.
+     */
+    @Test
+    void testDuplicateCellValueCannotEraseThePayloadValue() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\" t=\"str\"><v>powershell -enc PAYLOAD</v></c>"
+                        + "<c r=\"A1\" t=\"str\"><v>0</v></c>");
+
+        String all = String.join(" | ", parser.getValues().values());
+        assertTrue(all.contains("powershell -enc PAYLOAD"),
+                "the payload value must not be erased by a decoy at the same ref; got: " + all);
+        assertEquals(2, parser.getValues().size(),
+                "each occurrence gets its own key; got: " + parser.getValues().keySet());
+        assertTrue(parser.hasStructuralAnomaly(), "and the duplication is flagged");
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
+    /** Parse a macrosheet whose single <row r="1"> contains the given raw cell markup. */
+    private static XlmXmlMacrosheetParser parseRowXml(String rowChildren) throws Exception {
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">" + rowChildren
+                + "</row></sheetData></worksheet>";
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+        return parser;
+    }
+
 
     private static long usedHeap() {
         Runtime rt = Runtime.getRuntime();
@@ -805,6 +1059,38 @@ class XlmEvasionResilienceTest {
         parser.parse();
         xhtml.endDocument();
         return parser;
+    }
+
+    /** Same, but at explicit part PATHS so a basename collision can be constructed. */
+    private static String processMacroSheetsAtPaths(Metadata metadata, String[] paths,
+                                                    String[] xml) throws Exception {
+        ParseContext parseContext = new ParseContext();
+        ToXMLContentHandler output = new ToXMLContentHandler();
+        XHTMLContentHandler xhtml =
+                new XHTMLContentHandler(output, metadata, parseContext);
+        try (ByteArrayOutputStream packageBytes = new ByteArrayOutputStream();
+             OPCPackage opcPackage = OPCPackage.create(packageBytes)) {
+            for (int i = 0; i < paths.length; i++) {
+                PackagePart part = opcPackage.createPart(
+                        PackagingURIHelper.createPartName(paths[i]),
+                        XSSFRelation.MACRO_SHEET_XML.getContentType());
+                try (OutputStream stream = part.getOutputStream()) {
+                    stream.write(xml[i].getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            XSSFExcelExtractorDecorator decorator =
+                    new XSSFExcelExtractorDecorator(parseContext, opcPackage, Locale.ROOT);
+            decorator.metadata = metadata;
+            Method process = XSSFExcelExtractorDecorator.class.getDeclaredMethod(
+                    "processXlmXmlMacroSheets", OPCPackage.class,
+                    XHTMLContentHandler.class, XSSFSharedStringsShim.class);
+            process.setAccessible(true);
+
+            xhtml.startDocument();
+            process.invoke(decorator, opcPackage, xhtml, null);
+            xhtml.endDocument();
+        }
+        return output.toString();
     }
 
     /** Run the real multi-part macrosheet loop over the given parts, in name order. */

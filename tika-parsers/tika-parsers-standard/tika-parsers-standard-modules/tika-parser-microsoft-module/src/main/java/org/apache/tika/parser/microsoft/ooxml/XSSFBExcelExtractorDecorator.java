@@ -268,14 +268,18 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                         + e.getMessage());
             }
             if (emulator.isLimitReached()) {
-                markXlmCaptureLimit(metadata, emulator.getLimitWarning());
+                for (String w : emulator.getLimitWarnings()) {
+                    markXlmCaptureLimit(metadata, w);
+                }
             }
 
             // Run emulation and emit resolved IOCs
             try {
                 emulator.emulate();
                 if (emulator.isLimitReached()) {
-                    markXlmCaptureLimit(metadata, emulator.getLimitWarning());
+                    for (String w : emulator.getLimitWarnings()) {
+                    markXlmCaptureLimit(metadata, w);
+                }
                 }
                 if (!emulator.iocs.isEmpty()) {
                     xhtml.startElement("div");
