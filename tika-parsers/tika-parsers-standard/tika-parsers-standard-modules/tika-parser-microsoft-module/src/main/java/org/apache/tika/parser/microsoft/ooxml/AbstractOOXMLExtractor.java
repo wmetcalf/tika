@@ -199,11 +199,37 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         surfaceExternalRefsFromAllParts(xhtml, metadata, handledRelationshipParts,
                 externalReferenceBudget);
         externalReferenceBudget.markTruncation(metadata);
+        lastExternalRefPartsScannedForTesting = externalReferenceBudget.getPartsScannedForTesting();
+        lastExternalRefPartRelationshipReadsForTesting =
+                externalReferenceBudget.getPartRelationshipReadsForTesting();
 
         // thumbnail
         handleThumbnail(xhtml, metadata);
 
         xhtml.endDocument();
+    }
+
+    // Visible for testing only: the total number of package parts scanned by the
+    // combined createExternalReferenceBudget()/surfaceExternalRefsFromAllParts()
+    // walks during the most recent getXHTML() call. Exposed as a plain int (rather
+    // than the private ExternalReferenceBudget type) so tests can assert the shared
+    // part-scan cap actually bounds BOTH loops combined, without relying on
+    // wall-clock timing (which can't distinguish "second loop capped" from
+    // "second loop unbounded" when per-part relationship parsing is cheap).
+    private int lastExternalRefPartsScannedForTesting = -1;
+
+    // Visible for testing only: how many times part.getRelationships() was
+    // actually invoked across BOTH external-reference walks during the most
+    // recent getXHTML(). This is the real scan cost, and unlike the
+    // tryScanPart()-driven counter it stays accurate if a guard is removed.
+    private int lastExternalRefPartRelationshipReadsForTesting = -1;
+
+    int getLastExternalRefPartRelationshipReadsForTesting() {
+        return lastExternalRefPartRelationshipReadsForTesting;
+    }
+
+    int getLastExternalRefPartsScannedForTesting() {
+        return lastExternalRefPartsScannedForTesting;
     }
 
     protected Map<String, EmbeddedPartMetadata> getEmbeddedPartMetadataMap() {
@@ -1121,6 +1147,66 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
      *  this cap a single doc could produce unbounded link-metadata entries. */
     private static final int MAX_EXTERNAL_REFS_PER_DOC = 1024;
 
+    /**
+     * Hard cap on the number of package parts scanned -- SHARED, cumulative
+     * across BOTH {@link #createExternalReferenceBudget} (the pre-pass, which
+     * runs before {@link #handleMacrosEarly} / {@link #buildXHTML} emit any
+     * content, so the cumulative write-limit / WriteLimitReachedException
+     * cannot bound it) and {@link #surfaceExternalRefsFromAllParts} (the
+     * catch-all walk that runs AFTER buildXHTML). MAX_EXTERNAL_REFS_PER_DOC
+     * only bounds how many *matching* high-priority/external relationships
+     * are recorded or emitted -- not how many parts are examined to find
+     * them. A package padded with a huge number of otherwise-empty parts
+     * (e.g. thousands of trivial customXml/theme/chart parts, none of which
+     * carry a matching relationship) would force either loop to call
+     * part.getRelationships() -- itself a relationship-XML parse -- once per
+     * part, unbounded by part count. That is a real gap in
+     * surfaceExternalRefsFromAllParts() too: once ExternalReferenceBudget
+     * #tryAcquire() stops being able to throw (MAX_EXTERNAL_REFS_PER_DOC
+     * already reserved, or -- the exact padding shape here -- a part simply
+     * has zero relationships), nothing in that loop's body can throw a
+     * write-limit SAXException, so the cumulative write-limit interlock the
+     * loop otherwise relies on to terminate early never fires, and the loop
+     * runs to O(part count) completion.
+     *
+     * <p>The cap is a SINGLE budget shared across both loops, charged ONCE PER DISTINCT
+     * PART ({@link ExternalReferenceBudget#tryScanPart(PackagePart)}). An earlier revision
+     * charged per ATTEMPT and justified it by claiming per-loop budgets would force "~2x
+     * expensive part scans". That justification was wrong: POI caches the parsed
+     * relationship collection on the PackagePart, so only the FIRST getRelationships() for
+     * a given part parses XML and the second pass is an in-memory filter. Charging twice
+     * bought nothing and halved real coverage to 2,500 parts -- a 2,501-part package lost
+     * the external hyperlink in its last part. Per-distinct-part keeps the true worst case
+     * at one XML parse per part while actually delivering the advertised coverage.</p>
+     */
+    /**
+     * Backstop on parts examined for external references. Deliberately set ABOVE POI's hard
+     * ceiling of 10,000 zip entries per package ({@code ZipSecureFile.setMaxFileCount(10000)}
+     * in {@link OOXMLParser}), so it CANNOT fire for any zip-backed package POI will open.
+     *
+     * <p>It was 5,000, and that was actively harmful. The pre-pass does not merely optimise:
+     * it RESERVES high-priority relationship keys, and {@code tryAcquire} refuses any
+     * high-priority reference the pre-pass never reached. The main-document walk is not
+     * part-capped, so with a 5,000 cap it still FOUND an external attachedTemplate past the
+     * cap and then discarded it -- silently destroying remote-template / external-oleObject
+     * detection. Measured on a real 5,100-junk-part package: the reference surfaced before
+     * the cap existed and vanished after. It was attacker-controlled, because
+     * {@code getParts()} is ordered by part name, so junk named {@code /customXml/...} sorts
+     * ahead of {@code /word/document.xml} and starves it; and it was SELECTIVE for exactly
+     * the dangerous relationship types (attachedTemplate/oleObject/frame suppressed while
+     * plain hyperlinks survived).
+     *
+     * <p>The cap also bought far less than its original comment claimed: with POI's 10,000
+     * entry ceiling the pre-existing worst case was ~10k cached relationship reads, so a
+     * 5,000 cap saved 2x -- not protection from an "unbounded" part count. Trading 2x for
+     * the loss of executable-reference detection is the wrong trade for this fork.
+     *
+     * <p>Kept as a true backstop rather than deleted: it still bounds a hypothetical
+     * non-zip-backed OPCPackage (a directory- or stream-backed package, or a future build
+     * that raises the zip ceiling), and it reports itself when it fires.
+     */
+    private static final int MAX_EXTERNAL_REF_PARTS_SCANNED = 20_000;
+
     private void surfaceExternalRefsFromAllParts(
             XHTMLContentHandler xhtml, Metadata metadata,
             Set<String> handledRelationshipParts,
@@ -1155,8 +1241,18 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
                 if (part == null || part.getPartName() == null) continue;
                 String partName = part.getPartName().getName();
                 if (handledRelationshipParts.contains(partName)) continue;
+                // Shared cap with createExternalReferenceBudget()'s pre-pass loop: once
+                // the combined total of parts scanned by BOTH loops hits
+                // MAX_EXTERNAL_REF_PARTS_SCANNED, stop -- this loop is not bounded by
+                // the write-limit once tryAcquire() stops being able to throw (cap
+                // already reserved, or a part simply has zero relationships), so it
+                // needs its own explicit part-count bound.
+                if (!externalReferenceBudget.tryScanPart(part)) {
+                    break;
+                }
                 PackageRelationshipCollection rels;
                 try {
+                    externalReferenceBudget.countPartRelationshipRead();
                     rels = part.getRelationships();
                 } catch (SecurityException e) {
                     throw e;
@@ -1234,7 +1330,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         try {
             for (PackagePart part : opcPackage.getParts()) {
                 if (part == null || part.getPartName() == null) continue;
+                // Shared cap with surfaceExternalRefsFromAllParts()'s catch-all loop --
+                // see MAX_EXTERNAL_REF_PARTS_SCANNED's javadoc. tryScanPart() itself
+                // marks the budget truncated once the shared cap is hit.
+                if (!budget.tryScanPart(part)) {
+                    break;
+                }
                 try {
+                    budget.countPartRelationshipRead();
                     budget.preRecordHighPriority(
                             part.getRelationships(),
                             normalizePartName(part.getPartName().getName()),
@@ -1281,6 +1384,18 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         private int remainingHighPriority;
         private int emitted;
         private boolean truncated;
+        // Cumulative parts scanned across BOTH createExternalReferenceBudget()'s
+        // pre-pass and surfaceExternalRefsFromAllParts()'s catch-all walk -- see
+        // MAX_EXTERNAL_REF_PARTS_SCANNED's javadoc for why this must be one shared
+        // budget rather than a separate allowance per loop.
+        private int partsScanned;
+        // Counts ACTUAL part.getRelationships() invocations across both walks --
+        // i.e. the real, expensive scan work, independent of whether a guard was
+        // consulted first. partsScanned only advances when tryScanPart() is
+        // called, so a regression that DELETES a tryScanPart() guard would leave
+        // partsScanned looking healthy while the relationship parsing ran
+        // unbounded. This counter is what makes that regression observable.
+        private int partRelationshipReads;
 
         private void preRecordHighPriority(
                 PackageRelationshipCollection relationships,
@@ -1384,7 +1499,91 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
             if (truncated) {
                 OfficeLinkMetadataUtil.markLinkLimitReached(metadata);
             }
+            if (partScanTruncated) {
+                // A DISTINCT signal. Reusing the link-limit warning misattributed the
+                // cause: it says "too many links to record" when the truth is "part of the
+                // package was never examined", and it fired even on documents with zero
+                // links recorded. Those two have very different follow-ups, and a consumer
+                // that treats link-volume warnings as benign noise would discard the only
+                // indication that parts went unscanned.
+                metadata.set("msoffice:external-ref-part-scan-limit-reached", "true");
+                metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                        "External-reference part scan stopped after "
+                                + MAX_EXTERNAL_REF_PARTS_SCANNED
+                                + " parts; later parts were not examined for external "
+                                + "references");
+            }
         }
+
+        /** Set only by the part-scan bound, so its signal stays distinguishable. */
+        private boolean partScanTruncated;
+
+        private void markPartScanTruncation() {
+            partScanTruncated = true;
+        }
+
+        /** Test-only instrumentation: counts actual getRelationships() calls. */
+        private void countPartRelationshipRead() {
+            partRelationshipReads++;
+        }
+
+        int getPartRelationshipReadsForTesting() {
+            return partRelationshipReads;
+        }
+
+        /** Part names already charged, so the two passes cannot double-bill one part. */
+        private final Set<String> scannedPartNames = new HashSet<>();
+
+        /**
+         * Charge a part against the shared scan budget, ONCE PER DISTINCT PART.
+         *
+         * <p>Both {@link #createExternalReferenceBudget} (pre-pass) and
+         * {@link #surfaceExternalRefsFromAllParts} (catch-all) iterate the SAME
+         * {@code opcPackage.getParts()}. Charging per ATTEMPT therefore billed every part
+         * twice and halved the real coverage to MAX_EXTERNAL_REF_PARTS_SCANNED/2: measured,
+         * a 2,501-part package already lost the external hyperlink in its last part, and at
+         * 5,000 parts even part 0 became unreachable. Keying on the part name makes the
+         * second pass free for parts the pre-pass already paid for, which is also what the
+         * cost model actually is -- see the note on getRelationships() caching below.
+         *
+         * <p>Callers must still call this BEFORE {@code part.getRelationships()} and break
+         * as soon as it returns false.
+         */
+        private boolean tryScanPart(PackagePart part) {
+            String key = part == null || part.getPartName() == null
+                    ? null : part.getPartName().getName();
+            if (key != null && scannedPartNames.contains(key)) {
+                // Already paid for by the other pass; POI caches the parsed relationship
+                // collection per part, so re-reading it costs no XML parse.
+                return true;
+            }
+            if (partsScanned >= MAX_EXTERNAL_REF_PARTS_SCANNED) {
+                // Deliberately does NOT set : that keys the link-limit warning
+                // ("additional links were skipped") plus an ExploitClass stamp, which is
+                // the misattribution this signal exists to replace. Setting both meant a
+                // 5,001-part package with ZERO links still reported a link-volume
+                // truncation. Part-scan truncation reports only its own flag.
+                markPartScanTruncation();
+                return false;
+            }
+            if (key != null) {
+                scannedPartNames.add(key);
+            }
+            partsScanned++;
+            return true;
+        }
+
+        /** Visible for testing: total parts scanned across both loops so far. */
+        int getPartsScannedForTesting() {
+            return partsScanned;
+        }
+    }
+
+    /** Visible for testing: package-private so tests can assert on the shared
+     *  part-scan cap without exposing it as part of the public API. */
+    static int getMaxExternalRefPartsScannedForTesting() {
+        return MAX_EXTERNAL_REF_PARTS_SCANNED;
     }
 
     private static String relationshipKey(

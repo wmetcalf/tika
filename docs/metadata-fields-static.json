@@ -1,11 +1,11 @@
 {
-  "scanned_at": "2026-08-29T19:42:48.516795+00:00",
-  "tika_root": "/tmp/shape",
+  "scanned_at": "2026-08-31T04:59:50.685107+00:00",
+  "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
     "property_declarations": 740,
     "parsers_emitting_fields": 165,
-    "undeclared_string_fields": 277,
+    "undeclared_string_fields": 278,
     "templated_patterns": 115
   },
   "properties": {
@@ -6411,12 +6411,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
-          "line": 350
+          "line": 376
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
-          "line": 1585
+          "line": 1784
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
@@ -7933,6 +7933,15 @@
           "class": "org.apache.tika.parser.microsoft.MscParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/MscParser.java",
           "line": 382
+        }
+      ]
+    },
+    "msoffice:external-ref-part-scan-limit-reached": {
+      "emitted_by": [
+        {
+          "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
+          "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
+          "line": 1509
         }
       ]
     },
@@ -11086,6 +11095,7 @@
     "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor": {
       "emits": [
         "ExploitClass",
+        "msoffice:external-ref-part-scan-limit-reached",
         "msoffice:ooxml:ole-auto-exec",
         "msoffice:ooxml:ole-suspicious-progids",
         "msoffice:prog-id",
