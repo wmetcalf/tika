@@ -342,14 +342,26 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
     }
 
     private static void markXlmCaptureLimit(Metadata metadata, String warning) {
-        if (metadata == null
-                || Boolean.parseBoolean(
-                        metadata.get("msoffice:xlm-capture-limit-reached"))) {
+        if (metadata == null) {
             return;
         }
-        metadata.set("msoffice:xlm-capture-limit-reached", "true");
-        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        // Flag idempotent, warnings accumulate -- see the XML decorator for why keeping only the
+        // FIRST reason let an attacker choose which diagnosis an analyst gets to see.
+        if (!Boolean.parseBoolean(metadata.get("msoffice:xlm-capture-limit-reached"))) {
+            metadata.set("msoffice:xlm-capture-limit-reached", "true");
+            metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        }
+        if (warning != null) {
+            for (String existing : metadata.getValues(
+                    TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+                if (warning.equals(existing)) {
+                    return;
+                }
+            }
+            if (metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length < 16) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+            }
+        }
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "XLM analysis incomplete; workbook values may not have been analyzed");

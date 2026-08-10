@@ -144,7 +144,60 @@ final class XlmXmlIocScanner {
      *                    Pass an empty map if none are available.
      */
     static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues) {
-        return scan(formulas, cellValues, MAX_FORMULA_SCAN_LEN, null);
+        return scan(formulas, cellValues, MAX_FORMULA_SCAN_LEN, null, 0, 0, null);
+    }
+
+    static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues,
+                             int maxScanLen, Runnable onScanTruncated) {
+        return scan(formulas, cellValues, maxScanLen, onScanTruncated, 0, 0, null);
+    }
+
+    /**
+     * Bounded IOC accumulator.
+     *
+     * <p>The XML path had NO output bound of any kind: the {@code xlmMaxIocEntries} /
+     * {@code xlmMaxIocChars} knobs were wired only into the XLSB emulator. Every indicator was
+     * materialised into an unbounded list before the caller could emit any of it, and
+     * {@code EXEC(cellref)} resolution amplifies hard -- an 8-char {@code EXEC(A1)} match yields
+     * an IOC as long as the referenced cell value (up to {@code WORKBOOK_VALUE_MAX_LEN}), so a
+     * ~10 MB crafted workbook whose retention stays entirely within every documented cap could
+     * still build gigabytes of strings and OOM a triage worker. Bounding the OUTPUT is the fix;
+     * bounding retention never could be, because the amplification happens after retention.
+     */
+    private static final class IocSink {
+        private final List<String> out = new ArrayList<>();
+        private final int maxEntries;
+        private final int maxChars;
+        private long chars;
+        private boolean limited;
+
+        IocSink(int maxEntries, int maxChars) {
+            this.maxEntries = maxEntries > 0
+                    ? maxEntries : XlmMacroEmulator.Limits.DEFAULT.maxIocEntries;
+            this.maxChars = maxChars > 0
+                    ? maxChars : XlmMacroEmulator.Limits.DEFAULT.maxIocChars;
+        }
+
+        /**
+         * @return false when the entry did not fit. Callers continue rather than break: a long
+         *         entry must not suppress the shorter, often higher-value ones behind it.
+         */
+        boolean add(String ioc) {
+            if (ioc == null) {
+                return false;
+            }
+            if (out.size() >= maxEntries || chars + ioc.length() > maxChars) {
+                limited = true;
+                return false;
+            }
+            chars += ioc.length();
+            out.add(ioc);
+            return true;
+        }
+
+        boolean isLimited() {
+            return limited;
+        }
     }
 
     /**
@@ -155,11 +208,16 @@ final class XlmXmlIocScanner {
      * @param onScanTruncated  invoked when a formula was too long to scan entirely. Truncating
      *                         the scan input means IOCs may exist in the unscanned tail, so
      *                         this must never be silent.
+     * @param maxIocEntries    output entry bound; 0 selects the same default the XLSB path uses.
+     * @param maxIocChars      output char bound; 0 selects the XLSB default.
+     * @param onIocLimit       invoked when any indicator was dropped for want of budget.
      */
     static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues,
-                             int maxScanLen, Runnable onScanTruncated) {
+                             int maxScanLen, Runnable onScanTruncated,
+                             int maxIocEntries, int maxIocChars, Runnable onIocLimit) {
         int scanLen = maxScanLen > 0 ? maxScanLen : MAX_FORMULA_SCAN_LEN;
-        List<String> iocs = new ArrayList<>();
+        IocSink sink = new IocSink(maxIocEntries, maxIocChars);
+        List<String> iocs = sink.out;
         if (formulas == null || formulas.isEmpty()) return iocs;
         // Build a "{cellRef}" → value index so cellref-only lookups work
         // without sheet:row prefix when the formula is in the same workbook
@@ -200,37 +258,37 @@ final class XlmXmlIocScanner {
             formula = java.text.Normalizer.normalize(formula, java.text.Normalizer.Form.NFKC);
 
             // EXEC("cmd …")
-            addAll(iocs, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
+            addAll(sink, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXECUTE("…") — used by Excel for DDE-style command exec
-            addAll(iocs, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
+            addAll(sink, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXEC(A1) — resolve through cellValues if known
             for (Matcher m = EXEC_REF.matcher(formula); m.find(); ) {
                 String ref = m.group(2).toUpperCase(java.util.Locale.ROOT);
                 String resolved = shortRef.get(ref);
-                iocs.add("EXEC: " + (resolved != null ? unq(resolved) : "<ref " + ref + ">"));
+                sink.add("EXEC: " + (resolved != null ? unq(resolved) : "<ref " + ref + ">"));
             }
             // FOPEN("path", mode)
             for (Matcher m = FOPEN.matcher(formula); m.find(); ) {
                 String path = unq(m.group(1));
                 String mode = m.group(2) != null ? m.group(2) : "?";
-                iocs.add("FOPEN: " + path + " (mode " + mode + ")");
+                sink.add("FOPEN: " + path + " (mode " + mode + ")");
             }
             // FWRITE / FWRITELN (numeric-handle form)
-            addAll(iocs, FWRITE.matcher(formula), m -> "FWRITE: " + unq(m.group(1)));
+            addAll(sink, FWRITE.matcher(formula), m -> "FWRITE: " + unq(m.group(1)));
             // CALL("dll", "fn", …)
-            addAll(iocs, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
+            addAll(sink, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
             // ALERT("msg") — sometimes the only sign of a live macro
-            addAll(iocs, ALERT.matcher(formula), m -> "ALERT: " + unq(m.group(1)));
+            addAll(sink, ALERT.matcher(formula), m -> "ALERT: " + unq(m.group(1)));
             // REGISTER("dll", ...) — DLL function binding
-            addAll(iocs, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
+            addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // GOTO(A1) — control flow, useful for tracing macro layout
             for (Matcher m = GOTO_REF.matcher(formula); m.find(); ) {
-                iocs.add("GOTO: " + m.group(2).toUpperCase(java.util.Locale.ROOT));
+                sink.add("GOTO: " + m.group(2).toUpperCase(java.util.Locale.ROOT));
             }
             // Bare URLs anywhere in the formula text — catches obfuscations the
             // function-name matchers missed (e.g. URL concatenated from cell refs
             // but still embedded as a literal somewhere).
-            addAll(iocs, URL.matcher(formula), m -> "URL: " + m.group(0));
+            addAll(sink, URL.matcher(formula), m -> "URL: " + m.group(0));
             // Time-gated logic: flag formulas referencing volatile clock funcs.
             // De-duped via `seen` outside the loop would noise-up the IOC list,
             // so emit one TIME_GATE per cell rather than per match. Sanitize
@@ -238,7 +296,7 @@ final class XlmXmlIocScanner {
             // overrides, NUL, or be megabytes long; downstream metadata
             // consumers (JSON encoders, log aggregators) misbehave on those.
             if (TIME_GATE.matcher(formula).find()) {
-                iocs.add("TIME_GATE: " + sanitizeForIoc(formula));
+                sink.add("TIME_GATE: " + sanitizeForIoc(formula));
             }
         }
 
@@ -262,7 +320,14 @@ final class XlmXmlIocScanner {
                 }
                 for (m = DROP_PATH.matcher(val); m.find(); ) seen.add("DROP_PATH: " + m.group(0));
             }
-            iocs.addAll(seen);
+            // Drain through the SINK, not addAll: these are the split URL/IP/path
+            // fragments and they must be bounded like everything else.
+            for (String v : seen) {
+                sink.add(v);
+            }
+        }
+        if (sink.isLimited() && onIocLimit != null) {
+            onIocLimit.run();
         }
         return iocs;
     }
@@ -321,7 +386,7 @@ final class XlmXmlIocScanner {
     @FunctionalInterface
     private interface Fmt { String apply(Matcher m); }
 
-    private static void addAll(List<String> sink, Matcher m, Fmt fmt) {
+    private static void addAll(IocSink sink, Matcher m, Fmt fmt) {
         while (m.find()) {
             sink.add(fmt.apply(m));
         }

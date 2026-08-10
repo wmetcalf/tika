@@ -567,17 +567,24 @@ class XlmEvasionResilienceTest {
                 new ToXMLContentHandler(), metadata, new ParseContext());
         XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
                 new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
-                xhtml, "Macro1", null, 4096, 4096, 4096, 4096, 310);
+                xhtml, "Macro1", null, 4096, 4096, 4096, 4096, 340);
         xhtml.startDocument();
         parser.parse();
         xhtml.endDocument();
 
-        assertEquals(payload, onlyFormula(parser),
-                "the payload must replace the decoy at the same cell ref; got: "
-                        + parser.getFormulas());
+        // Both are kept (see testDuplicateCellRefKeepsBothAndIsFlagged): a duplicated ref is
+        // malformed and we cannot know which one Excel honours, so neither may be discarded.
+        String kept = onlyFormula(parser);
+        assertTrue(kept.contains(PAYLOAD),
+                "the payload must survive a decoy at the same cell ref; got: " + kept);
+        assertTrue(kept.contains("DDD"), "and the decoy is kept too; got: " + kept);
         assertFalse(parser.isTruncated(),
-                "the replacement fit, so no truncation may be reported -- reporting one here "
-                        + "fabricates an evidence loss");
+                "the combined text fit the aggregate cap, so no truncation may be reported -- "
+                        + "reporting one here fabricates an evidence loss");
+        assertEquals(kept.length(), parser.getRetainedFormulaChars(),
+                "THE INVARIANT: the budget charge must equal exactly what is stored. This is "
+                        + "what catches both gross charging (billing per overwrite) and under-"
+                        + "charging (storing more than was billed).");
     }
 
     // ── 8. A repeated cell ref burned budget it never retained ───────────────
@@ -608,12 +615,140 @@ class XlmEvasionResilienceTest {
         xhtml.endDocument();
 
         assertEquals(1, parser.getFormulas().size(),
-                "same cell ref must collapse to ONE retained entry");
-        assertTrue(parser.getRetainedFormulaChars() <= 500,
-                "the budget must be charged for what is RETAINED (~401 chars), not for every "
-                        + "overwrite; charged " + parser.getRetainedFormulaChars());
-        assertFalse(parser.isTruncated(),
-                "nothing exceeded the real budget, so nothing should be reported truncated");
+                "one cell ref stays ONE map entry, however many times it is repeated");
+        // Repetitions are CONCATENATED rather than dropped, so the charge grows with what is
+        // actually stored -- and that is the invariant worth pinning. The earlier version of
+        // this test asserted a fixed ceiling (~500), which encoded the old replace-and-discard
+        // behaviour and would have to be edited every time the retention policy changed.
+        int stored = onlyFormula(parser).length();
+        assertEquals(stored, parser.getRetainedFormulaChars(),
+                "THE INVARIANT: charged must equal stored. Gross charging billed 20x for one "
+                        + "retained copy; charged " + parser.getRetainedFormulaChars()
+                        + " for " + stored + " stored chars");
+        assertTrue(parser.getRetainedFormulaChars() <= 2000,
+                "and the aggregate cap still bounds the total; charged "
+                        + parser.getRetainedFormulaChars());
+    }
+
+    // ── 9. Residuals from the review, now fixed ──────────────────────────────
+
+    /**
+     * The XML IOC scan had NO output bound: the {@code xlmMaxIocEntries}/{@code xlmMaxIocChars}
+     * knobs were honoured only by the XLSB emulator. {@code EXEC(cellref)} resolution amplifies a
+     * short formula into a value-length indicator, so a workbook whose RETENTION stays inside
+     * every documented cap could still build gigabytes of IOC strings and OOM a triage worker.
+     * Bounding retention could never fix it -- the amplification happens after retention.
+     */
+    @Test
+    void testIocOutputIsBoundedAndTheBoundIsReported() {
+        // 400 formulas each resolving EXEC(A1) against a 1 KB cell value: ~400 KB of output from
+        // a few KB of input, before any per-entry cap applies.
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        for (int i = 1; i <= 400; i++) {
+            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(A1)");
+        }
+        Map<String, String> values = Map.of("Sheet1:1:A1", "X".repeat(1024));
+
+        int[] limited = new int[1];
+        List<String> bounded = XlmXmlIocScanner.scan(formulas, values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 50, 8192, () -> limited[0]++);
+
+        assertEquals(1, limited[0], "dropping indicators for want of budget must be REPORTED");
+        assertTrue(bounded.size() <= 50, "entry bound must hold; got " + bounded.size());
+        int chars = bounded.stream().mapToInt(String::length).sum();
+        assertTrue(chars <= 8192, "char bound must hold; got " + chars);
+        assertTrue(bounded.stream().anyMatch(s -> s.startsWith("EXEC:")),
+                "the bound must not empty the list -- indicators up to the cap still ship");
+
+        // Control: a generous bound must not report a limit, and must not silently drop.
+        int[] unlimited = new int[1];
+        List<String> full = XlmXmlIocScanner.scan(formulas, values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 0, 0, () -> unlimited[0]++);
+        assertEquals(0, unlimited[0], "a default bound this input fits must not report a limit");
+        assertTrue(full.size() > 50,
+                "control: with the default bound the same input yields more than the tight cap, "
+                        + "so the tight case above genuinely exercised the bound");
+    }
+
+    /**
+     * A duplicated {@code <c r="...">} used to let a benign decoy DELETE the payload from
+     * {@code formulas} -- the same last-wins evasion fixed one level down for a duplicated
+     * {@code <f>}, left live at the cell level. {@code formulas} feeds the IOC scanner and the
+     * MACRO entry, so the payload vanished from every structured output with no flag.
+     */
+    @Test
+    void testDuplicateCellRefKeepsBothAndIsFlagged() throws Exception {
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">"
+                + "<c r=\"A1\"><f>=EXEC(\"" + PAYLOAD + "\")</f></c>"
+                + "<c r=\"A1\"><f>=1+1</f></c>"
+                + "</row></sheetData></worksheet>";
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        String formula = onlyFormula(parser);
+        assertTrue(formula.contains(PAYLOAD),
+                "the payload must not be deleted by a later decoy at the same ref; got: "
+                        + formula);
+        assertTrue(formula.contains("1+1"), "and the decoy is kept too; got: " + formula);
+        assertTrue(parser.hasStructuralAnomaly(),
+                "a duplicated cell ref is not something Excel emits");
+    }
+
+    /**
+     * {@code ValueCharBudget} was charged GROSS on a repeated cell ref while the map kept one
+     * copy, so duplicate cells drained the document value budget and starved the split URL/IP
+     * fragments the map exists to capture. Same net-vs-gross error as the formula path.
+     */
+    @Test
+    void testValueBudgetChargesNetOnReplacement() {
+        XSSFExcelExtractorDecorator.ValueCharBudget budget =
+                new XSSFExcelExtractorDecorator.ValueCharBudget(2048);
+
+        assertTrue(budget.tryRetain(1024), "first value fits");
+        // Same cell ref overwritten twice more: each replaces 1024 chars, so net stays 1024.
+        assertTrue(budget.tryRetain(1024, 1024), "a replacement must be charged NET");
+        assertTrue(budget.tryRetain(1024, 1024), "and again -- the map still holds ONE copy");
+        // A genuinely NEW entry still consumes budget, and the cap still bites.
+        assertTrue(budget.tryRetain(1024), "a new entry consumes the remaining budget");
+        assertFalse(budget.tryRetain(1, 0),
+                "the cap must still bite once genuinely full -- net accounting must not "
+                        + "become no accounting");
+    }
+
+    /**
+     * {@code markXlmCaptureLimit} returned early once the flag was set, so exactly ONE reason was
+     * ever recorded -- and an attacker picks which fires first, hiding a severe diagnosis behind
+     * a cheap one. The flag is idempotent; the warnings accumulate.
+     */
+    @Test
+    void testDistinctCaptureWarningsAllReachMetadata() throws Exception {
+        Metadata metadata = new Metadata();
+        // TWO unparseable parts, so BOTH warnings come from markXlmCaptureLimit itself. An
+        // earlier version of this test paired a parse error with a structural anomaly -- but the
+        // anomaly is published by a DIFFERENT method that always adds, so the assertion passed
+        // whether or not markXlmCaptureLimit accumulated. Mutation caught that.
+        processMacroSheets(metadata, new String[] {"aa-broken", "bb-alsobroken"},
+                new String[] {"   not xml at all", "<worksheet><sheetData><c"});
+
+        String[] warnings = metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+        long parseErrors = java.util.Arrays.stream(warnings)
+                .filter(w -> w.contains("parse error")).count();
+        assertEquals(2, parseErrors,
+                "BOTH parts' parse errors must be recorded -- keeping only the first lets an "
+                        + "attacker choose which diagnosis an analyst sees. Got: "
+                        + java.util.Arrays.toString(warnings));
+        assertTrue(java.util.Arrays.stream(warnings).anyMatch(w -> w.contains("aa-broken"))
+                        && java.util.Arrays.stream(warnings).anyMatch(w -> w.contains("bb-")),
+                "each warning must name its own part; got: "
+                        + java.util.Arrays.toString(warnings));
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────

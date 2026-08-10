@@ -512,7 +512,20 @@ final class XlmXmlMacrosheetParser {
                 String existing = formulas.get(key);
                 long creditedTotal =
                         retainedFormulaChars - (existing == null ? 0 : existing.length());
-                boolean roomByChars = creditedTotal + projected <= formulaTotalMaxChars;
+                // A REPEATED cell key means a duplicated <c r="..."> or <row r="...">, which
+                // SpreadsheetML never emits. put() replaced the earlier entry, so a benign decoy
+                // at the same ref DELETED the payload from `formulas` -- and `formulas` is what
+                // feeds the IOC scanner and the MACRO entry, so the payload vanished from every
+                // structured output with no flag. Exactly the last-wins evasion already fixed
+                // one level down for a duplicated <f> inside one <c>, left live at the cell and
+                // row level. Keep BOTH, in either order, since we cannot know which Excel would
+                // honour; the aggregate gate below still bounds the combined length.
+                int combinedExtra = existing == null ? 0 : existing.length() + 1;
+                boolean roomByChars =
+                        creditedTotal + combinedExtra + projected <= formulaTotalMaxChars;
+                if (existing != null) {
+                    structuralAnomaly = true;
+                }
                 if (roomByCount && roomByChars) {
                     // A formula cut at XLM_FORMULA_MAX_LEN is no longer valid syntax, and a
                     // bare prefix reads as a complete formula to anything downstream. Mark it
@@ -536,17 +549,17 @@ final class XlmXmlMacrosheetParser {
                     // not cell values or the IOC scanner's output, so the guarantee it appeared
                     // to give was not one it delivered. Trading a real budget escape for a
                     // cosmetic defence of a non-authoritative marker is the wrong trade.
-                    String recorded = cellFormulaTruncated
+                    String base = cellFormulaTruncated
                             ? currentFormulaText + " " + XLM_TRUNCATION_MARKER
                             : currentFormulaText;
+                    String recorded = existing == null ? base : existing + " " + base;
                     // Charge only the NET change. `formulas` is keyed by cell ref, so a
                     // repeated ref REPLACES the previous entry -- but the budget used to be
                     // charged the full length every time, so a sheet repeating one cell ref
                     // burned the document-wide formula budget on content that was never
                     // retained, cutting capture short for later sheets that had real payload.
-                    String previous = formulas.put(key, recorded);
-                    retainedFormulaChars +=
-                            recorded.length() - (previous == null ? 0 : previous.length());
+                    formulas.put(key, recorded);
+                    retainedFormulaChars = creditedTotal + recorded.length();
                     handlerRetainedFormulaChars = (int) Math.min(
                             Integer.MAX_VALUE, retainedFormulaChars);
                     xhtml.element("p", currentCellRef + ": " + recorded);
@@ -566,8 +579,12 @@ final class XlmXmlMacrosheetParser {
                 }
                 if (values.size() < maxValueEntries || values.containsKey(key)) {
                     // Aggregate guard, shared document-wide with the worksheet path.
+                    // Credit the entry this replaces: values.put() overwrites on a repeated
+                    // cell ref, so charging gross billed the document budget per repetition.
+                    String priorValue = values.get(key);
                     if (valueCharBudget != null
-                            && !valueCharBudget.tryRetain(resolved.length())) {
+                            && !valueCharBudget.tryRetain(resolved.length(),
+                                    priorValue == null ? 0 : priorValue.length())) {
                         truncated = true;
                     } else {
                         values.put(key, resolved);
