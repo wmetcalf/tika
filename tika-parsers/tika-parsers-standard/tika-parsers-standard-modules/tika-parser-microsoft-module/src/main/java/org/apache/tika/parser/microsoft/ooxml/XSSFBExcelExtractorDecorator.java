@@ -258,7 +258,14 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                 throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
+                // Flag it. Emitting the note into the TEXT and nothing else meant a consumer
+                // reading metadata -- which is where every other capture shortfall is
+                // reported -- saw a clean parse. A macro part we failed to read is precisely
+                // the case where "no XLM IOCs found" must not be trusted, and a truncated
+                // .bin part is trivially attacker-supplied.
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+                markXlmCaptureLimit(metadata, "XLSB XLM macrosheet parse error: "
+                        + e.getMessage());
             }
             if (emulator.isLimitReached()) {
                 markXlmCaptureLimit(metadata, emulator.getLimitWarning());

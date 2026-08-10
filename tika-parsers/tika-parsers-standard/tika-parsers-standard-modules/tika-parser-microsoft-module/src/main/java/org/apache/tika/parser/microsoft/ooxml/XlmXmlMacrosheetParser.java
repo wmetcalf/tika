@@ -494,10 +494,16 @@ final class XlmXmlMacrosheetParser {
                     String recorded = cellFormulaTruncated
                             ? body + " " + XLM_TRUNCATION_MARKER
                             : body;
-                    retainedFormulaChars += recorded.length();
+                    // Charge only the NET change. `formulas` is keyed by cell ref, so a
+                    // repeated ref REPLACES the previous entry -- but the budget used to be
+                    // charged the full length every time, so a sheet repeating one cell ref
+                    // burned the document-wide formula budget on content that was never
+                    // retained, cutting capture short for later sheets that had real payload.
+                    String previous = formulas.put(key, recorded);
+                    retainedFormulaChars +=
+                            recorded.length() - (previous == null ? 0 : previous.length());
                     handlerRetainedFormulaChars = (int) Math.min(
                             Integer.MAX_VALUE, retainedFormulaChars);
-                    formulas.put(key, recorded);
                     xhtml.element("p", currentCellRef + ": " + recorded);
                 } else {
                     truncated = true;

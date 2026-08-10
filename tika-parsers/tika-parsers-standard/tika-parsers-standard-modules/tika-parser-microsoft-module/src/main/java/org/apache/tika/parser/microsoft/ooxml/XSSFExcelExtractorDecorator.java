@@ -652,11 +652,26 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         }
     }
 
+    /**
+     * Document-scoped total of macro text emitted across ALL macro parts.
+     *
+     * <p>{@link #boundedMacroText} is called once per macro part, so measuring
+     * {@code cfgMacroTextMaxChars} against a fresh per-call buffer made the real ceiling
+     * N_parts x the cap -- up to {@link #MAX_XLM_MACRO_PARTS} times the documented bound.
+     * This is the FIFTH per-part/per-sheet scope slip in this family (formula aggregate,
+     * value aggregate, image budget, warning gate, and now macro text); the pattern is a
+     * budget compared against a buffer whose lifetime is narrower than the budget's scope.
+     */
+    private long emittedMacroTextCharsDoc;
+
     private String boundedMacroText(Iterable<String> formulas) {
         StringBuilder text = new StringBuilder();
         for (String formula : formulas) {
             int separator = text.length() == 0 ? 0 : 1;
-            int remaining = cfgMacroTextMaxChars - text.length() - separator;
+            // Charge against the DOCUMENT total, not just this part's buffer.
+            long remainingLong =
+                    cfgMacroTextMaxChars - emittedMacroTextCharsDoc - text.length() - separator;
+            int remaining = (int) Math.min(Integer.MAX_VALUE, remainingLong);
             if (remaining <= 0) {
                 markXlmCaptureLimit("XLM macro text retention limit reached");
                 break;
@@ -671,6 +686,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 break;
             }
         }
+        emittedMacroTextCharsDoc += text.length();
         return text.toString();
     }
 
