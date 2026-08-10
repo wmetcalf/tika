@@ -18,7 +18,6 @@ package org.apache.tika.parser.pdf.image;
 
 import java.io.Serializable;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.pdfbox.cos.COSStream;
@@ -38,11 +37,10 @@ public class ImageGraphicsEngineFactory implements Serializable {
                                          PDFParserConfig pdfParserConfig,
                                          Map<COSStream, Integer> processedInlineImages,
                                          AtomicInteger imageCounter,
-                                         AtomicBoolean imageBudgetWarningEmitted,
                                          XHTMLContentHandler xhtml,
                                          Metadata parentMetadata, ParseContext parseContext) {
         return new ImageGraphicsEngine(page, pageNumber, embeddedDocumentExtractor, pdfParserConfig,
-                processedInlineImages, imageCounter, imageBudgetWarningEmitted, xhtml,
+                processedInlineImages, imageCounter, xhtml,
                 parentMetadata, parseContext);
     }
 

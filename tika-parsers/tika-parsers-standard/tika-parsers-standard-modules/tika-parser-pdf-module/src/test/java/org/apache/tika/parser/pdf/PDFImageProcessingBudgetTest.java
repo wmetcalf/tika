@@ -148,6 +148,122 @@ public class PDFImageProcessingBudgetTest {
         return context;
     }
 
+    /** Collects the RESOURCE_NAME_KEY of every extracted image, in order. */
+    private static class NameCollectingExtractor implements EmbeddedDocumentExtractor {
+        private final java.util.List<String> names = new java.util.ArrayList<>();
+
+        @Override
+        public boolean shouldParseEmbedded(Metadata metadata) {
+            return true;
+        }
+
+        @Override
+        public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                  Metadata metadata, ParseContext ctx, boolean outputHtml) {
+            names.add(metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+        }
+    }
+
+    private static byte[] buildPdfWithDistinctImagesEachDrawnTwice(int distinct)
+            throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage();
+            doc.addPage(page);
+            java.util.List<PDImageXObject> xs = new java.util.ArrayList<>();
+            for (int i = 0; i < distinct; i++) {
+                BufferedImage img = new BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB);
+                img.setRGB(0, 0, 0x110000 * (i + 1));
+                xs.add(LosslessFactory.createFromImage(doc, img));
+            }
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                for (int i = 0; i < distinct; i++) {
+                    cs.drawImage(xs.get(i), 10 + i * 6, 10, 4, 4);
+                    cs.drawImage(xs.get(i), 10 + i * 6, 20, 4, 4);
+                }
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            doc.save(bos);
+            return bos.toByteArray();
+        }
+    }
+
+    /**
+     * The opt-in budget must not renumber extracted images on the DEFAULT (-1) path.
+     *
+     * <p>Regression guard: the budget was charged to {@code imageCounter}, which is also
+     * what assigns IMAGE-&lt;n&gt; names, so repeat draws consumed names. Measured before
+     * the fix with 3 images x 3 draws: image-0/image-3/image-6 instead of
+     * image-0/image-1/image-2 -- with the budget DISABLED, i.e. an opt-in DoS backstop
+     * silently changed default output. Budget accounting now has its own counter.
+     */
+    @Test
+    public void testDisabledBudgetDoesNotRenumberExtractedImages() throws Exception {
+        NameCollectingExtractor extractor = new NameCollectingExtractor();
+        PDFParserConfig pdfConfig = new PDFParserConfig();
+        pdfConfig.setExtractInlineImages(true);
+        pdfConfig.setExtractUniqueInlineImagesOnly(false);
+        pdfConfig.setMaxImagesPerDocument(-1); // the shipped default: unlimited
+        OcrConfig ocrConfig = new OcrConfig();
+        ocrConfig.setStrategy(OcrConfig.Strategy.NO_OCR);
+        pdfConfig.setOcr(ocrConfig);
+        ParseContext context = new ParseContext();
+        context.set(PDFParserConfig.class, pdfConfig);
+        context.set(EmbeddedDocumentExtractor.class, extractor);
+
+        byte[] pdf = buildPdfWithDistinctImagesEachDrawnTwice(3);
+        try (TikaInputStream tis = TikaInputStream.get(new ByteArrayInputStream(pdf))) {
+            new AutoDetectParser().parse(tis, new BodyContentHandler(-1), new Metadata(),
+                    context);
+        }
+
+        java.util.Set<String> distinctNames = new java.util.HashSet<>(extractor.names);
+        assertEquals(3, distinctNames.size(),
+                "3 distinct image objects must yield 3 distinct resource names; got "
+                        + extractor.names);
+        assertTrue(distinctNames.contains("image-0.png") && distinctNames.contains("image-1.png")
+                        && distinctNames.contains("image-2.png"),
+                "names must stay DENSE (image-0/1/2) on the default unlimited path -- a "
+                        + "sparse sequence means the budget counter is naming images; got "
+                        + extractor.names);
+    }
+
+    /**
+     * A repeat draw must reuse the name the object was first published under.
+     *
+     * <p>Regression guard for cross-labelling: {@code imageNumber} stayed 0 on the
+     * repeat-draw path, so every redraw was published as image-0 -- meaning
+     * {@code <img src="embedded:image-0.png">} resolved to a DIFFERENT image's bytes and
+     * multiple attachments claimed one resource name. (Pre-existing upstream; the fix is
+     * one line in a branch that already edits this block.)
+     */
+    @Test
+    public void testRepeatDrawReusesItsOwnNameRatherThanImageZero() throws Exception {
+        NameCollectingExtractor extractor = new NameCollectingExtractor();
+        PDFParserConfig pdfConfig = new PDFParserConfig();
+        pdfConfig.setExtractInlineImages(true);
+        pdfConfig.setExtractUniqueInlineImagesOnly(false);
+        pdfConfig.setMaxImagesPerDocument(-1);
+        OcrConfig ocrConfig = new OcrConfig();
+        ocrConfig.setStrategy(OcrConfig.Strategy.NO_OCR);
+        pdfConfig.setOcr(ocrConfig);
+        ParseContext context = new ParseContext();
+        context.set(PDFParserConfig.class, pdfConfig);
+        context.set(EmbeddedDocumentExtractor.class, extractor);
+
+        byte[] pdf = buildPdfWithDistinctImagesEachDrawnTwice(2);
+        try (TikaInputStream tis = TikaInputStream.get(new ByteArrayInputStream(pdf))) {
+            new AutoDetectParser().parse(tis, new BodyContentHandler(-1), new Metadata(),
+                    context);
+        }
+
+        long imageZero = extractor.names.stream()
+                .filter(n -> "image-0.png".equals(n)).count();
+        assertEquals(2, imageZero,
+                "only the FIRST object's two draws may be named image-0.png; more means "
+                        + "the second object's redraw was cross-labelled as image-0; got "
+                        + extractor.names);
+    }
+
     @Test
     public void testRepeatedImageDrawsAreBoundedAndFast() throws Exception {
         final int drawCount = 4000;

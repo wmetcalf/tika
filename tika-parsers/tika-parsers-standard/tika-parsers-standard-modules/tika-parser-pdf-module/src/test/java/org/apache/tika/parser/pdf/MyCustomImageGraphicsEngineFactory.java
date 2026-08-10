@@ -17,7 +17,6 @@
 package org.apache.tika.parser.pdf;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
@@ -84,7 +83,6 @@ public class MyCustomImageGraphicsEngineFactory extends ImageGraphicsEngineFacto
                                          PDFParserConfig pdfParserConfig,
                                          Map<COSStream, Integer> processedInlineImages,
                                          AtomicInteger imageCounter,
-                                         AtomicBoolean imageBudgetWarningEmitted,
                                          XHTMLContentHandler xhtml,
                                          Metadata parentMetadata, ParseContext parseContext) {
         // Record that this custom factory was used
@@ -93,7 +91,7 @@ public class MyCustomImageGraphicsEngineFactory extends ImageGraphicsEngineFacto
 
         // Delegate to the default implementation
         return super.newEngine(page, pageNumber, embeddedDocumentExtractor, pdfParserConfig,
-                processedInlineImages, imageCounter, imageBudgetWarningEmitted, xhtml,
+                processedInlineImages, imageCounter, xhtml,
                 parentMetadata, parseContext);
     }
 }

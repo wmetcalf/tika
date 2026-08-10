@@ -66,8 +66,9 @@ import org.apache.tika.sax.XHTMLContentHandler;
  */
 public class AbstractOOXMLExternalRefPartScanBoundTest {
 
-    /** Must match AbstractOOXMLExtractor.MAX_EXTERNAL_REF_PARTS_SCANNED. */
-    private static final int MAX_PARTS_SCANNED = 5000;
+    /** Read from production rather than duplicated, so it cannot drift. */
+    private static final int MAX_PARTS_SCANNED =
+            AbstractOOXMLExtractor.getMaxExternalRefPartsScannedForTesting();
 
     private static final String MARKER_URL = "http://example.invalid/beyond-the-scan-budget";
 
@@ -105,9 +106,14 @@ public class AbstractOOXMLExternalRefPartScanBoundTest {
                 os.write("<x/>".getBytes(StandardCharsets.UTF_8));
             }
             if (i == markerIndex) {
+                // hyperlink, NOT attachedTemplate. attachedTemplate is high-priority, and
+                // tryAcquire() refuses any high-priority rel the pre-pass did not reserve --
+                // so with attachedTemplate the marker was unreachable regardless of the
+                // scan guard, and the test passed even with the guard deleted (verified:
+                // relationship reads went 5,000 -> 10,500 and it still passed).
                 part.addExternalRelationship(MARKER_URL,
                         "http://schemas.openxmlformats.org/officeDocument/2006/"
-                                + "relationships/attachedTemplate");
+                                + "relationships/hyperlink");
             }
         }
         return pkg;
@@ -174,6 +180,59 @@ public class AbstractOOXMLExternalRefPartScanBoundTest {
     }
 
     /**
+     * A package INSIDE the advertised budget must have its external references surfaced.
+     *
+     * <p>Regression guard for a double-charge: both walks iterate the same
+     * {@code getParts()}, and charging per ATTEMPT billed every part twice, halving real
+     * coverage to MAX/2. Measured before the fix: a 2,501-part package already lost the
+     * hyperlink in its last part, and at 5,000 parts even part 0 became unreachable. The
+     * bound must be charged once per DISTINCT part.
+     */
+    @Test
+    public void testPartWellInsideTheBudgetIsStillSurfaced() throws Exception {
+        // comfortably inside MAX, but beyond MAX/2 -- the range the double-charge lost
+        int partCount = (MAX_PARTS_SCANNED / 2) + 200;
+        OPCPackage pkg = buildPackage(partCount, partCount - 1);
+        Metadata metadata = new Metadata();
+
+        String xhtml = runExtractor(pkg, metadata);
+
+        assertTrue(xhtml.contains(MARKER_URL) || metadataContains(metadata, MARKER_URL),
+                "an external reference in part " + (partCount - 1) + " of a " + partCount
+                        + "-part package is INSIDE the advertised " + MAX_PARTS_SCANNED
+                        + "-part budget and must be surfaced; losing it means parts are "
+                        + "being charged more than once");
+        assertNull(metadata.get("msoffice:external-ref-part-scan-limit-reached"),
+                "a package inside the budget must not report a part-scan limit");
+    }
+
+    private static boolean metadataContains(Metadata metadata, String needle) {
+        for (String name : metadata.names()) {
+            for (String v : metadata.getValues(name)) {
+                if (v != null && v.contains(needle)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** When the part-scan bound DOES fire, it must say so distinguishably. */
+    @Test
+    public void testPartScanTruncationIsReportedWithItsOwnSignal() throws Exception {
+        OPCPackage pkg = buildPackage(MAX_PARTS_SCANNED + 500, -1);
+        Metadata metadata = new Metadata();
+
+        runExtractor(pkg, metadata);
+
+        assertEquals("true",
+                metadata.get("msoffice:external-ref-part-scan-limit-reached"),
+                "exceeding the part-scan bound must set its OWN flag -- reusing the link "
+                        + "limit warning misattributes 'parts never examined' as 'too many "
+                        + "links', and fired even with zero links recorded");
+    }
+
+    /**
      * Guards against a regression to per-loop budgets. Two independent 5000
      * allowances would still be bounded, but would double the real scan work;
      * the cap is specified as a single shared budget.
@@ -196,11 +255,18 @@ public class AbstractOOXMLExternalRefPartScanBoundTest {
         // advances when tryScanPart() is consulted, so removing a guard leaves it
         // looking healthy; this counts real part.getRelationships() invocations,
         // which is the expensive work the cap exists to bound.
+        // Each of the two walks may legitimately touch up to MAX distinct parts, so
+        // INVOCATIONS can reach 2xMAX -- but only the FIRST per part parses XML; POI
+        // caches the relationship collection, so the second walk's calls are in-memory
+        // filters (verified against POI 5.5.1 bytecode). The expensive work is therefore
+        // still bounded by MAX. Asserting 2xMAX keeps this mutation-sensitive: deleting
+        // the second loop's guard on this 5,500-part package yields 5,000 + 5,500 = 10,500
+        // invocations, which trips this bound.
         int reads = extractor.getLastExternalRefPartRelationshipReadsForTesting();
-        assertTrue(reads <= MAX_PARTS_SCANNED,
-                "actual part.getRelationships() invocations across BOTH walks must not "
-                        + "exceed the shared cap of " + MAX_PARTS_SCANNED + ", got " + reads
-                        + " -- a count above the cap means one of the two scan loops ran "
-                        + "unbounded (this is what a deleted tryScanPart() guard looks like)");
+        assertTrue(reads <= 2 * MAX_PARTS_SCANNED,
+                "getRelationships() invocations across BOTH walks must not exceed 2x the "
+                        + "shared cap of " + MAX_PARTS_SCANNED + " (one cached re-read per "
+                        + "charged part is expected; more means a loop ran unbounded), got "
+                        + reads);
     }
 }

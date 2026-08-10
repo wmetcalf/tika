@@ -96,9 +96,38 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
     protected final PDFParserConfig pdfParserConfig;
     protected final Map<COSStream, Integer> processedInlineImages;
     protected final AtomicInteger imageCounter;
+    /**
+     * Draws charged against the image budget. Separate from {@link #imageCounter}, which
+     * assigns IMAGE-&lt;n&gt; names: mixing the two let an opt-in DoS backstop renumber
+     * extracted images on the default (-1, unlimited) path.
+     */
+    /**
+     * Document-wide image budget state. Set by the caller AFTER construction rather than
+     * passed in, so {@link ImageGraphicsEngineFactory#newEngine} keeps its original
+     * signature: widening it silently bypassed downstream custom factories (an old
+     * override simply stops overriding -- no compile error, no runtime error, no warning)
+     * and would conflict with upstream on every sync. A factory may return any subclass;
+     * the caller sets the budget on whatever it gets back.
+     */
+    private DocumentImageBudget documentImageBudget = new DocumentImageBudget();
+
+    public void setDocumentImageBudget(DocumentImageBudget documentImageBudget) {
+        if (documentImageBudget != null) {
+            this.documentImageBudget = documentImageBudget;
+        }
+    }
+
+    /**
+     * Per-DOCUMENT image budget state. Must not live on the engine: the engine is
+     * constructed per PAGE, so engine-scoped counters reset every page and a
+     * document-wide bound would silently become per-page.
+     */
+    public static final class DocumentImageBudget {
+        private final AtomicInteger imagesProcessed = new AtomicInteger();
+        private final AtomicBoolean warningEmitted = new AtomicBoolean(false);
+    }
     // Shared, document-wide (not per-page, unlike this engine instance) exactly-once gate
     // for the image-budget-exceeded warning. See isImageProcessingBudgetExceeded().
-    protected final AtomicBoolean imageBudgetWarningEmitted;
     protected final Metadata parentMetadata;
     protected final XHTMLContentHandler xhtml;
     protected final ParseContext parseContext;
@@ -113,7 +142,6 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
                                   PDFParserConfig pdfParserConfig,
                                   Map<COSStream, Integer> processedInlineImages,
                                   AtomicInteger imageCounter,
-                                  AtomicBoolean imageBudgetWarningEmitted,
                                   XHTMLContentHandler xhtml,
                                   Metadata parentMetadata, ParseContext parseContext) {
         super(page);
@@ -122,7 +150,6 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
         this.pdfParserConfig = pdfParserConfig;
         this.processedInlineImages = processedInlineImages;
         this.imageCounter = imageCounter;
-        this.imageBudgetWarningEmitted = imageBudgetWarningEmitted;
         this.xhtml = xhtml;
         this.parentMetadata = parentMetadata;
         this.parseContext = parseContext;
@@ -294,16 +321,16 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
      * reserved-key block entirely, since {@code Metadata.set(Property, ...)}
      * does not go through {@code blockReservedKeyWrite}.
      */
-    private boolean isImageProcessingBudgetExceeded() {
+    protected boolean isImageProcessingBudgetExceeded() {
         int max = pdfParserConfig.getMaxImagesPerDocument();
         if (max <= 0) {
             // -1 (or any non-positive value reaching here) means "no limit"
             return false;
         }
-        if (imageCounter.get() < max) {
+        if (documentImageBudget.imagesProcessed.get() < max) {
             return false;
         }
-        if (imageBudgetWarningEmitted.compareAndSet(false, true)) {
+        if (documentImageBudget.warningEmitted.compareAndSet(false, true)) {
             parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
             parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                     "PDF image extraction truncated after " + max +
@@ -332,25 +359,35 @@ public class ImageGraphicsEngine extends PDFGraphicsStreamEngine {
             }
             if (cachedNumber == null) {
                 imageNumber = imageCounter.getAndIncrement();
+                documentImageBudget.imagesProcessed.incrementAndGet();
                 processedInlineImages.put(xobject.getCOSObject(), imageNumber);
             } else {
-                // extractUniqueInlineImagesOnly is false: this is a repeat draw
-                // of an already-seen image object. It still costs a full
-                // rasterize/color-convert/recursive-parse cycle below (that's
-                // the whole point of disabling dedup), so it must still be
-                // charged against the per-document image budget even though
-                // it doesn't consume a fresh sequence number. Without this,
-                // an adversarial PDF that redraws one tiny image XObject
-                // thousands of times pays zero budget cost per redraw while
-                // still doing full CMYK/LittleCMS conversion + QR/hash work
-                // on every single draw -- an unbounded-by-page-count cost.
-                imageCounter.incrementAndGet();
+                // extractUniqueInlineImagesOnly is false: a repeat draw of an
+                // already-seen image object. It still costs a full
+                // rasterize/color-convert/recursive-parse cycle below (that's the whole
+                // point of disabling dedup), so it must still be charged against the
+                // per-document image budget -- otherwise a PDF that redraws one tiny
+                // XObject thousands of times pays nothing while doing full
+                // CMYK/LittleCMS + QR/hash work every time.
+                //
+                // Charged to imagesProcessed, NOT imageCounter. imageCounter NAMES the
+                // extracted images (IMAGE-<n>), so incrementing it here made the sequence
+                // sparse -- image-0/image-3/image-6 instead of image-0/image-1/image-2 --
+                // and did so even with the budget DISABLED (-1, the default), i.e. an
+                // opt-in feature silently changed default-path output.
+                documentImageBudget.imagesProcessed.incrementAndGet();
+                // Reuse the name this object was first published under, rather than
+                // leaving imageNumber at 0: that cross-labelled every repeat draw as
+                // image-0, so <img src="embedded:image-0.png"> pointed at a DIFFERENT
+                // image's bytes and several attachments claimed the same resource name.
+                imageNumber = cachedNumber;
             }
         } else {
             if (isImageProcessingBudgetExceeded()) {
                 return;
             }
             imageNumber = imageCounter.getAndIncrement();
+            documentImageBudget.imagesProcessed.incrementAndGet();
         }
         //TODO: should we use the hash of the PDImage to check for seen
         //For now, we're relying on the cosobject, but this could lead to

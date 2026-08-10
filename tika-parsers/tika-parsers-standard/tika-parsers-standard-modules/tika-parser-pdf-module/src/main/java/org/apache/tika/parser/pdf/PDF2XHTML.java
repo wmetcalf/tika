@@ -23,7 +23,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.pdfbox.cos.COSArray;
@@ -78,7 +77,8 @@ class PDF2XHTML extends AbstractPDF2XHTML {
     // an atomic/cheap-to-mutate exactly-once gate, and a per-page ImageGraphicsEngine
     // instance can't hold this itself since the budget (like inlineImageCounter) is
     // document-wide, not per-page.
-    private final AtomicBoolean inlineImageBudgetWarningEmitted = new AtomicBoolean(false);
+    private final ImageGraphicsEngine.DocumentImageBudget documentImageBudget =
+            new ImageGraphicsEngine.DocumentImageBudget();
 
     PDF2XHTML(PDDocument document, ContentHandler handler, ParseContext context, Metadata metadata,
               PDFParserConfig config, Renderer renderer) throws IOException {
@@ -248,8 +248,11 @@ class PDF2XHTML extends AbstractPDF2XHTML {
         ImageGraphicsEngine engine =
                 config.getImageGraphicsEngineFactory().newEngine(
                         page, getCurrentPageNo(), embeddedDocumentExtractor, config,
-                        processedInlineImages, inlineImageCounter,
-                        inlineImageBudgetWarningEmitted, xhtml, metadata, context);
+                        processedInlineImages, inlineImageCounter, xhtml, metadata, context);
+        // Set AFTER construction so newEngine() keeps its original signature and a
+        // downstream custom factory is never silently bypassed. This object is
+        // document-scoped; the engine is per page.
+        engine.setDocumentImageBudget(documentImageBudget);
         engine.run();
         List<IOException> engineExceptions = engine.getExceptions();
         if (!engineExceptions.isEmpty()) {
