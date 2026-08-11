@@ -1267,7 +1267,7 @@ class XlmEvasionResilienceTest {
     /** Duplicated {@code <is>} in one cell -- the value-side join. */
     @Test
     void testDuplicateInlineStringCostIsSubQuadratic() {
-        assertSubQuadratic("duplicate <is> per cell", 3000, n -> {
+        assertSubQuadratic("duplicate <is> per cell", 25000, n -> {
             StringBuilder cell = new StringBuilder("<c r=\"A1\" t=\"inlineStr\">");
             for (int i = 0; i < n; i++) {
                 cell.append("<is><t>x</t></is>");
@@ -1275,6 +1275,227 @@ class XlmEvasionResilienceTest {
             cell.append("</c>");
             try {
                 parseRowXml(cell.toString());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
+    // ── Gate 2: charge == stored, for the OTHER budget ───────────────────────
+
+    /**
+     * The VALUE budget must also be charged exactly what is stored.
+     *
+     * <p>The formula budget has had this invariant since three retention-policy changes cost five
+     * test rewrites; {@code ValueCharBudget} had none -- and it is the harder one, because a single
+     * instance is shared across every macro part AND the worksheet capture path, so a leak
+     * compounds document-wide. Read by reflection because the counter is deliberately private.
+     */
+    @Test
+    void testValueBudgetChargeEqualsStoredAcrossShapes() throws Exception {
+        String[][] shapes = {
+            {"plain value", "<c r=\"A1\" t=\"str\"><v>plain</v></c>"},
+            {"duplicate value", "<c r=\"A1\" t=\"str\"><v>one</v></c>"
+                    + "<c r=\"A1\" t=\"str\"><v>two</v></c>"},
+            {"inline string", "<c r=\"A1\" t=\"inlineStr\"><is><t>abc</t></is></c>"},
+            {"rich text runs", "<c r=\"A1\" t=\"inlineStr\"><is><r><t>ab</t></r>"
+                    + "<r><t>cd</t></r></is></c>"},
+            {"duplicate <is>", "<c r=\"A1\" t=\"inlineStr\"><is><t>aa</t></is>"
+                    + "<is><t>bb</t></is></c>"},
+            {"value then inline", "<c r=\"A1\"><v>vv</v><is><t>ii</t></is></c>"},
+            {"furigana excluded", "<c r=\"A1\" t=\"inlineStr\"><is><t>real</t>"
+                    + "<rPh sb=\"0\" eb=\"2\"><t>furi</t></rPh></is></c>"},
+            {"no @r", "<c t=\"str\"><v>implied</v></c>"},
+            {"nested cell", "<c r=\"A1\" t=\"str\"><v>outer</v>"
+                    + "<c r=\"B1\" t=\"str\"><v>inner</v></c></c>"},
+        };
+        java.lang.reflect.Field retained =
+                XSSFExcelExtractorDecorator.ValueCharBudget.class.getDeclaredField("retained");
+        retained.setAccessible(true);
+
+        for (String[] shape : shapes) {
+            XSSFExcelExtractorDecorator.ValueCharBudget budget =
+                    new XSSFExcelExtractorDecorator.ValueCharBudget(1 << 20);
+            XlmXmlMacrosheetParser parser = parseRowXmlWithValueBudget(shape[1], budget);
+            int stored = parser.getValues().values().stream().mapToInt(String::length).sum();
+            assertEquals(stored, ((Integer) retained.get(budget)).intValue(),
+                    "VALUE budget charge != stored for shape '" + shape[0] + "'; stored " + stored
+                            + ", entries " + parser.getValues());
+        }
+    }
+
+    /** And when the value budget REFUSES, the refusal must not be charged. */
+    @Test
+    void testValueBudgetChargeEqualsStoredWhenItRefuses() throws Exception {
+        StringBuilder row = new StringBuilder();
+        for (int i = 1; i <= 30; i++) {
+            row.append("<c r=\"A").append(i).append("\" t=\"str\"><v>")
+                    .append("V".repeat(50)).append("</v></c>");
+        }
+        XSSFExcelExtractorDecorator.ValueCharBudget budget =
+                new XSSFExcelExtractorDecorator.ValueCharBudget(200);
+        XlmXmlMacrosheetParser parser = parseRowXmlWithValueBudget(row.toString(), budget);
+
+        java.lang.reflect.Field retained =
+                XSSFExcelExtractorDecorator.ValueCharBudget.class.getDeclaredField("retained");
+        retained.setAccessible(true);
+        int stored = parser.getValues().values().stream().mapToInt(String::length).sum();
+        assertEquals(stored, ((Integer) retained.get(budget)).intValue(),
+                "refused values must not be charged; stored " + stored);
+        assertTrue(((Integer) retained.get(budget)).intValue() <= 200, "and the cap must hold");
+        assertTrue(parser.isTruncated(), "and the refusal must be reported");
+    }
+
+    // ── Gate 3: every flag needs a negative control on LEGITIMATE input ──────
+
+    /**
+     * None of the XLM signals may fire on an ORDINARY macro-bearing workbook.
+     *
+     * <p>Four defects in this work were a flag set from the wrong condition, and the worst of them
+     * -- 66 of 1,961 real documents reported as structurally malformed -- was caught only by the
+     * corpus, because no test asserted the negative. A flag that fires on ordinary input is worse
+     * than no flag: it trains an analyst to ignore it.
+     */
+    @Test
+    void testNoSignalFiresOnLegitimateWorkbookShapes() throws Exception {
+        String[][] legit = {
+            {"formula then value", "<f>=EXEC(\"a\")</f><v>0</v>"},
+            {"value only", "<v>123</v>"},
+            {"shared string", "<v>0</v>"},
+            {"inline string", "<is><t>plain</t></is>"},
+            {"rich text", "<is><r><t>ab</t></r><r><t>cd</t></r></is>"},
+            {"furigana", "<is><t>real</t><rPh sb=\"0\" eb=\"2\"><t>furi</t></rPh>"
+                    + "<phoneticPr fontId=\"1\"/></is>"},
+            {"error value", "<v>#REF!</v>"},
+            {"empty formula", "<f></f><v>0</v>"},
+            {"shared formula follower", "<f t=\"shared\" si=\"0\"/><v>5</v>"},
+        };
+        for (String[] shape : legit) {
+            Metadata metadata = new Metadata();
+            String out = processMacroSheets(metadata, new String[] {"sheet1"},
+                    new String[] {cellXmlDoc(shape[0].contains("shared string")
+                            ? shape[1] : shape[1], null)});
+            assertFalse(Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly")),
+                    "anomaly flag must NOT fire on legitimate shape '" + shape[0] + "'");
+            assertFalse(Boolean.parseBoolean(
+                            metadata.get("msoffice:xlm-capture-limit-reached")),
+                    "capture-limit flag must NOT fire on legitimate shape '" + shape[0] + "'");
+            assertNull(metadata.get(TikaCoreProperties.TRUNCATED_METADATA),
+                    "TRUNCATED_METADATA must NOT be set for legitimate shape '" + shape[0]
+                            + "'; output was:\n" + out);
+        }
+    }
+
+    /** A macro part sharing a WORKSHEET's name is normal -- it must not be flagged. */
+    @Test
+    void testMacroPartNamedAfterAWorksheetIsNotFlagged() throws Exception {
+        // Measured on 66 of 1,961 real corpus documents, so this shape MUST stay unflagged.
+        Metadata metadata = new Metadata();
+        processMacroSheets(metadata, new String[] {"sheet1"},
+                new String[] {cellXmlDoc("<f>=EXEC(\"a\")</f>", null)});
+        assertFalse(Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly")),
+                "a macro part named like a worksheet is ordinary and must not be flagged");
+    }
+
+    // ── Gate 4: a property claimed over a SET is tested over the whole set ───
+
+    /**
+     * {@code SPLIT_MARKER} must not bridge any indicator pattern it can actually reach.
+     *
+     * <p>Scoped by where joining still HAPPENS, which mutation testing forced me to get right: a
+     * first version of this test split across duplicate {@code <f>} elements and was VACUOUS,
+     * because those are now retained as separate entries and never joined -- so replacing the marker
+     * with a bare space left it green. The marker survives only on the VALUE path (duplicate
+     * {@code <v>}/{@code <is>} joined in flushCell), and the patterns matched against cell values
+     * are URL, IP_HOST and DROP_PATH. Those are the set, and all of them are tested.
+     *
+     * <p>The quoted-argument family (EXEC/EXECUTE/CALL/REGISTER/FOPEN/FWRITE/ALERT) is matched only
+     * against FORMULA text, which no longer joins at all -- so it is unreachable by construction
+     * rather than defended by this test. {@code testSplitHalvesCannotBeJoinedIntoAFabricatedIoc}
+     * pins that separately, including the entry count that proves no join occurred.
+     *
+     * <p>Each half is chosen so it matches NOTHING on its own: otherwise the scanner extracting it
+     * is correct behaviour, not a bridge. That mistake failed this test's first run on the URL case.
+     *
+     * <p>HONEST LIMIT, established by mutation: this test does NOT currently detect a weakening of
+     * the separator. Replacing SPLIT_MARKER with a bare space leaves it green, because all three
+     * value patterns exclude whitespace by construction ({@code [^\s"<>()]+} and a dotted-quad),
+     * so the marker's distinctiveness is not load-bearing on this path. The separator's form WAS
+     * load-bearing for the quoted-argument family, whose capture group {@code ((?:[^"]|"")*)}
+     * matches anything -- and that family is now defended by NOT JOINING formulas at all, which
+     * {@code testSplitHalvesCannotBeJoinedIntoAFabricatedIoc} pins via its entry-count assertion
+     * (mutation-verified RED). This test is kept as a cheap guard for the day someone adds a
+     * whitespace-tolerant value pattern; it is not evidence that the marker is safe.
+     */
+    @Test
+    void testSplitMarkerBridgesNoValuePatternInTheWholeFamily() throws Exception {
+        String[][] family = {
+            {"URL", "htt", "p://evil.example/x"},
+            {"IPV4", "1.2.", "3.4/x"},
+            {"DROP_PATH", "C:\\\\Users\\\\Public\\\\p", ".exe"},
+        };
+        for (String[] f : family) {
+            // Duplicate <v> in one cell: flushCell joins them with SPLIT_MARKER.
+            XlmXmlMacrosheetParser parser = parseRowXml(
+                    "<c r=\"A1\" t=\"str\"><v>" + f[1] + "</v><v>" + f[2] + "</v></c>");
+            String joined = String.join(" | ", parser.getValues().values());
+            assertTrue(joined.contains(f[1]) && joined.contains(f[2]),
+                    f[0] + ": both halves must be retained as evidence; got: " + joined);
+
+            List<String> iocs = XlmXmlIocScanner.scan(Map.of("Macro1:1:B1", "=1+1"),
+                    parser.getValues());
+            assertTrue(iocs.isEmpty(),
+                    f[0] + ": the two halves must NOT be joined into an indicator the document "
+                            + "never contained; got: " + iocs + " from value: " + joined);
+
+            // Control: the same text WITHOUT the split must be found, so the fixture is real.
+            List<String> whole = XlmXmlIocScanner.scan(Map.of("Macro1:1:B1", "=1+1"),
+                    Map.of("Macro1:1:A1", f[1] + f[2]));
+            assertFalse(whole.isEmpty(),
+                    f[0] + ": control -- unsplit, this text MUST produce an indicator, else the "
+                            + "fixture proves nothing");
+        }
+    }
+
+    // ── Gate 1 extension: the remaining repeatable dimensions ────────────────
+
+    /** Cells per row -- an ordinary dimension, but the document chooses the count. */
+    @Test
+    void testManyDistinctCellsCostIsSubQuadratic() {
+        assertSubQuadratic("distinct cells per row", 8000, n -> {
+            StringBuilder row = new StringBuilder();
+            for (int i = 1; i <= n; i++) {
+                row.append("<c r=\"A").append(i).append("\"><f>=1</f></c>");
+            }
+            try {
+                parseRowXml(row.toString());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
+    /** Rows per sheet. */
+    @Test
+    void testManyRowsCostIsSubQuadratic() {
+        assertSubQuadratic("rows per sheet", 6000, n -> {
+            StringBuilder sd = new StringBuilder();
+            for (int i = 1; i <= n; i++) {
+                sd.append("<row r=\"").append(i).append("\"><c r=\"A").append(i)
+                        .append("\"><f>=1</f></c></row>");
+            }
+            String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/"
+                    + "2006/main\"><sheetData>" + sd + "</sheetData></worksheet>";
+            try {
+                Metadata md = new Metadata();
+                XHTMLContentHandler x = new XHTMLContentHandler(
+                        new ToXMLContentHandler(), md, new ParseContext());
+                XlmXmlMacrosheetParser pr = new XlmXmlMacrosheetParser(
+                        new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                        x, "Macro1", null);
+                x.startDocument();
+                pr.parse();
+                x.endDocument();
             } catch (Exception e) {
                 throw new AssertionError(e);
             }
@@ -1356,6 +1577,25 @@ class XlmEvasionResilienceTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+    /** Parse one row with a caller-supplied ValueCharBudget, so its accounting can be inspected. */
+    private static XlmXmlMacrosheetParser parseRowXmlWithValueBudget(
+            String rowChildren, XSSFExcelExtractorDecorator.ValueCharBudget budget)
+            throws Exception {
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\">" + rowChildren
+                + "</row></sheetData></worksheet>";
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 4096, 4096, 16384, 1024, 1 << 20, budget);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+        return parser;
+    }
+
     /** Parse a macrosheet whose single <row r="1"> contains the given raw cell markup. */
     private static XlmXmlMacrosheetParser parseRowXml(String rowChildren) throws Exception {
         String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
