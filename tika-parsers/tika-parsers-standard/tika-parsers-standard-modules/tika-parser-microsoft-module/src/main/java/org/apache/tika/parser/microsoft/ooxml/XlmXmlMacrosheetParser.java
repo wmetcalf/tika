@@ -350,10 +350,11 @@ final class XlmXmlMacrosheetParser {
                             // currentValueText, so flushCell() cleared the uncommitted inline
                             // string and PAYLOAD disappeared with isTruncated() false. The normal
                             // </is> path combines; this recovery must match it.
-                            currentValueText =
-                                    (currentValueText == null || currentValueText.isEmpty())
-                                            ? inlineAcc.toString()
-                                            : currentValueText + SPLIT_MARKER + inlineAcc;
+                            if (currentValueText == null || currentValueText.isEmpty()) {
+                                currentValueText = inlineAcc.toString();
+                            } else {
+                                pendingValues.add(inlineAcc.toString());
+                            }
                         }
                         flushCell();
                     }
@@ -645,9 +646,13 @@ final class XlmXmlMacrosheetParser {
                             if (currentValueText == null || currentValueText.isEmpty()) {
                                 currentValueText = inlineAcc.toString();
                             } else {
+                                // Queue it; do NOT rebuild the accumulated string per <is>. That
+                                // concatenation was QUADRATIC -- measured by the scaling harness at
+                                // ratios 5.00 and 4.62 per doubling, i.e. the same defect class as
+                                // the formula-path concatenation, in the value path. flushCell()
+                                // joins the queue exactly once.
                                 structuralAnomaly = true;
-                                currentValueText =
-                                        currentValueText + SPLIT_MARKER + inlineAcc;
+                                pendingValues.add(inlineAcc.toString());
                             }
                         }
                         inInlineString = false;

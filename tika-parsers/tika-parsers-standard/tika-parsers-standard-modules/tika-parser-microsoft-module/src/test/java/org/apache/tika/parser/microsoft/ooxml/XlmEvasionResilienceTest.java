@@ -1188,6 +1188,99 @@ class XlmEvasionResilienceTest {
         assertTrue(values.contains("DECOY"), "and the decoy too; got: " + values);
     }
 
+    // ── Cost shape: every attacker-repeatable dimension, measured ────────────
+
+    /**
+     * Assert the cost of {@code body} grows SUB-QUADRATICALLY in n.
+     *
+     * <p>Ratios across doublings, not a wall-clock ceiling: a single-size timeout is useless here
+     * because a 4x-per-doubling curve slips under any threshold at small n and only explodes in
+     * production. Quadratic shows ~4.0 per doubling, linear ~2.0. Every DoS this work introduced --
+     * two OOMs and a CPU exhaustion, all found by reviewers rather than by me -- was quadratic cost
+     * on an input the document controls, and none of the existing tests could see it because they
+     * asserted on retained SIZE or a fixed timeout.
+     *
+     * <p>Timing is noisy, so: warm up, take the median of three, require the base measurement to be
+     * large enough to mean something, and allow a generous 3.0 ratio.
+     */
+    private static void assertSubQuadratic(String what, int baseN,
+                                           java.util.function.IntConsumer body) {
+        body.accept(baseN);        // warm up JIT on the real shape
+        long[] cost = new long[3];
+        int[] sizes = {baseN, baseN * 2, baseN * 4};
+        for (int i = 0; i < 3; i++) {
+            long best = Long.MAX_VALUE;
+            for (int rep = 0; rep < 3; rep++) {
+                long t0 = System.nanoTime();
+                body.accept(sizes[i]);
+                best = Math.min(best, System.nanoTime() - t0);
+            }
+            cost[i] = best;
+        }
+        // If the base is too fast to measure, the ratios are noise -- say so rather than pass.
+        assertTrue(cost[0] > 1_000_000L,
+                what + ": base cost " + cost[0] / 1_000_000 + " ms is too small to measure a "
+                        + "cost shape; raise baseN");
+        double r1 = (double) cost[1] / cost[0];
+        double r2 = (double) cost[2] / cost[1];
+        assertTrue(r1 < 3.0 && r2 < 3.0,
+                what + ": cost grows ~quadratically. n=" + sizes[0] + "," + sizes[1] + ","
+                        + sizes[2] + " -> " + cost[0] / 1_000_000 + "," + cost[1] / 1_000_000
+                        + "," + cost[2] / 1_000_000 + " ms; ratios per doubling "
+                        + String.format(java.util.Locale.ROOT, "%.2f, %.2f", r1, r2)
+                        + " (linear ~2.0, quadratic ~4.0)");
+    }
+
+    /** Duplicated {@code <c r="A1">} -- the dimension whose uniquify loop was O(N^2). */
+    @Test
+    void testDuplicateCellRefCostIsSubQuadratic() {
+        assertSubQuadratic("duplicate <c r> per row", 6000, n -> {
+            StringBuilder row = new StringBuilder();
+            for (int i = 0; i < n; i++) {
+                row.append("<c r=\"A1\"><f>=1</f></c>");
+            }
+            try {
+                parseRowXml(row.toString());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
+    /** Duplicated {@code <f>} in one cell -- the dimension whose buffer seeding was O(N^2). */
+    @Test
+    void testDuplicateFormulaElementCostIsSubQuadratic() {
+        assertSubQuadratic("duplicate <f> per cell", 4000, n -> {
+            StringBuilder cell = new StringBuilder("<c r=\"A1\">");
+            for (int i = 0; i < n; i++) {
+                cell.append("<f>=1</f>");
+            }
+            cell.append("</c>");
+            try {
+                parseRowXml(cell.toString());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
+    /** Duplicated {@code <is>} in one cell -- the value-side join. */
+    @Test
+    void testDuplicateInlineStringCostIsSubQuadratic() {
+        assertSubQuadratic("duplicate <is> per cell", 3000, n -> {
+            StringBuilder cell = new StringBuilder("<c r=\"A1\" t=\"inlineStr\">");
+            for (int i = 0; i < n; i++) {
+                cell.append("<is><t>x</t></is>");
+            }
+            cell.append("</c>");
+            try {
+                parseRowXml(cell.toString());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
     // ── The settled retention semantics, in ONE place ────────────────────────
 
     /**
