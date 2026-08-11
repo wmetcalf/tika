@@ -1225,9 +1225,13 @@ final class Biff12XlmFormulaDecoder {
                             // emitted. The drain runs after the high-value indicators are secured
                             // and may spend the whole remainder, so it is strictly the better
                             // emitter here -- leave the content to it.
-                            ctx.markNonFatal("XLSB XLM reconstructed file content deferred at "
-                                    + "FCLOSE: emitted by the post-loop drain with a larger "
-                                    + "budget.");
+                            // NO warning: deferral is not a loss. The post-loop drain always runs
+                            // and reports its own failure if it cannot emit, whereas warning here
+                            // promoted a DEFERRAL into a capture limit and TRUNCATED_METADATA on
+                            // documents whose content the drain then emitted in full -- measured
+                            // with a 6,096-char budget and a 5,000-char payload: complete
+                            // FILE_CONTENT, no ellipsis, later EXEC preserved, and a capture-limit
+                            // flag anyway.
                         } else {
                             // Do NOT emit a content-free "FILE_CONTENT[path]: …". It carries zero
                             // evidence, spends budget on an attacker-chosen path string, and when

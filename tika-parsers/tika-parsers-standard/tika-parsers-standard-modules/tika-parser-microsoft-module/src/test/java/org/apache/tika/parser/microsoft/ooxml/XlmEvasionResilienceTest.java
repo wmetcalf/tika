@@ -1110,6 +1110,84 @@ class XlmEvasionResilienceTest {
                 "and the truncation must still be reported");
     }
 
+    /**
+     * A duplicated {@code <v>} must NOT be recorded as a formula. {@code beginCapture} serves both
+     * {@code <f>} and {@code <v>} and stashed into one shared slot, so a duplicate VALUE was
+     * recorded through the formula path -- measured, {@code <v>=EXEC("FAKE")</v><v>0</v>} fabricated
+     * an EXEC indicator from a cell containing no formula at all.
+     */
+    @Test
+    void testDuplicateValueIsNotRecordedAsAFormula() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\" t=\"str\"><v>=EXEC(\"FAKE\")</v><v>0</v></c>");
+
+        assertTrue(parser.getFormulas().isEmpty(),
+                "a cell with no <f> must produce NO formula entry; got: " + parser.getFormulas());
+        List<String> iocs = XlmXmlIocScanner.scan(parser.getFormulas(), Map.of());
+        assertTrue(iocs.isEmpty(),
+                "and therefore no fabricated EXEC indicator; got: " + iocs);
+        assertTrue(String.join(" | ", parser.getValues().values()).contains("EXEC(\"FAKE\")"),
+                "the text is still retained as a VALUE; got: " + parser.getValues());
+    }
+
+    /** A THIRD sibling {@code <f>} must not silently delete the first. */
+    @Test
+    void testThreeSiblingFormulasAllSurvive() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\"><f>=EXEC(\"" + PAYLOAD + "\")</f><f>=1+1</f><f>=2+2</f></c>");
+
+        String all = String.join(" | ", parser.getFormulaList());
+        assertTrue(all.contains(PAYLOAD), "the FIRST formula must survive; got: " + all);
+        assertTrue(all.contains("1+1") && all.contains("2+2"), "and so must the others: " + all);
+        assertEquals(3, parser.getFormulas().size(), "three entries; got: " + parser.getFormulas());
+    }
+
+    /**
+     * The truncation marker must land on the formula that was ACTUALLY cut. Pending siblings were
+     * recorded with {@code false} while the cell-wide flag went to the LAST one, reversing it.
+     */
+    @Test
+    void testTruncationMarkerLandsOnTheFormulaThatWasCut() throws Exception {
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                new ToXMLContentHandler(), metadata, new ParseContext());
+        String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/"
+                + "main\"><sheetData><row r=\"1\"><c r=\"A1\">"
+                + "<f>=ABCDEFG</f><f>=OK</f></c></row></sheetData></worksheet>";
+        XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                xhtml, "Macro1", null, 4096, 4096, /* formulaMaxLen */ 4, 4096, 1 << 20);
+        xhtml.startDocument();
+        parser.parse();
+        xhtml.endDocument();
+
+        String cut = parser.getFormulaList().stream()
+                .filter(f -> f.startsWith("=ABC")).findFirst().orElse("");
+        String intact = parser.getFormulaList().stream()
+                .filter(f -> f.startsWith("=OK")).findFirst().orElse("");
+        assertTrue(cut.contains("TIKA-XLM-FORMULA-TRUNCATED"),
+                "the CUT formula must carry the marker; got: " + parser.getFormulaList());
+        assertFalse(intact.contains("TIKA-XLM-FORMULA-TRUNCATED"),
+                "and the intact one must not; got: " + parser.getFormulaList());
+    }
+
+    /**
+     * The nested-cell recovery must COMBINE an in-flight inline string with an existing value, as
+     * the normal {@code </is>} path does -- only filling an empty slot lost the inline payload
+     * whenever a {@code <v>} had already been captured.
+     */
+    @Test
+    void testNestedCellRecoveryCombinesInlineStringWithAnExistingValue() throws Exception {
+        XlmXmlMacrosheetParser parser = parseRowXml(
+                "<c r=\"A1\"><v>DECOY</v><is><t>PAYLOAD-INLINE</t>"
+                        + "<c r=\"B1\"><v>0</v></c></is></c>");
+
+        String values = String.join(" | ", parser.getValues().values());
+        assertTrue(values.contains("PAYLOAD-INLINE"),
+                "the inline payload must survive alongside the decoy; got: " + parser.getValues());
+        assertTrue(values.contains("DECOY"), "and the decoy too; got: " + values);
+    }
+
     // ── The settled retention semantics, in ONE place ────────────────────────
 
     /**

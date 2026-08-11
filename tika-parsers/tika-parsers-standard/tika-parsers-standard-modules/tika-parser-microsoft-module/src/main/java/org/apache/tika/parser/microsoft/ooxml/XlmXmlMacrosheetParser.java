@@ -344,9 +344,16 @@ final class XlmXmlMacrosheetParser {
                         // PAYLOAD</t><c r="B1"><v>0</v></c></is></c> stored only B1, and the
                         // payload appeared nowhere in the output (macrosheet values are not
                         // emitted to XHTML) -- an inline string is a documented payload stash spot.
-                        if (inInlineString && inlineAcc.length() > 0
-                                && (currentValueText == null || currentValueText.isEmpty())) {
-                            currentValueText = inlineAcc.toString();
+                        if (inInlineString && inlineAcc.length() > 0) {
+                            // COMBINE, do not only fill an empty slot: with
+                            // <v>DECOY</v><is><t>PAYLOAD</t><c/></is> the decoy already occupied
+                            // currentValueText, so flushCell() cleared the uncommitted inline
+                            // string and PAYLOAD disappeared with isTruncated() false. The normal
+                            // </is> path combines; this recovery must match it.
+                            currentValueText =
+                                    (currentValueText == null || currentValueText.isEmpty())
+                                            ? inlineAcc.toString()
+                                            : currentValueText + SPLIT_MARKER + inlineAcc;
                         }
                         flushCell();
                     }
@@ -383,7 +390,7 @@ final class XlmXmlMacrosheetParser {
                         enterSuppressed();
                     } else {
                         inFormula = true;
-                        beginCapture(currentFormulaText);
+                        beginCapture(currentFormulaText, true);
                     }
                     break;
                 case "v":
@@ -391,7 +398,7 @@ final class XlmXmlMacrosheetParser {
                         enterSuppressed();
                     } else {
                         inValue = true;
-                        beginCapture(currentValueText);
+                        beginCapture(currentValueText, false);
                     }
                     break;
                 case "is":
@@ -451,8 +458,18 @@ final class XlmXmlMacrosheetParser {
          * either order). Seeding preserves both; the per-element cap in characters() still
          * applies to the combined length, so this cannot escape the budget.
          */
-        /** Prior text from a duplicated <f> in this cell, recorded alongside the later one. */
-        private String pendingDuplicateFormula;
+        /**
+         * Prior text from duplicated {@code <f>} / {@code <v>} elements in this cell, recorded
+         * alongside the later one. Each entry carries its OWN truncation flag.
+         *
+         * <p>SEPARATE lists per element kind, and lists rather than single slots, because a single
+         * shared slot was two bugs: {@code beginCapture} serves both {@code <f>} and {@code <v>},
+         * so a duplicated VALUE was recorded as a FORMULA -- {@code <v>=EXEC("FAKE")</v><v>0</v>}
+         * fabricated an EXEC indicator from a cell with no formula at all -- and a THIRD sibling
+         * overwrote the first, silently deleting it with isTruncated() false.
+         */
+        private final List<String[]> pendingFormulas = new ArrayList<>();
+        private final List<String> pendingValues = new ArrayList<>();
 
 
         /**
@@ -514,7 +531,7 @@ final class XlmXmlMacrosheetParser {
             xhtml.element("p", currentCellRef + ": " + recorded);
         }
 
-        private void beginCapture(String priorText) {
+        private void beginCapture(String priorText, boolean formulaKind) {
             buf.setLength(0);
             if (priorText != null) {
                 structuralAnomaly = true;
@@ -527,7 +544,19 @@ final class XlmXmlMacrosheetParser {
                 // keeps every occurrence (a decoy still cannot delete the payload), respects the
                 // per-formula cap, and needs no separator -- so it also cannot bridge an IOC
                 // pattern the way a joined string could.
-                pendingDuplicateFormula = priorText;
+                if (formulaKind) {
+                    // Carry the flag for THIS text: `formulaWasTruncated` describes the sibling
+                    // being displaced right now, and it is cleared below so the next sibling starts
+                    // clean. Recording every pending formula with `false` and applying the cell-wide
+                    // flag to the LAST one reversed which formula was reported as cut -- measured
+                    // with a 4-char cap, <f>=ABCDEFG</f><f>=OK</f> recorded "=ABC" unmarked and
+                    // "=OK [...marker]".
+                    pendingFormulas.add(
+                            new String[] {priorText, Boolean.toString(formulaWasTruncated)});
+                    formulaWasTruncated = false;
+                } else {
+                    pendingValues.add(priorText);
+                }
             }
         }
 
@@ -681,11 +710,12 @@ final class XlmXmlMacrosheetParser {
             // Record the prior text of a duplicated <f> FIRST, then this cell's own formula. Both
             // go through the SAME single recording path, so the charge-equals-stored invariant and
             // the caps apply identically however the duplicate arrived.
-            String duplicated = pendingDuplicateFormula;
-            pendingDuplicateFormula = null;
-            if (duplicated != null && !duplicated.isEmpty()) {
-                recordFormula(key, duplicated, false);
+            for (String[] pending : pendingFormulas) {
+                if (!pending[0].isEmpty()) {
+                    recordFormula(key, pending[0], Boolean.parseBoolean(pending[1]));
+                }
             }
+            pendingFormulas.clear();
             if (currentFormulaText != null && !currentFormulaText.isEmpty()) {
                 recordFormula(key, currentFormulaText, cellFormulaTruncated);
             }
@@ -693,6 +723,20 @@ final class XlmXmlMacrosheetParser {
             // Resolve shared-string-indexed cells (<c t="s"><v>N</v></c>) before
             // recording. Without this, droppers stashing payload fragments via
             // sharedStrings.xml in the macrosheet itself bypass the IOC scanner.
+            if (!pendingValues.isEmpty()) {
+                StringBuilder joined = new StringBuilder();
+                for (String pv : pendingValues) {
+                    if (joined.length() > 0) {
+                        joined.append(SPLIT_MARKER);
+                    }
+                    joined.append(pv);
+                }
+                if (currentValueText != null && !currentValueText.isEmpty()) {
+                    joined.append(SPLIT_MARKER).append(currentValueText);
+                }
+                currentValueText = joined.toString();
+                pendingValues.clear();
+            }
             String resolved = resolveValue(currentCellType, currentValueText);
             if (resolved != null && !resolved.isEmpty()) {
                 if (resolved.length() > valueMaxLen) {
@@ -746,6 +790,8 @@ final class XlmXmlMacrosheetParser {
             inFormula = false;
             inValue = false;
             cellOpen = false;
+            pendingFormulas.clear();
+            pendingValues.clear();
             suppressDepth = 0;
             inlineAcc.setLength(0);
             buf.setLength(0);
