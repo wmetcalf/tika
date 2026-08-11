@@ -58,6 +58,22 @@ final class VbaProjectBuilder {
     private final List<Module> modules = new ArrayList<>();
     private String storageName = "VBA";
     private String nestUnder;
+    private boolean poiHostile;
+
+    /**
+     * Prepend a dir-stream record that POI's parser REJECTS and a lenient parser skips: a
+     * REFERENCE_NAME (0x0016) whose trailing reserved short is neither 0x003E nor the
+     * REFERENCE_REGISTERED id, which is the shape POI throws on.
+     *
+     * <p>This is the population {@link LenientVBAReader} exists for -- Mac-Word-authored projects
+     * write records POI does not expect -- and without it an end-to-end test on a well-formed
+     * project silently measures POI rather than the lenient reader. Mutating the lenient reader
+     * left such a test green, which is how the gap was found.
+     */
+    VbaProjectBuilder poiHostile() {
+        this.poiHostile = true;
+        return this;
+    }
 
     private static final class Module {
         String moduleName;      // MODULENAME  (0x0019) -- the name a human sees
@@ -192,6 +208,12 @@ final class VbaProjectBuilder {
         ByteArrayOutputStream d = new ByteArrayOutputStream();
         // PROJECTCODEPAGE: size 2, codepage 1252
         record(d, REC_PROJECT_CODEPAGE, le16(1252));
+        if (poiHostile) {
+            // REFERENCE_NAME, then a reserved short POI does not accept. POI throws here; a lenient
+            // parser reads both as unknown records and skips them.
+            record(d, 0x0016, "junk".getBytes(StandardCharsets.ISO_8859_1));
+            record(d, 0x0099, new byte[0]);
+        }
         // PROJECTMODULES: size 2, count
         record(d, REC_PROJECT_MODULES, le16(modules.size()));
         record(d, REC_MODULE_COUNT, le16(modules.size()));
