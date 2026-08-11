@@ -44,7 +44,6 @@ public final class VbaFormParser {
     // Bound the two allocation sites a crafted form could drive to OutOfMemoryError (an
     // Error that escapes catch(Exception) and kills the parse thread).
     private static final int MAX_SITES = 65_536;                    // OleSiteConcreteControl count cap
-    private static final long MAX_STREAM_BYTES = 10L * 1024 * 1024; // mirrors LenientVBAReader
 
     /** One extracted control from a UserForm's "f" stream. */
     public static final class FormControl {
@@ -94,19 +93,37 @@ public final class VbaFormParser {
      * Returns an empty list if no form directories are found or on parse error.
      */
     public static List<FormModuleResult> extractFormVariables(POIFSFileSystem fs) {
+        return extractFormVariables(fs, new LenientVBAReader.Bounds());
+    }
+
+    /**
+     * As {@link #extractFormVariables(POIFSFileSystem)}, but bounded and REPORTING.
+     *
+     * <p>Every failure here used to go to {@code LOG.fine} and nowhere else, so a form whose parse
+     * blew up, a stream refused for exceeding the size cap, and a site count over the cap all
+     * produced the same observable result as a form with no controls: no flag, no warning, nothing.
+     * A UserForm we could not read is precisely a UserForm whose hidden ControlTipText/Tag we
+     * cannot vouch for, which is the opposite of "nothing to see".
+     */
+    public static List<FormModuleResult> extractFormVariables(POIFSFileSystem fs,
+                                                              LenientVBAReader.Bounds bounds) {
         List<FormModuleResult> results = new ArrayList<>();
         try {
-            for (DirectoryEntry formDir : findFormDirs(fs)) {
+            for (DirectoryEntry formDir : findFormDirs(fs, bounds)) {
                 String name = formDir.getName();
                 try {
-                    results.add(new FormModuleResult(name, parseFormDir(formDir)));
+                    results.add(new FormModuleResult(name, parseFormDir(formDir, bounds)));
                 } catch (Exception | OutOfMemoryError e) {
                     LOG.fine("VbaFormParser: error parsing form '" + name + "': "
                             + e.getMessage());
+                    bounds.mark("UserForm '" + name + "' could not be parsed, so any control "
+                            + "properties hidden in it were not read: " + e.getMessage());
                 }
             }
         } catch (Exception | OutOfMemoryError e) {
             LOG.fine("VbaFormParser: scan error: " + e.getMessage());
+            bounds.mark("the UserForm scan failed; hidden control properties may not have been "
+                    + "read: " + e.getMessage());
         }
         return results;
     }
@@ -120,16 +137,31 @@ public final class VbaFormParser {
      * never reaches a form is indistinguishable from a form that yields no controls.
      */
     static List<DirectoryEntry> findFormDirs(POIFSFileSystem fs) {
+        return findFormDirs(fs, new LenientVBAReader.Bounds());
+    }
+
+    static List<DirectoryEntry> findFormDirs(POIFSFileSystem fs,
+                                             LenientVBAReader.Bounds bounds) {
         List<DirectoryEntry> out = new ArrayList<>();
-        collectFormDirs(fs.getRoot(), out, 0);
+        collectFormDirs(fs.getRoot(), out, 0, bounds);
         return out;
     }
 
     /** Depth cap: a crafted CFBF child tree can be cyclic. */
     private static final int MAX_DIR_DEPTH = 32;
+    /** Cap on how many UserForm storages one document may contribute (observed max in a
+     *  6,574-document macro corpus: 260). Firing it is reported, never silent. */
+    private static final int MAX_FORMS = 4096;
 
-    private static void collectFormDirs(DirectoryEntry dir, List<DirectoryEntry> out, int depth) {
-        if (depth >= MAX_DIR_DEPTH || out.size() >= MAX_SITES) {
+    private static void collectFormDirs(DirectoryEntry dir, List<DirectoryEntry> out, int depth,
+                                        LenientVBAReader.Bounds bounds) {
+        if (out.size() >= MAX_FORMS) {
+            bounds.mark("UserForm count exceeded " + MAX_FORMS
+                    + "; later forms were not read");
+            return;
+        }
+        if (depth >= MAX_DIR_DEPTH) {
+            bounds.mark("UserForm search stopped at depth " + MAX_DIR_DEPTH);
             return;
         }
         for (Entry entry : dir) {
@@ -151,13 +183,15 @@ public final class VbaFormParser {
             if (!containerOnly && sub.hasEntry("f")) {
                 out.add(sub);
             }
-            collectFormDirs(sub, out, depth + 1);
+            collectFormDirs(sub, out, depth + 1, bounds);
         }
     }
 
-    private static List<FormControl> parseFormDir(DirectoryEntry formDir) throws IOException {
-        byte[] fBytes = readEntry(formDir, "f");
-        byte[] oBytes = hasEntry(formDir, "o") ? readEntry(formDir, "o") : new byte[0];
+    private static List<FormControl> parseFormDir(DirectoryEntry formDir,
+                                                  LenientVBAReader.Bounds bounds)
+            throws IOException {
+        byte[] fBytes = readEntry(formDir, "f", bounds);
+        byte[] oBytes = hasEntry(formDir, "o") ? readEntry(formDir, "o", bounds) : new byte[0];
         OleStream fStream = new OleStream(fBytes);
         OleStream oStream = new OleStream(oBytes);
         return consumeFormControl(fStream, oStream);
@@ -741,15 +775,22 @@ public final class VbaFormParser {
 
     // ── POIFS helpers ─────────────────────────────────────────────────────────
 
-    private static byte[] readEntry(DirectoryEntry dir, String name) throws IOException {
+    private static byte[] readEntry(DirectoryEntry dir, String name,
+                                    LenientVBAReader.Bounds bounds) throws IOException {
         org.apache.poi.poifs.filesystem.DocumentEntry de =
             (org.apache.poi.poifs.filesystem.DocumentEntry) dir.getEntry(name);
         int size = de.getSize();
         // Cap the up-front buffer alloc: getSize() is the raw OLE2 directory size field
         // (attacker-controlled), and the "f"/"o" streams deflate-compress to ~nothing in
         // the OOXML ZIP. LenientVBAReader has this guard; VbaFormParser did not (audit M-2).
-        if (size < 0 || size > MAX_STREAM_BYTES) {
-            throw new IOException("VbaForm stream '" + name + "' too large: " + size);
+        //
+        // The cap is now the SAME operator knob the module streams use, rather than a private
+        // constant that happened to hold the same number: two copies of one limit drift, and only
+        // one of them was configurable. The caller reports the drop -- parseFormDir's IOException
+        // reaches extractFormVariables, which marks it.
+        if (size < 0 || size > bounds.max()) {
+            throw new IOException("VbaForm stream '" + name + "' too large: " + size
+                    + " (bound " + bounds.max() + ")");
         }
         byte[] buf = new byte[size];
         try (org.apache.poi.poifs.filesystem.DocumentInputStream dis =
