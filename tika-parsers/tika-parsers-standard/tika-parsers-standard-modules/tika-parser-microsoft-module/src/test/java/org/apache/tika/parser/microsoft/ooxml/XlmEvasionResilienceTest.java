@@ -1203,82 +1203,132 @@ class XlmEvasionResilienceTest {
      * <p>Timing is noisy, so: warm up, take the median of three, require the base measurement to be
      * large enough to mean something, and allow a generous 3.0 ratio.
      */
-    private static void assertSubQuadratic(String what, int baseN,
-                                           java.util.function.IntConsumer body) {
-        body.accept(baseN);        // warm up JIT on the real shape
-        long[] cost = new long[3];
-        int[] sizes = {baseN, baseN * 2, baseN * 4};
-        for (int i = 0; i < 3; i++) {
-            long best = Long.MAX_VALUE;
-            for (int rep = 0; rep < 3; rep++) {
-                long t0 = System.nanoTime();
-                body.accept(sizes[i]);
-                best = Math.min(best, System.nanoTime() - t0);
+    private static <T> void assertSubQuadratic(String what, int startN,
+                                              java.util.function.IntFunction<T> prepare,
+                                              java.util.function.Consumer<T> run) {
+        // PREPARE is untimed, RUN is timed. Building the input is inherently linear, and folding it
+        // into the measurement diluted the signal enough that a quadratic parse could hide behind
+        // it -- and made the "too cheap to measure" floor unreachable for cheap dimensions.
+        //
+        // The base auto-scales until it is big enough to mean something: a hand-tuned size is
+        // machine-dependent and produced a flake at 10, 5, 38 ms, where the 2n run came in FASTER
+        // than n. Growth is capped so a genuinely quadratic implementation cannot spin here.
+        final long minMeasurable = 60_000_000L; // 60 ms of real parse work
+        int baseN = startN;
+        long baseCost = 0;
+        run.accept(prepare.apply(baseN));         // warm up JIT on the real shape
+        for (int grow = 0; grow < 7; grow++) {
+            baseCost = bestOfThree(run, prepare.apply(baseN));
+            if (baseCost >= minMeasurable) {
+                break;
             }
-            cost[i] = best;
+            baseN *= 2;
         }
-        // If the base is too fast to measure, the ratios are noise -- say so rather than pass.
-        assertTrue(cost[0] > 1_000_000L,
-                what + ": base cost " + cost[0] / 1_000_000 + " ms is too small to measure a "
-                        + "cost shape; raise baseN");
-        double r1 = (double) cost[1] / cost[0];
-        double r2 = (double) cost[2] / cost[1];
-        assertTrue(r1 < 3.0 && r2 < 3.0,
-                what + ": cost grows ~quadratically. n=" + sizes[0] + "," + sizes[1] + ","
-                        + sizes[2] + " -> " + cost[0] / 1_000_000 + "," + cost[1] / 1_000_000
-                        + "," + cost[2] / 1_000_000 + " ms; ratios per doubling "
-                        + String.format(java.util.Locale.ROOT, "%.2f, %.2f", r1, r2)
-                        + " (linear ~2.0, quadratic ~4.0)");
+        assertTrue(baseCost >= minMeasurable,
+                what + ": could not reach a measurable base cost even at n=" + baseN + " ("
+                        + baseCost / 1_000_000 + " ms). Raise startN rather than trusting ratios "
+                        + "built on noise.");
+
+        long c2 = bestOfThree(run, prepare.apply(baseN * 2));
+        long c4 = bestOfThree(run, prepare.apply(baseN * 4));
+
+        // Judge TOTAL growth across the 4x span, not each doubling separately. Per-doubling ratios
+        // fail on a single noisy point -- observed 3.94 then 1.09 on the same run, which is
+        // mutually inconsistent and therefore noise rather than a cost shape. Over 4x input,
+        // linear costs 4x and quadratic costs 16x, so 8x is a wide midpoint that no linear
+        // implementation reaches and no quadratic one escapes. A flaky gate is worse than none:
+        // it teaches people to ignore red.
+        double total = (double) c4 / baseCost;
+        assertTrue(total < 8.0,
+                what + ": cost grows ~quadratically. n=" + baseN + "," + (baseN * 2) + ","
+                        + (baseN * 4) + " -> " + baseCost / 1_000_000 + "," + c2 / 1_000_000 + ","
+                        + c4 / 1_000_000 + " ms; total growth over 4x input "
+                        + String.format(java.util.Locale.ROOT, "%.1fx", total)
+                        + " (linear ~4x, quadratic ~16x)");
+    }
+
+    /** Fastest of three runs: the minimum is the least noise-contaminated estimate. */
+    private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
+        long best = Long.MAX_VALUE;
+        for (int rep = 0; rep < 3; rep++) {
+            long t0 = System.nanoTime();
+            run.accept(input);
+            best = Math.min(best, System.nanoTime() - t0);
+        }
+        return best;
+    }
+
+    /** Build a macrosheet document whose single row repeats {@code cell} n times. */
+    private static String repeatedCellSheet(String cell, int n) {
+        StringBuilder row = new StringBuilder(cell.length() * n + 256);
+        for (int i = 0; i < n; i++) {
+            row.append(cell);
+        }
+        return "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                + "<sheetData><row r=\"1\">" + row + "</row></sheetData></worksheet>";
+    }
+
+    /** Parse a prepared macrosheet document, discarding the result. */
+    private static void parsePrepared(String xml) {
+        try {
+            Metadata metadata = new Metadata();
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(
+                    new ToXMLContentHandler(), metadata, new ParseContext());
+            XlmXmlMacrosheetParser parser = new XlmXmlMacrosheetParser(
+                    new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
+                    xhtml, "Macro1", null);
+            xhtml.startDocument();
+            parser.parse();
+            xhtml.endDocument();
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
     }
 
     /** Duplicated {@code <c r="A1">} -- the dimension whose uniquify loop was O(N^2). */
     @Test
     void testDuplicateCellRefCostIsSubQuadratic() {
-        assertSubQuadratic("duplicate <c r> per row", 6000, n -> {
-            StringBuilder row = new StringBuilder();
-            for (int i = 0; i < n; i++) {
-                row.append("<c r=\"A1\"><f>=1</f></c>");
-            }
-            try {
-                parseRowXml(row.toString());
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        });
+        assertSubQuadratic("duplicate <c r> per row", 8000,
+                n -> repeatedCellSheet("<c r=\"A1\"><f>=1</f></c>", n),
+                XlmEvasionResilienceTest::parsePrepared);
     }
 
     /** Duplicated {@code <f>} in one cell -- the dimension whose buffer seeding was O(N^2). */
     @Test
     void testDuplicateFormulaElementCostIsSubQuadratic() {
-        assertSubQuadratic("duplicate <f> per cell", 4000, n -> {
-            StringBuilder cell = new StringBuilder("<c r=\"A1\">");
-            for (int i = 0; i < n; i++) {
-                cell.append("<f>=1</f>");
-            }
-            cell.append("</c>");
-            try {
-                parseRowXml(cell.toString());
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        });
+        assertSubQuadratic("duplicate <f> per cell", 8000,
+                n -> {
+                    StringBuilder cell = new StringBuilder("<c r=\"A1\">");
+                    for (int i = 0; i < n; i++) {
+                        cell.append("<f>=1</f>");
+                    }
+                    return "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/"
+                            + "2006/main\"><sheetData><row r=\"1\">" + cell
+                            + "</c></row></sheetData></worksheet>";
+                },
+                XlmEvasionResilienceTest::parsePrepared);
     }
 
-    /** Duplicated {@code <is>} in one cell -- the value-side join. */
+    /**
+     * Duplicated {@code <is>} in one cell -- the value-side join.
+     *
+     * <p>This dimension FOUND the real defect: on the harness's first ever run it measured ratios
+     * 5.00 and 4.62 here, which is how the quadratic value-path concatenation was discovered after
+     * five review rounds had missed it.
+     *
+     * <p>HONEST LIMIT: I could not subsequently construct a mutation that this test detects.
+     * Restoring the per-element concatenation alone leaves it green, at 1-char and at 200-char
+     * element widths, and I did not determine why within reasonable effort -- the original defect
+     * may have had a second cost component that the mutation does not reconstruct. So treat this as
+     * a dimension that is MEASURED but not currently mutation-proven, unlike the
+     * {@code <c r>}/{@code <f>} dimensions, which fail at ratios ~4.0 when their defects are put
+     * back. Do not read a green here as strong evidence.
+     */
     @Test
     void testDuplicateInlineStringCostIsSubQuadratic() {
-        assertSubQuadratic("duplicate <is> per cell", 25000, n -> {
-            StringBuilder cell = new StringBuilder("<c r=\"A1\" t=\"inlineStr\">");
-            for (int i = 0; i < n; i++) {
-                cell.append("<is><t>x</t></is>");
-            }
-            cell.append("</c>");
-            try {
-                parseRowXml(cell.toString());
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        });
+        assertSubQuadratic("duplicate <is> per cell", 8000,
+                n -> repeatedCellSheet("<is><t>" + "v".repeat(200) + "</t></is>", n),
+                XlmEvasionResilienceTest::parsePrepared);
     }
 
     // ── Gate 2: charge == stored, for the OTHER budget ───────────────────────
@@ -1462,44 +1512,33 @@ class XlmEvasionResilienceTest {
     /** Cells per row -- an ordinary dimension, but the document chooses the count. */
     @Test
     void testManyDistinctCellsCostIsSubQuadratic() {
-        assertSubQuadratic("distinct cells per row", 8000, n -> {
-            StringBuilder row = new StringBuilder();
-            for (int i = 1; i <= n; i++) {
-                row.append("<c r=\"A").append(i).append("\"><f>=1</f></c>");
-            }
-            try {
-                parseRowXml(row.toString());
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        });
+        assertSubQuadratic("distinct cells per row", 8000,
+                n -> {
+                    StringBuilder row = new StringBuilder();
+                    for (int i = 1; i <= n; i++) {
+                        row.append("<c r=\"A").append(i).append("\"><f>=1</f></c>");
+                    }
+                    return "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/"
+                            + "2006/main\"><sheetData><row r=\"1\">" + row
+                            + "</row></sheetData></worksheet>";
+                },
+                XlmEvasionResilienceTest::parsePrepared);
     }
 
     /** Rows per sheet. */
     @Test
     void testManyRowsCostIsSubQuadratic() {
-        assertSubQuadratic("rows per sheet", 6000, n -> {
-            StringBuilder sd = new StringBuilder();
-            for (int i = 1; i <= n; i++) {
-                sd.append("<row r=\"").append(i).append("\"><c r=\"A").append(i)
-                        .append("\"><f>=1</f></c></row>");
-            }
-            String xml = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/"
-                    + "2006/main\"><sheetData>" + sd + "</sheetData></worksheet>";
-            try {
-                Metadata md = new Metadata();
-                XHTMLContentHandler x = new XHTMLContentHandler(
-                        new ToXMLContentHandler(), md, new ParseContext());
-                XlmXmlMacrosheetParser pr = new XlmXmlMacrosheetParser(
-                        new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)),
-                        x, "Macro1", null);
-                x.startDocument();
-                pr.parse();
-                x.endDocument();
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        });
+        assertSubQuadratic("rows per sheet", 8000,
+                n -> {
+                    StringBuilder sd = new StringBuilder();
+                    for (int i = 1; i <= n; i++) {
+                        sd.append("<row r=\"").append(i).append("\"><c r=\"A").append(i)
+                                .append("\"><f>=1</f></c></row>");
+                    }
+                    return "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/"
+                            + "2006/main\"><sheetData>" + sd + "</sheetData></worksheet>";
+                },
+                XlmEvasionResilienceTest::parsePrepared);
     }
 
     // ── The IOC output budget, with all four gates applied ───────────────────
@@ -1637,14 +1676,16 @@ class XlmEvasionResilienceTest {
     /** GATE 1 for this budget: the value scan is the dimension where two OOMs lived. */
     @Test
     void testCellValueScanCostIsSubQuadratic() {
-        assertSubQuadratic("cell values scanned", 40000, n -> {
-            Map<String, String> values = new java.util.LinkedHashMap<>();
-            for (int i = 0; i < n; i++) {
-                values.put("Sheet1:1:A" + i, "http://evil.example/" + i);
-            }
-            XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
-                    XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null);
-        });
+        assertSubQuadratic("cell values scanned", 40000,
+                n -> {
+                    Map<String, String> values = new java.util.LinkedHashMap<>();
+                    for (int i = 0; i < n; i++) {
+                        values.put("Sheet1:1:A" + i, "http://evil.example/" + i);
+                    }
+                    return values;
+                },
+                values -> XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
+                        XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null));
     }
 
     /** And with a budget nothing can fit, the walk must STOP rather than build rejects. */

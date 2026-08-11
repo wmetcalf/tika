@@ -225,6 +225,107 @@ class XlmSyntheticCorpusTest {
                         + "vacuous. Text was:\n" + head(first));
     }
 
+
+    // ── The XLSB evasions, at document level ────────────────────────────────
+
+    /**
+     * One spliced unknown Ptg byte used to strip the function call --
+     * {@code =EXEC("...")} decoding to {@code ="..."} and being emitted as COMPLETE. The emitted
+     * text must carry the incomplete-decode marker and the document must be flagged.
+     */
+    @Test
+    void unknownPtgIsMarkedAndFlaggedEndToEnd() throws Exception {
+        Parsed p = parse(craftXlsb(formulaRecord(execWithUnknownPtg(PAYLOAD))));
+        assertTrue(p.text.contains("TIKA-XLM-PTG-UNDECODED"),
+                "a partially decoded formula must be marked in the output; text:\n"
+                        + head(p.text));
+        assertTrue(Boolean.parseBoolean(p.metadata.get("msoffice:xlm-capture-limit-reached")),
+                "and the document must be flagged, since a PREFIX reads as a complete formula");
+    }
+
+    /**
+     * A junk byte in an EARLY cell must not suppress LATER cells' indicators. Routing that
+     * condition through the emulator's limit channel aborted the whole macrosheet: measured, three
+     * EXEC indicators dropped to zero.
+     */
+    @Test
+    void oneUndecodableCellDoesNotSuppressLaterCellsEndToEnd() throws Exception {
+        Parsed p = parse(craftXlsb(
+                formulaRecord(new byte[] {(byte) 0x30}),
+                formulaRecord(execFormula("first-" + PAYLOAD)),
+                formulaRecord(execFormula("second-payload"))));
+        // Assert on the emulator's IOC LINES ("EXEC: x"), NOT the raw formula text
+        // ("A1: =EXEC(\"x\")"). The parser emits the formula text regardless of whether emulation
+        // ran, so a raw-text assertion passes even with the sheet aborted -- mutation proved it,
+        // staying green with the fatal channel restored.
+        assertTrue(p.text.contains("EXEC: first-" + PAYLOAD),
+                "the first later cell's EXEC INDICATOR must survive an earlier junk byte; text:\n"
+                        + head(p.text));
+        assertTrue(p.text.contains("EXEC: second-payload"),
+                "and so must the second's; text:\n" + head(p.text));
+    }
+
+    /**
+     * An oversized FWRITE must not abort the cells after it -- the "report, do not abort" rule. Its
+     * truncation once went through the fatal channel, so the following EXEC was never evaluated.
+     */
+    @Test
+    void oversizedFileWriteDoesNotSuppressTheFollowingExecEndToEnd() throws Exception {
+        // A CONFIGURED small file-content budget, so the write actually truncates. At the 10 MB
+        // default a 3,000-char write never trips it and the test was vacuous -- mutation proved it,
+        // staying green with the fatal channel restored. Configuring it here also exercises the
+        // OfficeParserConfig plumbing end-to-end, which nothing else tested.
+        org.apache.tika.parser.microsoft.OfficeParserConfig cfg =
+                new org.apache.tika.parser.microsoft.OfficeParserConfig();
+        cfg.setXlmMaxFileContentChars(64);
+        Parsed p = parse(craftXlsb(
+                formulaRecord(fopenFormula("C:\\Users\\Public\\p.exe")),
+                formulaRecord(fwriteFormula(1, "A".repeat(3000))),
+                formulaRecord(execFormula(PAYLOAD))), cfg);
+        assertTrue(p.text.contains("EXEC: " + PAYLOAD),
+                "the EXEC INDICATOR after a truncated FWRITE must still be emulated; text:\n"
+                        + head(p.text));
+        assertTrue(Boolean.parseBoolean(p.metadata.get("msoffice:xlm-capture-limit-reached")),
+                "and the truncation must still be reported");
+    }
+
+    /**
+     * A 22-byte record declaring a huge formula size must be dropped and REPORTED, not allocated.
+     * The size field was validated against an operator knob rather than the bytes present, so a
+     * tiny record could demand hundreds of MiB.
+     */
+    @Test
+    void recordWithALyingSizeFieldIsDroppedAndFlaggedEndToEnd() throws Exception {
+        // Claim a size UNDER the DEFAULT_MAX_FORMULA_RECORD_BYTES knob (65,536) but far above the
+        // bytes actually present. 512 MiB was the obvious fixture and was WRONG: it exceeds the
+        // knob, so the pre-existing check catches it and the buf.remaining() bound is never
+        // reached -- mutation proved it, staying green with that bound deleted. The operator can
+        // raise the knob to Integer.MAX_VALUE, which is exactly when only this bound stands
+        // between a 22-byte record and a huge allocation.
+        Parsed p = parse(craftXlsb(
+                lyingSizeRecord(60_000),
+                formulaRecord(execFormula(PAYLOAD))));
+        assertTrue(p.text.contains("EXEC: " + PAYLOAD),
+                "the following real cell must still be captured; text:\n" + head(p.text));
+        // The SPECIFIC warning, not merely "some flag is set": another condition in the same
+        // document can set the flag, which made a generic assertion pass with the bound removed.
+        assertTrue(java.util.Arrays.stream(
+                        p.metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                        .anyMatch(w -> w.contains("formula record exceeded the size bound")),
+                "dropping an over-sized formula record must be reported by its own warning; got: "
+                        + java.util.Arrays.toString(p.metadata.getValues(
+                                TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)));
+    }
+
+    /** An ordinary XLSB macrosheet must set no failure signal. */
+    @Test
+    void ordinaryXlsbMacrosheetSetsNoFailureSignalEndToEnd() throws Exception {
+        Parsed p = parse(craftXlsb(formulaRecord(execFormula(PAYLOAD))));
+        assertTrue(p.text.contains("EXEC: " + PAYLOAD), "sanity: the indicator is found");
+        assertFalse(Boolean.parseBoolean(p.metadata.get("msoffice:xlm-capture-limit-reached")),
+                "an ordinary XLSB macrosheet must not be flagged; text:\n" + head(p.text));
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
 
     private static final class Parsed {
@@ -239,10 +340,21 @@ class XlmSyntheticCorpusTest {
 
     /** Full pipeline: detection, extractor factory, decorator, metadata filters. */
     private static Parsed parse(byte[] doc) throws Exception {
+        return parse(doc, null);
+    }
+
+    /** Same, with an OfficeParserConfig in the ParseContext, so config plumbing is exercised too. */
+    private static Parsed parse(byte[] doc,
+                                org.apache.tika.parser.microsoft.OfficeParserConfig cfg)
+            throws Exception {
         Metadata metadata = new Metadata();
         BodyContentHandler handler = new BodyContentHandler(-1);
+        ParseContext context = new ParseContext();
+        if (cfg != null) {
+            context.set(org.apache.tika.parser.microsoft.OfficeParserConfig.class, cfg);
+        }
         try (TikaInputStream is = TikaInputStream.get(new ByteArrayInputStream(doc))) {
-            new AutoDetectParser().parse(is, handler, metadata, new ParseContext());
+            new AutoDetectParser().parse(is, handler, metadata, context);
         }
         return new Parsed(handler.toString(), metadata);
     }
@@ -310,8 +422,8 @@ class XlmSyntheticCorpusTest {
                 .array();
     }
 
-    /** Add a binary macrosheet part carrying one formula record to the XLSB carrier. */
-    private static byte[] craftXlsb(byte[] cellRecord) throws Exception {
+    /** Add a binary macrosheet part carrying the given formula-cell records to the XLSB carrier. */
+    private static byte[] craftXlsb(byte[]... cellRecords) throws Exception {
         ByteArrayOutputStream saved = new ByteArrayOutputStream();
         try (InputStream carrier = XlmSyntheticCorpusTest.class.getResourceAsStream(CARRIER_XLSB);
              OPCPackage pkg = OPCPackage.open(carrier)) {
@@ -319,11 +431,64 @@ class XlmSyntheticCorpusTest {
                     PackagingURIHelper.createPartName("/xl/macrosheets/sheet1.bin"),
                     XSSFRelation.MACRO_SHEET_BIN.getContentType());
             try (OutputStream os = part.getOutputStream()) {
-                writeBiffRecord(os, 0x0009, cellRecord);
+                for (byte[] rec : cellRecords) {
+                    writeBiffRecord(os, 0x0009, rec);
+                }
             }
             pkg.save(saved);
         }
         return saved.toByteArray();
+    }
+
+    /** PtgStr(arg) + PtgFuncVar(argc=1, funcId). */
+    private static byte[] strCall(String arg, int funcId) {
+        byte[] chars = arg.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return java.nio.ByteBuffer.allocate(1 + 2 + chars.length + 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x17).putShort((short) arg.length()).put(chars)
+                .put((byte) 0x22).put((byte) 1).putShort((short) funcId).array();
+    }
+
+    private static byte[] execFormula(String cmd) {
+        return strCall(cmd, 0x006e);
+    }
+
+    /** Same as execFormula but with one UNKNOWN Ptg opcode spliced before the call. */
+    private static byte[] execWithUnknownPtg(String cmd) {
+        byte[] chars = cmd.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return java.nio.ByteBuffer.allocate(1 + 2 + chars.length + 1 + 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x17).putShort((short) cmd.length()).put(chars)
+                .put((byte) 0x30)
+                .put((byte) 0x22).put((byte) 1).putShort((short) 0x006e).array();
+    }
+
+    /** FOPEN(path, 3). */
+    private static byte[] fopenFormula(String path) {
+        byte[] chars = path.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return java.nio.ByteBuffer.allocate(1 + 2 + chars.length + 3 + 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x17).putShort((short) path.length()).put(chars)
+                .put((byte) 0x1e).putShort((short) 3)
+                .put((byte) 0x22).put((byte) 2).putShort((short) 0x0084).array();
+    }
+
+    /** FWRITE(handle, text). */
+    private static byte[] fwriteFormula(int handle, String text) {
+        byte[] chars = text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return java.nio.ByteBuffer.allocate(3 + 1 + 2 + chars.length + 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e).putShort((short) handle)
+                .put((byte) 0x17).putShort((short) text.length()).put(chars)
+                .put((byte) 0x22).put((byte) 2).putShort((short) 0x008A).array();
+    }
+
+    /** A cell record whose declared formula SIZE far exceeds the bytes actually present. */
+    private static byte[] lyingSizeRecord(int claimedSize) {
+        return java.nio.ByteBuffer.allocate(22)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(0).putInt(0).putDouble(0).putShort((short) 0)
+                .putInt(claimedSize).array();
     }
 
     /** BIFF12 record: varint type, varint length, payload. */
