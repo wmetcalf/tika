@@ -1,5 +1,5 @@
 {
-  "scanned_at": "2026-08-10T18:10:33.952831+00:00",
+  "scanned_at": "2026-08-11T03:05:09.017853+00:00",
   "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
@@ -6359,12 +6359,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFBExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFBExcelExtractorDecorator.java",
-          "line": 347
+          "line": 375
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 731
+          "line": 869
         },
         {
           "class": "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
@@ -7873,12 +7873,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFBExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFBExcelExtractorDecorator.java",
-          "line": 343
+          "line": 360
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 727
+          "line": 859
         }
       ]
     },
@@ -7887,7 +7887,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 717
+          "line": 835
         }
       ]
     },

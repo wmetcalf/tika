@@ -164,9 +164,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     private final int cfgFormulaMaxLen;
     private final int cfgFormulaTotalMaxChars;
     private final int cfgMacroTextMaxChars;
-    /** Output bounds for the XML IOC scan; 0 = the XLSB path's defaults. */
-    private final int cfgIocMaxEntries;
-    private final int cfgIocMaxChars;
     private final int cfgValueMaxLen;
     private final int cfgValueTotalMaxChars;
     private final int cfgValuesMaxEntries;
@@ -242,12 +239,6 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         this.cfgMacroTextMaxChars = positiveOr(
                 officeParserConfig == null ? 0 : officeParserConfig.getXlmMacroTextMaxChars(),
                 MAX_XLM_MACRO_TEXT_CHARS);
-        // Same two knobs the XLSB emulator already honours. The XML path ignored them, so its
-        // IOC output was unbounded -- see XlmXmlIocScanner.IocSink.
-        this.cfgIocMaxEntries = officeParserConfig == null
-                ? 0 : officeParserConfig.getXlmMaxIocEntries();
-        this.cfgIocMaxChars = officeParserConfig == null
-                ? 0 : officeParserConfig.getXlmMaxIocChars();
         this.cfgValueMaxLen = positiveOr(
                 officeParserConfig == null ? 0 : officeParserConfig.getXlmWorkbookValueMaxLen(),
                 WORKBOOK_VALUE_MAX_LEN);
@@ -725,19 +716,12 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         // Pattern-scan everything once we've seen all sheets. Cross-sheet
         // EXEC(Sheet1!A1) lookups resolve here.
-        // Scan ceiling tracks the effective CAPTURE cap: a formula we retained in full must be
-        // inspected in full, else raising xlmFormulaMaxLen for forensics silently narrows
-        // detection to the first 64 KB of each formula -- worse detection from the knob whose
-        // whole purpose is more.
-        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues,
-                Math.max(cfgFormulaMaxLen, XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN),
-                () -> markXlmCaptureLimit("XLM IOC scan input truncated: a formula exceeded "
-                        + "the scan ceiling, so IOCs in its tail were not extracted"),
-                cfgIocMaxEntries, cfgIocMaxChars,
-                () -> markXlmCaptureLimit("XLM IOC output limit reached: some indicators were "
-                        + "not emitted. EXEC(cellref) resolution amplifies a short formula into "
-                        + "a value-length indicator, so this bound is what stops a crafted "
-                        + "workbook exhausting heap after retention has already been capped."));
+        // NOTE: the IOC output budget, the scan-length coupling and the priority ordering live on
+        // branch xlm/ioc-budget-machinery, deliberately NOT here. They address a real theoretical
+        // DoS, but no document in the 3,084-document corpus reaches them, and they were the source
+        // of most of this work's regressions -- so they get their own review cycle rather than
+        // riding along with the evasion fixes, which the corpus does verify.
+        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues);
         if (!iocs.isEmpty()) {
             xhtml.startElement("div", "class", "xlm-iocs");
             xhtml.element("h2", "XLM Emulation");

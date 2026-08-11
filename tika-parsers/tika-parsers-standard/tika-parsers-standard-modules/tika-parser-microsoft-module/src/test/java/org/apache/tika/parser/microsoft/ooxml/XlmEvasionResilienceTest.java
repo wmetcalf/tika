@@ -406,39 +406,6 @@ class XlmEvasionResilienceTest {
 
     // ── 6. Raising the formula cap silently narrowed IOC scanning ────────────
 
-    /**
-     * The IOC scanner's per-formula ceiling was a hardcoded 64 KB, decoupled from the
-     * operator-settable capture cap. At the 16 KB default capture cap it is unreachable, which
-     * is why it looked harmless -- but an operator raising the capture cap to catch bigger
-     * payloads still had only the first 64 KB SCANNED, silently. The knob whose purpose is
-     * "see more" made detection strictly worse for exactly the payloads that motivated it.
-     */
-    @Test
-    void testScanCeilingTracksCaptureCapAndReportsTruncation() {
-        int scanCap = XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN;
-        // Payload past the DEFAULT scan ceiling; recoverable only if the ceiling was raised.
-        String formula = "=" + "A".repeat(scanCap + 64) + "&EXEC(\"" + PAYLOAD + "\")";
-        Map<String, String> formulas = Map.of("Macro1:1:1", formula);
-
-        int[] truncations = new int[1];
-        List<String> atDefault = XlmXmlIocScanner.scan(
-                formulas, Map.of(), scanCap, () -> truncations[0]++);
-        assertEquals(1, truncations[0],
-                "cutting the scan input must be REPORTED -- IOCs in the tail are simply "
-                        + "absent from the IOC list, invisible to every consumer of it");
-        assertTrue(atDefault.stream().noneMatch(s -> s.contains(PAYLOAD)),
-                "control: at the default ceiling the tail payload is genuinely missed, so "
-                        + "this fixture actually exercises the cap rather than passing "
-                        + "vacuously");
-
-        int[] noTruncation = new int[1];
-        List<String> raised = XlmXmlIocScanner.scan(
-                formulas, Map.of(), formula.length(), () -> noTruncation[0]++);
-        assertEquals(0, noTruncation[0], "nothing was cut, so nothing should be reported");
-        assertTrue(raised.stream().anyMatch(s -> s.contains(PAYLOAD)),
-                "with the ceiling raised to the capture cap the payload must be found; got: "
-                        + raised);
-    }
 
     // ── 7. Holes review found in the FIRST version of these fixes ────────────
 
@@ -642,43 +609,6 @@ class XlmEvasionResilienceTest {
 
     // ── 9. Residuals from the review, now fixed ──────────────────────────────
 
-    /**
-     * The XML IOC scan had NO output bound: the {@code xlmMaxIocEntries}/{@code xlmMaxIocChars}
-     * knobs were honoured only by the XLSB emulator. {@code EXEC(cellref)} resolution amplifies a
-     * short formula into a value-length indicator, so a workbook whose RETENTION stays inside
-     * every documented cap could still build gigabytes of IOC strings and OOM a triage worker.
-     * Bounding retention could never fix it -- the amplification happens after retention.
-     */
-    @Test
-    void testIocOutputIsBoundedAndTheBoundIsReported() {
-        // 400 formulas each resolving EXEC(A1) against a 1 KB cell value: ~400 KB of output from
-        // a few KB of input, before any per-entry cap applies.
-        Map<String, String> formulas = new java.util.LinkedHashMap<>();
-        for (int i = 1; i <= 400; i++) {
-            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(A1)");
-        }
-        Map<String, String> values = Map.of("Sheet1:1:A1", "X".repeat(1024));
-
-        int[] limited = new int[1];
-        List<String> bounded = XlmXmlIocScanner.scan(formulas, values,
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 50, 8192, () -> limited[0]++);
-
-        assertEquals(1, limited[0], "dropping indicators for want of budget must be REPORTED");
-        assertTrue(bounded.size() <= 50, "entry bound must hold; got " + bounded.size());
-        int chars = bounded.stream().mapToInt(String::length).sum();
-        assertTrue(chars <= 8192, "char bound must hold; got " + chars);
-        assertTrue(bounded.stream().anyMatch(s -> s.startsWith("EXEC:")),
-                "the bound must not empty the list -- indicators up to the cap still ship");
-
-        // Control: a generous bound must not report a limit, and must not silently drop.
-        int[] unlimited = new int[1];
-        List<String> full = XlmXmlIocScanner.scan(formulas, values,
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 0, 0, () -> unlimited[0]++);
-        assertEquals(0, unlimited[0], "a default bound this input fits must not report a limit");
-        assertTrue(full.size() > 50,
-                "control: with the default bound the same input yields more than the tight cap, "
-                        + "so the tight case above genuinely exercised the bound");
-    }
 
     /**
      * A duplicated {@code <c r="...">} used to let a benign decoy DELETE the payload from
@@ -1082,119 +1012,8 @@ class XlmEvasionResilienceTest {
                         + iocs);
     }
 
-    /**
-     * A REJECTED indicator must not be retained in the dedupe set. Adding to {@code seen} before
-     * knowing whether the sink accepted meant every distinct rejected entry stayed retained, and a
-     * rejection on the CHAR budget leaves both counters below their caps so scanning continued --
-     * measured, {@code seen} grew to 200,000 strings with {@code maxIocChars=1}. Bounding by
-     * ACCEPTANCE bounds it by {@code maxIocEntries}.
-     */
-    @Test
-    void testRejectedIndicatorsAreNotRetainedAndTheLimitIsReported() {
-        Map<String, String> formulas = Map.of("Macro1:1:A1", "=1+1");
-        Map<String, String> values = new java.util.LinkedHashMap<>();
-        for (int i = 0; i < 5000; i++) {
-            values.put("Sheet1:1:A" + i, "http://evil.example/" + i);
-        }
-        int[] limited = new int[1];
-        // maxIocChars=1: nothing can fit, so every candidate is rejected.
-        List<String> out = XlmXmlIocScanner.scan(formulas, values,
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1, () -> limited[0]++);
 
-        assertTrue(out.isEmpty(), "nothing fits a 1-char budget; got " + out.size());
-        assertEquals(1, limited[0],
-                "and dropping every indicator must be REPORTED -- a rejection on the char budget "
-                        + "leaves the counters below their caps, which used to read as not-full");
-    }
 
-    /**
-     * With a budget that nothing can fit, the scan must STOP instead of walking the whole corpus
-     * building candidates it will reject.
-     *
-     * <p>Measured by COUNTING VALUES VISITED, not by heap. A heap-delta version of this test was
-     * written first and was unreliable in a shared-JVM suite run (it passed in isolation and failed
-     * at 92 MB inside the full suite, because other tests' retained objects land in the same
-     * measurement). Counting iteration of the input map is exact and deterministic.
-     *
-     * <p>The defects it pins have no output-visible effect -- adding to the dedupe set before
-     * knowing whether the sink accepted, and an {@code isFull()} that ignored a char-budget refusal
-     * -- so an output-only assertion passes against both, verified by mutation.
-     */
-    @Test
-    void testAnUnfittableBudgetStopsScanningInsteadOfBuildingRejects() {
-        int n = 20_000;
-        final int[] visited = new int[1];
-        Map<String, String> backing = new java.util.LinkedHashMap<>();
-        for (int i = 0; i < n; i++) {
-            backing.put("Sheet1:1:A" + i, "http://evil.example/" + i);
-        }
-        // A view that counts how many values the scan actually pulls.
-        Map<String, String> counted = new java.util.AbstractMap<String, String>() {
-            @Override
-            public java.util.Set<Map.Entry<String, String>> entrySet() {
-                return backing.entrySet();
-            }
-
-            @Override
-            public java.util.Collection<String> values() {
-                java.util.List<String> out = new java.util.ArrayList<>();
-                for (String v : backing.values()) {
-                    out.add(v);
-                }
-                return new java.util.AbstractList<String>() {
-                    @Override
-                    public String get(int i) {
-                        return out.get(i);
-                    }
-
-                    @Override
-                    public int size() {
-                        return out.size();
-                    }
-
-                    @Override
-                    public java.util.Iterator<String> iterator() {
-                        java.util.Iterator<String> it = out.iterator();
-                        return new java.util.Iterator<String>() {
-                            @Override
-                            public boolean hasNext() {
-                                return it.hasNext();
-                            }
-
-                            @Override
-                            public String next() {
-                                visited[0]++;
-                                return it.next();
-                            }
-                        };
-                    }
-                };
-            }
-        };
-
-        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), counted,
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1, null);
-
-        assertTrue(out.isEmpty(), "nothing fits a 1-char budget; got " + out.size());
-        assertTrue(visited[0] < 100,
-                "the scan must stop once nothing can be accepted, not walk all " + n
-                        + " values building rejects; visited " + visited[0]);
-    }
-
-    /** Exactly filling the entry cap must still report the limit, not drop silently. */
-    @Test
-    void testFillingTheEntryCapExactlyStillReportsTheLimit() {
-        Map<String, String> formulas = new java.util.LinkedHashMap<>();
-        for (int i = 0; i < 50; i++) {
-            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(\"cmd" + i + "\")");
-        }
-        int[] limited = new int[1];
-        List<String> out = XlmXmlIocScanner.scan(formulas, Map.of(),
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 5, 1 << 20, () -> limited[0]++);
-
-        assertEquals(5, out.size(), "the entry cap holds");
-        assertEquals(1, limited[0], "and the drop is reported");
-    }
 
     /**
      * A one-character case change in {@code @r} must not bypass duplicate detection. The scanner
@@ -1218,49 +1037,7 @@ class XlmEvasionResilienceTest {
                 "and the payload must still resolve, not just the decoy; got: " + iocs);
     }
 
-    /**
-     * One cell packed with high-value matches must not consume the whole entry budget and starve a
-     * LATER cell's EXEC. The two passes separate CATEGORIES, not cells, and the emitters did not
-     * consult the sink -- measured, a cell with 6,000 {@code =EXEC("jN")} calls emitted j0..j4095
-     * and a second cell's real payload was never recovered. Fourth instance of this class.
-     */
-    @Test
-    void testOneCellCannotStarveAnotherCellsExec() {
-        StringBuilder packed = new StringBuilder("=");
-        for (int i = 0; i < 300; i++) {
-            packed.append("EXEC(\"j").append(i).append("\")&");
-        }
-        Map<String, String> formulas = new java.util.LinkedHashMap<>();
-        formulas.put("Macro1:1:A1", packed.toString());
-        formulas.put("Macro1:2:A2", "=EXEC(\"powershell -enc REALPAYLOAD\")");
 
-        // Entry budget smaller than the packed cell's match count, so pass 0 must not spend it all
-        // inside the first cell.
-        List<String> iocs = XlmXmlIocScanner.scan(formulas, Map.of(),
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 100, 1 << 20, null);
-
-        assertTrue(iocs.size() <= 100, "the entry budget still holds; got " + iocs.size());
-        assertTrue(iocs.stream().anyMatch(s -> s.contains("REALPAYLOAD")),
-                "the second cell's EXEC must not be starved by the first cell's volume; got "
-                        + iocs.size() + " entries, first=" + (iocs.isEmpty() ? "-" : iocs.get(0)));
-    }
-
-    /** Reporting a limit when nothing was dropped puts TRUNCATED_METADATA on a clean extraction. */
-    @Test
-    void testNoLimitIsReportedWhenNothingWasDropped() {
-        Map<String, String> values = new java.util.LinkedHashMap<>();
-        values.put("Sheet1:1:A1", "http://a.example/1");
-        values.put("Sheet1:1:A2", "http://a.example/2");
-
-        int[] limited = new int[1];
-        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
-                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 2, 1 << 20, () -> limited[0]++);
-
-        assertEquals(2, out.size(), "both indicators fit exactly");
-        assertEquals(0, limited[0],
-                "nothing was refused, so no shortfall may be reported -- `limited` must mean "
-                        + "REFUSED, not merely saturated");
-    }
 
     /**
      * A {@code <c>} opening inside an OPEN {@code <is>} must not discard the inline string.
