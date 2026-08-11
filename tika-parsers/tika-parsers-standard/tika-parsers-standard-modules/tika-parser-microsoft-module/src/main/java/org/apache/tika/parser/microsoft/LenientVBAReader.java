@@ -44,6 +44,7 @@ public final class LenientVBAReader {
 
     // MS-OVBA dir-stream record IDs we care about
     private static final int REC_MODULENAME        = 0x0019;
+    private static final int REC_MODULESTREAMNAME  = 0x001A;
     private static final int REC_MODULEOFFSET      = 0x0031;
     private static final int REC_MODULETERM        = 0x002B;
     private static final int REC_PROJECTCODEPAGE   = 0x0003;
@@ -53,16 +54,35 @@ public final class LenientVBAReader {
     static final int MAX_STREAM_BYTES = 10 * 1024 * 1024; // 10 MB default guard
 
     /**
-     * Per-document stream bound plus the signal that it fired.
+     * Default ceiling on the TOTAL macro source one document may yield. Chosen well above any
+     * real VBA project (the largest in a 52,920-document macro corpus is orders of magnitude
+     * below it) so it bounds bombs without touching real extraction.
+     */
+    static final long MAX_TOTAL_BYTES = 32L * 1024 * 1024;
+
+    /** Depth cap on the search for VBA storages; a crafted CFBF child tree can be cyclic. */
+    private static final int MAX_STORAGE_DEPTH = 32;
+    /** Cap on how many VBA storages one document may contribute. */
+    private static final int MAX_VBA_STORAGES = 64;
+
+    /**
+     * Per-stream AND per-document VBA size bounds, plus the signal that one fired.
      *
      * <p>Exists because every bound in this reader used to fail SILENTLY: an over-cap module
      * stream returned {@code null} and its entire source vanished, and the decompressor
      * {@code break}s mid-stream leaving a partial macro body. Either way the caller received
      * a short-but-plausible macro with no indication that evidence had been withheld -- the
      * same defect class as the XLM capture caps, on the VBA path.
+     *
+     * <p>The stream bound alone bounds nothing at document scope: a project may hold any number
+     * of modules, so N modules each just under the cap cost N times the cap. That is the same
+     * per-part-vs-per-document scope slip the XLM caps had. {@link #hasRoomFor}/{@link #charge}
+     * add the document-wide ceiling; charge EXACTLY what is retained, never what was read.
      */
     public static final class Bounds {
         private final int maxStreamBytes;
+        private final long maxTotalBytes;
+        private long retained;
         private boolean limitReached;
         private String limitDetail;
 
@@ -71,16 +91,44 @@ public final class LenientVBAReader {
         }
 
         public Bounds(int maxStreamBytes) {
+            this(maxStreamBytes, 0);
+        }
+
+        public Bounds(int maxStreamBytes, long maxTotalBytes) {
             this.maxStreamBytes = maxStreamBytes > 0 ? maxStreamBytes : MAX_STREAM_BYTES;
+            // The two knobs are independent and the TIGHTER one wins, as bounds should: a caller
+            // that asks for a 200 KB document total means it even though one stream may be 10 MB.
+            // (Clamping the total up to the stream cap instead silently ignored every requested
+            // total below 10 MB -- which made the document bound untestable and unusable.)
+            this.maxTotalBytes = maxTotalBytes > 0 ? maxTotalBytes : MAX_TOTAL_BYTES;
         }
 
         /** 0 / null config means the built-in default. */
         public static Bounds fromConfig(OfficeParserConfig config) {
-            return new Bounds(config == null ? 0 : config.getVbaMaxStreamBytes());
+            return new Bounds(config == null ? 0 : config.getVbaMaxStreamBytes(),
+                    config == null ? 0 : config.getVbaMaxTotalBytes());
         }
 
         int max() {
             return maxStreamBytes;
+        }
+
+        long totalMax() {
+            return maxTotalBytes;
+        }
+
+        /** Whether {@code len} more retained bytes still fit in the document budget. */
+        boolean hasRoomFor(long len) {
+            return retained + len <= maxTotalBytes;
+        }
+
+        /** Account for bytes actually KEPT. Must mirror {@link #hasRoomFor} exactly. */
+        void charge(long len) {
+            retained += len;
+        }
+
+        long retainedBytes() {
+            return retained;
         }
 
         void mark(String detail) {
@@ -113,16 +161,103 @@ public final class LenientVBAReader {
     /** As {@link #readMacros(POIFSFileSystem)}, but reports whether a bound fired. */
     public static Map<String, String> readMacros(POIFSFileSystem fs, Bounds bounds)
             throws IOException {
-        Map<String, String> viaTree = readMacros(fs.getRoot(), bounds);
-        if (!viaTree.isEmpty()) {
-            return viaTree;
+        // Both routes fill ONE map, so there is exactly one place a module is retained and
+        // charged against the document budget. Collecting into two maps and merging would
+        // charge twice for every module both routes reach.
+        Map<String, String> result = new LinkedHashMap<>();
+        collectFromTree(fs.getRoot(), bounds, result);
+        // The VBA storage may be ORPHANED — its OLE/CFBF directory entry deliberately unlinked
+        // from the directory tree (a malware anti-analysis trick) so POI's tree-walking readers
+        // can't see it, even though Excel and olevba still run the macro by enumerating ALL raw
+        // directory entries. Recover the same way: scan every property, then reuse the
+        // dir/module decompression.
+        //
+        // This used to run ONLY when the tree walk came back empty, which made it defeatable by
+        // a decoy: one tree-visible module -- an empty Sub is enough -- and the orphaned payload
+        // was never looked for. Always run it; retain() collapses what both routes reach.
+        collectFromOrphans(fs, bounds, result);
+        return result;
+    }
+
+    /**
+     * Record a module without letting a repeated name discard one. Keying results by module name
+     * alone made a second module of the same name silently replace the first -- and the one that
+     * loses is the one written second, which is where a payload goes. Identical bodies ARE
+     * collapsed: the tree walk and the orphan scan legitimately reach the same module twice.
+     */
+    private static boolean putUnique(Map<String, String> out, String name, String text) {
+        String key = (name == null || name.isEmpty()) ? "Module" : name;
+        // Walk this NAME'S family -- key, key#2, key#3 ... -- collapsing on an exact body match
+        // anywhere in it and otherwise taking the first free slot. Scanning the whole map's values
+        // instead (Map.containsValue) is O(modules x length) in String comparisons, so a document
+        // with many long modules sharing a long prefix turns the merge quadratic in the payload;
+        // comparing only against out.get(key) is too narrow and lets the orphan scan re-add the
+        // SECOND module of a duplicated name under a fresh #N (caught by
+        // LenientVBADirStreamTest#testDuplicateModuleNamesBothSurvive).
+        String candidate = key;
+        int n = 1;
+        while (true) {
+            String existing = out.get(candidate);
+            if (existing == null) {
+                out.put(candidate, text);
+                return true;
+            }
+            if (existing.equals(text)) {
+                return false; // same module reached by two routes
+            }
+            candidate = key + "#" + (++n);
         }
-        // Tree-walk found nothing. The VBA storage may be ORPHANED — its OLE/CFBF directory
-        // entry deliberately unlinked from the directory tree (a malware anti-analysis trick)
-        // so POI's tree-walking readers (incl. findVBADir above) can't see it, even though
-        // Excel and olevba still run the macro by enumerating ALL raw directory entries.
-        // Recover the same way: scan every property, then reuse the dir/module decompression.
-        return readMacrosFromOrphans(fs, bounds);
+    }
+
+    /**
+     * Retain one module against the document budget. Returns false when the budget is exhausted,
+     * meaning the caller must stop -- and it is marked, because stopping here drops whole modules.
+     *
+     * <p>Charges only what is actually STORED: a duplicate that {@link #putUnique} collapses costs
+     * nothing, so the accumulator always equals the bytes a consumer can see. Charging what was
+     * READ instead would let a repeated module exhaust the budget for the modules after it.
+     */
+    private static boolean retain(Map<String, String> out, String name, String text,
+                                  Bounds bounds) {
+        if (!bounds.hasRoomFor(text.length())) {
+            bounds.mark("VBA macro source reached the " + bounds.totalMax()
+                    + "-byte per-document bound; later modules were dropped");
+            return false;
+        }
+        if (putUnique(out, name, text)) {
+            bounds.charge(text.length());
+        }
+        return true;
+    }
+
+    /** One module as the dir stream describes it. */
+    private static final class ModuleRef {
+        /** MODULENAME (0x0019) — the label a human sees; used as the result key. */
+        final String displayName;
+        /** MODULESTREAMNAME (0x001A) — which OLE stream actually holds the source. */
+        final String streamName;
+        final int offset;
+
+        ModuleRef(String displayName, String streamName, int offset) {
+            this.displayName = displayName;
+            this.streamName = streamName;
+            this.offset = offset;
+        }
+
+        /** Names to try, in order, when locating this module's stream. */
+        String[] candidates() {
+            if (streamName == null) {
+                return new String[] {displayName};
+            }
+            if (displayName == null || displayName.equals(streamName)) {
+                return new String[] {streamName};
+            }
+            return new String[] {streamName, displayName};
+        }
+
+        String key() {
+            return displayName != null ? displayName : streamName;
+        }
     }
 
     /**
@@ -138,34 +273,59 @@ public final class LenientVBAReader {
 
     static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs, Bounds bounds) {
         Map<String, String> result = new LinkedHashMap<>();
+        collectFromOrphans(fs, bounds, result);
+        return result;
+    }
+
+    private static void collectFromOrphans(POIFSFileSystem fs, Bounds bounds,
+                                           Map<String, String> result) {
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
-        DocumentProperty dirProp = streams.get("dir"); // map is lower-cased; "dir" is already lc
-        if (dirProp == null) {
-            return result;
+        // EVERY dir stream, not just the first. Keying by name kept only one, so a document with a
+        // tree-visible VBA storage next to an orphaned one had the orphan's dir shadowed -- and
+        // the orphan is where the payload is put, that being the whole point of orphaning it.
+        for (DocumentProperty dirProp : dirPropsOf(fs, streams)) {
+            if (!collectFromOneOrphanDir(fs, dirProp, streams, bounds, result)) {
+                return; // document budget exhausted
+            }
         }
+    }
+
+    /** @return false when the document budget is exhausted and the caller must stop. */
+    private static boolean collectFromOneOrphanDir(POIFSFileSystem fs, DocumentProperty dirProp,
+                                                   Map<String, DocumentProperty> streams,
+                                                   Bounds bounds, Map<String, String> result) {
         try {
             byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
             if (dirRaw == null) {
-                return result;
+                return true;
             }
-            Map<String, Integer> moduleOffsets = parseDir(decompress(dirRaw, 0, bounds));
+            List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds));
             Charset charset = Charset.forName("windows-1252");
-            for (Map.Entry<String, Integer> e : moduleOffsets.entrySet()) {
+            for (ModuleRef ref : refs) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
                 // original-case module name as the result key.
-                DocumentProperty modProp = streams.get(e.getKey().toLowerCase(Locale.ROOT));
+                DocumentProperty modProp = null;
+                for (String candidate : ref.candidates()) {
+                    if (candidate == null) {
+                        continue;
+                    }
+                    modProp = streams.get(candidate.toLowerCase(Locale.ROOT));
+                    if (modProp != null) {
+                        break;
+                    }
+                }
                 if (modProp == null) {
                     continue;
                 }
                 try {
                     byte[] raw = readPropBytes(fs, modProp, bounds);
-                    int offset = e.getValue();
+                    int offset = ref.offset;
                     if (raw == null || offset < 3 || offset >= raw.length) {
                         continue;
                     }
                     String text = new String(decompress(raw, offset, bounds), charset);
-                    if (!text.isBlank()) {
-                        result.put(e.getKey(), text);
+                    if (!text.isBlank() && !retain(result, ref.key(), text, bounds)) {
+                        return false;
                     }
                 } catch (Exception ignore) {
                     // skip individual module failures
@@ -174,7 +334,29 @@ public final class LenientVBAReader {
         } catch (Exception ignore) {
             // dir stream unreadable / not actually a VBA dir
         }
-        return result;
+        return true;
+    }
+
+    /**
+     * Every raw property named {@code dir}, in property-table order. {@link #collectAllStreamProps}
+     * keeps one entry per name, which is right for module lookup but wrong for the dir stream: a
+     * document may carry several VBA projects, and the interesting one is the shadowed one.
+     */
+    private static List<DocumentProperty> dirPropsOf(POIFSFileSystem fs,
+                                                     Map<String, DocumentProperty> streams) {
+        List<DocumentProperty> out = new java.util.ArrayList<>();
+        for (DocumentProperty p : allStreamProps(fs)) {
+            if ("dir".equalsIgnoreCase(p.getName())) {
+                out.add(p);
+            }
+        }
+        if (out.isEmpty()) {
+            DocumentProperty single = streams.get("dir");
+            if (single != null) {
+                out.add(single);
+            }
+        }
+        return out;
     }
 
     /**
@@ -187,6 +369,18 @@ public final class LenientVBAReader {
      */
     private static Map<String, DocumentProperty> collectAllStreamProps(POIFSFileSystem fs) {
         Map<String, DocumentProperty> out = new LinkedHashMap<>();
+        for (DocumentProperty p : allStreamProps(fs)) {
+            // Key case-insensitively: OLE stream names are case-insensitive in MS Office,
+            // and malware case-mismatches the dir-stream module name vs the real entry name
+            // to evade case-sensitive readers (olevba matches case-insensitively too).
+            out.putIfAbsent(p.getName().toLowerCase(Locale.ROOT), p);
+        }
+        return out;
+    }
+
+    /** The raw property-table stream entries, in table order, duplicates included. */
+    private static List<DocumentProperty> allStreamProps(POIFSFileSystem fs) {
+        List<DocumentProperty> out = new java.util.ArrayList<>();
         try {
             Field ptField = POIFSFileSystem.class.getDeclaredField("_property_table");
             ptField.setAccessible(true);
@@ -209,10 +403,7 @@ public final class LenientVBAReader {
                 if (name == null || name.isEmpty() || !(p instanceof DocumentProperty)) {
                     continue;
                 }
-                // Key case-insensitively: OLE stream names are case-insensitive in MS Office,
-                // and malware case-mismatches the dir-stream module name vs the real entry name
-                // to evade case-sensitive readers (olevba matches case-insensitively too).
-                out.putIfAbsent(name.toLowerCase(Locale.ROOT), (DocumentProperty) p);
+                out.add((DocumentProperty) p);
             }
         } catch (Throwable t) {
             // POI internals not accessible (version drift / module restriction) — recovery off.
@@ -249,57 +440,197 @@ public final class LenientVBAReader {
         }
     }
 
+    // ── pre-flight projection ─────────────────────────────────────────────────
+
+    /**
+     * Upper bound on the bytes this project's module streams can decompress to, derived from
+     * MS-OVBA chunk headers alone -- no decompression, no allocation proportional to the output.
+     * Each chunk yields at most 4096 bytes (§2.4.1.1.3), so counting chunk headers bounds the
+     * total. Returns as soon as {@code ceiling} is passed, so a bomb costs a partial walk.
+     *
+     * <p>This exists so a caller can decide whether it is safe to run a reader that has NO size
+     * bound. POI's {@link org.apache.poi.poifs.macros.VBAMacroReader} decompresses every module
+     * into memory with an unbounded {@code IOUtils.toByteArray}; a small file whose modules
+     * decompress to hundreds of megabytes takes the worker's heap with it, and a bound applied
+     * after that read cannot prevent it. The projection has to happen first.
+     *
+     * <p>KNOWN RESIDUAL, stated rather than papered over: a module whose MODULEOFFSET is out of
+     * range is skipped here, because there is no container start to walk from. POI reacts to the
+     * same input by brute-force searching the stream for a decompressible offset, and that search
+     * is not covered by this projection. The exposure is therefore documents with a malformed
+     * MODULEOFFSET whose stream nonetheless decompresses hugely from some other offset. Failing
+     * closed on those would cost real recall (the bounded reader skips such modules entirely, so
+     * we would lose what POI recovers), so the trade is deliberate. See {@code VbaBudgetTest}.
+     *
+     * @return the projected byte count, or a value greater than {@code ceiling} as soon as the
+     *         walk passes it (the exact total above the ceiling is not computed)
+     */
+    public static long projectDecompressedBytes(POIFSFileSystem fs, long ceiling) {
+        long total = 0;
+        // The probe must be at least as permissive as the ceiling it is testing: with the default
+        // 10 MB per-stream cap it would refuse to read a larger dir stream, project 0, and clear
+        // POI to run unbounded on exactly the document the operator raised the cap for. Its marks
+        // are discarded -- a projection must never set a flag.
+        int probeStream = (int) Math.min(Integer.MAX_VALUE, Math.max(MAX_STREAM_BYTES, ceiling));
+        Bounds probe = new Bounds(probeStream, Long.MAX_VALUE / 4);
+        try {
+            for (DirectoryNode vbaDir : findVBADirs(fs.getRoot(), probe)) {
+                byte[] dirRaw = readStream(vbaDir, "dir", probe);
+                if (dirRaw == null) {
+                    continue;
+                }
+                for (ModuleRef ref : parseDir(decompress(dirRaw, 0, probe))) {
+                    DocumentEntry de = null;
+                    for (String candidate : ref.candidates()) {
+                        de = findEntry(vbaDir, candidate);
+                        if (de != null) {
+                            break;
+                        }
+                    }
+                    if (de == null || ref.offset < 3 || ref.offset >= de.getSize()) {
+                        continue;
+                    }
+                    total += projectStream(de, ref.offset, ceiling - total);
+                    if (total > ceiling) {
+                        return total;
+                    }
+                }
+            }
+        } catch (Exception | OutOfMemoryError e) {
+            // A project we cannot walk is one we cannot vouch for. Report it as over the
+            // ceiling rather than silently clearing an unbounded reader to run on it.
+            return ceiling + 1;
+        }
+        return total;
+    }
+
+    /**
+     * Walk one stream's chunk headers from {@code offset}, charging 4096 bytes per chunk. Reads
+     * 2 bytes per chunk and skips the rest, so the cost is O(chunks) with no large allocation.
+     */
+    private static long projectStream(DocumentEntry de, int offset, long remainingCeiling) {
+        long projected = 0;
+        try (DocumentInputStream dis = new DocumentInputStream(de)) {
+            if (skipFully(dis, offset) != offset) {
+                return 0;
+            }
+            int signature = dis.read();
+            if (signature < 0) {
+                return 0;
+            }
+            if (signature != 0x01) {
+                // Not a compressed container: decompress() returns every byte from `offset`
+                // onward, INCLUDING the one just read -- so this is size - offset, not one less.
+                // An upper bound that is short by even one byte is not an upper bound.
+                return Math.max(0, de.getSize() - offset);
+            }
+            byte[] header = new byte[2];
+            while (true) {
+                if (readFully(dis, header) < 2) {
+                    return projected;
+                }
+                int chunkHeader = (header[0] & 0xFF) | ((header[1] & 0xFF) << 8);
+                int chunkDataLen = (chunkHeader & 0x0FFF) + 1;
+                projected += 4096; // MS-OVBA: one chunk decompresses to at most 4096 bytes
+                if (projected > remainingCeiling) {
+                    return projected;
+                }
+                if (skipFully(dis, chunkDataLen) != chunkDataLen) {
+                    return projected;
+                }
+            }
+        } catch (Exception e) {
+            return projected;
+        }
+    }
+
+    private static long skipFully(DocumentInputStream dis, long n) throws IOException {
+        long skipped = 0;
+        while (skipped < n) {
+            long s = dis.skip(n - skipped);
+            if (s <= 0) {
+                break;
+            }
+            skipped += s;
+        }
+        return skipped;
+    }
+
+    private static int readFully(DocumentInputStream dis, byte[] buf) throws IOException {
+        int read = 0;
+        while (read < buf.length) {
+            int n = dis.read(buf, read, buf.length - read);
+            if (n < 0) {
+                break;
+            }
+            read += n;
+        }
+        return read;
+    }
+
     public static Map<String, String> readMacros(DirectoryNode root) throws IOException {
         return readMacros(root, new Bounds());
     }
 
     public static Map<String, String> readMacros(DirectoryNode root, Bounds bounds)
             throws IOException {
-        // Locate the VBA storage
-        DirectoryNode vbaDir = findVBADir(root);
-        if (vbaDir == null) {
-            return new LinkedHashMap<>();
-        }
+        Map<String, String> result = new LinkedHashMap<>();
+        collectFromTree(root, bounds, result);
+        return result;
+    }
 
-        // Decompress the dir stream
+    private static void collectFromTree(DirectoryNode root, Bounds bounds,
+                                        Map<String, String> result) throws IOException {
+        // EVERY VBA storage, not just the first. A project may legally hold more than one, and
+        // stopping at the first let a decoy storage placed where the reader looks first hide the
+        // real one -- POI reads them all, so stopping early lost macros POI would have found.
+        for (DirectoryNode vbaDir : findVBADirs(root, bounds)) {
+            if (!readOneStorage(vbaDir, bounds, result)) {
+                return; // document budget exhausted
+            }
+        }
+    }
+
+    /** @return false when the document budget is exhausted and the caller must stop. */
+    private static boolean readOneStorage(DirectoryNode vbaDir, Bounds bounds,
+                                          Map<String, String> result) throws IOException {
         byte[] dirRaw = readStream(vbaDir, "dir", bounds);
         if (dirRaw == null) {
-            return new LinkedHashMap<>();
+            return true;
         }
-        byte[] dirDecompressed = decompress(dirRaw, 0, bounds);
-
-        // Parse module names + offsets from dir stream
-        Map<String, Integer> moduleOffsets = parseDir(dirDecompressed);
-
-        // Decompress each module stream and return source text
-        Map<String, String> result = new LinkedHashMap<>();
+        List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds));
         Charset charset = Charset.forName("windows-1252");
-        for (Map.Entry<String, Integer> entry : moduleOffsets.entrySet()) {
-            String name = entry.getKey();
-            int offset = entry.getValue();
+        for (ModuleRef ref : refs) {
             try {
-                byte[] raw = readStream(vbaDir, name, bounds);
-                if (raw == null || offset < 3 || offset >= raw.length) {
+                byte[] raw = null;
+                for (String candidate : ref.candidates()) {
+                    raw = readStream(vbaDir, candidate, bounds);
+                    if (raw != null) {
+                        break;
+                    }
+                }
+                if (raw == null || ref.offset < 3 || ref.offset >= raw.length) {
                     continue;
                 }
-                byte[] src = decompress(raw, offset, bounds);
+                byte[] src = decompress(raw, ref.offset, bounds);
                 String text = new String(src, charset);
-                if (!text.isBlank()) {
-                    result.put(name, text);
+                if (!text.isBlank() && !retain(result, ref.key(), text, bounds)) {
+                    return false;
                 }
             } catch (Exception ignore) {
                 // skip individual module failures — don't abort the whole extraction
             }
         }
-        return result;
+        return true;
     }
 
     // ── dir stream parser ─────────────────────────────────────────────────────
 
-    private static Map<String, Integer> parseDir(byte[] dir) {
-        Map<String, Integer> modules = new LinkedHashMap<>();
+    private static List<ModuleRef> parseDir(byte[] dir) {
+        List<ModuleRef> modules = new java.util.ArrayList<>();
 
         String currentName = null;
+        String currentStreamName = null;
         int pos = 0;
 
         while (pos + 6 <= dir.length) {
@@ -324,15 +655,24 @@ public final class LenientVBAReader {
                     case REC_MODULENAME:
                         currentName = new String(recData, "windows-1252");
                         break;
+                    case REC_MODULESTREAMNAME:
+                        // MODULENAME is a LABEL; MODULESTREAMNAME (which used to be ignored
+                        // entirely) is what says which OLE stream holds the source. When an
+                        // author makes them differ, resolving by MODULENAME finds no stream and
+                        // the module's whole body is lost with no signal -- and POI, which reads
+                        // this record, finds the macro that we then report as absent.
+                        currentStreamName = new String(recData, "windows-1252");
+                        break;
                     case REC_MODULEOFFSET:
-                        if (currentName != null && recLen == 4) {
+                        if ((currentName != null || currentStreamName != null) && recLen == 4) {
                             int offset = (recData[0] & 0xFF) | ((recData[1] & 0xFF) << 8)
                                        | ((recData[2] & 0xFF) << 16) | ((recData[3] & 0xFF) << 24);
-                            modules.put(currentName, offset);
+                            modules.add(new ModuleRef(currentName, currentStreamName, offset));
                         }
                         break;
                     case REC_MODULETERM:
                         currentName = null;
+                        currentStreamName = null;
                         break;
                     default:
                         // skip unknown / reserved records leniently
@@ -374,6 +714,8 @@ public final class LenientVBAReader {
 
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         int i = startOffset + 1; // skip signature byte
+        // A skipped chunk is only evidence loss if real data followed it; see the signature check.
+        boolean sawBadSignature = false;
 
         while (i < compressed.length) {
             // CompressedChunkHeader: 2 bytes LE
@@ -385,19 +727,45 @@ public final class LenientVBAReader {
 
             boolean isCompressed = (chunkHeader & 0x8000) != 0;
             int signature = (chunkHeader >> 12) & 0x07;
-            int chunkSize = (chunkHeader & 0x0FFF) + 3;
+            // MS-OVBA §2.4.1.1.5: the stored CompressedChunkSize is the chunk's TOTAL length
+            // INCLUDING its own 2-byte header, minus 3. The data following the header is
+            // therefore field + 1 bytes -- which is what POI's RLEDecompressingInputStream
+            // reads. This used to compute field + 3, overshooting every chunk by 2 bytes; the
+            // next read then started 2 bytes past the following chunk header, failed the
+            // signature check below, and abandoned the remainder of the stream. Any VBA module
+            // needing more than one chunk (more than ~4 KB of source) was silently truncated
+            // to its first chunk, on the two paths that exist precisely FOR malware:
+            // POI-rejecting projects and orphaned VBA storages.
+            int chunkDataLen = (chunkHeader & 0x0FFF) + 1;
 
             if (signature != 0b011) {
-                // Unexpected signature — skip this chunk safely
-                i += Math.min(chunkSize, compressed.length - i);
+                // A chunk we cannot interpret. POI throws here; being lenient and skipping it is
+                // the right call for triage, but the skipped bytes may have held macro source, and
+                // dropping that silently is the same evidence loss as truncating.
+                //
+                // Do NOT report it yet, though: a module stream commonly carries slack after its
+                // last chunk, and reading that slack as a chunk header fails this check with
+                // nothing withheld. Measured on a 6,574-document macro corpus, marking here
+                // unconditionally flagged ~1.3% of real documents. Remember it instead and report
+                // only if a LATER chunk decodes -- which proves we were inside real data rather
+                // than past the end of it.
+                sawBadSignature = true;
+                i += Math.min(chunkDataLen, compressed.length - i);
                 continue;
             }
+            if (sawBadSignature) {
+                bounds.mark("VBA chunk header had an invalid signature mid-stream; up to 4096 "
+                        + "bytes of macro source were skipped");
+                sawBadSignature = false;
+            }
 
-            int chunkEnd = Math.min(i + chunkSize, compressed.length);
+            int chunkEnd = Math.min(i + chunkDataLen, compressed.length);
 
             if (!isCompressed) {
-                // Raw chunk: exactly 4096 bytes
-                int rawLen = Math.min(4096, compressed.length - i);
+                // Raw chunk: the header declares its length (4096 for a well-formed chunk).
+                // Honour the declared length rather than assuming 4096, so a short final
+                // chunk stays aligned with the next header instead of over-reading into it.
+                int rawLen = Math.min(chunkDataLen, compressed.length - i);
                 out.write(compressed, i, rawLen);
                 i += rawLen;
             } else {
@@ -451,9 +819,16 @@ public final class LenientVBAReader {
             }
 
             if (out.size() > bounds.max()) {
-                // Cutting here leaves a PARTIAL macro body that still reads as complete.
-                bounds.mark("VBA decompressed stream exceeded the size bound "
-                        + "and was truncated");
+                // Cutting here leaves a PARTIAL macro body that still reads as complete -- but
+                // only if there was in fact more to read. When the last chunk is what pushed the
+                // total past the bound, nothing is being withheld and the flag would be a false
+                // positive, which is exactly as harmful as a missing one: a truncation flag on
+                // clean documents is indistinguishable from noise, and an analyst learns to
+                // ignore it. Check for remaining input before claiming loss.
+                if (i < compressed.length) {
+                    bounds.mark("VBA decompressed stream exceeded the size bound "
+                            + "and was truncated");
+                }
                 break;
             }
         }
@@ -462,21 +837,55 @@ public final class LenientVBAReader {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    private static DirectoryNode findVBADir(DirectoryNode root) {
-        try {
-            return (DirectoryNode) root.getEntry("VBA");
-        } catch (Exception ignore) {
-            // not at root level — fall through to nested search
+    /**
+     * Every VBA storage in the tree, at any depth. OOXML {@code vbaProject.bin} has one at root
+     * level; OLE2 nests it under {@code Macros} / {@code _VBA_PROJECT_CUR}; a document may hold
+     * several. Mirrors POI's {@code findMacros} traversal (which does not recurse INTO a VBA
+     * storage), with a depth cap because a crafted CFBF child tree can be cyclic and a count cap
+     * so one document cannot enumerate unboundedly. Either cap firing is reported.
+     */
+    private static List<DirectoryNode> findVBADirs(DirectoryNode root, Bounds bounds) {
+        List<DirectoryNode> out = new java.util.ArrayList<>();
+        collectVBADirs(root, out, 0, bounds);
+        return out;
+    }
+
+    private static void collectVBADirs(DirectoryNode node, List<DirectoryNode> out, int depth,
+                                       Bounds bounds) {
+        if (out.size() >= MAX_VBA_STORAGES) {
+            bounds.mark("VBA storage count exceeded " + MAX_VBA_STORAGES
+                    + "; later storages were not read");
+            return;
         }
-        // OOXML vbaProject.bin has VBA at root level; OLE2 has it nested
-        for (org.apache.poi.poifs.filesystem.Entry e : root) {
+        if ("VBA".equalsIgnoreCase(node.getName())) {
+            out.add(node);
+            return;
+        }
+        if (depth >= MAX_STORAGE_DEPTH) {
+            bounds.mark("VBA storage search stopped at depth " + MAX_STORAGE_DEPTH);
+            return;
+        }
+        for (org.apache.poi.poifs.filesystem.Entry e : node) {
             if (e instanceof DirectoryNode) {
-                DirectoryNode sub = (DirectoryNode) e;
-                try {
-                    return (DirectoryNode) sub.getEntry("VBA");
-                } catch (Exception ignore) {
-                    // not in this subdirectory
-                }
+                collectVBADirs((DirectoryNode) e, out, depth + 1, bounds);
+            }
+        }
+    }
+
+    /**
+     * Resolve a stream by name, case-INSENSITIVELY. OLE storage names are case-insensitive in
+     * Office and olevba matches them that way, so a one-character case difference between the
+     * dir stream's module name and the real entry name must not hide a module.
+     */
+    private static DocumentEntry findEntry(DirectoryNode dir, String name) {
+        try {
+            return (DocumentEntry) dir.getEntry(name);
+        } catch (Exception ignore) {
+            // fall through to a case-insensitive scan
+        }
+        for (org.apache.poi.poifs.filesystem.Entry e : dir) {
+            if (e instanceof DocumentEntry && e.getName().equalsIgnoreCase(name)) {
+                return (DocumentEntry) e;
             }
         }
         return null;
@@ -484,7 +893,10 @@ public final class LenientVBAReader {
 
     private static byte[] readStream(DirectoryNode dir, String name, Bounds bounds) {
         try {
-            DocumentEntry de = (DocumentEntry) dir.getEntry(name);
+            DocumentEntry de = findEntry(dir, name);
+            if (de == null) {
+                return null;
+            }
             if (de.getSize() > bounds.max()) {
                 bounds.mark("VBA stream '" + name
                         + "' exceeded the size bound and was dropped");

@@ -148,15 +148,53 @@ public class OfficeParser extends AbstractOfficeParser {
                                      ParseContext context, Metadata parentMetadata)
             throws IOException, SAXException, TikaException {
 
-        VBAMacroReader reader = null;
-        Map<String, String> macros = null;
-        // Shared across BOTH lenient-reader attempts below so a bound that fires in either
-        // one is reported once on the parent metadata.
+        // Shared across every reader attempt below so a bound that fires in any one of them is
+        // reported once on the parent metadata -- from a finally, so no exit path can skip it.
         LenientVBAReader.Bounds vbaBounds = LenientVBAReader.Bounds.fromConfig(
                 context.get(OfficeParserConfig.class));
         try {
-            reader = new VBAMacroReader(fs);
-            macros = reader.readMacros();
+            extractMacrosBounded(fs, xhtml, embeddedDocumentExtractor, context, vbaBounds);
+        } finally {
+            reportVbaBounds(vbaBounds, parentMetadata);
+        }
+    }
+
+    private static void extractMacrosBounded(POIFSFileSystem fs, ContentHandler xhtml,
+                                             EmbeddedDocumentExtractor embeddedDocumentExtractor,
+                                             ParseContext context,
+                                             LenientVBAReader.Bounds vbaBounds)
+            throws IOException, SAXException, TikaException {
+
+        VBAMacroReader reader = null;
+        Map<String, String> macros = null;
+
+        // POI's VBAMacroReader honours NO size bound: it decompresses every module into memory
+        // with an unbounded IOUtils.toByteArray. So the VBA bounds, which only the lenient reader
+        // below consults, did not constrain the PRIMARY path at all -- a small file whose modules
+        // decompress to hundreds of megabytes took the worker's heap with it, and no bound applied
+        // after that read could have prevented it. Project the decompressed size from chunk
+        // headers FIRST, and when the projection clears the document budget POI cannot exceed it.
+        long projected = LenientVBAReader.projectDecompressedBytes(fs, vbaBounds.totalMax());
+        boolean overBudget = projected > vbaBounds.totalMax();
+        if (overBudget) {
+            // Deliberately NOT marked here: the projection is an upper bound, so a redirect is
+            // not by itself evidence that anything was withheld. The bounded reader marks if it
+            // actually drops or truncates, and the empty case is marked below.
+            try {
+                macros = LenientVBAReader.readMacros(fs, vbaBounds);
+            } catch (Exception | OutOfMemoryError ignore) {
+                macros = null;
+            }
+            if (macros == null || macros.isEmpty()) {
+                vbaBounds.mark("VBA project projected to decompress to more than "
+                        + vbaBounds.totalMax() + " bytes; the bounded reader recovered no macros");
+            }
+        }
+        try {
+            if (!overBudget) {
+                reader = new VBAMacroReader(fs);
+                macros = reader.readMacros();
+            }
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
@@ -179,9 +217,7 @@ public class OfficeParser extends AbstractOfficeParser {
                             //pass in space character so that we don't trigger a zero-byte exception
                             TikaInputStream.get(new byte[]{'\u0020'}), xhtml, m, context, true);
                 }
-                // Report BEFORE returning: this is the path a fired bound actually takes.
-                reportVbaBounds(vbaBounds, parentMetadata);
-                return;
+                return; // the caller's finally reports the bound on this path too
             }
         }
         // Orphaned VBA storage returns empty WITHOUT throwing (its OLE directory entry was
@@ -189,7 +225,9 @@ public class OfficeParser extends AbstractOfficeParser {
         // Try the lenient reader's olevba-style all-entry / orphan recovery before concluding
         // there are no macros. LenientVBAReader.readMacros(fs) does the tree-walk first, then
         // falls back to scanning every raw directory entry for the orphaned dir + module streams.
-        if (macros == null || macros.isEmpty()) {
+        // Skipped when the projection already sent us down the bounded reader: that call WAS the
+        // lenient read, and repeating it would re-charge the document budget it already spent.
+        if (!overBudget && (macros == null || macros.isEmpty())) {
             try {
                 Map<String, String> recovered =
                         LenientVBAReader.readMacros(fs, vbaBounds);
@@ -200,7 +238,6 @@ public class OfficeParser extends AbstractOfficeParser {
                 // recovery is best-effort
             }
         }
-        reportVbaBounds(vbaBounds, parentMetadata);
         if (macros == null) {
             return;
         }

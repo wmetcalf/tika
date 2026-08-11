@@ -70,6 +70,8 @@ public class OfficeParserConfig implements Serializable {
     private int xlmValueTotalMaxChars = 0;
     /** Max bytes in a single VBA project stream (raw or decompressed); 0 = built-in default. */
     private int vbaMaxStreamBytes = 0;
+    /** Max TOTAL VBA macro-source bytes per document, across all modules; 0 = default. */
+    private long vbaMaxTotalBytes = 0;
 
     private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
@@ -492,6 +494,22 @@ public class OfficeParserConfig implements Serializable {
      */
     public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
         this.vbaMaxStreamBytes = vbaMaxStreamBytes;
+    }
+
+    public long getVbaMaxTotalBytes() {
+        return vbaMaxTotalBytes;
+    }
+
+    /**
+     * Max TOTAL bytes of VBA macro source one document may yield, across every module and every
+     * VBA storage in it. The per-stream bound above says nothing at document scope: a project may
+     * hold any number of modules, so N modules each just under the stream cap cost N times the
+     * cap. This also decides whether POI's own VBA reader -- which has no size bound at all -- is
+     * allowed to run: a project projected to decompress past this ceiling is read by the bounded
+     * reader instead. 0 = built-in default ({@code 32 MB}).
+     */
+    public void setVbaMaxTotalBytes(long vbaMaxTotalBytes) {
+        this.vbaMaxTotalBytes = vbaMaxTotalBytes;
     }
 
     public int getXlmMaxFormulaRecordBytes() {
