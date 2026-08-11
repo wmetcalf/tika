@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.poi.poifs.filesystem.DirectoryNode;
 import org.apache.poi.poifs.filesystem.DocumentEntry;
@@ -64,6 +65,22 @@ public final class LenientVBAReader {
     private static final int MAX_STORAGE_DEPTH = 32;
     /** Cap on how many VBA storages one document may contribute. */
     private static final int MAX_VBA_STORAGES = 64;
+
+    /**
+     * Cap on how many modules one dir stream may describe.
+     *
+     * <p>Reading a document's module streams is QUADRATIC in the number of streams -- and that is
+     * POI's cost, not ours: reading N small streams straight through POI's own API, with no Tika
+     * code involved at all, measures 6 ms at N=1,024 and 742 ms at N=16,384. Each of the three
+     * passes over a project (the projection, the tree walk, the orphan scan) pays it, so an
+     * attacker-chosen module count is a CPU amplifier even though every stream stays tiny and the
+     * byte budget is never approached.
+     *
+     * <p>4,096 is ~9.5x the largest module count in a 6,574-document macro corpus (429; mean 9.2,
+     * nothing above 512), so it cannot touch real documents, while holding the quadratic to about
+     * 80 ms per pass. Firing it drops modules, so it is reported.
+     */
+    private static final int MAX_MODULE_REFS = 4096;
 
     /**
      * Per-stream AND per-document VBA size bounds, plus the signal that one fired.
@@ -164,7 +181,7 @@ public final class LenientVBAReader {
         // Both routes fill ONE map, so there is exactly one place a module is retained and
         // charged against the document budget. Collecting into two maps and merging would
         // charge twice for every module both routes reach.
-        Map<String, String> result = new LinkedHashMap<>();
+        ModuleSink result = new ModuleSink();
         collectFromTree(fs.getRoot(), bounds, result);
         // The VBA storage may be ORPHANED — its OLE/CFBF directory entry deliberately unlinked
         // from the directory tree (a malware anti-analysis trick) so POI's tree-walking readers
@@ -176,7 +193,7 @@ public final class LenientVBAReader {
         // a decoy: one tree-visible module -- an empty Sub is enough -- and the orphaned payload
         // was never looked for. Always run it; retain() collapses what both routes reach.
         collectFromOrphans(fs, bounds, result);
-        return result;
+        return result.out;
     }
 
     /**
@@ -185,28 +202,37 @@ public final class LenientVBAReader {
      * loses is the one written second, which is where a payload goes. Identical bodies ARE
      * collapsed: the tree walk and the orphan scan legitimately reach the same module twice.
      */
-    private static boolean putUnique(Map<String, String> out, String name, String text) {
+    private static boolean putUnique(ModuleSink sink, String name, String text) {
         String key = (name == null || name.isEmpty()) ? "Module" : name;
-        // Walk this NAME'S family -- key, key#2, key#3 ... -- collapsing on an exact body match
-        // anywhere in it and otherwise taking the first free slot. Scanning the whole map's values
-        // instead (Map.containsValue) is O(modules x length) in String comparisons, so a document
-        // with many long modules sharing a long prefix turns the merge quadratic in the payload;
-        // comparing only against out.get(key) is too narrow and lets the orphan scan re-add the
-        // SECOND module of a duplicated name under a fresh #N (caught by
-        // LenientVBADirStreamTest#testDuplicateModuleNamesBothSurvive).
-        String candidate = key;
-        int n = 1;
-        while (true) {
-            String existing = out.get(candidate);
-            if (existing == null) {
-                out.put(candidate, text);
-                return true;
-            }
-            if (existing.equals(text)) {
-                return false; // same module reached by two routes
-            }
-            candidate = key + "#" + (++n);
+        // Two things have to be true at once: a repeated name must NOT discard a module (the second
+        // one is where a payload goes), and the same module reached by both the tree walk and the
+        // orphan scan must NOT appear twice. So bodies are indexed per name in a hash set, and the
+        // suffix counter is remembered rather than rediscovered.
+        //
+        // The obvious implementations are both wrong. Map.containsValue scans every value in the
+        // document, O(modules x length) in String comparisons. Walking just this name's family --
+        // key, key#2, key#3 ... -- comparing bodies as it goes is quadratic in the number of
+        // SAME-NAMED modules: measured 14.8x the cost of the same 2,048 modules with distinct names
+        // (1084 ms vs 73 ms) on same-length bodies differing only at the end, which is the shape
+        // that denies String.equals its early exit. See VbaCostShapeTest.
+        Set<String> bodies = sink.bodiesByKey.computeIfAbsent(key, k -> new java.util.HashSet<>());
+        if (!bodies.add(text)) {
+            return false; // this exact body is already stored under this name
         }
+        int suffix = sink.nextSuffix.merge(key, 1, Integer::sum);
+        sink.out.put(suffix == 1 ? key : key + "#" + suffix, text);
+        return true;
+    }
+
+    /**
+     * The result map plus the bookkeeping that keeps {@link #putUnique} linear. One sink per
+     * document, shared by the tree walk and the orphan scan so a module both reach is retained --
+     * and charged -- exactly once.
+     */
+    private static final class ModuleSink {
+        final Map<String, String> out = new LinkedHashMap<>();
+        final Map<String, Set<String>> bodiesByKey = new java.util.HashMap<>();
+        final Map<String, Integer> nextSuffix = new java.util.HashMap<>();
     }
 
     /**
@@ -217,14 +243,14 @@ public final class LenientVBAReader {
      * nothing, so the accumulator always equals the bytes a consumer can see. Charging what was
      * READ instead would let a repeated module exhaust the budget for the modules after it.
      */
-    private static boolean retain(Map<String, String> out, String name, String text,
+    private static boolean retain(ModuleSink sink, String name, String text,
                                   Bounds bounds) {
         if (!bounds.hasRoomFor(text.length())) {
             bounds.mark("VBA macro source reached the " + bounds.totalMax()
                     + "-byte per-document bound; later modules were dropped");
             return false;
         }
-        if (putUnique(out, name, text)) {
+        if (putUnique(sink, name, text)) {
             bounds.charge(text.length());
         }
         return true;
@@ -272,13 +298,13 @@ public final class LenientVBAReader {
     }
 
     static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs, Bounds bounds) {
-        Map<String, String> result = new LinkedHashMap<>();
+        ModuleSink result = new ModuleSink();
         collectFromOrphans(fs, bounds, result);
-        return result;
+        return result.out;
     }
 
     private static void collectFromOrphans(POIFSFileSystem fs, Bounds bounds,
-                                           Map<String, String> result) {
+                                           ModuleSink result) {
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
         // EVERY dir stream, not just the first. Keying by name kept only one, so a document with a
         // tree-visible VBA storage next to an orphaned one had the orphan's dir shadowed -- and
@@ -293,13 +319,13 @@ public final class LenientVBAReader {
     /** @return false when the document budget is exhausted and the caller must stop. */
     private static boolean collectFromOneOrphanDir(POIFSFileSystem fs, DocumentProperty dirProp,
                                                    Map<String, DocumentProperty> streams,
-                                                   Bounds bounds, Map<String, String> result) {
+                                                   Bounds bounds, ModuleSink result) {
         try {
             byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
             if (dirRaw == null) {
                 return true;
             }
-            List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds));
+            List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds), bounds);
             Charset charset = Charset.forName("windows-1252");
             for (ModuleRef ref : refs) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
@@ -479,7 +505,7 @@ public final class LenientVBAReader {
                 if (dirRaw == null) {
                     continue;
                 }
-                for (ModuleRef ref : parseDir(decompress(dirRaw, 0, probe))) {
+                for (ModuleRef ref : parseDir(decompress(dirRaw, 0, probe), probe)) {
                     DocumentEntry de = null;
                     for (String candidate : ref.candidates()) {
                         de = findEntry(vbaDir, candidate);
@@ -574,13 +600,13 @@ public final class LenientVBAReader {
 
     public static Map<String, String> readMacros(DirectoryNode root, Bounds bounds)
             throws IOException {
-        Map<String, String> result = new LinkedHashMap<>();
+        ModuleSink result = new ModuleSink();
         collectFromTree(root, bounds, result);
-        return result;
+        return result.out;
     }
 
     private static void collectFromTree(DirectoryNode root, Bounds bounds,
-                                        Map<String, String> result) throws IOException {
+                                        ModuleSink result) throws IOException {
         // EVERY VBA storage, not just the first. A project may legally hold more than one, and
         // stopping at the first let a decoy storage placed where the reader looks first hide the
         // real one -- POI reads them all, so stopping early lost macros POI would have found.
@@ -593,12 +619,12 @@ public final class LenientVBAReader {
 
     /** @return false when the document budget is exhausted and the caller must stop. */
     private static boolean readOneStorage(DirectoryNode vbaDir, Bounds bounds,
-                                          Map<String, String> result) throws IOException {
+                                          ModuleSink result) throws IOException {
         byte[] dirRaw = readStream(vbaDir, "dir", bounds);
         if (dirRaw == null) {
             return true;
         }
-        List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds));
+        List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds), bounds);
         Charset charset = Charset.forName("windows-1252");
         for (ModuleRef ref : refs) {
             try {
@@ -626,7 +652,7 @@ public final class LenientVBAReader {
 
     // ── dir stream parser ─────────────────────────────────────────────────────
 
-    private static List<ModuleRef> parseDir(byte[] dir) {
+    private static List<ModuleRef> parseDir(byte[] dir, Bounds bounds) {
         List<ModuleRef> modules = new java.util.ArrayList<>();
 
         String currentName = null;
@@ -664,6 +690,11 @@ public final class LenientVBAReader {
                         currentStreamName = new String(recData, "windows-1252");
                         break;
                     case REC_MODULEOFFSET:
+                        if (modules.size() >= MAX_MODULE_REFS) {
+                            bounds.mark("the dir stream describes more than " + MAX_MODULE_REFS
+                                    + " modules; later ones were not read");
+                            return modules;
+                        }
                         if ((currentName != null || currentStreamName != null) && recLen == 4) {
                             int offset = (recData[0] & 0xFF) | ((recData[1] & 0xFF) << 8)
                                        | ((recData[2] & 0xFF) << 16) | ((recData[3] & 0xFF) << 24);

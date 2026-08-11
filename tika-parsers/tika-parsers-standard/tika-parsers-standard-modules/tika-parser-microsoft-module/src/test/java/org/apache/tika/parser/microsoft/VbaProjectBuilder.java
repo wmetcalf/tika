@@ -100,6 +100,61 @@ final class VbaProjectBuilder {
         return this;
     }
 
+    /**
+     * {@code count} modules that all share ONE MODULENAME but live in distinct streams, with
+     * bodies of IDENTICAL length that differ only in their last byte.
+     *
+     * <p>This is the adversarial shape for duplicate-name handling. Same-length bodies sharing a
+     * long prefix are the worst case for any comparison-based duplicate check: differing lengths or
+     * an early-differing byte let {@link String#equals} short-circuit, so a cost-shape test built
+     * from those would pass against a quadratic implementation.
+     */
+    VbaProjectBuilder sameNameDistinctStreams(String moduleName, int count, int bodyLen) {
+        for (int i = 0; i < count; i++) {
+            StringBuilder body = new StringBuilder(bodyLen);
+            for (int c = 0; c < bodyLen - 6; c++) {
+                body.append('A');
+            }
+            // Differ only at the very end, and keep every body the same length.
+            body.append(String.format("%06d", i));
+            module(moduleName, "s" + i, "s" + i, body.toString());
+        }
+        return this;
+    }
+
+    /** The control arm for {@link #sameNameDistinctStreams}: same shape, distinct names. */
+    VbaProjectBuilder distinctNamesDistinctStreams(int count, int bodyLen) {
+        for (int i = 0; i < count; i++) {
+            StringBuilder body = new StringBuilder(bodyLen);
+            for (int c = 0; c < bodyLen - 6; c++) {
+                body.append('A');
+            }
+            body.append(String.format("%06d", i));
+            module("Module" + i, "s" + i, "s" + i, body.toString());
+        }
+        return this;
+    }
+
+    /**
+     * {@code count} dir-stream module records that all point at ONE small stream.
+     *
+     * <p>The cheap shape of a module-count attack: the dir stream is a few tens of kilobytes of
+     * records and the document holds a single tiny module stream, yet a reader that trusts the
+     * record count does that many stream reads.
+     */
+    VbaProjectBuilder refsToOneStream(String moduleName, int count, String source) {
+        for (int i = 0; i < count; i++) {
+            Module m = new Module();
+            m.moduleName = moduleName + i;
+            m.streamName = "shared";
+            m.entryName = null;            // only the first ref creates the stream
+            m.container = compressedContainer(source.getBytes(StandardCharsets.ISO_8859_1));
+            modules.add(m);
+        }
+        modules.get(0).entryName = "shared";
+        return this;
+    }
+
     /** Nest the VBA storage one level down, as OLE2 (.doc/.xls) documents do. */
     VbaProjectBuilder nestedUnder(String parentStorage) {
         this.nestUnder = parentStorage;
@@ -115,6 +170,9 @@ final class VbaProjectBuilder {
             DirectoryNode vba = (DirectoryNode) parent.createDirectory(storageName);
             vba.createDocument("dir", new ByteArrayInputStream(dirStream()));
             for (Module m : modules) {
+                if (m.entryName == null) {
+                    continue; // a ref that deliberately shares another module's stream
+                }
                 ByteArrayOutputStream stream = new ByteArrayOutputStream();
                 for (int i = 0; i < MODULE_PREFIX_BYTES; i++) {
                     stream.write(0xAA); // performance cache; readers skip to MODULEOFFSET
