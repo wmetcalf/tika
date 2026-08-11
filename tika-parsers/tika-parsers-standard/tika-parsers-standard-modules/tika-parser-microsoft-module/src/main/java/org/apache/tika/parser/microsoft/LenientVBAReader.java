@@ -516,7 +516,7 @@ public final class LenientVBAReader {
                     if (de == null || ref.offset < 3 || ref.offset >= de.getSize()) {
                         continue;
                     }
-                    total += projectStream(de, ref.offset, ceiling - total);
+                    total += projectStream(de, ref.offset, ceiling - total, probe);
                     if (total > ceiling) {
                         return total;
                     }
@@ -531,67 +531,100 @@ public final class LenientVBAReader {
     }
 
     /**
-     * Walk one stream's chunk headers from {@code offset}, charging 4096 bytes per chunk. Reads
-     * 2 bytes per chunk and skips the rest, so the cost is O(chunks) with no large allocation.
+     * Cap on how many brute-force container starts one stream may contribute to the projection.
+     * Beyond it the projection fails closed rather than spending unbounded time enumerating.
      */
-    private static long projectStream(DocumentEntry de, int offset, long remainingCeiling) {
+    private static final int MAX_BRUTE_FORCE_CANDIDATES = 256;
+
+    /**
+     * Projected upper bound for one module stream, charging 4096 bytes per MS-OVBA chunk.
+     *
+     * <p>When the declared offset points at a compressed container this is a walk of that
+     * container's chunk headers. When it does NOT -- an in-range offset landing on a byte that is
+     * not 0x01 -- POI does something else entirely, and the projection has to model THAT or it is
+     * not an upper bound on what POI will do: {@code findCompressedStreamWBruteForce} scans every
+     * byte position for 0x01 followed by a valid chunk header and decompresses at each one with an
+     * unbounded {@code IOUtils.toByteArray}, keeping a single result but allocating all of them.
+     *
+     * <p>That gap was a measured BYPASS of the whole gate, not a theoretical one: a 399 KB document
+     * whose module offset lands on filler and whose stream carries 16 bomb containers projected at
+     * 393 KB -- comfortably inside the 32 MB budget -- and then produced 16,769,024 chars from POI.
+     * Summing the candidates closes it.
+     */
+    private static long projectStream(DocumentEntry de, int offset, long remainingCeiling,
+                                      Bounds probe) {
+        byte[] raw = readEntryBytes(de, probe);
+        if (raw == null) {
+            // Unreadable at the probe's own bound: we cannot vouch for it.
+            return remainingCeiling + 1;
+        }
+        if (offset < 0 || offset >= raw.length) {
+            return 0;
+        }
+        if ((raw[offset] & 0xFF) == 0x01) {
+            return projectContainer(raw, offset, remainingCeiling);
+        }
+        // decompress() returns every byte from `offset` onward when there is no container there,
+        // and POI additionally brute-forces. Charge both.
+        long total = raw.length - offset;
+        int candidates = 0;
+        for (int i = 0; i + 2 < raw.length; i++) {
+            if ((raw[i] & 0xFF) != 0x01) {
+                continue;
+            }
+            int w = (raw[i + 1] & 0xFF) | ((raw[i + 2] & 0xFF) << 8);
+            if (w <= 0 || (w & 0x7000) != 0x3000) {
+                continue; // same candidate test POI applies
+            }
+            if (++candidates > MAX_BRUTE_FORCE_CANDIDATES) {
+                return remainingCeiling + 1;
+            }
+            total += projectContainer(raw, i, remainingCeiling - total);
+            if (total > remainingCeiling) {
+                return total;
+            }
+        }
+        return total;
+    }
+
+    /** Chunk-header walk over {@code raw} from {@code start}; stops once past the ceiling. */
+    private static long projectContainer(byte[] raw, int start, long remainingCeiling) {
         long projected = 0;
-        try (DocumentInputStream dis = new DocumentInputStream(de)) {
-            if (skipFully(dis, offset) != offset) {
-                return 0;
+        int i = start + 1; // skip the container signature byte
+        while (i + 2 <= raw.length) {
+            int chunkHeader = (raw[i] & 0xFF) | ((raw[i + 1] & 0xFF) << 8);
+            i += 2;
+            projected += 4096; // MS-OVBA: one chunk decompresses to at most 4096 bytes
+            if (projected > remainingCeiling) {
+                return projected;
             }
-            int signature = dis.read();
-            if (signature < 0) {
-                return 0;
+            i += (chunkHeader & 0x0FFF) + 1;
+        }
+        return projected;
+    }
+
+    /** Read a document entry whole, refusing anything over the probe's per-stream bound. */
+    private static byte[] readEntryBytes(DocumentEntry de, Bounds probe) {
+        try {
+            int size = de.getSize();
+            if (size < 0 || size > probe.max()) {
+                return null;
             }
-            if (signature != 0x01) {
-                // Not a compressed container: decompress() returns every byte from `offset`
-                // onward, INCLUDING the one just read -- so this is size - offset, not one less.
-                // An upper bound that is short by even one byte is not an upper bound.
-                return Math.max(0, de.getSize() - offset);
-            }
-            byte[] header = new byte[2];
-            while (true) {
-                if (readFully(dis, header) < 2) {
-                    return projected;
+            byte[] data = new byte[size];
+            try (DocumentInputStream dis = new DocumentInputStream(de)) {
+                int read = 0;
+                while (read < data.length) {
+                    int n = dis.read(data, read, data.length - read);
+                    if (n < 0) {
+                        break;
+                    }
+                    read += n;
                 }
-                int chunkHeader = (header[0] & 0xFF) | ((header[1] & 0xFF) << 8);
-                int chunkDataLen = (chunkHeader & 0x0FFF) + 1;
-                projected += 4096; // MS-OVBA: one chunk decompresses to at most 4096 bytes
-                if (projected > remainingCeiling) {
-                    return projected;
-                }
-                if (skipFully(dis, chunkDataLen) != chunkDataLen) {
-                    return projected;
-                }
             }
+            return data;
         } catch (Exception e) {
-            return projected;
+            return null;
         }
-    }
-
-    private static long skipFully(DocumentInputStream dis, long n) throws IOException {
-        long skipped = 0;
-        while (skipped < n) {
-            long s = dis.skip(n - skipped);
-            if (s <= 0) {
-                break;
-            }
-            skipped += s;
-        }
-        return skipped;
-    }
-
-    private static int readFully(DocumentInputStream dis, byte[] buf) throws IOException {
-        int read = 0;
-        while (read < buf.length) {
-            int n = dis.read(buf, read, buf.length - read);
-            if (n < 0) {
-                break;
-            }
-            read += n;
-        }
-        return read;
     }
 
     public static Map<String, String> readMacros(DirectoryNode root) throws IOException {

@@ -172,6 +172,63 @@ public class VbaBudgetTest {
         }
     }
 
+    /**
+     * A module whose declared offset lands on a byte that is NOT a container signature sends POI
+     * down {@code findCompressedStreamWBruteForce}, which scans every byte position for 0x01
+     * followed by a valid chunk header and decompresses at each one with an unbounded
+     * {@code IOUtils.toByteArray}. A projection that only walks the declared offset does not bound
+     * that, and the gap was a measured bypass of the whole budget: this exact shape at 16 bombs
+     * projected at 393 KB, cleared the 32 MB budget, and then produced 16,769,024 chars from POI.
+     */
+    @Test
+    void testBruteForceCandidatesAreProjected() throws Exception {
+        long budget = 32L * 1024 * 1024;
+
+        byte[] loaded = offsetOnFillerWithBombs(16, 4096);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(loaded))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, budget);
+            assertTrue(projected > budget,
+                    "bomb containers reachable only by POI's brute-force search must count "
+                            + "towards the projection; got " + projected + " for a document whose "
+                            + "streams decompress to far more");
+        }
+        // The same shape is what POI would actually expand, so confirm the fixture is not a paper
+        // tiger: POI must really produce far more than the document's size.
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(loaded));
+             VBAMacroReader reader = new VBAMacroReader(fs)) {
+            assertTrue(totalChars(reader.readMacros()) > 4L * 1024 * 1024,
+                    "fixture sanity: POI must expand this document, else the test proves nothing");
+        }
+
+        // NEGATIVE CONTROL: a malformed offset with no bomb behind it must NOT be pushed over the
+        // ceiling. Charging every odd offset as if it were a bomb would redirect real documents.
+        byte[] harmless = offsetOnFillerWithBombs(1, 2);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(harmless))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, budget);
+            assertTrue(projected <= budget,
+                    "a malformed offset with nothing large behind it must still clear the "
+                            + "budget; got " + projected);
+        }
+    }
+
+    /**
+     * A project whose single module declares an offset landing on filler (not 0x01), with
+     * {@code copies} bomb containers further along the stream -- the shape that reaches POI's
+     * brute-force search.
+     */
+    private static byte[] offsetOnFillerWithBombs(int copies, int chunksEach) throws Exception {
+        ByteArrayOutputStream payload = new ByteArrayOutputStream();
+        for (int i = 0; i < 40; i++) {
+            payload.write(0xAA); // the declared offset lands here
+        }
+        byte[] bomb = VbaProjectBuilder.ratioBombContainer(chunksEach);
+        for (int c = 0; c < copies; c++) {
+            payload.write(bomb, 0, bomb.length);
+            payload.write(0xAA); // separator, so each container start is distinct
+        }
+        return new VbaProjectBuilder().rawModule("Module1", payload.toByteArray()).build();
+    }
+
     /** A project the projection cannot walk must be treated as over the ceiling, not under it. */
     @Test
     void testUnwalkableProjectFailsClosed() throws Exception {
