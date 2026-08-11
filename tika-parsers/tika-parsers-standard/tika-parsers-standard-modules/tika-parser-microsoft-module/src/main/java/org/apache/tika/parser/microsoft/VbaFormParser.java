@@ -96,35 +96,62 @@ public final class VbaFormParser {
     public static List<FormModuleResult> extractFormVariables(POIFSFileSystem fs) {
         List<FormModuleResult> results = new ArrayList<>();
         try {
-            collectFormDirs(fs.getRoot(), results);
+            for (DirectoryEntry formDir : findFormDirs(fs)) {
+                String name = formDir.getName();
+                try {
+                    results.add(new FormModuleResult(name, parseFormDir(formDir)));
+                } catch (Exception | OutOfMemoryError e) {
+                    LOG.fine("VbaFormParser: error parsing form '" + name + "': "
+                            + e.getMessage());
+                }
+            }
         } catch (Exception | OutOfMemoryError e) {
             LOG.fine("VbaFormParser: scan error: " + e.getMessage());
         }
         return results;
     }
 
-    /** Accumulates (formName, controls) from directories that contain an "f" stream. */
-    private static void collectFormDirs(DirectoryEntry dir, List<FormModuleResult> results) {
+    /**
+     * Every UserForm storage in {@code fs}: a directory holding an {@code f} (FormControl) stream
+     * and optionally an {@code o} (ObjectData) sibling.
+     *
+     * <p>Discovery is separate from parsing so it can be tested on its own -- crafting a valid
+     * MS-OFORMS {@code f} stream is a project of its own, and without this seam a traversal that
+     * never reaches a form is indistinguishable from a form that yields no controls.
+     */
+    static List<DirectoryEntry> findFormDirs(POIFSFileSystem fs) {
+        List<DirectoryEntry> out = new ArrayList<>();
+        collectFormDirs(fs.getRoot(), out, 0);
+        return out;
+    }
+
+    /** Depth cap: a crafted CFBF child tree can be cyclic. */
+    private static final int MAX_DIR_DEPTH = 32;
+
+    private static void collectFormDirs(DirectoryEntry dir, List<DirectoryEntry> out, int depth) {
+        if (depth >= MAX_DIR_DEPTH || out.size() >= MAX_SITES) {
+            return;
+        }
         for (Entry entry : dir) {
             if (!(entry instanceof DirectoryEntry)) continue;
             DirectoryEntry sub = (DirectoryEntry) entry;
-            // A UserForm directory has "f" (FormControl) and optionally "o" (ObjectDataStream).
-            // Skip "VBA" and "_VBA_PROJECT_CUR" — those are the source/compiled code storages.
             String name = sub.getName();
-            if ("VBA".equals(name) || "_VBA_PROJECT_CUR".equals(name)
-                    || "Macros".equals(name) || name.startsWith("")) {
+            // "VBA" holds module source, not forms, and a \x01-prefixed storage is a compiled
+            // artefact -- neither can be a UserForm, so neither is worth descending into.
+            if ("VBA".equals(name) || name.startsWith("\u0001")) {
                 continue;
             }
-            if (!sub.hasEntry("f")) {
-                collectFormDirs(sub, results); // recurse
-                continue;
+            // "Macros" and "_VBA_PROJECT_CUR" are CONTAINERS: in an OLE2 .doc/.xls the UserForm
+            // storages sit INSIDE them (Macros/UserForm1/{f,o}). They used to be skipped WITHOUT
+            // recursing, so OLE2 UserForms were never visited at all -- every control property
+            // hidden in one, the ControlTipText/Tag fields this class exists to read, was lost for
+            // the entire OLE2 half of the format family. Descend into them, but never treat one as
+            // a form storage itself.
+            boolean containerOnly = "Macros".equals(name) || "_VBA_PROJECT_CUR".equals(name);
+            if (!containerOnly && sub.hasEntry("f")) {
+                out.add(sub);
             }
-            try {
-                List<FormControl> controls = parseFormDir(sub);
-                results.add(new FormModuleResult(name, controls));
-            } catch (Exception | OutOfMemoryError e) {
-                LOG.fine("VbaFormParser: error parsing form '" + name + "': " + e.getMessage());
-            }
+            collectFormDirs(sub, out, depth + 1);
         }
     }
 
