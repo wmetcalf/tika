@@ -61,10 +61,23 @@ final class XlmXmlIocScanner {
     // Per-cell scan length cap: even with linear-time regex, a multi-MB formula
     // would still be measurable scan cost. 64 KB is far past any legitimate XLM
     // formula size while bounding pathological worst case.
-    private static final int MAX_FORMULA_SCAN_LEN = 64 * 1024;
+    //
+    // DEFAULT ONLY -- callers should pass the effective formula CAPTURE cap instead. This
+    // constant used to be the sole ceiling, decoupled from the operator-settable
+    // xlmFormulaMaxLen. At the 16 KB default capture cap it is unreachable, so it looked
+    // harmless; but an operator who raised xlmFormulaMaxLen to 1 MB for forensics still had
+    // only the first 64 KB of each formula SCANNED, silently. Raising the knob to see more
+    // therefore made detection strictly worse for the payloads that motivated raising it,
+    // with nothing in the output saying so.
+    static final int MAX_FORMULA_SCAN_LEN = 64 * 1024;
     // TIME_GATE IOC carries the formula text. Cap so a megabyte-long crafted
     // formula doesn't bloat the link-metadata index / extracted text.
     private static final int MAX_TIME_GATE_LEN = 4096;
+    /** High-value slots each cell is guaranteed in the fair pass before volume wins. */
+    /** Floor below which no indicator worth emitting can fit; see IocSink.isFull(). */
+    private static final int MIN_USEFUL_IOC_CHARS = 16;
+    /** Minimum high-value slots each cell is guaranteed; the quota scales up when there is room. */
+    private static final int MIN_HIGH_VALUE_PER_CELL = 8;
 
     // ── Patterns ─────────────────────────────────────────────────────────────
     // Function-name match is case-insensitive — XLM is itself case-insensitive
@@ -74,22 +87,30 @@ final class XlmXmlIocScanner {
     // flag doesn't help (it folds ＥＸＥＣ → ｅｘｅｃ, not to ASCII).
     private static final int CI = Pattern.CASE_INSENSITIVE;
 
+    // Quoted XLM string argument, doubled-quote escaped. Written as `[^"]*+(?:""[^"]*+)*` and NOT as
+    // `(?:[^"]|"")*`: the latter is an alternation inside a star, which java.util.regex implements by
+    // RECURSING once per iteration, so a long argument blows the stack. Measured -- a single
+    // =EXEC("<4000 chars>") raised StackOverflowError inside scan(), which is an Error and so escapes
+    // the parser's per-part recovery entirely. The possessive quantifiers also stop the engine
+    // exploring the exponential number of ways to split a run of non-quote characters. Same
+    // language, no recursion, no backtracking.
+
     private static final Pattern EXEC_STR = Pattern.compile(
-            "\\bEXEC\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bEXEC\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern EXEC_REF = Pattern.compile(
             "\\bEXEC\\(\\s*([A-Z][A-Z0-9_]*!)?(\\$?[A-Z]+\\$?\\d+)\\s*[,)]", CI);
     private static final Pattern EXECUTE_STR = Pattern.compile(
-            "\\bEXECUTE\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bEXECUTE\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern FOPEN = Pattern.compile(
-            "\\bFOPEN\\(\\s*\"((?:[^\"]|\"\")*)\"\\s*(?:,\\s*(\\d+))?", CI);
+            "\\bFOPEN\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"\\s*(?:,\\s*(\\d+))?", CI);
     private static final Pattern FWRITE = Pattern.compile(
-            "\\bFWRITE(?:LN)?\\(\\s*\\d+\\s*,\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bFWRITE(?:LN)?\\(\\s*\\d+\\s*,\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern CALL = Pattern.compile(
-            "\\bCALL\\(\\s*\"((?:[^\"]|\"\")*)\"\\s*,\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bCALL\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"\\s*,\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern ALERT = Pattern.compile(
-            "\\bALERT\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bALERT\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern REGISTER = Pattern.compile(
-            "\\bREGISTER\\(\\s*\"((?:[^\"]|\"\")*)\"", CI);
+            "\\bREGISTER\\(\\s*\"([^\"]*+(?:\"\"[^\"]*+)*)\"", CI);
     private static final Pattern GOTO_REF = Pattern.compile(
             "\\bGOTO\\(\\s*([A-Z][A-Z0-9_]*!)?(\\$?[A-Z]+\\$?\\d+)\\s*\\)", CI);
     private static final Pattern URL = Pattern.compile(
@@ -136,20 +157,137 @@ final class XlmXmlIocScanner {
      *                    Pass an empty map if none are available.
      */
     static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues) {
-        List<String> iocs = new ArrayList<>();
+        return scan(formulas, cellValues, MAX_FORMULA_SCAN_LEN, null, 0, 0, null);
+    }
+
+    static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues,
+                             int maxScanLen, Runnable onScanTruncated) {
+        return scan(formulas, cellValues, maxScanLen, onScanTruncated, 0, 0, null);
+    }
+
+    /**
+     * Bounded IOC accumulator.
+     *
+     * <p>The XML path had NO output bound of any kind: the {@code xlmMaxIocEntries} /
+     * {@code xlmMaxIocChars} knobs were wired only into the XLSB emulator. Every indicator was
+     * materialised into an unbounded list before the caller could emit any of it, and
+     * {@code EXEC(cellref)} resolution amplifies hard -- an 8-char {@code EXEC(A1)} match yields
+     * an IOC as long as the referenced cell value (up to {@code WORKBOOK_VALUE_MAX_LEN}), so a
+     * ~10 MB crafted workbook whose retention stays entirely within every documented cap could
+     * still build gigabytes of strings and OOM a triage worker. Bounding the OUTPUT is the fix;
+     * bounding retention never could be, because the amplification happens after retention.
+     */
+    private static final class IocSink {
+        private final List<String> out = new ArrayList<>();
+        final int maxEntries;
+        private final int maxChars;
+        private long chars;
+        private boolean limited;
+
+        IocSink(int maxEntries, int maxChars) {
+            this.maxEntries = maxEntries > 0
+                    ? maxEntries : XlmMacroEmulator.Limits.DEFAULT.maxIocEntries;
+            this.maxChars = maxChars > 0
+                    ? maxChars : XlmMacroEmulator.Limits.DEFAULT.maxIocChars;
+        }
+
+        /**
+         * @return false when the entry did not fit. Callers continue rather than break: a long
+         *         entry must not suppress the shorter, often higher-value ones behind it.
+         */
+        boolean add(String ioc) {
+            if (ioc == null) {
+                return false;
+            }
+            if (quotaSpent()) {
+                // NOT `limited`: this cell's share is spent for THIS pass, and a later pass picks
+                // the remainder up. Marking a shortfall here would report loss that has not
+                // happened yet.
+                return false;
+            }
+            if (out.size() >= maxEntries || chars + ioc.length() > maxChars) {
+                limited = true;
+                return false;
+            }
+            emittedThisCell++;
+            chars += ioc.length();
+            out.add(ioc);
+            return true;
+        }
+
+        boolean isLimited() {
+            return limited;
+        }
+
+        /**
+         * True once nothing further can be accepted. Lets callers STOP SCANNING rather than keep
+         * building strings the sink will refuse -- the difference between bounding emission and
+         * bounding allocation, and the whole point of this class.
+         */
+        /** Per-cell emission quota for the fair pass; 0 = unlimited. */
+        private int cellQuota;
+        private int emittedThisCell;
+
+        void startCell(int quota) {
+            cellQuota = quota;
+            emittedThisCell = 0;
+        }
+
+        /** True when this cell hit its quota, so a later pass must revisit it. */
+        boolean quotaWasSpent() {
+            return quotaSpent();
+        }
+
+        private boolean quotaSpent() {
+            return cellQuota > 0 && emittedThisCell >= cellQuota;
+        }
+
+        boolean isFull() {
+            // "Nothing more can fit", NOT "something was refused".
+            //
+            // Treating any refusal as full meant ONE oversized indicator stopped the scan and
+            // suppressed every shorter, often higher-value one behind it -- flagged independently by
+            // two reviewer families. But the opposite error is the OOM: add() refuses on the char
+            // bound WITHOUT advancing `chars`, so a plain `chars >= maxChars` test never becomes
+            // true and the walk continues forever. The resolution is a floor: once fewer than
+            // MIN_USEFUL_IOC_CHARS remain, no indicator worth emitting can fit, so stop. Above that
+            // floor, keep going -- a refused giant does not speak for the entries after it.
+            return out.size() >= maxEntries || (maxChars - chars) < MIN_USEFUL_IOC_CHARS;
+        }
+    }
+
+    /**
+     * @param maxScanLen       per-formula scan ceiling. Pass the EFFECTIVE formula capture cap
+     *                         so scanning tracks capture: a formula we bothered to retain in
+     *                         full must be inspected in full, or raising the capture knob
+     *                         silently degrades detection.
+     * @param onScanTruncated  invoked when a formula was too long to scan entirely. Truncating
+     *                         the scan input means IOCs may exist in the unscanned tail, so
+     *                         this must never be silent.
+     * @param maxIocEntries    output entry bound; 0 selects the same default the XLSB path uses.
+     * @param maxIocChars      output char bound; 0 selects the XLSB default.
+     * @param onIocLimit       invoked when any indicator was dropped for want of budget.
+     */
+    static List<String> scan(Map<String, String> formulas, Map<String, String> cellValues,
+                             int maxScanLen, Runnable onScanTruncated,
+                             int maxIocEntries, int maxIocChars, Runnable onIocLimit) {
+        int scanLen = maxScanLen > 0 ? maxScanLen : MAX_FORMULA_SCAN_LEN;
+        IocSink sink = new IocSink(maxIocEntries, maxIocChars);
+        List<String> iocs = sink.out;
         if (formulas == null || formulas.isEmpty()) return iocs;
         // Build a "{cellRef}" → value index so cellref-only lookups work
         // without sheet:row prefix when the formula is in the same workbook
         // (the most common dropper pattern). Also keep the fully-qualified
         // form for sheet-aware resolution when both are available.
-        // ALL distinct candidate values per cell ref, not one.
+        // ALL candidate values per cell ref, not one.
         //
-        // XlmXmlMacrosheetParser retains a duplicated cell ref under `A1#2`, `A1#3` keys so a decoy
-        // cannot delete a payload. Keying this index on the raw trailing segment made `A1#2` an
-        // entry no EXEC_REF match can ever name, so resolution became FIRST-occurrence-wins and a
-        // decoy placed BEFORE the payload won -- measured, A1="0" then A1="powershell -enc PAYLOAD"
-        // with =EXEC(A1) emitted only `EXEC: 0`. Strip the suffix and keep every DISTINCT candidate;
-        // we cannot know which one Excel would honour, and an analyst needs to see both.
+        // Duplicated cell refs are retained under distinct `A1#2`, `A1#3` keys so a decoy cannot
+        // delete a payload. But this index keyed on the RAW trailing segment, so `A1#2` indexed
+        // under "A1#2" and EXEC(A1) resolved only the unsuffixed entry: measured, A1="0" followed
+        // by A1="powershell -enc PAYLOAD" with B1==EXEC(A1) emitted ONLY `EXEC: 0`. The payload was
+        // retained somewhere the resolver never looked, so preserving it did nothing for detection.
+        // Strip the suffix and keep EVERY candidate -- we cannot know which one Excel would honour,
+        // and an analyst needs to see both.
         Map<String, List<String>> shortRef = new LinkedHashMap<>();
         if (cellValues != null) {
             for (Map.Entry<String, String> e : cellValues.entrySet()) {
@@ -163,6 +301,10 @@ final class XlmXmlIocScanner {
                     }
                     List<String> candidates =
                             shortRef.computeIfAbsent(ref, x -> new ArrayList<>());
+                    // Distinct values only. Two duplicate cells holding the SAME text are one
+                    // piece of evidence; emitting an indicator per occurrence just doubled
+                    // identical lines (measured +2 EXEC lines corpus-wide with no new distinct
+                    // indicator). Different values are all kept -- that is the point.
                     if (!candidates.contains(e.getValue())) {
                         candidates.add(e.getValue());
                     }
@@ -170,15 +312,77 @@ final class XlmXmlIocScanner {
             }
         }
 
+        // TWO PASSES over the formulas, high-value categories first.
+        //
+        // Priority ordering previously existed only WITHIN one formula (EXEC before URL), so a
+        // bulk emitter in an earlier-iterated cell could exhaust the whole entry budget before the
+        // cell holding EXEC was reached -- and `allFormulas` is a HashMap keyed on
+        // attacker-chosen sheet/row/ref, so the attacker picks which cell is scanned last.
+        // Measured: 47 KB of formulas across 4 cells, three packed with short URLs, one holding
+        // =EXEC("powershell -enc ..."), gave EXEC_recovered=0. That was the THIRD instance of the
+        // starvation defect the XLSB side already fixed twice by priority-ordering; the fix is the
+        // same one -- name what the macro DOES before the bulk it references.
+        // THREE passes. Pass 0 gives every cell a small QUOTA of high-value slots, so one cell
+        // packed with volume cannot spend the budget before other cells are looked at -- measured,
+        // a cell with 6,000 =EXEC("jN") calls emitted j0..j4095 and a second cell's real payload
+        // was never recovered even after the emitters learned to stop on a full sink, because the
+        // passes separate CATEGORIES, not cells. Pass 1 then takes the high-value remainder, and
+        // pass 2 the bulk. Breadth before depth, depth before volume.
+        // TWO passes: high-value across every cell, then bulk. The quota is ADAPTIVE -- each cell
+        // is guaranteed an equal share of the entry budget, never fewer than MIN_HIGH_VALUE_PER_CELL
+        // -- so with a handful of cells and a 4,096-entry budget the quota is thousands and nothing
+        // is deferred, while with 100,000 cells it is 8 and no single cell can starve the rest.
+        //
+        // A previous version used a FIXED quota plus a third "leftovers" pass, and that pass
+        // re-emitted everything the first had already emitted: measured on the corpus as EXEC
+        // 239 -> 478 and FOPEN 22 -> 44, exactly 2x, all duplicates. Restricting it to quota-spent
+        // cells only narrowed the duplication rather than removing it -- flagged by three
+        // independent reviewer families. An adaptive quota removes the need for the pass at all,
+        // which removes the defect by construction instead of by another guard.
+        // One slot per cell is the floor, NOT eight: with more cells than budget a floor of 8 let
+        // the first budget/8 cells consume everything, so only a twenty-fifth of the cells were
+        // represented. A floor of 1 spreads across as many distinct cells as the budget allows,
+        // which is the most fairness arithmetic permits. When there IS room the share scales up, so
+        // an ordinary document defers nothing.
+        int quotaShare = formulas.isEmpty()
+                ? MIN_HIGH_VALUE_PER_CELL
+                : Math.max(1, sink.maxEntries / formulas.size());
+        for (int pass = 0; pass < 2; pass++) {
+            boolean highValuePass = pass == 0;
+            // Report side-effects ONCE, on the first pass only: the later passes re-walk the
+            // same formulas, so reporting in each would double-count and spend a warning slot
+            // per pass.
+            boolean reportingPass = pass == 0;
+            int quota = highValuePass ? quotaShare : 0;
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
+            sink.startCell(quota);
+            if (sink.isFull()) {
+                // Something remains unprocessed, so indicators ARE being dropped: report it.
+                // (Contrast the post-loop case, where the input simply ended -- reporting there
+                // put TRUNCATED_METADATA on complete extractions.)
+                sink.limited = true;
+                // NOTE: do NOT set `limited` here. `limited` means "something was REFUSED", and
+                // add() sets it on every refusal. Setting it from a SATURATION test instead made
+                // onIocLimit fire on documents where nothing was dropped -- measured, two cell
+                // values and maxIocEntries=2 emitted both and still reported a shortfall, which
+                // put TRUNCATED_METADATA on a complete extraction. Breaking out when the sink is
+                // already full cannot itself lose anything that add() would not have refused.
+                break;
+            }
             String formula = entry.getValue();
             if (formula == null || formula.isEmpty()) continue;
-            if (formula.length() > MAX_FORMULA_SCAN_LEN) {
-                // Truncate the scan input for this cell. We still see most of the
-                // payload (legitimate XLM lines are tiny; only attacker-padded
-                // formulas exceed the cap), and the formula text was already
-                // emitted in full to the XHTML stream by XlmXmlMacrosheetParser.
-                formula = formula.substring(0, MAX_FORMULA_SCAN_LEN);
+            if (formula.length() > scanLen) {
+                // Truncate the scan input for this cell. The formula text was already
+                // emitted in full to the XHTML stream by XlmXmlMacrosheetParser, but any
+                // IOC living past this point will NOT be extracted -- and an IOC that was
+                // never extracted is invisible to everything downstream that consumes the
+                // IOC list rather than re-reading the formula. So report it.
+                formula = formula.substring(0, scanLen);
+                // Report ONCE: the second pass re-walks the same formulas, so reporting in both
+                // would double-count and, worse, spend a warning slot per pass.
+                if (reportingPass && onScanTruncated != null) {
+                    onScanTruncated.run();
+                }
             }
             // NFKC-normalize so fullwidth-letter obfuscation (ＥＸＥＣ → EXEC),
             // ligatures, and other compatibility variants collapse to the ASCII
@@ -188,44 +392,51 @@ final class XlmXmlIocScanner {
             // round-trip-lossy fold.
             formula = java.text.Normalizer.normalize(formula, java.text.Normalizer.Form.NFKC);
 
+            // HIGH-VALUE: what the macro DOES. Emitted for every cell before any bulk.
+            if (highValuePass) {
             // EXEC("cmd …")
-            addAll(iocs, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
+            addAll(sink, EXEC_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXECUTE("…") — used by Excel for DDE-style command exec
-            addAll(iocs, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
+            addAll(sink, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXEC(A1) — resolve through cellValues if known
-            for (Matcher m = EXEC_REF.matcher(formula); m.find(); ) {
+            for (Matcher m = EXEC_REF.matcher(formula); m.find() && !sink.isFull(); ) {
                 String ref = m.group(2).toUpperCase(java.util.Locale.ROOT);
                 List<String> candidates = shortRef.get(ref);
                 if (candidates == null || candidates.isEmpty()) {
-                    iocs.add("EXEC: <ref " + ref + ">");
+                    sink.add("EXEC: <ref " + ref + ">");
                 } else {
                     for (String resolved : candidates) {
-                        iocs.add("EXEC: " + unq(resolved));
+                        sink.add("EXEC: " + unq(resolved));
                     }
                 }
             }
+            // CALL("dll", "fn", …)
+            addAll(sink, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
+            // REGISTER("dll", ...) — DLL function binding
+            addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // FOPEN("path", mode)
-            for (Matcher m = FOPEN.matcher(formula); m.find(); ) {
+            for (Matcher m = FOPEN.matcher(formula); m.find() && !sink.isFull(); ) {
                 String path = unq(m.group(1));
                 String mode = m.group(2) != null ? m.group(2) : "?";
-                iocs.add("FOPEN: " + path + " (mode " + mode + ")");
+                sink.add("FOPEN: " + path + " (mode " + mode + ")");
             }
+            }
+            if (highValuePass) {
+                continue;
+            }
+            // BULK: volume, and only meaningful once the above are secured.
             // FWRITE / FWRITELN (numeric-handle form)
-            addAll(iocs, FWRITE.matcher(formula), m -> "FWRITE: " + unq(m.group(1)));
-            // CALL("dll", "fn", …)
-            addAll(iocs, CALL.matcher(formula), m -> "CALL: " + unq(m.group(1)) + "!" + unq(m.group(2)));
+            addAll(sink, FWRITE.matcher(formula), m -> "FWRITE: " + unq(m.group(1)));
             // ALERT("msg") — sometimes the only sign of a live macro
-            addAll(iocs, ALERT.matcher(formula), m -> "ALERT: " + unq(m.group(1)));
-            // REGISTER("dll", ...) — DLL function binding
-            addAll(iocs, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
+            addAll(sink, ALERT.matcher(formula), m -> "ALERT: " + unq(m.group(1)));
             // GOTO(A1) — control flow, useful for tracing macro layout
-            for (Matcher m = GOTO_REF.matcher(formula); m.find(); ) {
-                iocs.add("GOTO: " + m.group(2).toUpperCase(java.util.Locale.ROOT));
+            for (Matcher m = GOTO_REF.matcher(formula); m.find() && !sink.isFull(); ) {
+                sink.add("GOTO: " + m.group(2).toUpperCase(java.util.Locale.ROOT));
             }
             // Bare URLs anywhere in the formula text — catches obfuscations the
             // function-name matchers missed (e.g. URL concatenated from cell refs
             // but still embedded as a literal somewhere).
-            addAll(iocs, URL.matcher(formula), m -> "URL: " + m.group(0));
+            addAll(sink, URL.matcher(formula), m -> "URL: " + m.group(0));
             // Time-gated logic: flag formulas referencing volatile clock funcs.
             // De-duped via `seen` outside the loop would noise-up the IOC list,
             // so emit one TIME_GATE per cell rather than per match. Sanitize
@@ -233,8 +444,9 @@ final class XlmXmlIocScanner {
             // overrides, NUL, or be megabytes long; downstream metadata
             // consumers (JSON encoders, log aggregators) misbehave on those.
             if (TIME_GATE.matcher(formula).find()) {
-                iocs.add("TIME_GATE: " + sanitizeForIoc(formula));
+                sink.add("TIME_GATE: " + sanitizeForIoc(formula));
             }
+        }
         }
 
         // Also surface URL / IPv4 host / drop-path fragments that appear in
@@ -243,21 +455,44 @@ final class XlmXmlIocScanner {
         // statically reconstruct the joined URL without a formula evaluator
         // but the fragments themselves are forensically actionable.
         if (cellValues != null && !cellValues.isEmpty()) {
+            // Dedupe set bounded by the sink: once the sink is full we stop scanning entirely.
+            // Previously every URL/IPV4/DROP_PATH match across ALL cell values accumulated into an
+            // unbounded LinkedHashSet and was only offered to the sink AFTER the loop, so the
+            // bound applied to EMISSION but not to PEAK HEAP -- measured OOM at -Xmx256m from
+            // 31 MiB of legal cell values even with maxIocEntries=1, which defeated the entire
+            // purpose of this budget.
+            // Feed the sink DURING iteration and stop as soon as it is full.
+            //
+            // The previous version accumulated every URL/IPV4/DROP_PATH match across ALL cell
+            // values into an unbounded LinkedHashSet and only offered it to the sink AFTER the
+            // loop. That bounded EMISSION but not PEAK HEAP: measured OOM at -Xmx256m from 31 MiB
+            // of entirely legal cell values (200k entries, 1 KB each -- every documented cap
+            // respected) even with maxIocEntries=1, which defeated the whole purpose of this
+            // budget. The dedupe set is now bounded by the sink, because we stop scanning once
+            // the sink cannot accept anything further.
             java.util.Set<String> seen = new java.util.LinkedHashSet<>();
             for (String val : cellValues.values()) {
+                if (sink.isFull()) {
+                    sink.limited = true;
+                    break;
+                }
                 if (val == null || val.isEmpty()) continue;
                 Matcher m;
-                for (m = URL.matcher(val); m.find(); ) seen.add("URL: " + m.group(0));
-                // IP_HOST already requires 4 dotted octets in its main pattern,
-                // so every match is shape-valid by construction; no second-pass
-                // filter needed (the prior "skip 3-octet versions" check was
-                // tautological — the regex never produced 3-octet hits).
-                for (m = IP_HOST.matcher(val); m.find(); ) {
-                    seen.add("IPV4: " + m.group(0));
+                for (m = URL.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "URL: " + m.group(0));
                 }
-                for (m = DROP_PATH.matcher(val); m.find(); ) seen.add("DROP_PATH: " + m.group(0));
+                // IP_HOST already requires 4 dotted octets in its main pattern, so every match is
+                // shape-valid by construction; no second-pass filter needed.
+                for (m = IP_HOST.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "IPV4: " + m.group(0));
+                }
+                for (m = DROP_PATH.matcher(val); m.find() && !sink.isFull(); ) {
+                    emitOnce(sink, seen, "DROP_PATH: " + m.group(0));
+                }
             }
-            iocs.addAll(seen);
+        }
+        if (sink.isLimited() && onIocLimit != null) {
+            onIocLimit.run();
         }
         return iocs;
     }
@@ -316,8 +551,29 @@ final class XlmXmlIocScanner {
     @FunctionalInterface
     private interface Fmt { String apply(Matcher m); }
 
-    private static void addAll(List<String> sink, Matcher m, Fmt fmt) {
-        while (m.find()) {
+    /** Dedupe then emit. The set is bounded by the sink: scanning stops when it is full. */
+    private static void emitOnce(IocSink sink, java.util.Set<String> seen, String ioc) {
+        if (seen.contains(ioc)) {
+            return;
+        }
+        // Record ONLY what was accepted. Adding to `seen` first meant every distinct REJECTED
+        // entry stayed retained, and a rejection on the CHAR budget leaves out.size() and chars
+        // below their caps so isFull() stayed false and scanning continued -- measured, `seen`
+        // grew to 200,000 strings with maxIocChars=1, so the set still mirrored a whole document's
+        // value corpus. Bounding `seen` by ACCEPTANCE bounds it by maxIocEntries.
+        if (sink.add(ioc)) {
+            seen.add(ioc);
+        }
+    }
+
+    private static void addAll(IocSink sink, Matcher m, Fmt fmt) {
+        // Stop on a full sink. Without this, ONE cell packed with high-value matches consumed the
+        // whole entry budget inside pass 0 and later cells' EXEC never got a slot: measured, a cell
+        // with 6,000 =EXEC("jN") calls emitted j0..j4095 and a second cell's
+        // =EXEC("powershell -enc REALPAYLOAD") was never recovered. The two passes separate
+        // CATEGORIES, not cells, so the per-cell check at the top of the loop was not enough --
+        // fourth instance of this starvation class in this file.
+        while (m.find() && !sink.isFull()) {
             sink.add(fmt.apply(m));
         }
     }

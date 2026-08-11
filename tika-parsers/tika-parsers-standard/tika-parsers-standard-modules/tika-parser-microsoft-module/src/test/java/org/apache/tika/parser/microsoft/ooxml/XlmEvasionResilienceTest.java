@@ -1502,6 +1502,262 @@ class XlmEvasionResilienceTest {
         });
     }
 
+    // ── The IOC output budget, with all four gates applied ───────────────────
+
+    /** The scan ceiling must track the CAPTURE cap, and cutting the scan input must be reported. */
+    @Test
+    void testScanCeilingTracksCaptureCapAndReportsTruncation() {
+        int scanCap = XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN;
+        String formula = "=" + "A".repeat(scanCap + 64) + "&EXEC(\"" + PAYLOAD + "\")";
+        Map<String, String> formulas = Map.of("Macro1:1:1", formula);
+
+        int[] truncations = new int[1];
+        List<String> atDefault = XlmXmlIocScanner.scan(
+                formulas, Map.of(), scanCap, () -> truncations[0]++, 0, 0, null);
+        assertEquals(1, truncations[0], "cutting the scan input must be REPORTED");
+        assertTrue(atDefault.stream().noneMatch(x -> x.contains(PAYLOAD)),
+                "control: at the default ceiling the tail payload is genuinely missed, so this "
+                        + "fixture exercises the cap rather than passing vacuously");
+
+        int[] none = new int[1];
+        List<String> raised = XlmXmlIocScanner.scan(
+                formulas, Map.of(), formula.length(), () -> none[0]++, 0, 0, null);
+        assertEquals(0, none[0], "nothing was cut, so nothing may be reported");
+        assertTrue(raised.stream().anyMatch(x -> x.contains(PAYLOAD)),
+                "with the ceiling raised to the capture cap the payload must be found");
+    }
+
+    /** GATE 2 for this budget: emitted entries must never exceed either bound. */
+    @Test
+    void testIocOutputRespectsBothBoundsAndReportsTheDrop() {
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        for (int i = 1; i <= 400; i++) {
+            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(A1)");
+        }
+        Map<String, String> values = Map.of("Sheet1:1:A1", "X".repeat(1024));
+
+        int[] limited = new int[1];
+        List<String> bounded = XlmXmlIocScanner.scan(formulas, values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 50, 8192, () -> limited[0]++);
+        assertEquals(1, limited[0], "dropping indicators must be REPORTED");
+        assertTrue(bounded.size() <= 50, "entry bound holds; got " + bounded.size());
+        assertTrue(bounded.stream().mapToInt(String::length).sum() <= 8192, "char bound holds");
+        assertFalse(bounded.isEmpty(), "and the bound must not empty the list");
+    }
+
+    /**
+     * GATE 3 for this budget: the limit must NOT be reported when nothing was dropped. Reporting
+     * from a saturation test rather than a refusal put TRUNCATED_METADATA on complete extractions.
+     */
+    @Test
+    void testIocLimitIsNotReportedWhenNothingWasDropped() {
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        values.put("Sheet1:1:A1", "http://a.example/1");
+        values.put("Sheet1:1:A2", "http://a.example/2");
+        int[] limited = new int[1];
+        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 2, 1 << 20, () -> limited[0]++);
+        assertEquals(2, out.size(), "both fit exactly");
+        assertEquals(0, limited[0], "`limited` must mean REFUSED, not merely saturated");
+    }
+
+    /**
+     * One OVERSIZED indicator must not suppress the shorter ones behind it. Treating any refusal as
+     * "full" stopped the scan dead -- flagged independently by two reviewer families -- while the
+     * opposite error (never becoming full) was the OOM. The floor resolves both.
+     */
+    @Test
+    void testOneOversizedIndicatorDoesNotSuppressLaterSmallerOnes() {
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        formulas.put("Macro1:1:A1", "=EXEC(\"" + "G".repeat(4000) + "\")");
+        formulas.put("Macro1:2:A2", "=EXEC(\"" + PAYLOAD + "\")");
+
+        int[] limited = new int[1];
+        // Room for the short one but not the giant.
+        List<String> out = XlmXmlIocScanner.scan(formulas, Map.of(),
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 500, () -> limited[0]++);
+
+        assertTrue(out.stream().anyMatch(x -> x.contains(PAYLOAD)),
+                "the SHORT high-value indicator must survive a refused giant; got: " + out);
+        assertEquals(1, limited[0], "and the giant's refusal must still be reported");
+    }
+
+    /** Cross-cell fairness must hold at ANY cell count -- the quota is adaptive. */
+    @Test
+    void testHighValueIndicatorsAreFairAcrossCellsAtSeveralScales() {
+        for (int cells : new int[] {2, 50, 2000}) {
+            Map<String, String> formulas = new java.util.LinkedHashMap<>();
+            StringBuilder packed = new StringBuilder("=");
+            for (int i = 0; i < 400; i++) {
+                packed.append("EXEC(\"j").append(i).append("\")&");
+            }
+            formulas.put("Macro1:0:A0", packed.toString());
+            for (int c = 1; c < cells; c++) {
+                formulas.put("Macro1:" + c + ":A" + c, "=EXEC(\"tail" + c + "\")");
+            }
+            List<String> out = XlmXmlIocScanner.scan(formulas, Map.of(),
+                    XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 200, 1 << 20, null);
+            long distinctCells = out.stream().filter(x -> x.startsWith("EXEC: tail")).count();
+            if (cells <= 200) {
+                // Room for every cell: the last one must be present, not merely represented.
+                assertTrue(out.stream().anyMatch(x -> x.contains("tail" + (cells - 1))),
+                        "with " + cells + " cells and a 200-entry budget the LAST cell's EXEC must "
+                                + "survive the first cell's volume; got " + out.size());
+            } else {
+                // More cells than budget: no arithmetic can represent them all, so the property
+                // that matters is that the budget is SPREAD rather than spent inside one cell.
+                assertTrue(distinctCells >= 100,
+                        "with " + cells + " cells the budget must spread across many of them, not "
+                                + "be consumed by the packed first cell; only " + distinctCells
+                                + " tail cells represented out of " + out.size() + " entries");
+            }
+        }
+    }
+
+    /** No indicator may be emitted TWICE -- the duplication three reviewer families flagged. */
+    @Test
+    void testNoIndicatorIsEmittedTwice() {
+        Map<String, String> formulas = new java.util.LinkedHashMap<>();
+        // A cell whose high-value match count exceeds any per-cell quota, so the deferral path
+        // (which used to re-emit from the start) is exercised.
+        StringBuilder packed = new StringBuilder("=");
+        for (int i = 0; i < 50; i++) {
+            packed.append("EXEC(\"k").append(i).append("\")&");
+        }
+        formulas.put("Macro1:1:A1", packed.toString());
+        formulas.put("Macro1:2:A2", "=EXEC(\"other\")");
+
+        List<String> out = XlmXmlIocScanner.scan(formulas, Map.of(),
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null);
+        assertEquals(new java.util.HashSet<>(out).size(), out.size(),
+                "every indicator must appear at most once; duplicates: " + (out.size()
+                        - new java.util.HashSet<>(out).size()) + " of " + out.size());
+    }
+
+    /** GATE 1 for this budget: the value scan is the dimension where two OOMs lived. */
+    @Test
+    void testCellValueScanCostIsSubQuadratic() {
+        assertSubQuadratic("cell values scanned", 40000, n -> {
+            Map<String, String> values = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < n; i++) {
+                values.put("Sheet1:1:A" + i, "http://evil.example/" + i);
+            }
+            XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
+                    XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null);
+        });
+    }
+
+    /** And with a budget nothing can fit, the walk must STOP rather than build rejects. */
+    @Test
+    void testUnfittableBudgetStopsScanningTheValueCorpus() {
+        int n = 20_000;
+        final int[] visited = new int[1];
+        Map<String, String> backing = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            backing.put("Sheet1:1:A" + i, "http://evil.example/" + i);
+        }
+        Map<String, String> counted = new java.util.AbstractMap<String, String>() {
+            @Override
+            public java.util.Set<Map.Entry<String, String>> entrySet() {
+                return backing.entrySet();
+            }
+
+            @Override
+            public java.util.Collection<String> values() {
+                java.util.List<String> vals = new java.util.ArrayList<>(backing.values());
+                return new java.util.AbstractList<String>() {
+                    @Override
+                    public String get(int i) {
+                        return vals.get(i);
+                    }
+
+                    @Override
+                    public int size() {
+                        return vals.size();
+                    }
+
+                    @Override
+                    public java.util.Iterator<String> iterator() {
+                        java.util.Iterator<String> it = vals.iterator();
+                        return new java.util.Iterator<String>() {
+                            @Override
+                            public boolean hasNext() {
+                                return it.hasNext();
+                            }
+
+                            @Override
+                            public String next() {
+                                visited[0]++;
+                                return it.next();
+                            }
+                        };
+                    }
+                };
+            }
+        };
+
+        List<String> out = XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), counted,
+                XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 4, null);
+        assertTrue(out.isEmpty(), "nothing fits a 4-char budget; got " + out.size());
+        assertTrue(visited[0] < 100,
+                "the walk must stop, not build rejects for all " + n + " values; visited "
+                        + visited[0]);
+    }
+
+    /**
+     * A long quoted argument must not crash the scanner.
+     *
+     * <p>The quoted-argument patterns were written {@code (?:[^"]|"")*} -- an alternation inside a
+     * star, which java.util.regex implements by RECURSING once per iteration. Rewritten as
+     * {@code [^"]*+(?:""[^"]*+)*}: the same language, no recursion, and possessive so the engine
+     * does not explore the exponentially many ways to split a run of non-quote characters.
+     *
+     * <p>HONEST LIMIT: this test is NOT a reliable regression guard for the overflow, and mutation
+     * proved it -- restoring the recursive pattern leaves it GREEN, because surefire's forked JVM
+     * runs with more stack headroom than a default launcher. The defect is real and was measured
+     * deterministically at the regex level on the default stack:
+     * <pre>
+     *   recursive  len=1000 matched | 4000, 20000, 100000, 400000 -> StackOverflowError
+     *   possessive len=1000..400000 -> matched
+     * </pre>
+     * StackOverflowError is an Error, so in production it escapes the per-part recovery and takes
+     * the whole parse down. What this test DOES guard is that long arguments are still extracted;
+     * the equivalence test next to it guards that the rewrite matches the same language. The
+     * overflow itself is guarded by the measurement above being recorded, not by an assertion.
+     */
+    @Test
+    void testLongQuotedArgumentDoesNotOverflowTheStack() {
+        for (int len : new int[] {4_000, 64_000, 250_000}) {
+            String arg = "G".repeat(len);
+            List<String> iocs = XlmXmlIocScanner.scan(
+                    Map.of("Macro1:1:A1", "=EXEC(\"" + arg + "\")"), Map.of(),
+                    Integer.MAX_VALUE, null, 4096, Integer.MAX_VALUE, null);
+            assertTrue(iocs.stream().anyMatch(x -> x.startsWith("EXEC: G")),
+                    "a " + len + "-char argument must still be extracted; got " + iocs.size()
+                            + " indicators");
+        }
+    }
+
+    /** The rewritten patterns must match EXACTLY what the recursive form matched. */
+    @Test
+    void testQuotedArgumentPatternsStillMatchTheSameLanguage() {
+        String[][] cases = {
+            {"plain", "=EXEC(\"calc.exe\")", "EXEC: calc.exe"},
+            {"doubled quote", "=EXEC(\"say \"\"hi\"\"\")", "EXEC: say \"hi\""},
+            {"empty argument", "=EXEC(\"\")", "EXEC: "},
+            {"leading spaces", "=EXEC(   \"calc\")", "EXEC: calc"},
+            {"embedded parens", "=EXEC(\"cmd /c (dir)\")", "EXEC: cmd /c (dir)"},
+            {"call two args", "=CALL(\"urlmon\",\"URLDownloadToFileA\")",
+                "CALL: urlmon!URLDownloadToFileA"},
+        };
+        for (String[] c : cases) {
+            List<String> iocs = XlmXmlIocScanner.scan(
+                    Map.of("Macro1:1:A1", c[1]), Map.of());
+            assertTrue(iocs.contains(c[2]),
+                    c[0] + ": expected \"" + c[2] + "\" from " + c[1] + "; got " + iocs);
+        }
+    }
+
     // ── The settled retention semantics, in ONE place ────────────────────────
 
     /**
