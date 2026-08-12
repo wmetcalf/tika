@@ -229,25 +229,162 @@ public class VbaBudgetTest {
         return new VbaProjectBuilder().rawModule("Module1", payload.toByteArray()).build();
     }
 
-    /** A project the projection cannot walk must be treated as over the ceiling, not under it. */
+    /**
+     * A stream sitting in the VBA storage that the dir stream never DESCRIBES is still read by POI:
+     * {@code readModuleFromDocumentStream} finds no module entry for it, stores its RAW bytes, and
+     * {@code getContent()} hands them back as macro source. The projection walked only the refs
+     * parsed out of the dir stream, so it counted such a stream as ZERO -- and the gate's guarantee,
+     * that POI runs only when the projection clears the document budget, was then false.
+     *
+     * <p>Measured before the fix: a 41 MB document projected at 4,096 bytes, cleared the 32 MB
+     * budget, and POI returned 41,943,056 chars. Unlike the brute-force bypass this one is 1:1
+     * rather than amplified -- the input has to be as large as the output -- but the document
+     * ceiling is simply not applied, which is the one thing the gate exists to do.
+     */
     @Test
-    void testUnwalkableProjectFailsClosed() throws Exception {
-        byte[] garbage;
-        try (POIFSFileSystem fs = new POIFSFileSystem()) {
-            fs.getRoot().createDirectory("VBA")
-                    .createDocument("dir", new ByteArrayInputStream(new byte[] {0x01, 0x00}));
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            fs.writeFilesystem(bos);
-            garbage = bos.toByteArray();
+    void testStreamsAbsentFromTheDirStreamAreProjected() throws Exception {
+        byte[] base = new VbaProjectBuilder().module("Module1", "Sub S()\nEnd Sub\n").build();
+        byte[] filler = new byte[1024 * 1024];
+        java.util.Arrays.fill(filler, (byte) 'Q');
+        long budget = 32L * 1024 * 1024;
+
+        byte[] doc = withExtraVbaStreams(base, filler, "undesc", 40);
+        // Fixture validity: POI really does hand these back as macro source.
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc));
+             VBAMacroReader reader = new VBAMacroReader(fs)) {
+            assertTrue(totalChars(reader.readMacros()) > budget,
+                    "fixture sanity: POI must return more than the budget for this document");
         }
-        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(garbage))) {
-            // No modules are described, so the projection is 0 -- that is a genuine "nothing to
-            // decompress", not a failure, and POI is safe to run on it.
-            assertEquals(0, LenientVBAReader.projectDecompressedBytes(fs, 1024));
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, budget);
+            assertTrue(projected > budget,
+                    "streams POI reads but the dir stream never describes must count towards the "
+                            + "projection; got " + projected + " for a document POI expands past "
+                            + "the budget");
+        }
+
+        // NEGATIVE CONTROL: the streams POI deliberately SKIPS must not be charged, or a real
+        // project gets redirected by its own performance caches.
+        byte[] skipped = withExtraVbaStreams(base, filler, "__SRP_", 8);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(skipped))) {
+            assertTrue(LenientVBAReader.projectDecompressedBytes(fs, budget) <= budget,
+                    "__SRP_* is skipped by POI, so charging it would redirect ordinary documents");
         }
     }
 
-    // ── the document budget ─────────────────────────────────────────────────
+    /** Add {@code n} streams named {@code prefix}{@code i} to the project's VBA storage. */
+    private static byte[] withExtraVbaStreams(byte[] project, byte[] content, String prefix, int n)
+            throws Exception {
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            org.apache.poi.poifs.filesystem.DirectoryNode vba =
+                    (org.apache.poi.poifs.filesystem.DirectoryNode) fs.getRoot().getEntry("VBA");
+            for (int i = 0; i < n; i++) {
+                vba.createDocument(prefix + i, new ByteArrayInputStream(content));
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            fs.writeFilesystem(bos);
+            return bos.toByteArray();
+        }
+    }
+
+    /**
+     * When the projection's OWN caps truncate its walk it must fail closed, because POI has no
+     * counterpart to them.
+     *
+     * <p>{@code MAX_MODULE_REFS} was added to bound POI's per-stream quadratic, and the projection
+     * reuses the same {@code parseDir}. POI's {@code processDirStream} registers every MODULEOFFSET
+     * with no count limit, so a dir stream describing 4,096 trivial modules and then a bomb projects
+     * only the first 4,096 -- under the ceiling -- and clears POI to decompress the bomb. Measured by
+     * an external reviewer: ~18 MB projected against a 32 MB ceiling for a project whose last module
+     * expands to ~819 MB, OOM on a 512 MB heap. A cap on what we READ is a deliberate loss with a
+     * mark; a cap on what we PROJECT silently destroys the upper-bound property the gate depends on.
+     */
+    @Test
+    void testProjectionFailsClosedWhenItsOwnCapTruncatesTheWalk() throws Exception {
+        // 4,100 refs all pointing at one small stream, so the dir stream exceeds MAX_MODULE_REFS
+        // while the document stays tiny. The projection must refuse to vouch for it.
+        byte[] project = new VbaProjectBuilder()
+                .refsToOneStream("M", 4100, "Sub S()\n  Shell \"calc\"\nEnd Sub\n")
+                .build();
+        long budget = 32L * 1024 * 1024;
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, budget);
+            assertTrue(projected > budget,
+                    "a dir stream past MAX_MODULE_REFS cannot be projected, so the gate must fail "
+                            + "CLOSED rather than report the partial sum; got " + projected);
+        }
+
+        // NEGATIVE CONTROL: a dir stream comfortably under the cap must still be projected
+        // truthfully, or every ordinary document is routed away from POI.
+        byte[] ordinary = new VbaProjectBuilder()
+                .refsToOneStream("M", 100, "Sub S()\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(ordinary))) {
+            assertTrue(LenientVBAReader.projectDecompressedBytes(fs, budget) <= budget,
+                    "100 refs is far under the cap; this document must still clear the budget");
+        }
+    }
+
+    /**
+     * The projection's fail-closed paths, actually exercised.
+     *
+     * <p>The previous version of this test was named FailsClosed and asserted
+     * {@code assertEquals(0, ...)} on a fixture that parses cleanly to zero modules -- the OPPOSITE
+     * of the property, and all three fail-closed returns had zero coverage: mutating them to
+     * {@code return 0} left the whole suite green while clearing POI's unbounded reader on documents
+     * the projection could not vouch for. Two real fail-closed triggers are covered here.
+     */
+    @Test
+    void testProjectionFailsClosedOnWhatItCannotVouchFor() throws Exception {
+        long ceiling = 1024 * 1024;
+
+        // (a) More brute-force candidate container starts than we are willing to enumerate. Every
+        // 0x01 followed by a valid chunk header is a candidate, so a run of them trips the cap.
+        ByteArrayOutputStream payload = new ByteArrayOutputStream();
+        for (int i = 0; i < 40; i++) {
+            payload.write(0xAA); // the declared offset lands on filler, so POI brute-forces
+        }
+        for (int i = 0; i < LenientVBAReader.MAX_BRUTE_FORCE_CANDIDATES + 50; i++) {
+            payload.write(0x01);
+            payload.write(0x01);
+            payload.write(0x30); // header 0x3001: valid signature, 2 data bytes
+            payload.write(0x00);
+            payload.write(0x00);
+        }
+        byte[] manyCandidates =
+                new VbaProjectBuilder().rawModule("Module1", payload.toByteArray()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(manyCandidates))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, ceiling);
+            assertTrue(projected > ceiling,
+                    "more than MAX_BRUTE_FORCE_CANDIDATES container starts cannot be enumerated, so "
+                            + "the projection must fail CLOSED; got " + projected);
+        }
+
+        // (b) A dir stream we cannot parse at all must not read as "nothing to decompress".
+        byte[] unparsable;
+        try (POIFSFileSystem fs = new POIFSFileSystem()) {
+            org.apache.poi.poifs.filesystem.DirectoryNode vba =
+                    (org.apache.poi.poifs.filesystem.DirectoryNode) fs.getRoot()
+                            .createDirectory("VBA");
+            vba.createDocument("dir", new ByteArrayInputStream(new byte[] {0x01, 0x00}));
+            // A module stream POI will read (raw, since the dir describes nothing) -- so a
+            // projection of 0 would be a lie about what POI retains.
+            byte[] big = new byte[2 * 1024 * 1024];
+            java.util.Arrays.fill(big, (byte) 'Z');
+            vba.createDocument("Module1", new ByteArrayInputStream(big));
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            fs.writeFilesystem(bos);
+            unparsable = bos.toByteArray();
+        }
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(unparsable))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, ceiling);
+            assertTrue(projected > ceiling,
+                    "a document whose streams POI will read raw must be projected at their size, "
+                            + "not at zero; got " + projected);
+        }
+    }
+
+    // ── the document budget ─────    // ── the document budget ─────────────────────────────────────────────────
 
     @Test
     void testDocumentBudgetCapsTheTotalAcrossModules() throws Exception {
@@ -385,9 +522,18 @@ public class VbaBudgetTest {
         }
     }
 
-    /** A module with nothing indicator-like in it must not consume the reserve. */
+    /**
+     * A module that does not fit must yield SOMETHING -- indicator lines when it has them, a bounded
+     * prefix when it does not.
+     *
+     * <p>This test previously asserted the opposite (that a module with no indicator lines gets no
+     * reserve entry at all), and that rule turned the budget into a total-loss switch: a bomb carrier
+     * whose every module exceeds the budget and whose bodies contain no newline and no indicator
+     * yielded 21 characters in total. Withholding a module is exactly when the analyst most needs a
+     * fragment of it, so "nothing worth keeping" is not a judgement this layer can make.
+     */
     @Test
-    void testReserveIsNotSpentOnModulesWithNoIndicators() throws Exception {
+    void testAModuleThatDoesNotFitStillYieldsAFragment() throws Exception {
         VbaProjectBuilder b = new VbaProjectBuilder();
         String junk = "' harmless filler line\n".repeat(500);
         for (int i = 0; i < 20; i++) {
@@ -397,11 +543,58 @@ public class VbaBudgetTest {
         try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
             LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 50_000);
             Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
-            for (Map.Entry<String, String> e : macros.entrySet()) {
-                assertFalse(e.getValue().contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
-                        "nothing worth keeping in " + e.getKey()
-                                + ", so no reserve entry should exist for it");
-            }
+
+            long fragments = macros.values().stream()
+                    .filter(v -> v.contains(LenientVBAReader.INDICATORS_ONLY_MARKER)).count();
+            assertTrue(fragments > 0,
+                    "modules that did not fit must appear as bounded fragments, not vanish; kept "
+                            + macros.keySet());
+            assertTrue(bounds.isLimitReached(), "and the truncation must be reported");
+            assertTrue(totalChars(macros) <= 50_000,
+                    "the fragments must still respect the budget; got " + totalChars(macros));
+            assertEquals(totalChars(macros), bounds.retainedBytes(),
+                    "charged bytes must equal stored bytes for fragments too");
+        }
+    }
+
+    /**
+     * A module the tree walk and the orphan scan BOTH reach must be charged once and must never
+     * report a truncation.
+     *
+     * <p>Both routes fill one sink and {@link LenientVBAReader} collapses the second sighting, so it
+     * costs nothing -- but the budget was consulted BEFORE the duplicate check, so the second
+     * sighting was tested against the ceiling as though it were new. On a document whose retained
+     * total plus one module exceeds the ceiling that raises the truncation flag with nothing
+     * withheld, and can spend the indicator reserve on a body already stored in full.
+     *
+     * <p>Found by an external reviewer as "double-charging on the POI-exception fallback"; the
+     * mechanism is not two reader calls (those three call sites are mutually exclusive) but the
+     * order of the duplicate check against the budget check.
+     */
+    @Test
+    void testAModuleReachedByBothRoutesIsNeitherChargedTwiceNorFlagged() throws Exception {
+        // One module of 10,000 chars, and a budget whose main phase has room for it once
+        // (10,000 <= 20,000 - 2,500 reserve) but not twice.
+        StringBuilder src = new StringBuilder();
+        while (src.length() < 10_000) {
+            src.append("' filler line of macro source\n");
+        }
+        String body = src.substring(0, 10_000);
+        byte[] project = new VbaProjectBuilder().module("Module1", body).build();
+
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(1024 * 1024, 20_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+
+            assertEquals(1, macros.size(),
+                    "the module must appear exactly once; got " + macros.keySet());
+            assertEquals(10_000, totalChars(macros), "the whole module must be retained");
+            assertEquals(10_000, bounds.retainedBytes(),
+                    "a module both routes reach must be charged ONCE");
+            assertFalse(bounds.isLimitReached(),
+                    "nothing was withheld -- the second sighting is a duplicate the reader "
+                            + "collapses -- so the truncation flag must stay clear; detail was: "
+                            + bounds.getLimitDetail());
         }
     }
 
@@ -480,9 +673,13 @@ public class VbaBudgetTest {
                 "/test-documents/testEXCEL_macro.xls"}) {
             Metadata md = new Metadata();
             String text = parse(readResource(name), md);
-            assertTrue(text.contains("Attribute VB_Name") || text.contains("Sub "),
-                    name + ": macro source must still be extracted; got "
-                            + text.length() + " chars");
+            // Count MODULES, not a generic substring. "contains Sub" survives losing all but one
+            // module: mutating the emission loop to emit only the first module of every document
+            // left this test green, which is exactly the recall regression it exists to catch.
+            int modules = text.split("Attribute VB_Name", -1).length - 1;
+            assertTrue(modules >= 2,
+                    name + ": every macro module must still be extracted; found " + modules
+                            + " module headers in " + text.length() + " chars");
             assertNull(md.get("msoffice:vba-capture-limit-reached"),
                     name + ": no bound fired, so no flag may be set");
             assertNull(md.get(TikaCoreProperties.TRUNCATED_METADATA),
@@ -511,8 +708,16 @@ public class VbaBudgetTest {
             new AutoDetectParser().parse(tis, handler, md, context);
         }
         String text = handler.toString();
-        assertTrue(text.length() < 2_000_000,
-                "the bomb's output must be bounded, not merely survived; got " + text.length());
+        // BOTH bounds. The earlier version asserted only "< 2,000,000" -- ten times the budget and
+        // about 10^5 times the observed 21 characters -- so it could not tell "bounded to 200 KB"
+        // from "extracted nothing at all", and mutating the over-budget branch to yield no macros
+        // whatsoever left it green. A bound with no floor is not a bound.
+        assertTrue(text.length() < 400_000,
+                "the bomb's output must be bounded near the 200 KB budget; got " + text.length());
+        assertTrue(text.contains("Bomb") || text.contains("X"),
+                "an over-budget document must still yield the macro content that FITS -- a gate "
+                        + "that turns into a total-loss switch is worse than no gate; got "
+                        + text.length() + " chars");
         assertEquals("true", md.get("msoffice:vba-capture-limit-reached"),
                 "a document whose macro source was cut must say so on its own metadata");
         assertNotNull(md.get(TikaCoreProperties.TRUNCATED_METADATA));

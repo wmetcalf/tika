@@ -54,6 +54,9 @@ public final class LenientVBAReader {
 
     static final int MAX_STREAM_BYTES = 10 * 1024 * 1024; // 10 MB default guard
 
+    /** Default MBCS charset when a project declares no usable PROJECTCODEPAGE. */
+    private static final Charset WINDOWS_1252 = Charset.forName("windows-1252");
+
     /**
      * Default ceiling on the TOTAL macro source one document may yield. Chosen well above any
      * real VBA project (the largest in a 52,920-document macro corpus is orders of magnitude
@@ -202,6 +205,21 @@ public final class LenientVBAReader {
             return retained + len <= maxTotalBytes;
         }
 
+        /**
+         * As {@link #hasReserveFor}, but for a bare PREFIX of a module that carried no indicator
+         * line -- allowed only half the reserve.
+         *
+         * <p>Two properties have to hold at once and they pull against each other: a module that
+         * does not fit must still yield something (else the budget is a total-loss switch), and
+         * indicator-bearing modules must not be starved by ones with nothing in them (else the
+         * dir stream's ORDER decides what the analyst sees, which is the evasion the reserve exists
+         * to stop). Measured both ways: with prefixes unrestricted, twenty filler modules consumed
+         * the reserve and the payload listed last was lost again. Prefixes therefore get half.
+         */
+        boolean hasPrefixReserveFor(long len) {
+            return retained + len <= maxTotalBytes - reserve() / 2;
+        }
+
         /** Account for bytes actually KEPT. Must mirror {@link #hasRoomFor} exactly. */
         void charge(long len) {
             retained += len;
@@ -296,6 +314,13 @@ public final class LenientVBAReader {
         final Map<String, String> out = new LinkedHashMap<>();
         final Map<String, Set<String>> bodiesByKey = new java.util.HashMap<>();
         final Map<String, Integer> nextSuffix = new java.util.HashMap<>();
+
+        /** Whether this exact body is already stored under this name -- a NON-mutating check. */
+        boolean alreadyStored(String name, String text) {
+            Set<String> bodies =
+                    bodiesByKey.get((name == null || name.isEmpty()) ? "Module" : name);
+            return bodies != null && bodies.contains(text);
+        }
     }
 
     /**
@@ -308,6 +333,14 @@ public final class LenientVBAReader {
      */
     private static boolean retain(ModuleSink sink, String name, String text,
                                   Bounds bounds) {
+        // Duplicate check BEFORE the budget check. The tree walk and the orphan scan both reach
+        // most modules, and putUnique collapses the second sighting -- so it costs nothing and
+        // withholds nothing. Testing it against the ceiling first raised the truncation flag on a
+        // document that lost NOTHING (measured: one 10,000-char module, 20,000-byte budget, flag
+        // set) and could spend the indicator reserve on a body already stored in full.
+        if (sink.alreadyStored(name, text)) {
+            return true;
+        }
         if (!bounds.hasRoomFor(text.length())) {
             bounds.mark("VBA macro source reached the " + bounds.totalMax()
                     + "-byte per-document bound; later modules were dropped");
@@ -348,12 +381,24 @@ public final class LenientVBAReader {
             }
             from = end + 1;
         }
-        if (kept.length() == 0) {
-            return true; // nothing here an analyst wants; do not spend the reserve on it
+        boolean prefixOnly = kept.length() == 0;
+        if (prefixOnly) {
+            // No indicator line, but this module does NOT fit, so we ARE withholding it: keep a
+            // bounded PREFIX rather than nothing. Rejecting an over-budget body whole is the same
+            // defect the XLM path had ("the point of raising the cap was more payload reaching the
+            // analyst, not none") -- measured here as a 4-module bomb carrier yielding 21 characters
+            // in total, i.e. the budget acting as a total-loss switch. A prefix carries the module
+            // header and its first statements, which is what triage reads first.
+            kept.append(text, 0, Math.min(text.length(), INDICATOR_CHARS_PER_MODULE));
         }
         String value = INDICATORS_ONLY_MARKER + "\n" + kept;
-        if (!bounds.hasReserveFor(value.length())) {
-            return false;
+        boolean room = prefixOnly
+                ? bounds.hasPrefixReserveFor(value.length())
+                : bounds.hasReserveFor(value.length());
+        if (!room) {
+            // A prefix that cannot fit its half of the reserve is skipped, NOT a stop: stopping here
+            // would abandon the modules after it, and one of them may carry indicators that do fit.
+            return prefixOnly;
         }
         if (putUnique(sink, name, value)) {
             bounds.charge(value.length());
@@ -430,9 +475,9 @@ public final class LenientVBAReader {
             if (dirRaw == null) {
                 return true;
             }
-            List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds), bounds);
-            Charset charset = Charset.forName("windows-1252");
-            for (ModuleRef ref : refs) {
+            DirInfo dir = parseDir(decompress(dirRaw, 0, bounds), bounds);
+            Charset charset = dir.charset;
+            for (ModuleRef ref : dir.modules) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
                 // original-case module name as the result key.
                 DocumentProperty modProp = null;
@@ -611,11 +656,23 @@ public final class LenientVBAReader {
                 if (dirRaw == null) {
                     continue;
                 }
-                for (ModuleRef ref : parseDir(decompress(dirRaw, 0, probe), probe)) {
+                Set<String> described = new java.util.HashSet<>();
+                List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, probe), probe).modules;
+                if (refs.size() >= MAX_MODULE_REFS) {
+                    // Our OWN cap truncated the walk, and POI has no counterpart to it: its
+                    // processDirStream registers every MODULEOFFSET with no count limit. A partial
+                    // sum is therefore not an upper bound on what POI will decompress -- 4,096
+                    // trivial refs followed by a bomb projected ~18 MB against a 32 MB ceiling and
+                    // POI expanded ~819 MB. Capping what we READ is a deliberate loss with a mark;
+                    // capping what we PROJECT has to fail closed instead.
+                    return ceiling + 1;
+                }
+                for (ModuleRef ref : refs) {
                     DocumentEntry de = null;
                     for (String candidate : ref.candidates()) {
                         de = findEntry(vbaDir, candidate);
                         if (de != null) {
+                            described.add(de.getName().toLowerCase(Locale.ROOT));
                             break;
                         }
                     }
@@ -626,6 +683,17 @@ public final class LenientVBAReader {
                     if (total > ceiling) {
                         return total;
                     }
+                }
+                // Streams the dir stream never DESCRIBES are still read by POI: finding no module
+                // entry for one, readModuleFromDocumentStream stores its RAW bytes and getContent()
+                // returns them as macro source. Projecting only the described refs counted those as
+                // zero, so the gate's guarantee was false for them -- measured, a 41 MB document
+                // projected at 4,096 bytes and POI returned 41,943,056 chars. Charge each one what
+                // POI actually retains, its raw size, using POI's own skip list so the performance
+                // caches every real project carries are not charged.
+                total += projectUndescribedStreams(vbaDir, described);
+                if (total > ceiling) {
+                    return total;
                 }
             }
         } catch (Exception | OutOfMemoryError e) {
@@ -640,7 +708,7 @@ public final class LenientVBAReader {
      * Cap on how many brute-force container starts one stream may contribute to the projection.
      * Beyond it the projection fails closed rather than spending unbounded time enumerating.
      */
-    private static final int MAX_BRUTE_FORCE_CANDIDATES = 256;
+    static final int MAX_BRUTE_FORCE_CANDIDATES = 256;
 
     /**
      * Projected upper bound for one module stream, charging 4096 bytes per MS-OVBA chunk.
@@ -668,11 +736,114 @@ public final class LenientVBAReader {
             return 0;
         }
         if ((raw[offset] & 0xFF) == 0x01) {
-            return projectContainer(raw, offset, remainingCeiling);
+            ContainerWalk walk = projectContainer(raw, offset, remainingCeiling);
+            if (walk.clean) {
+                return walk.bytes; // POI decompresses this and never brute-forces
+            }
+            // A container DOES start at the declared offset, but POI throws part-way through it and
+            // falls back to the brute-force search all the same: readModuleFromDocumentStream wraps
+            // the whole from-offset read in catch(IllegalArgumentException | IllegalStateException).
+            // Branching only on "no 0x01 at the offset" modelled a narrower condition than POI's and
+            // left the gate open -- measured, a 120 KB stream projected 4,096 bytes and POI returned
+            // 81,880,002 chars. Charge both what the partial walk yields and what the search can
+            // find, since POI transiently allocates both.
+            return walk.bytes + projectBruteForceCandidates(raw, remainingCeiling - walk.bytes);
         }
-        // decompress() returns every byte from `offset` onward when there is no container there,
-        // and POI additionally brute-forces. Charge both.
-        long total = raw.length - offset;
+        // No container at the offset: decompress() returns every byte from it onward, and POI
+        // brute-forces the whole stream.
+        long tail = raw.length - offset;
+        return tail + projectBruteForceCandidates(raw, remainingCeiling - tail);
+    }
+
+    /**
+     * Raw sizes of the streams POI would read but the dir stream never described.
+     *
+     * <p>Mirrors POI's own filter in {@code readMacros(DirectoryNode, ModuleMap)}: it skips
+     * {@code dir}, anything starting {@code __SRP}, and anything starting {@code _VBA_PROJECT}, and
+     * reads every other document in the storage. Those three are the caches a real project always
+     * carries, so charging them would redirect ordinary documents.
+     */
+    private static long projectUndescribedStreams(DirectoryNode vbaDir, Set<String> described) {
+        long total = 0;
+        for (org.apache.poi.poifs.filesystem.Entry e : vbaDir) {
+            if (!(e instanceof DocumentEntry)) {
+                continue;
+            }
+            String name = e.getName();
+            String lower = name.toLowerCase(Locale.ROOT);
+            if (described.contains(lower)
+                    || "dir".equalsIgnoreCase(name)
+                    || lower.startsWith("__srp")
+                    || lower.startsWith("_vba_project")) {
+                continue;
+            }
+            total += Math.max(0, ((DocumentEntry) e).getSize());
+        }
+        return total;
+    }
+
+    /** Outcome of a chunk-header walk: how much it yields, and whether POI would accept it. */
+    private static final class ContainerWalk {
+        long bytes;
+        /** False when POI's RLEDecompressingInputStream would THROW, sending it to brute force. */
+        boolean clean = true;
+    }
+
+    /**
+     * Chunk-header walk over {@code raw} from {@code start}, mirroring POI's
+     * {@code RLEDecompressingInputStream.readChunk} decision by decision, because any divergence
+     * between this model and POI's behaviour is a hole in the gate.
+     *
+     * <p>Three things it must get right, each of which was wrong when it charged a flat 4096 per
+     * header and ran to the end of the buffer: a {@code 0x0000} header is END OF STREAM for POI
+     * (readChunk returns -1), not a chunk; an UNCOMPRESSED chunk yields its DECLARED length, not
+     * 4096; and a bad signature makes POI THROW rather than skip, which is what sends it to the
+     * brute-force search. Charging 4096 per 3 bytes of trailing slack over-projected by up to
+     * 1365x, which redirects benign documents away from POI -- a recall loss, the mirror image of
+     * the bypass.
+     */
+    private static ContainerWalk projectContainer(byte[] raw, int start, long remainingCeiling) {
+        ContainerWalk walk = new ContainerWalk();
+        int i = start + 1; // skip the container signature byte
+        while (true) {
+            if (i + 2 > raw.length) {
+                return walk; // POI's readShort returns -1 here: clean end of stream
+            }
+            int w = (raw[i] & 0xFF) | ((raw[i + 1] & 0xFF) << 8);
+            i += 2;
+            if (w == 0) {
+                return walk; // POI treats a zero header as end of stream
+            }
+            if ((w & 0x7000) != 0x3000) {
+                walk.clean = false; // POI throws IllegalArgumentException -> brute force
+                return walk;
+            }
+            int chunkDataLen = (w & 0x0FFF) + 1;
+            boolean compressed = (w & 0x8000) != 0;
+            if (chunkDataLen > raw.length - i) {
+                // POI's readFully comes up short: IllegalStateException for a raw chunk, a -1
+                // return for a compressed one. Treat as not-clean, which is the safe direction.
+                walk.clean = false;
+                walk.bytes += compressed ? 4096 : Math.max(0, raw.length - i);
+                return walk;
+            }
+            walk.bytes += compressed ? 4096 : chunkDataLen;
+            if (walk.bytes > remainingCeiling) {
+                return walk;
+            }
+            i += chunkDataLen;
+        }
+    }
+
+    /**
+     * Sum of what POI's brute-force search could decompress from {@code raw}: it scans EVERY byte
+     * position for 0x01 followed by a valid chunk header and decompresses at each one.
+     *
+     * @return a value greater than {@code remainingCeiling} when the candidate count is itself
+     *         beyond what we are willing to enumerate
+     */
+    private static long projectBruteForceCandidates(byte[] raw, long remainingCeiling) {
+        long total = 0;
         int candidates = 0;
         for (int i = 0; i + 2 < raw.length; i++) {
             if ((raw[i] & 0xFF) != 0x01) {
@@ -680,33 +851,17 @@ public final class LenientVBAReader {
             }
             int w = (raw[i + 1] & 0xFF) | ((raw[i + 2] & 0xFF) << 8);
             if (w <= 0 || (w & 0x7000) != 0x3000) {
-                continue; // same candidate test POI applies
+                continue; // the same candidate test POI applies
             }
             if (++candidates > MAX_BRUTE_FORCE_CANDIDATES) {
                 return remainingCeiling + 1;
             }
-            total += projectContainer(raw, i, remainingCeiling - total);
+            total += projectContainer(raw, i, remainingCeiling - total).bytes;
             if (total > remainingCeiling) {
                 return total;
             }
         }
         return total;
-    }
-
-    /** Chunk-header walk over {@code raw} from {@code start}; stops once past the ceiling. */
-    private static long projectContainer(byte[] raw, int start, long remainingCeiling) {
-        long projected = 0;
-        int i = start + 1; // skip the container signature byte
-        while (i + 2 <= raw.length) {
-            int chunkHeader = (raw[i] & 0xFF) | ((raw[i + 1] & 0xFF) << 8);
-            i += 2;
-            projected += 4096; // MS-OVBA: one chunk decompresses to at most 4096 bytes
-            if (projected > remainingCeiling) {
-                return projected;
-            }
-            i += (chunkHeader & 0x0FFF) + 1;
-        }
-        return projected;
     }
 
     /** Read a document entry whole, refusing anything over the probe's per-stream bound. */
@@ -763,9 +918,9 @@ public final class LenientVBAReader {
         if (dirRaw == null) {
             return true;
         }
-        List<ModuleRef> refs = parseDir(decompress(dirRaw, 0, bounds), bounds);
-        Charset charset = Charset.forName("windows-1252");
-        for (ModuleRef ref : refs) {
+        DirInfo dir = parseDir(decompress(dirRaw, 0, bounds), bounds);
+        Charset charset = dir.charset;
+        for (ModuleRef ref : dir.modules) {
             try {
                 byte[] raw = null;
                 for (String candidate : ref.candidates()) {
@@ -792,8 +947,23 @@ public final class LenientVBAReader {
 
     // ── dir stream parser ─────────────────────────────────────────────────────
 
-    private static List<ModuleRef> parseDir(byte[] dir, Bounds bounds) {
-        List<ModuleRef> modules = new java.util.ArrayList<>();
+    /** What a dir stream tells us: which modules exist, and which codepage names/source use. */
+    private static final class DirInfo {
+        final List<ModuleRef> modules = new java.util.ArrayList<>();
+        /**
+         * PROJECTCODEPAGE (0x0003). The record was parsed and then IGNORED: every name and every
+         * module body was decoded windows-1252 regardless. POI honours it
+         * ({@code modules.charset = CodePageUtil.codepageToEncoding(codepage)}), so a project
+         * declaring e.g. cp1251 had its Cyrillic module names decoded to mojibake here, matched no
+         * OLE entry, and the module was dropped with NO mark -- a silent total loss on the two
+         * paths that exist for malware, for documents POI reads fine.
+         */
+        Charset charset = WINDOWS_1252;
+    }
+
+    private static DirInfo parseDir(byte[] dir, Bounds bounds) {
+        DirInfo info = new DirInfo();
+        List<ModuleRef> modules = info.modules;
 
         String currentName = null;
         String currentStreamName = null;
@@ -808,7 +978,12 @@ public final class LenientVBAReader {
             if (recLen < 0 || recLen > dir.length - pos) {
                 // Oversized / invalid record — Mac-Word writes non-standard reference
                 // entries here.  Skip byte-by-byte until we find a plausible record.
-                pos -= 4; // back up past the 2-byte record ID, retry from next byte
+                //
+                // -5, not -4. pos has already advanced 6, so -4 left a NET +2 and the resync only
+                // ever visited one parity: an even-length junk run recovered the following records
+                // and an odd-length one never did, silently, which is the opposite of the
+                // byte-by-byte scan this comment promises.
+                pos -= 5; // back up past the 2-byte record ID, retry from the next byte
                 continue;
             }
 
@@ -818,8 +993,11 @@ public final class LenientVBAReader {
 
             try {
                 switch (recId) {
+                    case REC_PROJECTCODEPAGE:
+                        info.charset = codepageCharset(recData, info.charset);
+                        break;
                     case REC_MODULENAME:
-                        currentName = new String(recData, "windows-1252");
+                        currentName = new String(recData, info.charset);
                         break;
                     case REC_MODULESTREAMNAME:
                         // MODULENAME is a LABEL; MODULESTREAMNAME (which used to be ignored
@@ -827,13 +1005,13 @@ public final class LenientVBAReader {
                         // author makes them differ, resolving by MODULENAME finds no stream and
                         // the module's whole body is lost with no signal -- and POI, which reads
                         // this record, finds the macro that we then report as absent.
-                        currentStreamName = new String(recData, "windows-1252");
+                        currentStreamName = new String(recData, info.charset);
                         break;
                     case REC_MODULEOFFSET:
                         if (modules.size() >= MAX_MODULE_REFS) {
                             bounds.mark("the dir stream describes more than " + MAX_MODULE_REFS
                                     + " modules; later ones were not read");
-                            return modules;
+                            return info;
                         }
                         if ((currentName != null || currentStreamName != null) && recLen == 4) {
                             int offset = (recData[0] & 0xFF) | ((recData[1] & 0xFF) << 8)
@@ -853,7 +1031,21 @@ public final class LenientVBAReader {
                 // per-record failure → continue
             }
         }
-        return modules;
+        return info;
+    }
+
+    /** Resolve a PROJECTCODEPAGE record to a charset, keeping the default if it is unusable. */
+    private static Charset codepageCharset(byte[] recData, Charset fallback) {
+        if (recData == null || recData.length < 2) {
+            return fallback;
+        }
+        int codepage = (recData[0] & 0xFF) | ((recData[1] & 0xFF) << 8);
+        try {
+            return Charset.forName(
+                    org.apache.poi.util.CodePageUtil.codepageToEncoding(codepage, true));
+        } catch (Exception e) {
+            return fallback; // unknown/unsupported codepage: decode as before
+        }
     }
 
     // ── MS-OVBA §2.4.1 decompressor ──────────────────────────────────────────

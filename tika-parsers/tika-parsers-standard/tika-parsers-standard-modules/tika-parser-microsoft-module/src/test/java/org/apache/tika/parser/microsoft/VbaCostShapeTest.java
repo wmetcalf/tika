@@ -129,12 +129,20 @@ public class VbaCostShapeTest {
         }
     }
 
-    /** Many chunks in one module: decompression must stay linear in the compressed length. */
+    /**
+     * Many chunks in one module. Feeds a COMPRESSED container on purpose: the quadratic risk the
+     * production code guards against ("use a fixed-size local buffer to avoid O(n^2) toByteArray()
+     * calls") is in the compressed branch, and an earlier version of this gate fed an UNCOMPRESSED
+     * container, so it measured a System.arraycopy and left the real branch unmeasured -- making the
+     * compressed accumulation quadratic (17 ms to 1000 ms on 4 MB) kept every gate green.
+     */
     @Test
     void testChunksPerModuleCostIsSubQuadratic() {
-        assertSubQuadratic("chunks per module", 256,
-                n -> VbaProjectBuilder.uncompressedContainer(
-                        "' filler\n".repeat(n * 8).getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)),
+        // Copy-token chunks: ~7 input bytes yield ~4094 output bytes each, so the work per unit of
+        // n is real decompression (the copy loop plus the chunkBuf -> out handoff where the
+        // quadratic would live) rather than the size of the input buffer.
+        assertSubQuadratic("compressed chunks per module", 4096,
+                n -> VbaProjectBuilder.ratioBombContainer(n),
                 container -> {
                     try {
                         LenientVBAReader.decompress(container, 0,
@@ -146,36 +154,13 @@ public class VbaCostShapeTest {
                 });
     }
 
-    /**
-     * The module cap is what holds the pre-flight projection's cost down, and this measures THAT --
-     * not the projection's own shape.
-     *
-     * <p>Named for what it asserts, after a mutation caught the earlier name lying: with the cap
-     * removed this same test fails at 14.0x, because the cost being measured across 4,096 -> 16,384
-     * modules is POI's per-stream quadratic, not the header walk. With the cap in place all three
-     * points stop at 4,096 modules and the cost is flat. A test whose name claims to measure one
-     * thing while measuring another is how an instrument artifact gets recorded as a property of
-     * the code.
-     */
-    @Test
-    void testProjectionCostIsHeldDownByTheModuleCap() {
-        assertSubQuadratic("projection with the module cap engaged", 64,
-                n -> {
-                    VbaProjectBuilder b = new VbaProjectBuilder();
-                    for (int i = 0; i < n; i++) {
-                        b.rawModule("Module" + i, VbaProjectBuilder.ratioBombContainer(16));
-                    }
-                    return build(b);
-                },
-                bytes -> {
-                    try (POIFSFileSystem fs = new POIFSFileSystem(
-                            new ByteArrayInputStream(bytes))) {
-                        LenientVBAReader.projectDecompressedBytes(fs, Long.MAX_VALUE / 4);
-                    } catch (Exception e) {
-                        throw new AssertionError(e);
-                    }
-                });
-    }
+    // REMOVED: a "projection cost is held down by the module cap" gate. Once the projection was
+    // made to FAIL CLOSED at MAX_MODULE_REFS it returns immediately at the cap, so the gate timed an
+    // early return (4 ms at every size) and could no longer distinguish anything. The cost it used to
+    // measure is POI's per-stream quadratic, which is not ours to flatten; what matters is that the
+    // cap engages and is reported, and that is pinned functionally by
+    // testModuleRefCapEngagesAndIsReported plus VbaBudgetTest's fail-closed cases. A timing gate that
+    // measures an early return is worse than no gate: it reads as coverage.
 
     /**
      * The module-count cap is the ONLY defence against POI's per-stream quadratic, so it has to
@@ -224,22 +209,59 @@ public class VbaCostShapeTest {
         }
     }
 
-    /** Many controls inside one UserForm. */
+    // REMOVED: a "controls per form" timing gate. The dimension is capped by MAX_SITES = 65,536, and
+    // measurement showed the cost FALLING above it (41 ms at 32,768 controls, 25 ms at 131,072)
+    // because the parser refuses the oversized site count outright -- so the fixture can never reach
+    // a measurable floor and a growth ratio is the wrong instrument for a dimension a cap already
+    // bounds. What matters is that the cap engages and is reported, which is asserted below rather
+    // than inferred from a clock.
+
+    /**
+     * The per-form site cap must refuse an oversized {@code countOfSites} AND report it, because
+     * that cap is the only thing bounding how much work one form can demand.
+     */
     @Test
-    void testControlsPerFormCostIsSubQuadratic() {
-        assertSubQuadratic("controls per form", 256,
-                n -> {
-                    VbaFormBuilder b = new VbaFormBuilder();
-                    for (int i = 0; i < n; i++) {
-                        b.control("Btn" + i, "tag" + i, "tip" + i);
-                    }
-                    try {
-                        return b.poifs("UserForm1");
-                    } catch (Exception e) {
-                        throw new AssertionError(e);
-                    }
-                },
-                VbaCostShapeTest::readForms);
+    void testSiteCountCapEngagesAndIsReported() throws Exception {
+        // Declare far more sites than the cap allows, with no site data behind the count.
+        java.io.ByteArrayOutputStream f = new java.io.ByteArrayOutputStream();
+        f.write(0x00);
+        f.write(0x04);
+        f.write(4);
+        f.write(0);                       // cbForm = 4 (the FormPropMask below)
+        for (int i = 0; i < 4; i++) {
+            f.write(0);                   // FormPropMask: nothing set
+        }
+        f.write(0);
+        f.write(0);                       // class table count = 0
+        int sites = 70_000;               // > MAX_SITES
+        f.write(sites & 0xFF);
+        f.write((sites >> 8) & 0xFF);
+        f.write((sites >> 16) & 0xFF);
+        f.write((sites >> 24) & 0xFF);
+        for (int i = 0; i < 4; i++) {
+            f.write(0);                   // countOfBytes
+        }
+
+        byte[] poifs;
+        try (POIFSFileSystem fs = new POIFSFileSystem()) {
+            fs.getRoot().createDirectory("UserForm1")
+                    .createDocument("f", new ByteArrayInputStream(f.toByteArray()));
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            fs.writeFilesystem(bos);
+            poifs = bos.toByteArray();
+        }
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(poifs))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            java.util.List<VbaFormParser.FormModuleResult> forms =
+                    VbaFormParser.extractFormVariables(fs, bounds);
+            long controls = forms.stream().mapToLong(r -> r.controls.size()).sum();
+            assertTrue(controls == 0,
+                    "a form declaring more sites than the cap allows must yield no controls; got "
+                            + controls);
+            assertTrue(bounds.isLimitReached(),
+                    "refusing a form for an oversized site count withholds whatever it held, so it "
+                            + "must be reported; detail was: " + bounds.getLimitDetail());
+        }
     }
 
     // ── the timed operations ────────────────────────────────────────────────
@@ -298,19 +320,16 @@ public class VbaCostShapeTest {
             }
             baseN *= 2;
         }
-        if (baseCost < minMeasurable) {
-            // The dimension is simply cheap: 128x the starting size still does not reach 60 ms, so
-            // there is no growth problem to gate. Treating that as a failure is what the earlier
-            // version did, and it is a false red -- the gate exists to catch superlinear GROWTH, and
-            // a cost that stays trivial across a 128x span has none worth measuring. Assert the
-            // triviality explicitly rather than passing silently.
-            assertTrue(baseCost < minMeasurable,
-                    what + ": unreachable state"); // documents the branch
-            assertTrue(baseN >= startN * 64,
-                    what + ": expected the auto-scale to have tried at least 64x the starting size "
-                            + "before concluding the dimension is cheap; reached n=" + baseN);
-            return;
-        }
+        // HARD FAIL, matching the XLM harness this was copied from. The earlier version turned an
+        // unreachable floor into a PASS built from two tautologies -- assertTrue(baseCost <
+        // minMeasurable) inside if (baseCost < minMeasurable), plus a baseN bound the scale loop
+        // always satisfies -- and 2 of the 3 gates took that branch, so they never evaluated a
+        // growth ratio at all while reading as green. A gate that cannot reach a measurable cost is
+        // a gate that needs a bigger fixture, not a silent skip.
+        assertTrue(baseCost >= minMeasurable,
+                what + ": could not reach a measurable base cost even at n=" + baseN + " ("
+                        + baseCost / 1_000_000 + " ms). Raise startN or make each unit of n cost "
+                        + "more, rather than trusting a ratio built on noise.");
 
         long c2 = bestOfThree(run, prepare.apply(baseN * 2));
         long c4 = bestOfThree(run, prepare.apply(baseN * 4));

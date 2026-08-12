@@ -332,12 +332,16 @@ class XlmSyntheticCorpusTest {
                 formulaRecord(fopenFormula("dropper.bin")),
                 formulaRecord(fwriteFormula(0, "MZ http://evil.example/payload.exe")),
                 formulaRecord(fcloseFormula(0))));
-        assertTrue(p.text.contains("FILE_CONTENT"),
-                "the reconstructed payload must appear in the extracted text; got:\n"
-                        + head(p.text));
-        assertTrue(p.text.contains("evil.example"),
-                "and it must carry the URL written into the dropped file -- that URL is the "
-                        + "reason the reconstruction exists; got:\n" + head(p.text));
+        // The URL must appear INSIDE the FILE_CONTENT entry. Asserting contains("FILE_CONTENT")
+        // and contains("evil.example") as independent substrings proved nothing: the decoded
+        // =FWRITE(0,"MZ http://evil.example/...") formula is echoed into the text anyway, so
+        // emitting the reconstruction EMPTY left both assertions green -- in the very tests added
+        // because a regression halved FILE_CONTENT output across the corpus.
+        assertTrue(java.util.regex.Pattern
+                        .compile("FILE_CONTENT\\[[^\\]]*\\]:[^\\n]*evil\\.example")
+                        .matcher(p.text).find(),
+                "the reconstructed payload entry itself must carry the URL written into the "
+                        + "dropped file; got:\n" + head(p.text));
     }
 
     /**
@@ -350,7 +354,11 @@ class XlmSyntheticCorpusTest {
         Parsed p = parse(craftXlsb(
                 formulaRecord(fopenFormula("dropper.bin")),
                 formulaRecord(fwriteFormula(0, "MZ http://evil.example/unclosed.exe"))));
-        assertTrue(p.text.contains("FILE_CONTENT") && p.text.contains("evil.example"),
+        // Same reason as above: the URL has to be inside the entry, not merely somewhere in the
+        // text where the echoed formula already puts it.
+        assertTrue(java.util.regex.Pattern
+                        .compile("FILE_CONTENT\\[[^\\]]*\\]:[^\\n]*evil\\.example")
+                        .matcher(p.text).find(),
                 "a never-closed handle must still be drained at end of emulation, or deleting the "
                         + "FCLOSE cell hides the dropper; got:\n" + head(p.text));
     }
