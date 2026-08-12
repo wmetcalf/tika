@@ -317,6 +317,44 @@ class XlmSyntheticCorpusTest {
                                 TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)));
     }
 
+    /**
+     * A dropper's reconstructed FILE payload must reach the consumer, end to end.
+     *
+     * <p>FILE_CONTENT had NO end-to-end coverage at all -- 0 references in this class -- and it is
+     * the one dimension where a change of mine caused a measured LIVE regression: closing the FCLOSE
+     * handle unconditionally halved it across the corpus, 1,556,505 chars to 779,927, and only the
+     * corpus A/B caught it. Unit tests on the emulator cannot see a wiring break between the
+     * emulator's indicator list and the extracted text, which is what that regression was.
+     */
+    @Test
+    void reconstructedFileContentReachesTheConsumerEndToEnd() throws Exception {
+        Parsed p = parse(craftXlsb(
+                formulaRecord(fopenFormula("dropper.bin")),
+                formulaRecord(fwriteFormula(0, "MZ http://evil.example/payload.exe")),
+                formulaRecord(fcloseFormula(0))));
+        assertTrue(p.text.contains("FILE_CONTENT"),
+                "the reconstructed payload must appear in the extracted text; got:\n"
+                        + head(p.text));
+        assertTrue(p.text.contains("evil.example"),
+                "and it must carry the URL written into the dropped file -- that URL is the "
+                        + "reason the reconstruction exists; got:\n" + head(p.text));
+    }
+
+    /**
+     * The same payload with NO FCLOSE: a macro that never closes its handle must still yield the
+     * content, via the end-of-emulation drain rather than the FCLOSE path. Omitting the close is
+     * free for an author, so if only the FCLOSE path emitted, the evasion would be one deleted cell.
+     */
+    @Test
+    void unclosedFileHandleStillYieldsItsContentEndToEnd() throws Exception {
+        Parsed p = parse(craftXlsb(
+                formulaRecord(fopenFormula("dropper.bin")),
+                formulaRecord(fwriteFormula(0, "MZ http://evil.example/unclosed.exe"))));
+        assertTrue(p.text.contains("FILE_CONTENT") && p.text.contains("evil.example"),
+                "a never-closed handle must still be drained at end of emulation, or deleting the "
+                        + "FCLOSE cell hides the dropper; got:\n" + head(p.text));
+    }
+
     /** An ordinary XLSB macrosheet must set no failure signal. */
     @Test
     void ordinaryXlsbMacrosheetSetsNoFailureSignalEndToEnd() throws Exception {
@@ -481,6 +519,14 @@ class XlmSyntheticCorpusTest {
                 .put((byte) 0x1e).putShort((short) handle)
                 .put((byte) 0x17).putShort((short) text.length()).put(chars)
                 .put((byte) 0x22).put((byte) 2).putShort((short) 0x008A).array();
+    }
+
+    /** FCLOSE(handle): PtgInt(handle) then PtgFuncVar(argc=1, FCLOSE=0x0085). */
+    private static byte[] fcloseFormula(int handle) {
+        return java.nio.ByteBuffer.allocate(3 + 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put((byte) 0x1e).putShort((short) handle)
+                .put((byte) 0x22).put((byte) 1).putShort((short) 0x0085).array();
     }
 
     /** A cell record whose declared formula SIZE far exceeds the bytes actually present. */
