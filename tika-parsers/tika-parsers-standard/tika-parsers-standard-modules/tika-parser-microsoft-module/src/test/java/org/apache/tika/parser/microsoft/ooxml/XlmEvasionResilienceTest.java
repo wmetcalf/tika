@@ -1688,6 +1688,56 @@ class XlmEvasionResilienceTest {
                         XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null));
     }
 
+    /**
+     * The scan's WORST case is text that does NOT match, and the dimension above cannot see it.
+     *
+     * <p>A match fills the sink, and a full sink stops the walk -- so a fixture made of indicators
+     * measures the cheap path. Measured: 20,000 to 80,000 matching values is FLAT at ~20 ms because
+     * the sink fills at 4,096 entries and the walk halts, while the same volume of NON-matching
+     * values costs 57 -> 115 -> 227 ms, every byte of it scanned. Linear, so not a defect, but the
+     * only thing keeping it bounded is the retained-text aggregate (32 MB of values, 10 MB of
+     * formulas), which makes the true worst case ~2.7 seconds of CPU on one crafted workbook
+     * against ~30 ms for an ordinary one.
+     *
+     * <p>Pinned here so that neither a change that makes non-matching scanning superlinear nor a
+     * raise of those aggregates can pass unnoticed. The same blind spot on the VBA path -- a gate
+     * written against matching input -- hid a scan that took 7.2 seconds.
+     */
+    @Test
+    void testNonMatchingCellValueScanCostIsSubQuadratic() {
+        assertSubQuadratic("non-matching cell values scanned", 40000,
+                n -> {
+                    Map<String, String> values = new java.util.LinkedHashMap<>();
+                    for (int i = 0; i < n; i++) {
+                        values.put("Sheet1:1:A" + i,
+                                "just some ordinary spreadsheet text value number " + i);
+                    }
+                    return values;
+                },
+                values -> XlmXmlIocScanner.scan(Map.of("Macro1:1:A1", "=1+1"), values,
+                        XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null));
+    }
+
+    /** The formula pass has the same asymmetry, and a much larger per-byte constant. */
+    @Test
+    void testNonMatchingFormulaScanCostIsSubQuadratic() {
+        StringBuilder longFormula = new StringBuilder("=");
+        while (longFormula.length() < XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN) {
+            longFormula.append("CONCATENATE(\"abcdefgh\",");
+        }
+        final String formula = longFormula.toString();
+        assertSubQuadratic("non-matching formulas scanned", 8,
+                n -> {
+                    Map<String, String> formulas = new java.util.LinkedHashMap<>();
+                    for (int i = 0; i < n; i++) {
+                        formulas.put("Macro1:1:A" + i, formula);
+                    }
+                    return formulas;
+                },
+                formulas -> XlmXmlIocScanner.scan(formulas, Map.of(),
+                        XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN, null, 4096, 1 << 20, null));
+    }
+
     /** And with a budget nothing can fit, the walk must STOP rather than build rejects. */
     @Test
     void testUnfittableBudgetStopsScanningTheValueCorpus() {
