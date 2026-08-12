@@ -83,6 +83,49 @@ public final class LenientVBAReader {
     private static final int MAX_MODULE_REFS = 4096;
 
     /**
+     * Slice of the document budget held back for the indicator-bearing lines of modules that no
+     * longer fit whole. CARVED OUT of the budget, never added to it, so the documented ceiling
+     * still holds.
+     *
+     * <p>Exists because a budget has to choose what to drop, and without this the choice was made
+     * by the dir stream's ORDER -- which the document's author picks. Measured: twenty filler
+     * modules and one payload module, identical bytes and identical budget, recovered the payload
+     * when it was listed first and lost it entirely when listed last.
+     */
+    private static final int INDICATOR_RESERVE_BYTES = 64 * 1024;
+    /** Per-module ceiling on retained indicator lines, so one module cannot take the reserve. */
+    private static final int INDICATOR_CHARS_PER_MODULE = 2048;
+
+    /**
+     * Total characters the indicator scan may READ across a document, as opposed to retain.
+     *
+     * <p>The reserve phase keeps going past a module that does not fit, where the old code stopped,
+     * so it introduced a cost that did not exist before: scanning. Measured at ~180 ms per megabyte
+     * on the worst case for a line-oriented pattern (one enormous line with no newline and no
+     * match) -- 40 modules of 1 MB each took 7.2 seconds. Unbounded, at the module cap that is
+     * hours. This holds the added cost near a third of a second, and it is only ever paid by a
+     * document that already exhausted a 32 MB macro budget.
+     */
+    private static final int INDICATOR_SCAN_BUDGET = 2 * 1024 * 1024;
+
+    /** Marks a module kept only as its indicator lines, so no consumer reads it as complete. */
+    public static final String INDICATORS_ONLY_MARKER = "[TIKA-VBA-INDICATORS-ONLY]";
+
+    /**
+     * Lines worth keeping when a module cannot be kept whole: the calls that make a macro do
+     * something observable, plus URLs and UNC paths.
+     *
+     * <p>Deliberately anchored and possessive-free but alternation-only over literals -- no nested
+     * quantifiers, so it cannot backtrack pathologically. A scanner regex that goes quadratic is
+     * its own denial of service; that lesson cost 7 minutes of CPU on one document earlier in this
+     * work.
+     */
+    private static final java.util.regex.Pattern VBA_INDICATOR = java.util.regex.Pattern.compile(
+            "(?i)(?:shell|createobject|getobject|wscript|powershell|cmd\\.exe|rundll32"
+                    + "|urldownloadtofile|xmlhttp|winhttp|msxml2|environ|declare\\s+(?:ptr)?function"
+                    + "|callbyname|https?://|ftp://|\\\\\\\\[a-z0-9._-])");
+
+    /**
      * Per-stream AND per-document VBA size bounds, plus the signal that one fired.
      *
      * <p>Exists because every bound in this reader used to fail SILENTLY: an over-cap module
@@ -100,6 +143,7 @@ public final class LenientVBAReader {
         private final int maxStreamBytes;
         private final long maxTotalBytes;
         private long retained;
+        private long indicatorScanned;
         private boolean limitReached;
         private String limitDetail;
 
@@ -134,8 +178,27 @@ public final class LenientVBAReader {
             return maxTotalBytes;
         }
 
+        /** Characters of indicator scanning still allowed for this document. */
+        int remainingScan() {
+            return (int) Math.max(0, INDICATOR_SCAN_BUDGET - indicatorScanned);
+        }
+
+        void chargeScan(long chars) {
+            indicatorScanned += chars;
+        }
+
+        /** Bytes held back from the main phase for indicator lines; see the constant. */
+        private long reserve() {
+            return Math.min(INDICATOR_RESERVE_BYTES, maxTotalBytes / 8);
+        }
+
         /** Whether {@code len} more retained bytes still fit in the document budget. */
         boolean hasRoomFor(long len) {
+            return retained + len <= maxTotalBytes - reserve();
+        }
+
+        /** As {@link #hasRoomFor}, but may dip into the indicator reserve. */
+        boolean hasReserveFor(long len) {
             return retained + len <= maxTotalBytes;
         }
 
@@ -256,6 +319,48 @@ public final class LenientVBAReader {
         return true;
     }
 
+    /**
+     * Last resort for a module that no longer fits: keep only its indicator-bearing lines, from the
+     * reserve. Returns false once even the reserve is gone, which is the point at which the caller
+     * genuinely must stop.
+     *
+     * <p>A module with nothing indicator-like in it costs nothing and is skipped, so the reserve is
+     * spent on the modules an analyst would actually want.
+     */
+    private static boolean retainIndicators(ModuleSink sink, String name, String text,
+                                            Bounds bounds) {
+        int scanLimit = Math.min(text.length(), bounds.remainingScan());
+        if (scanLimit <= 0) {
+            // The document has had all the scanning it is going to get.
+            return false;
+        }
+        bounds.chargeScan(scanLimit);
+        StringBuilder kept = new StringBuilder();
+        java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
+        int from = 0;
+        while (from < scanLimit && kept.length() < INDICATOR_CHARS_PER_MODULE) {
+            int nl = text.indexOf('\n', from);
+            int end = nl < 0 || nl > scanLimit ? scanLimit : nl;
+            String line = text.substring(from, end);
+            if (m.reset(line).find()) {
+                int room = INDICATOR_CHARS_PER_MODULE - kept.length();
+                kept.append(line, 0, Math.min(line.length(), room)).append('\n');
+            }
+            from = end + 1;
+        }
+        if (kept.length() == 0) {
+            return true; // nothing here an analyst wants; do not spend the reserve on it
+        }
+        String value = INDICATORS_ONLY_MARKER + "\n" + kept;
+        if (!bounds.hasReserveFor(value.length())) {
+            return false;
+        }
+        if (putUnique(sink, name, value)) {
+            bounds.charge(value.length());
+        }
+        return true;
+    }
+
     /** One module as the dir stream describes it. */
     private static final class ModuleRef {
         /** MODULENAME (0x0019) — the label a human sees; used as the result key. */
@@ -350,7 +455,8 @@ public final class LenientVBAReader {
                         continue;
                     }
                     String text = new String(decompress(raw, offset, bounds), charset);
-                    if (!text.isBlank() && !retain(result, ref.key(), text, bounds)) {
+                    if (!text.isBlank() && !retain(result, ref.key(), text, bounds)
+                            && !retainIndicators(result, ref.key(), text, bounds)) {
                         return false;
                     }
                 } catch (Exception ignore) {
@@ -673,7 +779,8 @@ public final class LenientVBAReader {
                 }
                 byte[] src = decompress(raw, ref.offset, bounds);
                 String text = new String(src, charset);
-                if (!text.isBlank() && !retain(result, ref.key(), text, bounds)) {
+                if (!text.isBlank() && !retain(result, ref.key(), text, bounds)
+                        && !retainIndicators(result, ref.key(), text, bounds)) {
                     return false;
                 }
             } catch (Exception ignore) {

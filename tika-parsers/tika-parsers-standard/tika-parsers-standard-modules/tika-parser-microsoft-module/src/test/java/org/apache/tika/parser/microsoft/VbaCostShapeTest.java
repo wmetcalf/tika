@@ -85,6 +85,50 @@ public class VbaCostShapeTest {
                         + "same-named modules.");
     }
 
+    /**
+     * The indicator scan that runs once the byte budget is exhausted must not grow with module
+     * SIZE. It keeps going past a module too big to fit -- where the old code stopped -- so it
+     * introduced a scanning cost that did not exist before, and unbounded that cost is a denial of
+     * service in its own right: measured at ~180 ms per megabyte on the worst case for a
+     * line-oriented pattern, 40 modules of 1 MB each took 7.2 SECONDS before the scan budget was
+     * added.
+     *
+     * <p>Fixture is that worst case deliberately: one enormous line, no newline to break the scan
+     * up, and nothing in it that matches, so every alternative is tried at every position.
+     */
+    @Test
+    void testIndicatorScanCostDoesNotGrowWithModuleSize() {
+        long small = bestOfThree(VbaCostShapeTest::readMacrosTightBudget, oneLineModules(64));
+        long large = bestOfThree(VbaCostShapeTest::readMacrosTightBudget, oneLineModules(1024));
+        double ratio = (double) large / small;
+        assertTrue(ratio < 3.0,
+                "16x the module bytes cost " + String.format(Locale.ROOT, "%.1fx", ratio)
+                        + " the time (" + small / 1_000_000 + " -> " + large / 1_000_000
+                        + " ms); the indicator scan budget is not bounding the scan");
+    }
+
+    /** 40 modules, each one unmatched line of {@code kb} kilobytes. */
+    private static byte[] oneLineModules(int kb) {
+        StringBuilder line = new StringBuilder(kb * 1024 + 16);
+        while (line.length() < kb * 1024) {
+            line.append("xyzqwv0123456789");
+        }
+        VbaProjectBuilder b = new VbaProjectBuilder();
+        for (int i = 0; i < 40; i++) {
+            b.module("Mod" + i, line.toString());
+        }
+        return build(b);
+    }
+
+    /** Read with a budget small enough that the indicator reserve phase runs. */
+    private static void readMacrosTightBudget(byte[] project) {
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.readMacros(fs, new LenientVBAReader.Bounds(64 * 1024 * 1024, 20_000));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
     /** Many chunks in one module: decompression must stay linear in the compressed length. */
     @Test
     void testChunksPerModuleCostIsSubQuadratic() {

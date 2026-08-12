@@ -284,6 +284,128 @@ public class VbaBudgetTest {
     }
 
     /**
+     * STARVATION: when the budget runs out, the modules that get dropped must not be decided by
+     * the attacker-controlled ORDER of the dir stream.
+     *
+     * <p>Measured before this was fixed: identical bytes and an identical budget, with twenty
+     * filler modules and one payload module, recovered the payload when it was listed FIRST and
+     * lost it entirely when listed LAST. The flag fired either way, so it was not silent -- but
+     * "some macro source was truncated" is a very different statement from "the module containing
+     * the Shell call is the part we dropped", and the analyst cannot tell them apart.
+     *
+     * <p>What this case pins is that the scan CONTINUES past a module too big to fit rather than
+     * stopping there, so a later small payload is still reached. The separate mechanism -- keeping a
+     * too-big payload as indicator lines out of a reserve -- is pinned by
+     * {@link #testOversizePayloadIsKeptAsIndicatorLinesFromTheReserve}. Keeping them apart matters:
+     * an earlier version of this test passed with the reserve removed entirely, because in this
+     * fixture the payload is small enough to fit in what the filler modules leave behind.
+     */
+    @Test
+    void testPayloadSurvivesTheBudgetRegardlessOfModuleOrder() throws Exception {
+        String junk = "' harmless filler line\n".repeat(500);
+        String payload = "Sub AutoOpen()\n  Shell \"powershell -enc EVIL\"\nEnd Sub\n";
+
+        for (boolean payloadLast : new boolean[] {false, true}) {
+            VbaProjectBuilder b = new VbaProjectBuilder();
+            if (!payloadLast) {
+                b.module("Payload", payload);
+            }
+            for (int i = 0; i < 20; i++) {
+                b.module("Junk" + i, junk);
+            }
+            if (payloadLast) {
+                b.module("Payload", payload);
+            }
+            byte[] project = b.build();
+
+            try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+                LenientVBAReader.Bounds bounds =
+                        new LenientVBAReader.Bounds(64 * 1024 * 1024, 50_000);
+                Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+                boolean found = macros.values().stream().anyMatch(v -> v.contains("EVIL"));
+                assertTrue(found,
+                        "payload listed " + (payloadLast ? "LAST" : "FIRST")
+                                + ": the Shell line must survive the budget -- otherwise the "
+                                + "dir stream's ordering, which the author chooses, decides "
+                                + "whether the payload is reported. Kept: " + macros.keySet());
+                assertTrue(bounds.isLimitReached(),
+                        "truncation still has to be reported");
+                assertTrue(totalChars(macros) <= 50_000,
+                        "the reserve must be carved OUT of the budget, not added to it; got "
+                                + totalChars(macros));
+                assertEquals(totalChars(macros), bounds.retainedBytes(),
+                        "charged bytes must still equal stored bytes in the reserve phase");
+            }
+        }
+    }
+
+    /**
+     * A payload module too big to fit in what is left must still yield its indicator lines, out of
+     * the reserve -- otherwise "too big to fit" is a way to be dropped entirely, and an author who
+     * pads the payload module gets the same silence as before.
+     */
+    @Test
+    void testOversizePayloadIsKeptAsIndicatorLinesFromTheReserve() throws Exception {
+        // Every module is far too big to fit whole in the budget below, and each carries MANY
+        // indicator lines -- enough that the reserve and the per-module cap both bind. With one
+        // indicator line per module they would not, and two mutations (reserve added instead of
+        // carved out, per-module cap removed) survived against that weaker fixture.
+        StringBuilder body = new StringBuilder();
+        for (int line = 0; line < 600; line++) {
+            body.append("' filler line inside the payload module\n");
+            body.append("  Shell \"powershell -enc EVIL").append(line).append("\"\n");
+        }
+        VbaProjectBuilder b = new VbaProjectBuilder();
+        for (int i = 0; i < 12; i++) {
+            b.module("Mod" + i, body.toString());
+        }
+        byte[] project = b.build();
+
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+
+            long indicatorEntries = macros.values().stream()
+                    .filter(v -> v.contains(LenientVBAReader.INDICATORS_ONLY_MARKER)).count();
+            assertTrue(indicatorEntries > 0,
+                    "modules that cannot be kept whole must still contribute their indicator "
+                            + "lines; kept " + macros.keySet());
+            assertTrue(macros.values().stream().anyMatch(v -> v.contains("EVIL")),
+                    "the Shell line is the whole point; it must appear somewhere");
+            assertTrue(indicatorEntries >= 3,
+                    "the per-module cap must let SEVERAL modules share the reserve rather than "
+                            + "letting the first one take it all; got " + indicatorEntries
+                            + " indicator entries");
+            assertTrue(totalChars(macros) <= 60_000,
+                    "the reserve must be carved OUT of the budget, not added to it; got "
+                            + totalChars(macros));
+            assertEquals(totalChars(macros), bounds.retainedBytes(),
+                    "reserve entries must be charged exactly like ordinary ones");
+            assertTrue(bounds.isLimitReached(), "the truncation must still be reported");
+        }
+    }
+
+    /** A module with nothing indicator-like in it must not consume the reserve. */
+    @Test
+    void testReserveIsNotSpentOnModulesWithNoIndicators() throws Exception {
+        VbaProjectBuilder b = new VbaProjectBuilder();
+        String junk = "' harmless filler line\n".repeat(500);
+        for (int i = 0; i < 20; i++) {
+            b.module("Junk" + i, junk);
+        }
+        byte[] project = b.build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 50_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            for (Map.Entry<String, String> e : macros.entrySet()) {
+                assertFalse(e.getValue().contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                        "nothing worth keeping in " + e.getKey()
+                                + ", so no reserve entry should exist for it");
+            }
+        }
+    }
+
+    /**
      * The accumulator must equal what a consumer can see. Charging what was READ rather than what
      * was KEPT lets a module that gets collapsed as a duplicate spend budget belonging to the
      * modules after it -- and the ones after it are where a payload hides.
