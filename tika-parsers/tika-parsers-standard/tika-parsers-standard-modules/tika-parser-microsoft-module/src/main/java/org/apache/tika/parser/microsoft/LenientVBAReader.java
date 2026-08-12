@@ -951,20 +951,31 @@ public final class LenientVBAReader {
         }
         DirInfo dir = parseDir(decompress(dirRaw, 0, bounds), bounds);
         Charset charset = dir.charset;
+        // Decompress each (stream, offset) at most ONCE. A dir stream may name the same stream any
+        // number of times -- up to MAX_MODULE_REFS -- and each ref used to re-read and re-decompress
+        // it in full, so 4,096 refs to one 10 MB stream cost 4,096 decompressions of it. The result
+        // is identical for identical inputs, so this is pure memoisation: same output, bounded work.
+        Map<String, String> decoded = new java.util.HashMap<>();
         for (ModuleRef ref : dir.modules) {
             try {
                 byte[] raw = null;
+                String resolvedName = null;
                 for (String candidate : ref.candidates()) {
                     raw = readStream(vbaDir, candidate, bounds);
                     if (raw != null) {
+                        resolvedName = candidate;
                         break;
                     }
                 }
                 if (raw == null || ref.offset < 3 || ref.offset >= raw.length) {
                     continue;
                 }
-                byte[] src = decompress(raw, ref.offset, bounds);
-                String text = new String(src, charset);
+                String cacheKey = resolvedName + "\u0000" + ref.offset;
+                String text = decoded.get(cacheKey);
+                if (text == null) {
+                    text = new String(decompress(raw, ref.offset, bounds), charset);
+                    decoded.put(cacheKey, text);
+                }
                 if (!text.isBlank() && !retain(result, ref.key(), text, bounds)
                         && !retainIndicators(result, ref.key(), text, bounds)) {
                     return false;
