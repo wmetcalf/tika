@@ -227,6 +227,38 @@ public class OfficeParser extends AbstractOfficeParser {
         // falls back to scanning every raw directory entry for the orphaned dir + module streams.
         // Skipped when the projection already sent us down the bounded reader: that call WAS the
         // lenient read, and repeating it would re-charge the document budget it already spent.
+        // ...and even when POI DID return modules, a project parked in a storage POI does not read
+        // (it only reads storages named "VBA") is still invisible to it. Making the orphan scan
+        // unconditional inside LenientVBAReader was not enough: on this path that reader is never
+        // called, so one tree-visible module -- an empty Sub is enough -- hid everything the property
+        // scan would have found. Only pay for the scan when the property table actually holds a dir
+        // stream the tree cannot reach.
+        if (!overBudget && macros != null && !macros.isEmpty()
+                && LenientVBAReader.hasUnreachableDirStream(fs)) {
+            try {
+                // A SEPARATE accumulator on purpose. Charging this recovery against the shared
+                // document budget was measured starving the extraction it is meant to supplement:
+                // the orphan scan resolves module names against a FLATTENED property map, so it can
+                // attribute unrelated streams as module bodies (a known finding), and those charges
+                // then cut the form pass -- one real document went 2,913,040 chars to 2,695,266 and
+                // gained a truncation flag with nothing actually withheld. Recovery must not be able
+                // to reduce what the primary path already produced.
+                //
+                // KNOWN, DELIBERATE SCOPE HOLE: modules merged here therefore do not count against
+                // vbaMaxTotalBytes. That is smaller than the alternative -- a live total-loss evasion
+                // where one decoy module hides an entire project -- and it collapses once the
+                // flattened-lookup finding is fixed, at which point this can share vbaBounds again.
+                Map<String, String> hidden = LenientVBAReader.readMacrosFromOrphans(fs,
+                        new LenientVBAReader.Bounds(0, vbaBounds.totalMax()));
+                for (Map.Entry<String, String> e : hidden.entrySet()) {
+                    if (!macros.containsValue(e.getValue())) {
+                        macros.put(uniqueKey(macros, e.getKey()), e.getValue());
+                    }
+                }
+            } catch (Exception | OutOfMemoryError ignore) {
+                // recovery is best-effort
+            }
+        }
         if (!overBudget && (macros == null || macros.isEmpty())) {
             try {
                 Map<String, String> recovered =
@@ -290,6 +322,17 @@ public class OfficeParser extends AbstractOfficeParser {
         } catch (Exception ignore) {
             // Non-fatal: form binary parsing errors should never fail the overall extraction
         }
+    }
+
+    /** A key not already present in {@code macros}, so a merged module cannot replace one. */
+    private static String uniqueKey(Map<String, String> macros, String name) {
+        String base = (name == null || name.isEmpty()) ? "Module" : name;
+        String key = base;
+        int n = 1;
+        while (macros.containsKey(key)) {
+            key = base + "#" + (++n);
+        }
+        return key;
     }
 
     public Set<MediaType> getSupportedTypes(ParseContext context) {

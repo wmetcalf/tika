@@ -17,6 +17,7 @@
 package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -176,6 +177,61 @@ public class VbaOle2CarrierTest {
         assertEquals("true", tight.get("msoffice:vba-capture-limit-reached"),
                 "the loss must be reported on the DOCUMENT's metadata, not on an embedded child");
         assertNotNull(tight.get(TikaCoreProperties.TRUNCATED_METADATA));
+    }
+
+    /**
+     * A decoy module that POI reads successfully must not suppress recovery of a project POI cannot
+     * see.
+     *
+     * <p>{@code OfficeParser} only calls the lenient reader when POI returned NOTHING
+     * ({@code if (!overBudget && (macros == null || macros.isEmpty()))}). The orphan scan was made
+     * unconditional inside {@code LenientVBAReader.readMacros}, but on the primary path that method
+     * is never called at all -- so one tree-visible module, an empty Sub is enough, still hides
+     * everything the property-table scan would find. The fix has to be at the layer that decides
+     * whether to look.
+     *
+     * <p>The hidden project lives in a storage NOT named "VBA", which POI's {@code findMacros}
+     * ignores by construction while the raw property scan still reaches its dir stream.
+     */
+    @Test
+    void testADecoyModuleDoesNotSuppressRecoveryOfAProjectPoiCannotSee() throws Exception {
+        byte[] decoy = new VbaProjectBuilder().module("Decoy", DECOY).build();
+        byte[] hidden = new VbaProjectBuilder().module("Payload", PAYLOAD).build();
+        byte[] doc = ole2CarrierWithHiddenStorage(decoy, hidden, "MBD00000000");
+
+        // Fixture validity: POI must succeed AND must not see the payload, else this proves nothing.
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc));
+             org.apache.poi.poifs.macros.VBAMacroReader reader =
+                     new org.apache.poi.poifs.macros.VBAMacroReader(fs)) {
+            java.util.Map<String, String> poi = reader.readMacros();
+            assertFalse(poi.isEmpty(), "fixture: POI must read the decoy");
+            assertTrue(poi.values().stream().noneMatch(v -> v.contains("ole2-carrier-marker")),
+                    "fixture: POI must NOT see the hidden project, else the test is vacuous");
+        }
+
+        String text = parse(doc, new Metadata(), null);
+        assertTrue(text.contains("Harmless"), "the decoy must still be reported");
+        assertTrue(text.contains("ole2-carrier-marker"),
+                "a project POI cannot see must still be recovered even though POI returned a "
+                        + "module -- otherwise one decoy hides the payload; got " + text.length()
+                        + " chars");
+    }
+
+    /** Carrier holding {@code visible} at Macros/VBA and {@code hidden} under {@code storageName}. */
+    private static byte[] ole2CarrierWithHiddenStorage(byte[] visible, byte[] hidden,
+                                                       String storageName) throws Exception {
+        byte[] carrier = ole2Carrier(visible);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(carrier));
+             POIFSFileSystem src = new POIFSFileSystem(new ByteArrayInputStream(hidden))) {
+            DirectoryEntry to = fs.getRoot().createDirectory(storageName);
+            DirectoryEntry from = (DirectoryEntry) src.getRoot().getEntry("VBA");
+            for (Entry e : from) {
+                copy(e, to);
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            fs.writeFilesystem(out);
+            return out.toByteArray();
+        }
     }
 
     /** The real carrier, unmodified, must remain unflagged -- the negative control for the wire. */
