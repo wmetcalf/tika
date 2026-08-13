@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -98,6 +99,11 @@ public class VbaFormBoundsTest {
     /**
      * The budget is shared with macro source, not a second allowance. Two ceilings that each admit
      * the full amount are not a document ceiling.
+     *
+     * <p>This used to charge in the loop, mirroring the caller. The charge now lives inside
+     * {@link VbaFormParser#extractFormVariables} -- so that a spent budget stops the PARSE and not
+     * only the emission -- which makes the property here stronger: what the parser hands back is
+     * exactly what it charged, so a consumer that emits all of it cannot exceed the ceiling.
      */
     @Test
     void testFormsAndModulesShareOneBudget() throws Exception {
@@ -107,17 +113,14 @@ public class VbaFormBoundsTest {
             long emitted = 0;
             for (VbaFormParser.FormModuleResult form
                     : VbaFormParser.extractFormVariables(fs, bounds)) {
-                String text = form.toText();
-                if (!bounds.hasRoomFor(text.length())) {
-                    break;
-                }
-                bounds.charge(text.length());
-                emitted += text.length();
+                emitted += form.toText().length();
             }
+            assertTrue(emitted > 0, "some forms must survive a 5,000-byte budget");
             assertTrue(emitted <= 5000,
                     "retained form text must fit the document budget; got " + emitted);
             assertEquals(emitted, bounds.retainedBytes(),
-                    "charged bytes must equal retained bytes");
+                    "the parser must charge exactly what it hands back, so a caller that emits "
+                            + "all of it cannot bust the ceiling");
         }
     }
 
@@ -189,6 +192,79 @@ public class VbaFormBoundsTest {
             parse(readResource(name), md, null);
             assertNull(md.get("msoffice:vba-capture-limit-reached"),
                     name + ": no bound fired, so no flag may be set");
+        }
+    }
+
+    // ── the budget must stop the PARSE, not only the emission ────────────────
+
+    /**
+     * A spent budget must stop forms being PARSED, not merely stop them being emitted.
+     *
+     * <p>Every form in the document was parsed and its full control text built before the caller
+     * charged the first byte, so the ceiling bounded what was written out and not what was held in
+     * memory at once. A document may carry up to {@code MAX_FORMS} form storages, so a budget that
+     * admits one of them still materialised all of them.
+     *
+     * <p>No output-shaped assertion can see this defect -- the emitted total was already correct --
+     * so this counts what the parser HANDS BACK. What remains, by construction, is that the form
+     * currently being parsed is materialised before its size is known: that is unavoidable (the
+     * length is not knowable without parsing) and is bounded by the per-stream cap.
+     */
+    @Test
+    void testFormParsingStopsOnceTheBudgetIsSpent() throws Exception {
+        byte[] project = formProject(40);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds tight = new LenientVBAReader.Bounds(1024 * 1024, 3000);
+            List<VbaFormParser.FormModuleResult> got =
+                    VbaFormParser.extractFormVariables(fs, tight);
+            assertTrue(got.size() < 40,
+                    "a 3,000-byte budget must stop the parse long before all 40 forms are built; "
+                            + "got " + got.size());
+            assertFalse(got.isEmpty(),
+                    "and it must not be all-or-nothing: the forms that fit must come back");
+            assertTrue(tight.isLimitReached(),
+                    "forms not read because the budget ran out are evidence loss; report it");
+        }
+        // NEGATIVE CONTROL: with room, every form must still be parsed and returned. Without this
+        // the assertions above pass against a parser that returns nothing at all.
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds roomy = new LenientVBAReader.Bounds();
+            assertEquals(40, VbaFormParser.extractFormVariables(fs, roomy).size(),
+                    "a roomy budget must still yield all 40 forms");
+            assertFalse(roomy.isLimitReached(), "nothing was withheld, so no flag");
+        }
+    }
+
+    /**
+     * The form-count cap must hold for a WIDE storage as well as a deep one.
+     *
+     * <p>{@code MAX_FORMS} was consulted only when ENTERING a directory, while the sibling loop
+     * added form storages with no check at all -- so one storage holding more than the cap's worth
+     * of form children was admitted whole, and the cap bounded only how many DIRECTORIES the walk
+     * would descend into. The cheap shape: sibling storages cost a CFBF property each.
+     */
+    @Test
+    void testFormCountCapStopsAWideSiblingSet() throws Exception {
+        int wide = VbaFormParser.MAX_FORMS + 200;
+        byte[] poifs;
+        try (POIFSFileSystem fs = new POIFSFileSystem()) {
+            DirectoryEntry macros = fs.getRoot().createDirectory("Macros");
+            for (int i = 0; i < wide; i++) {
+                macros.createDirectory("UserForm" + i)
+                        .createDocument("f", new ByteArrayInputStream(new byte[] {0}));
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            fs.writeFilesystem(bos);
+            poifs = bos.toByteArray();
+        }
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(poifs))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            List<DirectoryEntry> found = VbaFormParser.findFormDirs(fs, bounds);
+            assertTrue(found.size() <= VbaFormParser.MAX_FORMS,
+                    "a single wide storage must not be admitted past the cap; got " + found.size()
+                            + " for a cap of " + VbaFormParser.MAX_FORMS);
+            assertTrue(bounds.isLimitReached(),
+                    "forms dropped by the count cap are evidence loss and must be reported");
         }
     }
 

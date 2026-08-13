@@ -104,6 +104,14 @@ public final class VbaFormParser {
      * produced the same observable result as a form with no controls: no flag, no warning, nothing.
      * A UserForm we could not read is precisely a UserForm whose hidden ControlTipText/Tag we
      * cannot vouch for, which is the opposite of "nothing to see".
+     *
+     * <p>CHARGING HAPPENS HERE, and callers must not charge again. It used to happen in the caller,
+     * after this method had parsed EVERY form in the document and built each one's control text --
+     * so the ceiling bounded what was written out and not what was held in memory, and a budget
+     * admitting one form still materialised all {@link #MAX_FORMS} of them. Charging as each form is
+     * parsed lets the walk stop. What is still materialised before its size is known is the ONE form
+     * being parsed, which cannot be avoided (the length is not knowable without parsing) and is
+     * bounded by the per-stream cap.
      */
     public static List<FormModuleResult> extractFormVariables(POIFSFileSystem fs,
                                                               LenientVBAReader.Bounds bounds) {
@@ -112,7 +120,20 @@ public final class VbaFormParser {
             for (DirectoryEntry formDir : findFormDirs(fs, bounds)) {
                 String name = formDir.getName();
                 try {
-                    results.add(new FormModuleResult(name, parseFormDir(formDir, bounds)));
+                    FormModuleResult result = new FormModuleResult(name,
+                            parseFormDir(formDir, bounds));
+                    String text = result.toText();
+                    if (text.isBlank()) {
+                        continue;
+                    }
+                    if (!bounds.hasRoomFor(text.length())) {
+                        bounds.mark("UserForm control properties reached the " + bounds.totalMax()
+                                + "-byte per-document bound at '" + name + "'; that form and any "
+                                + "later one were not read");
+                        break;
+                    }
+                    bounds.charge(text.length());
+                    results.add(result);
                 } catch (Exception | OutOfMemoryError e) {
                     LOG.fine("VbaFormParser: error parsing form '" + name + "': "
                             + e.getMessage());
@@ -151,7 +172,7 @@ public final class VbaFormParser {
     private static final int MAX_DIR_DEPTH = 32;
     /** Cap on how many UserForm storages one document may contribute (observed max in a
      *  6,574-document macro corpus: 260). Firing it is reported, never silent. */
-    private static final int MAX_FORMS = 4096;
+    static final int MAX_FORMS = 4096;
 
     private static void collectFormDirs(DirectoryEntry dir, List<DirectoryEntry> out, int depth,
                                         LenientVBAReader.Bounds bounds) {
@@ -181,6 +202,16 @@ public final class VbaFormParser {
             // a form storage itself.
             boolean containerOnly = "Macros".equals(name) || "_VBA_PROJECT_CUR".equals(name);
             if (!containerOnly && sub.hasEntry("f")) {
+                // The cap has to be enforced HERE, not only on entry to a directory. Checking it
+                // only at the top of this method bounded how many directories the walk descends
+                // into and not how many forms it admits, so ONE storage holding more than the cap's
+                // worth of form children was taken whole -- 4,296 admitted against a cap of 4,096.
+                // Sibling storages cost a CFBF property each, so wide is as cheap as deep.
+                if (out.size() >= MAX_FORMS) {
+                    bounds.mark("UserForm count exceeded " + MAX_FORMS
+                            + "; later forms were not read");
+                    return;
+                }
                 out.add(sub);
             }
             collectFormDirs(sub, out, depth + 1, bounds);
@@ -828,8 +859,23 @@ public final class VbaFormParser {
             this.moduleName = moduleName;
             this.controls = Collections.unmodifiableList(controls);
         }
-        /** Returns a readable text dump of all controls with non-empty payload fields. */
+        /**
+         * Returns a readable text dump of all controls with non-empty payload fields.
+         *
+         * <p>Cached: it is the value the budget is charged on and the value the caller emits, and
+         * building it twice on a form with tens of thousands of controls is the cost this class is
+         * trying to bound.
+         */
         public String toText() {
+            if (text == null) {
+                text = buildText();
+            }
+            return text;
+        }
+
+        private String text;
+
+        private String buildText() {
             StringBuilder sb = new StringBuilder();
             sb.append("=== UserForm: ").append(moduleName).append(" ===\n");
             for (FormControl c : controls) {

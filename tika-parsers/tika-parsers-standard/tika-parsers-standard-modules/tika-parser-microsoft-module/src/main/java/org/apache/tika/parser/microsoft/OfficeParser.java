@@ -351,18 +351,16 @@ public class OfficeParser extends AbstractOfficeParser {
         // ceiling. This surface used to be bounded by nothing at all, which mattered more once
         // OLE2 UserForm discovery started working -- documents that previously yielded no form
         // output at all now yield hundreds of kilobytes.
+        //
+        // The charging moved INTO extractFormVariables and must not be repeated here. Doing it in
+        // this loop meant every form in the document was parsed and its control text built before
+        // the first byte was charged, so the ceiling bounded the emission and not the memory. What
+        // comes back has already been charged and already fits.
         try {
             for (VbaFormParser.FormModuleResult form
                     : VbaFormParser.extractFormVariables(fs, vbaBounds)) {
                 String text = form.toText();
                 if (text.isBlank()) continue;
-                if (!vbaBounds.hasRoomFor(text.length())) {
-                    vbaBounds.mark("UserForm control properties reached the "
-                            + vbaBounds.totalMax() + "-byte per-document bound; later forms "
-                            + "were dropped");
-                    break;
-                }
-                vbaBounds.charge(text.length());
                 Metadata m = Metadata.newInstance(context);
                 m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
                         TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
