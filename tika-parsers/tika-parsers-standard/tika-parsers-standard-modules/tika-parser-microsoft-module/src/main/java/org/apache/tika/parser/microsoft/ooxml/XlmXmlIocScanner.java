@@ -179,6 +179,19 @@ final class XlmXmlIocScanner {
      */
     private static final class IocSink {
         private final List<String> out = new ArrayList<>();
+        /**
+         * Every indicator already emitted, for O(1) duplicate rejection.
+         *
+         * <p>Without this a leftovers pass is impossible: the previous attempt at one re-emitted
+         * everything the fair pass had already emitted -- measured on the corpus as EXEC 239 -> 478
+         * and FOPEN 22 -> 44, exactly 2x, all duplicates -- and was reverted. The failure was
+         * DUPLICATION, not the idea, so removing duplication is what makes the idea work.
+         *
+         * <p>Deduplicating is also right on its own terms: two cells holding the same EXEC are one
+         * piece of evidence, which is the same rule the cell-value index above already applies. It
+         * frees budget for DISTINCT indicators, which is the only kind worth spending it on.
+         */
+        private final java.util.Set<String> seen = new java.util.HashSet<>();
         final int maxEntries;
         private final int maxChars;
         private long chars;
@@ -205,7 +218,18 @@ final class XlmXmlIocScanner {
                 // happened yet.
                 return false;
             }
+            if (!seen.add(ioc)) {
+                // A duplicate is NOT a refusal: nothing was lost, so `limited` must stay clear.
+                return false;
+            }
             if (out.size() >= maxEntries || chars + ioc.length() > maxChars) {
+                // Un-record it. `seen` must hold only what was ACCEPTED, for two reasons: a
+                // refused entry must not block a later attempt that might fit, and the set has to
+                // stay bounded by maxEntries. Retaining rejects instead was measured growing
+                // `seen` to 200,000 strings with maxIocChars=1 -- a rejection on the CHAR budget
+                // leaves out.size() below its cap, so isFull() stays false and scanning continues,
+                // and the set ends up mirroring the document's whole value corpus.
+                seen.remove(ioc);
                 limited = true;
                 return false;
             }
@@ -223,6 +247,27 @@ final class XlmXmlIocScanner {
          * stop matching because the sink is full DO know a match existed -- {@code m.find()} already
          * returned true -- so they say so here rather than leaving the loss silent.
          */
+        /**
+         * Offer an indicator; @return false when scanning should stop.
+         *
+         * <p>The distinction that makes a leftovers pass possible: a match ALREADY EMITTED is not a
+         * loss. The leftovers pass necessarily re-finds everything the fair pass emitted, so testing
+         * "sink full + a match exists" would report those re-finds as dropped evidence and put
+         * TRUNCATED_METADATA on a complete extraction -- which is exactly what happened the first
+         * time this was wired up.
+         */
+        boolean offer(String ioc) {
+            if (ioc != null && seen.contains(ioc)) {
+                return true;   // already emitted; nothing lost, keep going
+            }
+            if (isFull()) {
+                markLimited();  // a NEW match that cannot fit: that is the loss
+                return false;
+            }
+            add(ioc);
+            return true;
+        }
+
         void markLimited() {
             limited = true;
         }
@@ -300,7 +345,12 @@ final class XlmXmlIocScanner {
         // retained somewhere the resolver never looked, so preserving it did nothing for detection.
         // Strip the suffix and keep EVERY candidate -- we cannot know which one Excel would honour,
         // and an analyst needs to see both.
-        Map<String, List<String>> shortRef = new LinkedHashMap<>();
+        // LinkedHashSet, not ArrayList: insertion-ordered like before, but membership is O(1).
+        // A linear contains() per insertion is quadratic in the retained value count, which the
+        // configuration lets an author drive into the hundreds of thousands -- a CPU denial of
+        // service reachable from a small crafted sheet full of duplicate cell references. Reported
+        // by an external reviewer on PR #18.
+        Map<String, java.util.LinkedHashSet<String>> shortRef = new LinkedHashMap<>();
         if (cellValues != null) {
             for (Map.Entry<String, String> e : cellValues.entrySet()) {
                 String k = e.getKey();
@@ -311,15 +361,12 @@ final class XlmXmlIocScanner {
                     if (hash > 0) {
                         ref = ref.substring(0, hash);
                     }
-                    List<String> candidates =
-                            shortRef.computeIfAbsent(ref, x -> new ArrayList<>());
                     // Distinct values only. Two duplicate cells holding the SAME text are one
                     // piece of evidence; emitting an indicator per occurrence just doubled
                     // identical lines (measured +2 EXEC lines corpus-wide with no new distinct
                     // indicator). Different values are all kept -- that is the point.
-                    if (!candidates.contains(e.getValue())) {
-                        candidates.add(e.getValue());
-                    }
+                    shortRef.computeIfAbsent(ref, x -> new java.util.LinkedHashSet<>())
+                            .add(e.getValue());
                 }
             }
         }
@@ -356,16 +403,27 @@ final class XlmXmlIocScanner {
         // represented. A floor of 1 spreads across as many distinct cells as the budget allows,
         // which is the most fairness arithmetic permits. When there IS room the share scales up, so
         // an ordinary document defers nothing.
-        int quotaShare = formulas.isEmpty()
-                ? MIN_HIGH_VALUE_PER_CELL
-                : Math.max(1, sink.maxEntries / formulas.size());
-        for (int pass = 0; pass < 2; pass++) {
-            boolean highValuePass = pass == 0;
+        // No formulas.isEmpty() branch: an empty map returned early above, so that arm was dead
+        // and made MIN_HIGH_VALUE_PER_CELL look like it governed something here. Reported by an
+        // external reviewer on PR #18.
+        int quotaShare = Math.max(1, sink.maxEntries / formulas.size());
+        // THREE passes: high-value under the fair quota, high-value with the quota lifted, then
+        // bulk. The middle one is the leftovers pass, and it is back because the adaptive quota
+        // guarantees each cell a share without ever RECLAIMING the shares nobody used. Reported by
+        // an external reviewer on PR #18: with 100 cells and a 4,096-entry budget the quota is 40,
+        // so a cell holding 100 EXEC calls emits 40 and drops 60 -- while the other 99 cells
+        // contribute nothing and roughly 4,000 slots go unspent. Worse, a quota refusal deliberately
+        // does not set `limited` (it is a deferral, not a loss), so those 60 vanished in silence.
+        //
+        // The pass is only safe now because add() deduplicates; see IocSink.seen for what happened
+        // the last time it existed without that.
+        for (int pass = 0; pass < 3; pass++) {
+            boolean highValuePass = pass <= 1;
             // Report side-effects ONCE, on the first pass only: the later passes re-walk the
             // same formulas, so reporting in each would double-count and spend a warning slot
             // per pass.
             boolean reportingPass = pass == 0;
-            int quota = highValuePass ? quotaShare : 0;
+            int quota = pass == 0 ? quotaShare : 0;
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
             sink.startCell(quota);
             // Deliberately NO early break on a full sink, and no `limited` set from saturation.
@@ -413,17 +471,22 @@ final class XlmXmlIocScanner {
             addAll(sink, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXEC(A1) — resolve through cellValues if known
             for (Matcher m = EXEC_REF.matcher(formula); m.find(); ) {
-                if (sink.isFull()) {
-                    sink.markLimited();
-                    break;
-                }
                 String ref = m.group(2).toUpperCase(java.util.Locale.ROOT);
-                List<String> candidates = shortRef.get(ref);
+                java.util.Collection<String> candidates = shortRef.get(ref);
                 if (candidates == null || candidates.isEmpty()) {
-                    sink.add("EXEC: <ref " + ref + ">");
+                    if (!sink.offer("EXEC: <ref " + ref + ">")) {
+                        break;
+                    }
                 } else {
+                    boolean room = true;
                     for (String resolved : candidates) {
-                        sink.add("EXEC: " + unq(resolved));
+                        room = sink.offer("EXEC: " + unq(resolved));
+                        if (!room) {
+                            break;
+                        }
+                    }
+                    if (!room) {
+                        break;
                     }
                 }
             }
@@ -433,13 +496,11 @@ final class XlmXmlIocScanner {
             addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // FOPEN("path", mode)
             for (Matcher m = FOPEN.matcher(formula); m.find(); ) {
-                if (sink.isFull()) {
-                    sink.markLimited();
-                    break;
-                }
                 String path = unq(m.group(1));
                 String mode = m.group(2) != null ? m.group(2) : "?";
-                sink.add("FOPEN: " + path + " (mode " + mode + ")");
+                if (!sink.offer("FOPEN: " + path + " (mode " + mode + ")")) {
+                    break;
+                }
             }
             }
             if (highValuePass) {
@@ -491,24 +552,36 @@ final class XlmXmlIocScanner {
             // respected) even with maxIocEntries=1, which defeated the whole purpose of this
             // budget. The dedupe set is now bounded by the sink, because we stop scanning once
             // the sink cannot accept anything further.
-            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            // No local dedupe set any more: IocSink.add() deduplicates at the single choke point
+            // every emission path goes through, and bounds itself by what was ACCEPTED. A second
+            // set here would be a parallel mechanism to keep in step with it.
             for (String val : cellValues.values()) {
                 if (sink.isFull()) {
-                    sink.limited = true;
+                    // Unlike the formula loop this one DOES stop, and does report: the value corpus
+                    // runs to tens of thousands of entries, and testUnfittableBudgetStopsScanningTheValueCorpus
+                    // pins that we must not walk it all building rejects. Abandoning input we have
+                    // not examined is a possible loss we cannot rule out, so it is reported.
+                    sink.markLimited();
                     break;
                 }
                 if (val == null || val.isEmpty()) continue;
                 Matcher m;
-                for (m = URL.matcher(val); m.find() && !sink.isFull(); ) {
-                    emitOnce(sink, seen, "URL: " + m.group(0));
+                for (m = URL.matcher(val); m.find(); ) {
+                    if (!sink.offer("URL: " + m.group(0))) {
+                        break;
+                    }
                 }
                 // IP_HOST already requires 4 dotted octets in its main pattern, so every match is
                 // shape-valid by construction; no second-pass filter needed.
-                for (m = IP_HOST.matcher(val); m.find() && !sink.isFull(); ) {
-                    emitOnce(sink, seen, "IPV4: " + m.group(0));
+                for (m = IP_HOST.matcher(val); m.find(); ) {
+                    if (!sink.offer("IPV4: " + m.group(0))) {
+                        break;
+                    }
                 }
-                for (m = DROP_PATH.matcher(val); m.find() && !sink.isFull(); ) {
-                    emitOnce(sink, seen, "DROP_PATH: " + m.group(0));
+                for (m = DROP_PATH.matcher(val); m.find(); ) {
+                    if (!sink.offer("DROP_PATH: " + m.group(0))) {
+                        break;
+                    }
                 }
             }
         }
@@ -572,21 +645,6 @@ final class XlmXmlIocScanner {
     @FunctionalInterface
     private interface Fmt { String apply(Matcher m); }
 
-    /** Dedupe then emit. The set is bounded by the sink: scanning stops when it is full. */
-    private static void emitOnce(IocSink sink, java.util.Set<String> seen, String ioc) {
-        if (seen.contains(ioc)) {
-            return;
-        }
-        // Record ONLY what was accepted. Adding to `seen` first meant every distinct REJECTED
-        // entry stayed retained, and a rejection on the CHAR budget leaves out.size() and chars
-        // below their caps so isFull() stayed false and scanning continued -- measured, `seen`
-        // grew to 200,000 strings with maxIocChars=1, so the set still mirrored a whole document's
-        // value corpus. Bounding `seen` by ACCEPTANCE bounds it by maxIocEntries.
-        if (sink.add(ioc)) {
-            seen.add(ioc);
-        }
-    }
-
     private static void addAll(IocSink sink, Matcher m, Fmt fmt) {
         // Stop on a full sink. Without this, ONE cell packed with high-value matches consumed the
         // whole entry budget inside pass 0 and later cells' EXEC never got a slot: measured, a cell
@@ -595,13 +653,9 @@ final class XlmXmlIocScanner {
         // CATEGORIES, not cells, so the per-cell check at the top of the loop was not enough --
         // fourth instance of this starvation class in this file.
         while (m.find()) {
-            if (sink.isFull()) {
-                // A match EXISTS and there is no room for it. Stopping silently here is how a
-                // genuine loss went unreported: add() never ran, so nothing set `limited`.
-                sink.markLimited();
+            if (!sink.offer(fmt.apply(m))) {
                 break;
             }
-            sink.add(fmt.apply(m));
         }
     }
 

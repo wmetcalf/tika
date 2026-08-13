@@ -1566,14 +1566,26 @@ class XlmEvasionResilienceTest {
                 "with the ceiling raised to the capture cap the payload must be found");
     }
 
-    /** GATE 2 for this budget: emitted entries must never exceed either bound. */
+    /**
+     * GATE 2 for this budget: emitted entries must never exceed either bound.
+     *
+     * <p>The formulas must yield DISTINCT indicators. This fixture used 400 copies of
+     * {@code =EXEC(A1)} against a single A1 value, which pressured the bound only because the
+     * scanner emitted the same indicator 400 times; once duplicates are collapsed -- 400 copies of
+     * one EXEC being one piece of evidence -- that fixture produces exactly ONE entry, drops
+     * nothing, and stops testing either bound. Distinct payloads keep the gate meaning what its
+     * name says.
+     */
     @Test
     void testIocOutputRespectsBothBoundsAndReportsTheDrop() {
         Map<String, String> formulas = new java.util.LinkedHashMap<>();
         for (int i = 1; i <= 400; i++) {
-            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(A1)");
+            formulas.put("Macro1:" + i + ":A" + i, "=EXEC(A" + i + ")");
         }
-        Map<String, String> values = Map.of("Sheet1:1:A1", "X".repeat(1024));
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        for (int i = 1; i <= 400; i++) {
+            values.put("Sheet1:" + i + ":A" + i, "payload-" + i + "-" + "X".repeat(1024));
+        }
 
         int[] limited = new int[1];
         List<String> bounded = XlmXmlIocScanner.scan(formulas, values,
