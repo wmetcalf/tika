@@ -452,6 +452,15 @@ public final class LenientVBAReader {
             this.offset = offset;
         }
 
+        /**
+         * The name the body's {@code Attribute VB_Name} should carry: MODULENAME, which is what the
+         * VBA compiler writes into the source. Used to verify a relocated container really belongs
+         * to THIS module rather than to another one that happens to live in the same stream.
+         */
+        String expectedBodyName() {
+            return displayName != null ? displayName : streamName;
+        }
+
         /** Names to try, in order, when locating this module's stream. */
         String[] candidates() {
             if (streamName == null) {
@@ -531,7 +540,9 @@ public final class LenientVBAReader {
                     if (raw == null || offset < 3 || offset >= raw.length) {
                         continue;
                     }
-                    String text = new String(decompress(raw, offset, bounds), charset);
+                    String text = new String(
+                            decompressModuleBody(raw, offset, bounds, ref.expectedBodyName()),
+                            charset);
                     if (!text.isBlank() && !retain(result, ref.key(), text, bounds)
                             && !retainIndicators(result, ref.key(), text, bounds)) {
                         return false;
@@ -1017,7 +1028,9 @@ public final class LenientVBAReader {
                 String cacheKey = resolvedName + "\u0000" + ref.offset;
                 String text = decoded.get(cacheKey);
                 if (text == null) {
-                    text = new String(decompress(raw, ref.offset, bounds), charset);
+                    text = new String(
+                            decompressModuleBody(raw, ref.offset, bounds, ref.expectedBodyName()),
+                            charset);
                     decoded.put(cacheKey, text);
                 }
                 if (!text.isBlank() && !retain(result, ref.key(), text, bounds)
@@ -1156,6 +1169,180 @@ public final class LenientVBAReader {
      */
     static byte[] decompress(byte[] compressed, int startOffset) throws IOException {
         return decompress(compressed, startOffset, new Bounds());
+    }
+
+    /**
+     * How far either side of a declared MODULEOFFSET to look for the container it should have
+     * pointed at.
+     *
+     * <p>DELIBERATELY TINY, and the size is the whole safety argument. The measured distances at
+     * which a container exists at all are 8, -54, -302, -2028, 1805, 3313 and 6595, so a wider search
+     * finds more -- and the corpus showed what it finds: a stream can hold ANOTHER container for the
+     * same module, a stale or partial copy, and swapping it in cost three documents an exec indicator
+     * (3 to 2, 3 to 2, 9 to 8), gave four documents a truncation flag with nothing withheld, and took
+     * one from 16,115 characters to 3,483.
+     *
+     * <p>Requiring the relocated body to declare the module's own name does NOT rescue the wider
+     * search: those copies declare the same name, being copies of the same module, and the arm with
+     * name matching reproduced the wide arm's damage byte for byte. Two guards that fail together are
+     * one guard. So the bound is the distance: at 8 bytes the only thing reachable is the container
+     * the offset was meant to point INTO -- signature plus a 2-byte header, three bytes of skew in
+     * the observed shape -- and a stale copy elsewhere in the stream is out of reach by construction.
+     * That recovers 3 of the 42 affected refs rather than 10, and the 3 are verified correct.
+     */
+    private static final int MODULE_OFFSET_SEARCH_WINDOW = 8;
+
+    /**
+     * Decompress a MODULE BODY, relocating the container start when the declared MODULEOFFSET does
+     * not point at one.
+     *
+     * <p>{@link #decompress} treats "no 0x01 at the offset" as "this stream is stored uncompressed"
+     * and returns the bytes verbatim. When the offset instead points a few bytes INTO a compressed
+     * container, that fallback hands back COMPRESSED bytes as macro source -- and the result is not
+     * obviously broken, which is why it survived review: MS-OVBA writes a FlagByte before every 8
+     * tokens, so a mostly-literal chunk reads as the real text with one junk byte every 8
+     * characters. Readable enough to pass for a macro, broken enough that every consumer matching a
+     * pattern fails: a URL, a Shell line or a base64 blob each acquire a stray byte partway through.
+     *
+     * <p>Measured on the 6,574-document corpus before this existed: 102 documents (1.6%) returned
+     * module bodies declaring no {@code Attribute VB_Name} at all, which a genuine module body
+     * always carries. Found by probing for bodies whose content disagrees with their declared name,
+     * not by the review panel.
+     *
+     * <p>Relocation must PROVE itself, because a search for 0x01 followed by a plausible header
+     * finds "containers" in arbitrary binary -- decompressing those yields megabytes of plausible
+     * nothing, and an earlier byte-by-byte resync experiment on this branch lost 631 of 659
+     * procedures on one document exactly that way.
+     *
+     * <p>"Declares SOME module name" is not a strong enough gate, and the corpus proved it. A stream
+     * can hold ANOTHER module's container, so a search over 64 candidates found clean source
+     * belonging to a different module and swapped a complete body for it. Measured cost of the weaker
+     * gate: three documents lost an exec indicator (3 to 2, 3 to 2, 9 to 8), four gained a truncation
+     * flag with nothing actually withheld, and one fell from 16,115 characters to 3,483 -- the same
+     * document and the same magnitude as an earlier reverted experiment on this branch, which is
+     * itself a clue about that unexplained result. A relocated body must therefore declare the name
+     * of the module being RESOLVED; anything weaker leaves the original fallback untouched.
+     */
+    private static byte[] decompressModuleBody(byte[] raw, int offset, Bounds bounds,
+                                               String expectedName) throws IOException {
+        byte[] direct = decompress(raw, offset, bounds);
+        if (offset >= 0 && offset < raw.length && (raw[offset] & 0xFF) == 0x01) {
+            return direct; // the offset really is on a container; nothing to relocate
+        }
+        if (declaresModuleName(direct)) {
+            return direct; // genuinely uncompressed source: leave it exactly as it was
+        }
+        // Nearest-first, both directions, within a window small enough that only the container the
+        // offset points INTO is reachable. The window also bounds the cost: at most 16 candidate
+        // positions, so no per-candidate decompression storm is possible.
+        for (int d = 1; d <= MODULE_OFFSET_SEARCH_WINDOW; d++) {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                byte[] out = containerAt(raw, offset + sign * d, bounds, expectedName);
+                if (out != null) {
+                    return out;
+                }
+            }
+        }
+        return direct;
+    }
+
+    /** Cheap O(1) test: could a container plausibly start here? Keeps the scan off the decompressor. */
+    private static boolean isCandidateStart(byte[] raw, int start) {
+        if (start < 0 || start + 3 > raw.length || (raw[start] & 0xFF) != 0x01) {
+            return false;
+        }
+        int header = (raw[start + 1] & 0xFF) | ((raw[start + 2] & 0xFF) << 8);
+        return ((header >> 12) & 0x07) == 0b011;
+    }
+
+    /**
+     * Decompress at {@code start}, returning the result only if it proves itself to be the body of
+     * the module named {@code expectedName} -- not merely the body of some module.
+     */
+    private static byte[] containerAt(byte[] raw, int start, Bounds bounds, String expectedName) {
+        if (!isCandidateStart(raw, start)) {
+            return null;
+        }
+        try {
+            byte[] out = decompress(raw, start, bounds);
+            return declaresName(out, expectedName) ? out : null;
+        } catch (Exception | OutOfMemoryError e) {
+            return null;
+        }
+    }
+
+    /** Whether the body's {@code Attribute VB_Name} names exactly {@code expected}. */
+    private static boolean declaresName(byte[] body, String expected) {
+        if (body == null || expected == null || expected.isEmpty()) {
+            return false;
+        }
+        String declared = declaredName(body);
+        return declared != null && declared.equalsIgnoreCase(expected);
+    }
+
+    /**
+     * The name a body declares for itself, or null. Parsed from the first
+     * {@code Attribute VB_Name = "..."} in the first 8 KB, ASCII-matched so it does not depend on
+     * PROJECTCODEPAGE having been resolved first.
+     */
+    private static String declaredName(byte[] body) {
+        final byte[] needle = "attribute vb_name".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int limit = Math.min(body.length, 8192);
+        outer:
+        for (int i = 0; i + needle.length <= limit; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                byte c = body[i + j];
+                if (c >= 'A' && c <= 'Z') {
+                    c += 32;
+                }
+                if (c != needle[j]) {
+                    continue outer;
+                }
+            }
+            // Skip to the opening quote, then read to the closing one.
+            int p = i + needle.length;
+            while (p < body.length && body[p] != '"') {
+                p++;
+            }
+            if (p >= body.length) {
+                return null;
+            }
+            int from = ++p;
+            while (p < body.length && body[p] != '"') {
+                p++;
+            }
+            return p <= body.length
+                    ? new String(body, from, p - from, java.nio.charset.StandardCharsets.ISO_8859_1)
+                    : null;
+        }
+        return null;
+    }
+
+    /**
+     * Whether these bytes declare a module name, the one structural marker every real module body
+     * carries. ASCII-matched deliberately: the keyword is ASCII in every MBCS codepage a VBA project
+     * can declare, so this does not depend on having resolved PROJECTCODEPAGE first.
+     */
+    private static boolean declaresModuleName(byte[] body) {
+        if (body == null) {
+            return false;
+        }
+        final byte[] needle = "attribute vb_name".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int limit = Math.min(body.length, 8192); // the declaration is the first line of the body
+        outer:
+        for (int i = 0; i + needle.length <= limit; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                byte c = body[i + j];
+                if (c >= 'A' && c <= 'Z') {
+                    c += 32;
+                }
+                if (c != needle[j]) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     static byte[] decompress(byte[] compressed, int startOffset, Bounds bounds)

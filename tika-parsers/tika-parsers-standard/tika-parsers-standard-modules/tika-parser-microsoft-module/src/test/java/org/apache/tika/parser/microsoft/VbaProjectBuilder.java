@@ -177,6 +177,24 @@ final class VbaProjectBuilder {
         return this;
     }
 
+    /**
+     * Bytes added to every MODULEOFFSET beyond the real container start, so the declared offset
+     * lands INSIDE the compressed container instead of on its 0x01 signature.
+     *
+     * <p>Real corpus documents do this: measured on 102 of 6,574, the declared offset sits 3 bytes
+     * in -- past the signature and the 2-byte chunk header -- so a reader that requires 0x01 at the
+     * offset falls back to returning the raw COMPRESSED bytes as if they were source. That output
+     * looks like text with one junk byte every 8 characters (the MS-OVBA FlagByte), which is why it
+     * was never noticed: it is readable enough to pass for a macro and broken enough that every
+     * URL and IOC regex misses.
+     */
+    private int offsetSkew = 0;
+
+    VbaProjectBuilder offsetSkew(int skew) {
+        this.offsetSkew = skew;
+        return this;
+    }
+
     byte[] build() throws Exception {
         try (POIFSFileSystem fs = new POIFSFileSystem()) {
             DirectoryNode parent = fs.getRoot();
@@ -222,7 +240,7 @@ final class VbaProjectBuilder {
             record(d, REC_MODULE_STREAMNAME, m.streamName.getBytes(StandardCharsets.ISO_8859_1));
             // Reserved 0x0032 carries the UTF-16LE stream name; both readers frame it as a record.
             record(d, REC_STREAMNAME_UNICODE, m.streamName.getBytes(StandardCharsets.UTF_16LE));
-            record(d, REC_MODULE_OFFSET, le32(MODULE_PREFIX_BYTES));
+            record(d, REC_MODULE_OFFSET, le32(MODULE_PREFIX_BYTES + offsetSkew));
             // MODULETERMINATOR (§2.3.4.2.3.2.10) and the dir Terminator (§2.3.4.2.4) carry a
             // 4-byte Reserved field where other records carry their size, so they are written
             // as id + 4 zero bytes -- not as id + size + payload. Writing them the general way
