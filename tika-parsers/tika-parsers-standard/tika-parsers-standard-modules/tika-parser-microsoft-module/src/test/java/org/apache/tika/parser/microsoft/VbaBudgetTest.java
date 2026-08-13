@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -39,7 +40,10 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.RecursiveParserWrapper;
+import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.RecursiveParserWrapperHandler;
 
 /**
  * The VBA size bounds at DOCUMENT scope, and the gate in front of POI's unbounded reader.
@@ -384,7 +388,46 @@ public class VbaBudgetTest {
         }
     }
 
-    // ── the document budget ─────    // ── the document budget ─────────────────────────────────────────────────
+    /**
+     * The projection's REFUSAL must survive a large configured budget.
+     *
+     * <p>The fail-closed returns were {@code ceiling + 1}, which cannot express refusal at all when
+     * the ceiling is {@code Long.MAX_VALUE} -- nothing exceeds it -- and which overflows to
+     * {@code Long.MIN_VALUE} there, so the caller's {@code projected > ceiling} test read FALSE.
+     * That is fail-OPEN on exactly the documents the projection has just said it cannot bound: an
+     * operator who raises {@code vbaMaxTotalBytes} turns the gate off rather than widening it, and
+     * POI's unbounded reader runs on a project whose module count our own cap could not walk.
+     */
+    @Test
+    void testProjectionRefusalSurvivesAHugeConfiguredBudget() throws Exception {
+        byte[] unwalkable = new VbaProjectBuilder()
+                .refsToOneStream("M", 4100, "Sub S()\n  Shell \"calc\"\nEnd Sub\n")
+                .build();
+        for (long ceiling : new long[] {Long.MAX_VALUE, Long.MAX_VALUE - 1, 1L << 62,
+                32L * 1024 * 1024}) {
+            try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(unwalkable))) {
+                long projected = LenientVBAReader.projectDecompressedBytes(fs, ceiling);
+                assertEquals(LenientVBAReader.PROJECTION_CANNOT_VOUCH, projected,
+                        "ceiling " + ceiling + ": a project the walk cannot bound must return the "
+                                + "refusal sentinel, not an arithmetic value that a comparison "
+                                + "against this ceiling reads as 'fits'");
+                assertTrue(projected > 0,
+                        "ceiling " + ceiling + ": a refusal must never be NEGATIVE -- ceiling + 1 "
+                                + "overflowed to Long.MIN_VALUE and read as far below budget");
+            }
+        }
+        // NEGATIVE CONTROL: a project the walk CAN bound must still report its real total under a
+        // huge ceiling, or every document would be routed away from POI's reader.
+        byte[] ordinary = new VbaProjectBuilder().module("Module1", SRC).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(ordinary))) {
+            long projected = LenientVBAReader.projectDecompressedBytes(fs, Long.MAX_VALUE);
+            assertTrue(projected > 0 && projected < 1024 * 1024,
+                    "an ordinary project must project its real size, not the sentinel; got "
+                            + projected);
+        }
+    }
+
+    // ── the document budget ─────────────────────────────────────────────────
 
     @Test
     void testDocumentBudgetCapsTheTotalAcrossModules() throws Exception {
@@ -734,6 +777,80 @@ public class VbaBudgetTest {
                 "the injected macro must be extracted; got " + text.length() + " chars");
         assertNull(md.get("msoffice:vba-capture-limit-reached"),
                 "nothing was withheld, so the flag must not fire");
+    }
+
+    /**
+     * A module kept only as a FRAGMENT must say so on its own entry, not only inside its text.
+     *
+     * <p>The marker was embedded in the body and nowhere else, so a consumer reading the entries as
+     * documents -- which is how they are emitted -- saw a short module and one document-wide
+     * truncation flag, with no way to tell which of forty modules the flag was about. "Something was
+     * cut" and "the module holding the Shell call is what we cut" are different statements.
+     */
+    @Test
+    void testATruncatedModuleIsMarkedOnItsOwnEntry() throws Exception {
+        StringBuilder body = new StringBuilder();
+        for (int line = 0; line < 600; line++) {
+            body.append("' filler line inside the payload module\n");
+            body.append("  Shell \"powershell -enc EVIL").append(line).append("\"\n");
+        }
+        VbaProjectBuilder b = new VbaProjectBuilder();
+        for (int i = 0; i < 12; i++) {
+            b.module("Mod" + i, body.toString());
+        }
+        byte[] carrier = replaceVbaProject(readResource("/test-documents/testWORD_macros.docm"),
+                b.build());
+
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxTotalBytes(60_000);
+        List<Metadata> cut = recursiveMetadata(carrier, cfg);
+        long fragments = cut.stream()
+                .filter(m -> "true".equals(m.get(OfficeParser.VBA_MODULE_FRAGMENT)))
+                .count();
+        assertTrue(fragments > 0,
+                "a module withheld in part must be marked as a fragment on its own entry; "
+                        + "entries were " + describe(cut));
+        // Every marked entry must really be a fragment, or the mark is noise.
+        for (Metadata m : cut) {
+            if ("true".equals(m.get(OfficeParser.VBA_MODULE_FRAGMENT))) {
+                assertNotNull(m.get(TikaCoreProperties.TRUNCATED_METADATA),
+                        "a fragment entry must also carry the standard truncation property");
+            }
+        }
+
+        // NEGATIVE CONTROL: nothing was withheld here, so no entry may claim to be a fragment.
+        // Without this the assertion above passes against a build that marks every module.
+        byte[] whole = replaceVbaProject(readResource("/test-documents/testWORD_macros.docm"),
+                new VbaProjectBuilder().module("Module1", SRC).build());
+        for (Metadata m : recursiveMetadata(whole, null)) {
+            assertNull(m.get(OfficeParser.VBA_MODULE_FRAGMENT),
+                    "no bound fired, so no entry may be marked a fragment");
+        }
+    }
+
+    private static String describe(List<Metadata> list) {
+        StringBuilder sb = new StringBuilder();
+        for (Metadata m : list) {
+            sb.append('[').append(m.get(TikaCoreProperties.RESOURCE_NAME_KEY)).append(" frag=")
+                    .append(m.get(OfficeParser.VBA_MODULE_FRAGMENT)).append(']');
+        }
+        return sb.toString();
+    }
+
+    private static List<Metadata> recursiveMetadata(byte[] bytes, OfficeParserConfig cfg)
+            throws Exception {
+        ParseContext context = new ParseContext();
+        if (cfg != null) {
+            context.set(OfficeParserConfig.class, cfg);
+        }
+        RecursiveParserWrapper wrapper = new RecursiveParserWrapper(new AutoDetectParser());
+        RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(
+                new BasicContentHandlerFactory(
+                        BasicContentHandlerFactory.HANDLER_TYPE.TEXT, -1));
+        try (TikaInputStream tis = TikaInputStream.get(bytes)) {
+            wrapper.parse(tis, handler, new Metadata(), context);
+        }
+        return handler.getMetadataList();
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────

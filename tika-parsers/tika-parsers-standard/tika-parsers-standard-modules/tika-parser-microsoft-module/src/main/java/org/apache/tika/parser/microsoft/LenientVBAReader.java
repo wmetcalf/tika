@@ -699,9 +699,24 @@ public final class LenientVBAReader {
      * closed on those would cost real recall (the bounded reader skips such modules entirely, so
      * we would lose what POI recovers), so the trade is deliberate. See {@code VbaBudgetTest}.
      *
-     * @return the projected byte count, or a value greater than {@code ceiling} as soon as the
-     *         walk passes it (the exact total above the ceiling is not computed)
+     * @return the projected byte count; a value greater than {@code ceiling} as soon as the walk
+     *         passes it (the exact total above the ceiling is not computed); or
+     *         {@link #PROJECTION_CANNOT_VOUCH} when the walk cannot bound the project at all
      */
+    /**
+     * Returned by {@link #projectDecompressedBytes} when it cannot vouch for the project at all --
+     * its own caps truncated the walk, or the walk threw. Distinct from "projected above the
+     * ceiling" because it must be honoured however large the caller's ceiling is.
+     *
+     * <p>The fail-closed returns used to be {@code ceiling + 1}, which is not fail-closed for a
+     * large configured ceiling: at {@code Long.MAX_VALUE} it overflows to {@code Long.MIN_VALUE},
+     * and the caller's {@code projected > ceiling} test then reads FALSE -- clearing POI's unbounded
+     * reader to run on precisely the document the projection just said it could not bound. Even
+     * without overflow, no value can exceed a ceiling of {@code Long.MAX_VALUE}, so the arithmetic
+     * could not express "refuse" at all. Callers must test this sentinel explicitly.
+     */
+    public static final long PROJECTION_CANNOT_VOUCH = Long.MAX_VALUE;
+
     public static long projectDecompressedBytes(POIFSFileSystem fs, long ceiling) {
         long total = 0;
         // The probe must be at least as permissive as the ceiling it is testing: with the default
@@ -725,7 +740,7 @@ public final class LenientVBAReader {
                     // trivial refs followed by a bomb projected ~18 MB against a 32 MB ceiling and
                     // POI expanded ~819 MB. Capping what we READ is a deliberate loss with a mark;
                     // capping what we PROJECT has to fail closed instead.
-                    return ceiling + 1;
+                    return PROJECTION_CANNOT_VOUCH;
                 }
                 for (ModuleRef ref : refs) {
                     DocumentEntry de = null;
@@ -759,7 +774,7 @@ public final class LenientVBAReader {
         } catch (Exception | OutOfMemoryError e) {
             // A project we cannot walk is one we cannot vouch for. Report it as over the
             // ceiling rather than silently clearing an unbounded reader to run on it.
-            return ceiling + 1;
+            return PROJECTION_CANNOT_VOUCH;
         }
         return total;
     }

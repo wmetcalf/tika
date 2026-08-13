@@ -91,6 +91,11 @@ public final class VbaFormParser {
      * <p>Returns a list of (formModuleName, controls) pairs. Each entry corresponds to
      * one UserForm directory containing "f" and "o" sibling streams.
      * Returns an empty list if no form directories are found or on parse error.
+     *
+     * <p><b>Prefer the overload taking {@code bounds}.</b> This one allocates a throwaway
+     * {@link LenientVBAReader.Bounds}, so anything it withholds -- a form it could not parse, a
+     * stream refused for size, a form past the count cap -- is marked on an object the caller never
+     * sees, and is therefore indistinguishable from a document with no hidden control properties.
      */
     public static List<FormModuleResult> extractFormVariables(POIFSFileSystem fs) {
         return extractFormVariables(fs, new LenientVBAReader.Bounds());

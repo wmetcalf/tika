@@ -491,6 +491,13 @@ public class OfficeParserConfig implements Serializable {
      * dropped and a decompressed body above it is truncated; either way the loss is reported
      * via the {@code msoffice:vba-capture-limit-reached} metadata flag. 0 = built-in default
      * ({@code 10 MB}).
+     *
+     * <p>This is NOT the effective ceiling on what a document yields:
+     * {@link #setVbaMaxTotalBytes} bounds the total across every module, every VBA storage and
+     * the UserForm text, and the two are independent knobs where the TIGHTER one wins. Raising
+     * this alone does not raise what a document can yield -- above the default 32 MB total it has
+     * no observable effect at all -- and lowering the total below this value is honoured rather
+     * than clamped up to it. Set both when you mean to change what is captured.
      */
     public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
         this.vbaMaxStreamBytes = vbaMaxStreamBytes;

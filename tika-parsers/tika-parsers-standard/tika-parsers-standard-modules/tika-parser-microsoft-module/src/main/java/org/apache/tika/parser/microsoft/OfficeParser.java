@@ -99,10 +99,21 @@ public class OfficeParser extends AbstractOfficeParser {
     }
 
     /**
+     * Set on an emitted macro entry that is only a FRAGMENT of its module -- the indicator lines or
+     * a bounded prefix kept when the whole body did not fit the document budget.
+     */
+    static final String VBA_MODULE_FRAGMENT = "msoffice:vba-module-fragment";
+
+    /**
      * Helper to extract macros from an NPOIFS/vbaProject.bin
      * <p>
      * As of POI-3.15-final, there are still some bugs in VBAMacroReader.
      * For now, we are swallowing NPE and other runtime exceptions
+     *
+     * <p><b>Prefer the overload taking {@code parentMetadata}.</b> With no metadata to report on,
+     * a fired size bound is INVISIBLE to the caller: macro source that was dropped or truncated
+     * looks exactly like a document with short macros. This overload keeps working for
+     * compatibility and has no callers left in Tika itself.
      *
      * @param fs                        NPOIFS to extract from
      * @param xhtml                     SAX writer
@@ -215,7 +226,11 @@ public class OfficeParser extends AbstractOfficeParser {
         // here and this is the same comparison as before.
         long allowance = vbaBounds.remainingTotal();
         long projected = LenientVBAReader.projectDecompressedBytes(fs, allowance);
-        boolean overBudget = projected > allowance;
+        // The refusal sentinel is checked SEPARATELY from the comparison, because a comparison
+        // cannot express it: with a large configured budget nothing can exceed the allowance, and
+        // the old ceiling+1 refusal overflowed negative at Long.MAX_VALUE and read as "fits".
+        boolean overBudget = projected == LenientVBAReader.PROJECTION_CANNOT_VOUCH
+                || projected > allowance;
         if (overBudget) {
             // Deliberately NOT marked here: the projection is an upper bound, so a redirect is
             // not by itself evidence that anything was withheld. The bounded reader marks if it
@@ -335,6 +350,16 @@ public class OfficeParser extends AbstractOfficeParser {
             m.set(Metadata.CONTENT_TYPE, "text/x-vbasic");
             if (!StringUtils.isBlank(e.getKey())) {
                 m.set(TikaCoreProperties.RESOURCE_NAME_KEY, e.getKey());
+            }
+            // Say WHICH module is a fragment, on that module. The marker was only ever inside the
+            // text, so a consumer reading the entries as documents -- which is how they are emitted
+            // -- saw a short module body and one document-wide truncation flag, with no way to tell
+            // which of forty modules the flag was about. That is the difference between "something
+            // was cut" and "the module holding the Shell call is the part we cut".
+            if (e.getValue() != null
+                    && e.getValue().contains(LenientVBAReader.INDICATORS_ONLY_MARKER)) {
+                m.set(VBA_MODULE_FRAGMENT, "true");
+                m.set(TikaCoreProperties.TRUNCATED_METADATA, true);
             }
             if (embeddedDocumentExtractor.shouldParseEmbedded(m)) {
                 try (TikaInputStream tis = TikaInputStream.get(e.getValue().getBytes(StandardCharsets.UTF_8))) {
