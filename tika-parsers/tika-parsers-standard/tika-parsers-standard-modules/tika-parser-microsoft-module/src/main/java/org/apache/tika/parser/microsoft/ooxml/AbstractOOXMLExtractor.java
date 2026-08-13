@@ -63,6 +63,7 @@ import org.apache.tika.metadata.Office;
 import org.apache.tika.metadata.PageAnchoring;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.microsoft.LenientVBAReader;
 import org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil;
 import org.apache.tika.parser.microsoft.OfficeParser;
 import org.apache.tika.parser.microsoft.OfficeParser.POIFSDocumentType;
@@ -122,6 +123,17 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
     protected OfficeParserConfig config;
     protected OPCPackage opcPackage;
     private Exception vbaRelationshipDiscoveryFailure;
+    /**
+     * ONE VBA size accumulator for the whole package, created on first use.
+     *
+     * <p>A package may declare any number of {@code vbaProject} relationships and
+     * {@link #handleMacrosEarly} walks every one of them, deduplicated only by target part name. The
+     * accumulator used to be built inside {@code OfficeParser.extractMacros}, so each part started a
+     * fresh allowance and N parts cost N times the ceiling that calls itself per-document -- for the
+     * price of a few kilobytes of zip entry per part. Instance-scoped, like
+     * {@link #linkedRelationshipCollectionBudget}: one extractor is one package.
+     */
+    private LenientVBAReader.Bounds vbaBounds;
 
     public AbstractOOXMLExtractor(ParseContext context, OPCPackage opcPackage) {
         this.context = context;
@@ -1457,11 +1469,14 @@ public abstract class AbstractOOXMLExtractor implements OOXMLExtractor {
         OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
 
         if (officeParserConfig.isExtractMacros()) {
+            if (vbaBounds == null) {
+                vbaBounds = LenientVBAReader.Bounds.fromConfig(officeParserConfig);
+            }
             try (InputStream is = macroPart.getInputStream()) {
                 try (POIFSFileSystem poifs = new POIFSFileSystem(is)) {
                     //Macro reading exceptions are already swallowed here
                     OfficeParser.extractMacros(poifs, handler, embeddedExtractor, context,
-                            metadata);
+                            metadata, vbaBounds);
                 }
             } catch (IOException e) {
                 throw new TikaException("Broken OOXML file", e);

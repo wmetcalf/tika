@@ -420,6 +420,12 @@ public class HSLFExtractor extends AbstractPOIFSExtractor {
             return;
         }
         long persistId = vbaAtom.getPersistIdRef();
+        // ONE accumulator for the whole loop. persistId comes from the file and nothing says the
+        // object carrying it is unique -- any number of embedded objects may declare it, and each
+        // was a separate extractMacros call with its own fresh allowance, so N of them cost N times
+        // the ceiling that documents itself as per-document. Same shape as the OOXML macro-part walk.
+        LenientVBAReader.Bounds vbaBounds =
+                LenientVBAReader.Bounds.fromConfig(context.get(OfficeParserConfig.class));
         for (HSLFObjectData objData : ppt.getEmbeddedObjects()) {
             if (objData.getExOleObjStg().getPersistId() == persistId) {
                 try (POIFSFileSystem poifsFileSystem = new POIFSFileSystem(
@@ -427,7 +433,7 @@ public class HSLFExtractor extends AbstractPOIFSExtractor {
                     try {
                         OfficeParser.extractMacros(poifsFileSystem, xhtml,
                                 EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context),
-                                context, parentMetadata);
+                                context, parentMetadata, vbaBounds);
                     } catch (IOException | SAXException | TikaException inner) {
                         EmbeddedDocumentUtil.recordException(inner, parentMetadata);
                     }

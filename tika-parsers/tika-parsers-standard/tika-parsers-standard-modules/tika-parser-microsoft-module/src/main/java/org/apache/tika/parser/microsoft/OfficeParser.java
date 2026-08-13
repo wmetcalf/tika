@@ -138,6 +138,11 @@ public class OfficeParser extends AbstractOfficeParser {
         if (bounds == null || !bounds.isLimitReached() || parentMetadata == null) {
             return;
         }
+        // One accumulator is shared across every macro part of a container and reported from each
+        // part's finally, so without this the same detail lands on the metadata once per part.
+        if (!bounds.claimReport()) {
+            return;
+        }
         parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
         parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
         parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, bounds.getLimitDetail());
@@ -147,11 +152,34 @@ public class OfficeParser extends AbstractOfficeParser {
                                      EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                      ParseContext context, Metadata parentMetadata)
             throws IOException, SAXException, TikaException {
+        extractMacros(fs, xhtml, embeddedDocumentExtractor, context, parentMetadata, null);
+    }
+
+    /**
+     * As above, but reusing {@code sharedBounds} -- one accumulator for every macro-bearing part of
+     * ONE container -- instead of starting a fresh allowance for this call.
+     *
+     * <p>A container may hold several VBA projects: an OOXML package can declare any number of
+     * {@code vbaProject} relationships (walked by {@code AbstractOOXMLExtractor.handleMacrosEarly},
+     * deduplicated only by target part name) and a {@code .ppt} may hold several embedded objects
+     * under the author-chosen {@code persistId} the VBAInfoAtom names. Every one of those was a
+     * separate call and therefore a separate allowance, so what the bound's javadoc, its metadata
+     * message and its tests all called a per-DOCUMENT ceiling was really per macro part -- N parts
+     * cost N times the ceiling, at a cost to the author of a few kilobytes of zip entry each.
+     *
+     * <p>Callers with a single macro part should keep passing {@code null}: an unshared accumulator
+     * starting at zero is exactly what one part gets either way.
+     */
+    public static void extractMacros(POIFSFileSystem fs, ContentHandler xhtml,
+                                     EmbeddedDocumentExtractor embeddedDocumentExtractor,
+                                     ParseContext context, Metadata parentMetadata,
+                                     LenientVBAReader.Bounds sharedBounds)
+            throws IOException, SAXException, TikaException {
 
         // Shared across every reader attempt below so a bound that fires in any one of them is
         // reported once on the parent metadata -- from a finally, so no exit path can skip it.
-        LenientVBAReader.Bounds vbaBounds = LenientVBAReader.Bounds.fromConfig(
-                context.get(OfficeParserConfig.class));
+        LenientVBAReader.Bounds vbaBounds = sharedBounds != null ? sharedBounds
+                : LenientVBAReader.Bounds.fromConfig(context.get(OfficeParserConfig.class));
         try {
             extractMacrosBounded(fs, xhtml, embeddedDocumentExtractor, context, vbaBounds);
         } finally {
@@ -167,6 +195,11 @@ public class OfficeParser extends AbstractOfficeParser {
 
         VBAMacroReader reader = null;
         Map<String, String> macros = null;
+        // Whether the macros below came from POI's reader, which charges the budget nothing. The
+        // lenient reader charges as it retains, so only this case needs charging here -- and it
+        // needs it, or the accumulator reads zero after a full-size part and the next part of the
+        // same container gets the whole ceiling again.
+        boolean poiRead = false;
 
         // POI's VBAMacroReader honours NO size bound: it decompresses every module into memory
         // with an unbounded IOUtils.toByteArray. So the VBA bounds, which only the lenient reader
@@ -174,8 +207,15 @@ public class OfficeParser extends AbstractOfficeParser {
         // decompress to hundreds of megabytes took the worker's heap with it, and no bound applied
         // after that read could have prevented it. Project the decompressed size from chunk
         // headers FIRST, and when the projection clears the document budget POI cannot exceed it.
-        long projected = LenientVBAReader.projectDecompressedBytes(fs, vbaBounds.totalMax());
-        boolean overBudget = projected > vbaBounds.totalMax();
+        //
+        // Against what is LEFT of the document budget, not against the whole of it: this
+        // accumulator may already hold an earlier macro part of the same container, and a
+        // projection tested against the full ceiling clears once per part however much has been
+        // retained. For the single-part case -- effectively every real document -- retained is 0
+        // here and this is the same comparison as before.
+        long allowance = vbaBounds.remainingTotal();
+        long projected = LenientVBAReader.projectDecompressedBytes(fs, allowance);
+        boolean overBudget = projected > allowance;
         if (overBudget) {
             // Deliberately NOT marked here: the projection is an upper bound, so a redirect is
             // not by itself evidence that anything was withheld. The bounded reader marks if it
@@ -187,13 +227,15 @@ public class OfficeParser extends AbstractOfficeParser {
             }
             if (macros == null || macros.isEmpty()) {
                 vbaBounds.mark("VBA project projected to decompress to more than "
-                        + vbaBounds.totalMax() + " bytes; the bounded reader recovered no macros");
+                        + allowance + " bytes (of a " + vbaBounds.totalMax()
+                        + "-byte per-document budget); the bounded reader recovered no macros");
             }
         }
         try {
             if (!overBudget) {
                 reader = new VBAMacroReader(fs);
                 macros = reader.readMacros();
+                poiRead = true;
             }
         } catch (SecurityException e) {
             throw e;
@@ -219,6 +261,19 @@ public class OfficeParser extends AbstractOfficeParser {
                 }
                 return; // the caller's finally reports the bound on this path too
             }
+        }
+        // Charge what POI returned. Its reader consults no bound and charges nothing, so the
+        // accumulator sat at zero after a part POI had read in full -- and the form pass below, plus
+        // every later macro part of the same container, then got a whole second allowance. Not
+        // truncated here: POI ran only because the projection, an upper bound on what it can
+        // return, fitted the allowance, so what it did return fits as well. Charged BEFORE the
+        // orphan merge, which keeps the deliberately separate accumulator documented below.
+        if (poiRead && macros != null) {
+            long poiChars = 0;
+            for (String v : macros.values()) {
+                poiChars += v.length();
+            }
+            vbaBounds.charge(poiChars);
         }
         // Orphaned VBA storage returns empty WITHOUT throwing (its OLE directory entry was
         // corrupted to hide it from POI's tree-walking reader), so the catch above never fires.

@@ -149,6 +149,7 @@ public final class LenientVBAReader {
         private long indicatorScanned;
         private boolean limitReached;
         private String limitDetail;
+        private boolean reported;
 
         public Bounds() {
             this(0);
@@ -179,6 +180,34 @@ public final class LenientVBAReader {
 
         long totalMax() {
             return maxTotalBytes;
+        }
+
+        /**
+         * What is LEFT of the document ceiling.
+         *
+         * <p>The gate in front of POI's unbounded reader has to compare its projection against
+         * this, not against {@link #totalMax()}: one {@code Bounds} is shared across every macro
+         * part of a container, and a projection tested against the FULL ceiling clears once per
+         * part no matter how much has already been retained. Measured before this existed: five
+         * {@code vbaProject} parts of ~150 KB each, every one comfortably under a 200 KB ceiling,
+         * yielded 594,321 characters -- POI ran five separate times and its output was charged
+         * nowhere at all.
+         */
+        long remainingTotal() {
+            return Math.max(0, maxTotalBytes - retained);
+        }
+
+        /**
+         * True the FIRST time only, so surfacing a fired bound on the parent metadata is
+         * idempotent. One shared accumulator is reported from every macro part's {@code finally}
+         * and {@link #mark} is first-wins, so without this the same detail is added once per part.
+         */
+        boolean claimReport() {
+            if (reported) {
+                return false;
+            }
+            reported = true;
+            return true;
         }
 
         /** Characters of indicator scanning still allowed for this document. */
