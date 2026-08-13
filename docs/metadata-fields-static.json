@@ -1,9 +1,9 @@
 {
-  "scanned_at": "2026-08-11T03:05:09.017853+00:00",
+  "scanned_at": "2026-08-13T17:20:36.412206+00:00",
   "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 731,
+    "property_declarations": 732,
     "parsers_emitting_fields": 164,
     "undeclared_string_fields": 277,
     "templated_patterns": 115
@@ -2643,6 +2643,13 @@
       "emitted_by": [
         "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor"
       ]
+    },
+    "msoffice:vba-module-fragment": {
+      "type": "String",
+      "declared_in": "org.apache.tika.parser.microsoft.OfficeParser",
+      "constant_name": "VBA_MODULE_FRAGMENT",
+      "javadoc": null,
+      "emitted_by": []
     },
     "multipart:boundary": {
       "type": "internalText",
@@ -6334,12 +6341,12 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
-          "line": 338
+          "line": 350
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.AbstractOOXMLExtractor",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/AbstractOOXMLExtractor.java",
-          "line": 1570
+          "line": 1585
         },
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.OOXMLColorQRScanHelper",
@@ -6364,7 +6371,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 869
+          "line": 883
         },
         {
           "class": "org.apache.tika.parser.microsoft.rtf.RTFEmbObjHandler",
@@ -7864,7 +7871,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.OfficeParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OfficeParser.java",
-          "line": 141
+          "line": 157
         }
       ]
     },
@@ -7878,7 +7885,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 859
+          "line": 873
         }
       ]
     },
@@ -7887,7 +7894,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 835
+          "line": 849
         }
       ]
     },
@@ -7905,7 +7912,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.ooxml.XSSFExcelExtractorDecorator",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/ooxml/XSSFExcelExtractorDecorator.java",
-          "line": 515
+          "line": 523
         }
       ]
     },
