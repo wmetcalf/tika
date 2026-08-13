@@ -215,6 +215,18 @@ final class XlmXmlIocScanner {
             return true;
         }
 
+        /**
+         * Record that a real match was found and could not be emitted.
+         *
+         * <p>The distinction this exists to keep: {@code limited} means something was REFUSED, and
+         * a saturation test alone cannot tell refusal from "the input simply ended". Callers that
+         * stop matching because the sink is full DO know a match existed -- {@code m.find()} already
+         * returned true -- so they say so here rather than leaving the loss silent.
+         */
+        void markLimited() {
+            limited = true;
+        }
+
         boolean isLimited() {
             return limited;
         }
@@ -356,19 +368,20 @@ final class XlmXmlIocScanner {
             int quota = highValuePass ? quotaShare : 0;
         for (Map.Entry<String, String> entry : formulas.entrySet()) {
             sink.startCell(quota);
-            if (sink.isFull()) {
-                // Something remains unprocessed, so indicators ARE being dropped: report it.
-                // (Contrast the post-loop case, where the input simply ended -- reporting there
-                // put TRUNCATED_METADATA on complete extractions.)
-                sink.limited = true;
-                // NOTE: do NOT set `limited` here. `limited` means "something was REFUSED", and
-                // add() sets it on every refusal. Setting it from a SATURATION test instead made
-                // onIocLimit fire on documents where nothing was dropped -- measured, two cell
-                // values and maxIocEntries=2 emitted both and still reported a shortfall, which
-                // put TRUNCATED_METADATA on a complete extraction. Breaking out when the sink is
-                // already full cannot itself lose anything that add() would not have refused.
-                break;
-            }
+            // Deliberately NO early break on a full sink, and no `limited` set from saturation.
+            //
+            // Both were wrong, in opposite directions, and the file carried both at once: the line
+            // setting `limited` from saturation over-reported (two EXEC calls against
+            // maxIocEntries=2 emit both, refuse nothing, and still reported a shortfall, putting
+            // TRUNCATED_METADATA on a complete extraction), while breaking out under-reported (the
+            // third EXEC of three was never attempted, so add() never refused and the loss was
+            // silent). An external reviewer on PR #18 caught the contradiction -- the comment
+            // forbidding the line sat directly beneath the line.
+            //
+            // The resolution is to keep walking and let the matchers decide: a loss is exactly "a
+            // match existed that could not be emitted", which only the matcher knows. The cost is
+            // scanning formulas that will emit nothing, linear in a formula count the capture caps
+            // already bound. XlmIocLimitSemanticsTest pins both directions.
             String formula = entry.getValue();
             if (formula == null || formula.isEmpty()) continue;
             if (formula.length() > scanLen) {
@@ -399,7 +412,11 @@ final class XlmXmlIocScanner {
             // EXECUTE("…") — used by Excel for DDE-style command exec
             addAll(sink, EXECUTE_STR.matcher(formula), m -> "EXEC: " + unq(m.group(1)));
             // EXEC(A1) — resolve through cellValues if known
-            for (Matcher m = EXEC_REF.matcher(formula); m.find() && !sink.isFull(); ) {
+            for (Matcher m = EXEC_REF.matcher(formula); m.find(); ) {
+                if (sink.isFull()) {
+                    sink.markLimited();
+                    break;
+                }
                 String ref = m.group(2).toUpperCase(java.util.Locale.ROOT);
                 List<String> candidates = shortRef.get(ref);
                 if (candidates == null || candidates.isEmpty()) {
@@ -415,7 +432,11 @@ final class XlmXmlIocScanner {
             // REGISTER("dll", ...) — DLL function binding
             addAll(sink, REGISTER.matcher(formula), m -> "REGISTER: " + unq(m.group(1)));
             // FOPEN("path", mode)
-            for (Matcher m = FOPEN.matcher(formula); m.find() && !sink.isFull(); ) {
+            for (Matcher m = FOPEN.matcher(formula); m.find(); ) {
+                if (sink.isFull()) {
+                    sink.markLimited();
+                    break;
+                }
                 String path = unq(m.group(1));
                 String mode = m.group(2) != null ? m.group(2) : "?";
                 sink.add("FOPEN: " + path + " (mode " + mode + ")");
@@ -573,7 +594,13 @@ final class XlmXmlIocScanner {
         // =EXEC("powershell -enc REALPAYLOAD") was never recovered. The two passes separate
         // CATEGORIES, not cells, so the per-cell check at the top of the loop was not enough --
         // fourth instance of this starvation class in this file.
-        while (m.find() && !sink.isFull()) {
+        while (m.find()) {
+            if (sink.isFull()) {
+                // A match EXISTS and there is no room for it. Stopping silently here is how a
+                // genuine loss went unreported: add() never ran, so nothing set `limited`.
+                sink.markLimited();
+                break;
+            }
             sink.add(fmt.apply(m));
         }
     }
