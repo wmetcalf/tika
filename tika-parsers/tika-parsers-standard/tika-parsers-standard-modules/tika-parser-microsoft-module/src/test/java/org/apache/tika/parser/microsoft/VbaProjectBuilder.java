@@ -105,6 +105,20 @@ final class VbaProjectBuilder {
         return this;
     }
 
+    /**
+     * A dir-stream module record whose STREAM IS NEVER CREATED: the project declares a module the
+     * file does not contain, which is what a stripped or deleted module looks like on disk.
+     */
+    VbaProjectBuilder refToMissingStream(String name) {
+        Module m = new Module();
+        m.moduleName = name;
+        m.streamName = name;
+        m.entryName = null;   // build() skips entry creation for a null entry name
+        m.container = compressedContainer("unused".getBytes(StandardCharsets.ISO_8859_1));
+        modules.add(m);
+        return this;
+    }
+
     /** Add a module whose stream holds a pre-built container (for bombs / malformed input). */
     VbaProjectBuilder rawModule(String name, byte[] container) {
         Module m = new Module();

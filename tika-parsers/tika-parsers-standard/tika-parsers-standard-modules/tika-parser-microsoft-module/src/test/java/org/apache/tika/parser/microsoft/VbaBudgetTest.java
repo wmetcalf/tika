@@ -891,4 +891,61 @@ public class VbaBudgetTest {
         assertTrue(replaced, "carrier must already contain a vbaProject.bin to replace");
         return out.toByteArray();
     }
+
+    /**
+     * A module the project DECLARES but the file does not contain must be named, not skipped.
+     *
+     * <p>An unresolvable ref was dropped silently, so a project advertising five modules while
+     * holding four looked identical to one advertising four. Benign causes exist -- a stale record
+     * from a deleted module -- but so does the adversarial one: strip the stream and the source
+     * cannot be recovered while the dir stream still lists it. Either way the analyst is entitled to
+     * know the extraction is short of the file's own manifest.
+     *
+     * <p>Reported separately from the size bounds on purpose. "We withheld something for space" and
+     * "the file does not contain what it claims" are different statements, and folding the second
+     * into the truncation flag would make them indistinguishable. Measured at 139 refs across 48 of
+     * 6,574 corpus documents (0.73%), which is rare enough to mean something when it fires.
+     */
+    @Test
+    void testAModuleNamedButAbsentIsReported() throws Exception {
+        byte[] project = new VbaProjectBuilder()
+                .module("Present", SRC)
+                .refToMissingStream("Vanished")
+                .build();
+
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(macros.containsKey("Present"),
+                    "the module that IS present must still be extracted; got " + macros.keySet());
+            assertTrue(bounds.unresolvedModules().contains("Vanished"),
+                    "the declared-but-absent module must be named; got "
+                            + bounds.unresolvedModules());
+            assertFalse(bounds.isLimitReached(),
+                    "a missing module is not a size truncation; the capture-limit flag must stay "
+                            + "clear or the two conditions become indistinguishable");
+        }
+    }
+
+    /** NEGATIVE CONTROL: an intact project must report nothing, or the signal is noise. */
+    @Test
+    void testIntactProjectReportsNoMissingModules() throws Exception {
+        byte[] project = new VbaProjectBuilder()
+                .module("Module1", SRC)
+                .module("Module2", "Sub B()\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(bounds.unresolvedModules().isEmpty(),
+                    "nothing is missing here; got " + bounds.unresolvedModules());
+        }
+        for (String name : new String[] {"/test-documents/testWORD_macros.docm",
+                "/test-documents/testEXCEL_macro.xls"}) {
+            Metadata md = new Metadata();
+            parse(readResource(name), md);
+            assertNull(md.get(OfficeParser.VBA_UNRESOLVED_MODULES),
+                    name + ": a healthy real document must not be annotated");
+        }
+    }
 }
