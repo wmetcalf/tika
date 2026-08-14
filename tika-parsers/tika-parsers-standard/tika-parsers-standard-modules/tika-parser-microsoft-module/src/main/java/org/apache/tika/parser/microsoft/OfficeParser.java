@@ -247,7 +247,8 @@ public class OfficeParser extends AbstractOfficeParser {
         // The refusal sentinel is checked SEPARATELY from the comparison, because a comparison
         // cannot express it: with a large configured budget nothing can exceed the allowance, and
         // the old ceiling+1 refusal overflowed negative at Long.MAX_VALUE and read as "fits".
-        boolean overBudget = true;   // EXPERIMENT ONLY: POI's reader never runs
+        boolean overBudget = projected == LenientVBAReader.PROJECTION_CANNOT_VOUCH
+                || projected > allowance;
         if (overBudget) {
             // Deliberately NOT marked here: the projection is an upper bound, so a redirect is
             // not by itself evidence that anything was withheld. The bounded reader marks if it
