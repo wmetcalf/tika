@@ -493,11 +493,23 @@ public class OfficeParserConfig implements Serializable {
      * ({@code 10 MB}).
      *
      * <p>This is NOT the effective ceiling on what a document yields:
-     * {@link #setVbaMaxTotalBytes} bounds the total across every module, every VBA storage and
-     * the UserForm text, and the two are independent knobs where the TIGHTER one wins. Raising
-     * this alone does not raise what a document can yield -- above the default 32 MB total it has
-     * no observable effect at all -- and lowering the total below this value is honoured rather
-     * than clamped up to it. Set both when you mean to change what is captured.
+     * {@link #setVbaMaxTotalBytes} bounds the total across every module, every VBA storage and the
+     * UserForm text. Raising this alone does not raise what a document can yield -- above the
+     * default 32 MB total it has no observable effect -- and lowering the total below this value is
+     * honoured rather than clamped up to it. Set both when you mean to change what is captured.
+     *
+     * <p><b>KNOWN LIMITATION: this bound governs the LENIENT reader only.</b> When POI's
+     * {@code VBAMacroReader} succeeds -- the common case -- its output is charged against the
+     * document total but is NOT capped per stream, so a single module larger than this value is
+     * still emitted whole. An earlier version of this javadoc claimed the tighter of the two knobs
+     * wins; that was never true of the POI path, and saying so was the defect.
+     *
+     * <p>Heap is not the exposure: what decides whether POI's unbounded reader runs at all is the
+     * document total, via a pre-flight projection of the decompressed size. The gap is that an
+     * operator who lowers THIS knob expecting a tighter per-module bound will not get one on the
+     * primary path. Enforcing it there needs indicator-aware truncation rather than a prefix cut --
+     * cutting an oversize module's tail was measured dropping 10 of 11 exec indicators on a real
+     * document, because the payload sits at the end.
      */
     public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
         this.vbaMaxStreamBytes = vbaMaxStreamBytes;
