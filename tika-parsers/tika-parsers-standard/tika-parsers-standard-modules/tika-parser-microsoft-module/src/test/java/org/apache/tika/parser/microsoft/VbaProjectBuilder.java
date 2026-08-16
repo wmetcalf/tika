@@ -80,6 +80,7 @@ final class VbaProjectBuilder {
         String streamName;      // MODULESTREAMNAME (0x001A) -- the OLE stream to read
         String entryName;       // the OLE entry actually created (may differ in case)
         byte[] container;       // compressed container for the source
+        int compiledPrefixBytes = MODULE_PREFIX_BYTES;   // performance cache before MODULEOFFSET
     }
 
     /** Add a module whose stream name, dir-stream name and entry name all agree. */
@@ -115,6 +116,23 @@ final class VbaProjectBuilder {
         m.streamName = name;
         m.entryName = null;   // build() skips entry creation for a null entry name
         m.container = compressedContainer("unused".getBytes(StandardCharsets.ISO_8859_1));
+        modules.add(m);
+        return this;
+    }
+
+    /**
+     * A STOMPED module: {@code compiledBytes} of compiled code before MODULEOFFSET and no source
+     * after it, which is what remains when the source is stripped and the P-code is kept. Word runs
+     * such a module; a source-only extractor sees an empty project.
+     */
+    VbaProjectBuilder stompedModule(String name, int compiledBytes) {
+        Module m = new Module();
+        m.moduleName = name;
+        m.streamName = name;
+        m.entryName = name;
+        m.container = compressedContainer(
+                ("Attribute VB_Name = \"" + name + "\"\n").getBytes(StandardCharsets.ISO_8859_1));
+        m.compiledPrefixBytes = compiledBytes;
         modules.add(m);
         return this;
     }
@@ -222,7 +240,7 @@ final class VbaProjectBuilder {
                     continue; // a ref that deliberately shares another module's stream
                 }
                 ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                for (int i = 0; i < MODULE_PREFIX_BYTES; i++) {
+                for (int i = 0; i < m.compiledPrefixBytes; i++) {
                     stream.write(0xAA); // performance cache; readers skip to MODULEOFFSET
                 }
                 stream.write(m.container, 0, m.container.length);
@@ -254,7 +272,7 @@ final class VbaProjectBuilder {
             record(d, REC_MODULE_STREAMNAME, m.streamName.getBytes(StandardCharsets.ISO_8859_1));
             // Reserved 0x0032 carries the UTF-16LE stream name; both readers frame it as a record.
             record(d, REC_STREAMNAME_UNICODE, m.streamName.getBytes(StandardCharsets.UTF_16LE));
-            record(d, REC_MODULE_OFFSET, le32(MODULE_PREFIX_BYTES + offsetSkew));
+            record(d, REC_MODULE_OFFSET, le32(m.compiledPrefixBytes + offsetSkew));
             // MODULETERMINATOR (§2.3.4.2.3.2.10) and the dir Terminator (§2.3.4.2.4) carry a
             // 4-byte Reserved field where other records carry their size, so they are written
             // as id + 4 zero bytes -- not as id + size + payload. Writing them the general way

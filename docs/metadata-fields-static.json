@@ -1,9 +1,9 @@
 {
-  "scanned_at": "2026-08-14T12:42:32.204796+00:00",
+  "scanned_at": "2026-08-16T16:08:53.398109+00:00",
   "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 733,
+    "property_declarations": 734,
     "parsers_emitting_fields": 164,
     "undeclared_string_fields": 277,
     "templated_patterns": 115
@@ -2650,6 +2650,15 @@
       "constant_name": "VBA_MODULE_FRAGMENT",
       "javadoc": null,
       "emitted_by": []
+    },
+    "msoffice:vba-stomped-modules": {
+      "type": "String",
+      "declared_in": "org.apache.tika.parser.microsoft.OfficeParser",
+      "constant_name": "VBA_STOMPED_MODULES",
+      "javadoc": null,
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.OfficeParser"
+      ]
     },
     "msoffice:vba-unresolved-modules": {
       "type": "String",
@@ -7880,7 +7889,7 @@
         {
           "class": "org.apache.tika.parser.microsoft.OfficeParser",
           "file": "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/main/java/org/apache/tika/parser/microsoft/OfficeParser.java",
-          "line": 175
+          "line": 190
         }
       ]
     },
@@ -10849,6 +10858,7 @@
     "org.apache.tika.parser.microsoft.OfficeParser": {
       "emits": [
         "msoffice:vba-capture-limit-reached",
+        "msoffice:vba-stomped-modules",
         "msoffice:vba-unresolved-modules",
         "tk:exception:warn",
         "tk:warn:truncated-metadata"

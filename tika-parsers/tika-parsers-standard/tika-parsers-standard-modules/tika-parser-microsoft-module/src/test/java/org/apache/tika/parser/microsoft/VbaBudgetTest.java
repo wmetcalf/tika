@@ -948,4 +948,71 @@ public class VbaBudgetTest {
                     name + ": a healthy real document must not be annotated");
         }
     }
+
+    /**
+     * A module with compiled code and no source is the VBA-STOMPED shape, and must be reported.
+     *
+     * <p>Word executes the compiled performance cache, so such a document runs macros while a
+     * source-only extractor -- ours -- reports an empty project. Detection only: no P-code is
+     * decoded, because emitting fabricated source would be worse for triage than emitting none.
+     * Naming the module and its compiled size is enough for an analyst to pull the file.
+     */
+    @Test
+    void testStompedModuleIsReported() throws Exception {
+        byte[] project = new VbaProjectBuilder()
+                .module("Normal", SRC)
+                .stompedModule("Stomped", 64 * 1024)
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            assertEquals(1, bounds.stompedModules().size(),
+                    "the stomped module must be reported; got " + bounds.stompedModules());
+            assertTrue(bounds.stompedModules().get(0).startsWith("Stomped"),
+                    "and named: " + bounds.stompedModules());
+            assertTrue(bounds.stompedModules().get(0).contains("65536"),
+                    "with its compiled size, so an analyst can judge it: "
+                            + bounds.stompedModules());
+        }
+    }
+
+    /**
+     * NEGATIVE CONTROL, and the one that matters: an EMPTY ordinary module must not be flagged.
+     *
+     * <p>Every Excel workbook carries empty Sheet1/ThisWorkbook modules whose compiled stub is a
+     * couple of kilobytes. A naive "compiled bytes and no source" rule reports those as stomped --
+     * measured over the corpus, a 2 KB threshold flagged 237 refs of which 142 were exactly this.
+     * The 8 KB floor comes from that distribution, so a 2 KB stub must stay silent.
+     */
+    @Test
+    void testEmptyOrdinaryModuleIsNotFlagged() throws Exception {
+        byte[] project = new VbaProjectBuilder()
+                .module("Module1", SRC)
+                .stompedModule("Sheet1", 2048)
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(bounds.stompedModules().isEmpty(),
+                    "a 2 KB compiled stub is what an ordinary empty worksheet module looks like; "
+                            + "flagging it would report a large share of clean documents. Got "
+                            + bounds.stompedModules());
+        }
+        // And a module WITH source must never be flagged however big its compiled region.
+        byte[] withSource = new VbaProjectBuilder().module("Module1", SRC.repeat(40)).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(withSource))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(bounds.stompedModules().isEmpty(),
+                    "source is present, so nothing is stomped; got " + bounds.stompedModules());
+        }
+        // Real macro documents must stay silent too.
+        for (String name : new String[] {"/test-documents/testWORD_macros.docm",
+                "/test-documents/testEXCEL_macro.xls"}) {
+            Metadata md = new Metadata();
+            parse(readResource(name), md);
+            assertNull(md.get(OfficeParser.VBA_STOMPED_MODULES),
+                    name + ": a healthy document must not be annotated");
+        }
+    }
 }

@@ -111,6 +111,14 @@ public class OfficeParser extends AbstractOfficeParser {
     static final String VBA_UNRESOLVED_MODULES = "msoffice:vba-unresolved-modules";
 
     /**
+     * Modules carrying compiled VBA code with no source -- the "stomped" shape. Word runs the
+     * compiled code, so such a document executes macros while yielding an empty macro project to a
+     * source-only extractor. Detection only: no P-code is decoded, because emitting fabricated
+     * source would be worse than emitting none.
+     */
+    static final String VBA_STOMPED_MODULES = "msoffice:vba-stomped-modules";
+
+    /**
      * Helper to extract macros from an NPOIFS/vbaProject.bin
      * <p>
      * As of POI-3.15-final, there are still some bugs in VBAMacroReader.
@@ -163,6 +171,13 @@ public class OfficeParser extends AbstractOfficeParser {
         if (!bounds.unresolvedModules().isEmpty()) {
             parentMetadata.set(VBA_UNRESOLVED_MODULES,
                     String.join(", ", bounds.unresolvedModules()));
+        }
+        // Compiled code with no source: the document runs macros we cannot show. Reported on its
+        // own field for the same reason as the missing-module one -- it is a statement about the
+        // FILE, not about a bound we imposed, and conflating them would cost an analyst the
+        // distinction at exactly the moment it matters.
+        if (!bounds.stompedModules().isEmpty()) {
+            parentMetadata.set(VBA_STOMPED_MODULES, String.join(", ", bounds.stompedModules()));
         }
         if (!bounds.isLimitReached()) {
             return;
