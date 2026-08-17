@@ -498,18 +498,16 @@ public class OfficeParserConfig implements Serializable {
      * default 32 MB total it has no observable effect -- and lowering the total below this value is
      * honoured rather than clamped up to it. Set both when you mean to change what is captured.
      *
-     * <p><b>KNOWN LIMITATION: this bound governs the LENIENT reader only.</b> When POI's
-     * {@code VBAMacroReader} succeeds -- the common case -- its output is charged against the
-     * document total but is NOT capped per stream, so a single module larger than this value is
-     * still emitted whole. An earlier version of this javadoc claimed the tighter of the two knobs
-     * wins; that was never true of the POI path, and saying so was the defect.
+     * <p>Applies on BOTH readers: the lenient one, and POI's {@code VBAMacroReader} whose output is
+     * capped after the read. It bounds the source RETAINED from any single module; it does not decide
+     * whether POI's reader runs, which is the document total's job via a pre-flight projection of the
+     * decompressed size. So it is a bound on what is kept, not on peak memory during the read.
      *
-     * <p>Heap is not the exposure: what decides whether POI's unbounded reader runs at all is the
-     * document total, via a pre-flight projection of the decompressed size. The gap is that an
-     * operator who lowers THIS knob expecting a tighter per-module bound will not get one on the
-     * primary path. Enforcing it there needs indicator-aware truncation rather than a prefix cut --
-     * cutting an oversize module's tail was measured dropping 10 of 11 exec indicators on a real
-     * document, because the payload sits at the end.
+     * <p>A module over this size is NOT prefix-cut. Its indicator-bearing lines are collected from
+     * the whole body first and the prefix gets the remaining room, because a dropper's payload sits
+     * at the END of a long module -- a plain {@code substring} was measured taking one corpus
+     * document from 11 exec indicators to 1. Truncation is always reported via
+     * {@code msoffice:vba-capture-limit-reached}.
      */
     public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
         this.vbaMaxStreamBytes = vbaMaxStreamBytes;

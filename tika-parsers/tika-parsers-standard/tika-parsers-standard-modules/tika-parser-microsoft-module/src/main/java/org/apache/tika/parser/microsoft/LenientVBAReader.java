@@ -517,6 +517,56 @@ public final class LenientVBAReader {
         return true;
     }
 
+    /**
+     * Truncate {@code text} to {@code max} characters WITHOUT discarding its tail indicators.
+     *
+     * <p>A plain prefix cut is the wrong shape for macro source and this was measured, not
+     * reasoned: capping POI's output with {@code substring(0, max)} took one corpus document
+     * (lol.xlsm) from 11 exec indicators to 1, because a dropper's payload sits at the END of a
+     * long module -- after the padding, the decoys and the dead code. The same
+     * reject-the-tail defect is why {@link #retainIndicators} exists for the lenient path.
+     *
+     * <p>So the budget is split: indicator-bearing lines are collected from the WHOLE body first,
+     * and the prefix gets whatever remains. The result still respects {@code max}, which is what
+     * the knob promises, while what survives is what an analyst would have chosen to keep.
+     *
+     * <p>Scanning the whole body is affordable here because the caller only reaches this for
+     * output POI has already materialised, and POI runs only when the pre-flight projection cleared
+     * the document budget -- so the text scanned is bounded by that budget, not by the file.
+     */
+    static String truncateKeepingIndicators(String text, int max) {
+        if (text == null || max <= 0 || text.length() <= max) {
+            return text;
+        }
+        int indicatorRoom = max / 2;
+        StringBuilder indicators = new StringBuilder();
+        java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
+        int from = 0;
+        while (from < text.length() && indicators.length() < indicatorRoom) {
+            int nl = text.indexOf('\n', from);
+            int end = nl < 0 ? text.length() : nl;
+            if (end > from) {
+                String line = text.substring(from, end);
+                if (m.reset(line).find()) {
+                    int room = indicatorRoom - indicators.length();
+                    indicators.append(line, 0, Math.min(line.length(), room)).append('\n');
+                }
+            }
+            from = end + 1;
+        }
+        // Build the SUFFIX first and size the prefix against it. Assembling prefix-then-suffix and
+        // trimming the result to `max` at the end cuts off the very indicators this exists to keep:
+        // the marker and the collected lines land past the limit and get chopped. The suffix is the
+        // part that must survive, so it is the part that gets its room first.
+        String suffix = indicators.length() == 0 ? ""
+                : "\n" + INDICATORS_ONLY_MARKER + " (tail)\n" + indicators;
+        int prefixRoom = Math.max(0, max - suffix.length());
+        StringBuilder out = new StringBuilder(max);
+        out.append(text, 0, Math.min(text.length(), prefixRoom));
+        out.append(suffix);
+        return out.length() > max ? out.substring(0, max) : out.toString();
+    }
+
     /** One module as the dir stream describes it. */
     private static final class ModuleRef {
         /** MODULENAME (0x0019) — the label a human sees; used as the result key. */

@@ -317,9 +317,26 @@ public class OfficeParser extends AbstractOfficeParser {
         // return, fitted the allowance, so what it did return fits as well. Charged BEFORE the
         // orphan merge, which keeps the deliberately separate accumulator documented below.
         if (poiRead && macros != null) {
+            // Apply the PER-STREAM cap to POI's output too. POI consults no bound of ours, so this
+            // knob governed only the lenient reader: an operator lowering it to tighten per-module
+            // capture got no such effect on the primary path, while the config javadoc claimed the
+            // tighter of the two knobs wins. Reported by the review panel.
+            //
+            // Indicator-aware, NOT a prefix cut. Truncating with substring() was implemented, tested
+            // and reverted: it took lol.xlsm from 11 exec indicators to 1 at DEFAULT settings,
+            // because a dropper's payload sits at the END of a long module. truncateKeepingIndicators
+            // collects the tail's indicator lines before spending the rest of the budget on a prefix.
+            int perStream = vbaBounds.max();
             long poiChars = 0;
-            for (String v : macros.values()) {
-                poiChars += v.length();
+            for (Map.Entry<String, String> e : macros.entrySet()) {
+                String v = e.getValue();
+                if (v != null && v.length() > perStream) {
+                    e.setValue(LenientVBAReader.truncateKeepingIndicators(v, perStream));
+                    vbaBounds.mark("VBA module '" + e.getKey() + "' exceeded the " + perStream
+                            + "-byte per-stream bound; kept a prefix plus its indicator lines");
+                    v = e.getValue();
+                }
+                poiChars += v == null ? 0 : v.length();
             }
             vbaBounds.charge(poiChars);
         }

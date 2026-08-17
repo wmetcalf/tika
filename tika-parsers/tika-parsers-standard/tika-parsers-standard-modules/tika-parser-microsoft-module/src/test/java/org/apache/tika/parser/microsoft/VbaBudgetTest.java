@@ -1015,4 +1015,76 @@ public class VbaBudgetTest {
                     name + ": a healthy document must not be annotated");
         }
     }
+
+    /**
+     * The per-stream bound must apply on the POI path, and must NOT throw away the tail.
+     *
+     * <p>POI consults no bound of ours, so {@code vbaMaxStreamBytes} governed only the lenient
+     * fallback while the config javadoc claimed the tighter of the two knobs wins. Reported by the
+     * review panel.
+     *
+     * <p>The first fix for this was a prefix cut, and the corpus rejected it: lol.xlsm went from 11
+     * exec indicators to 1 at DEFAULT settings, because a dropper's payload sits at the END of a
+     * long module -- after the padding and the decoys. This fixture is that shape deliberately:
+     * 200 KB of filler with the Shell call last. A prefix cut passes a naive "was it truncated?"
+     * assertion and still loses the only line worth having.
+     */
+    @Test
+    void testPerStreamBoundKeepsTheTailIndicatorsOnThePoiPath() throws Exception {
+        String filler = "' a line of perfectly ordinary macro source\n".repeat(5000);
+        String payload = "  Shell \"powershell -w hidden -enc TAILPAYLOAD\"\n";
+        byte[] carrier = replaceVbaProject(readResource("/test-documents/testWORD_macros.docm"),
+                new VbaProjectBuilder().module("Module1", filler + payload).build());
+
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxStreamBytes(8192);          // far below the module, far below the 32 MB total
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, cfg);
+        Metadata md = new Metadata();
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        try (TikaInputStream tis = TikaInputStream.get(carrier)) {
+            new AutoDetectParser().parse(tis, handler, md, context);
+        }
+        String text = handler.toString();
+
+        assertTrue(text.contains("TAILPAYLOAD"),
+                "the Shell line is the LAST line of an oversize module -- a prefix cut drops it, "
+                        + "which cost a real corpus document 10 of its 11 exec indicators. Got "
+                        + text.length() + " chars");
+        int fillerLines = text.split("a line of perfectly ordinary macro source", -1).length - 1;
+        assertTrue(fillerLines > 0 && fillerLines < 5000,
+                "the bound must still bind: some filler kept, not all 5000; got " + fillerLines);
+        assertEquals("true", md.get("msoffice:vba-capture-limit-reached"),
+                "truncating a module is evidence loss and must be reported");
+    }
+
+    /** NEGATIVE CONTROL: under the cap, nothing is cut, nothing is flagged, no marker appears. */
+    @Test
+    void testPerStreamBoundDoesNotBiteWhenRoomy() throws Exception {
+        String body = "' a line of perfectly ordinary macro source\n".repeat(400);
+        byte[] carrier = replaceVbaProject(readResource("/test-documents/testWORD_macros.docm"),
+                new VbaProjectBuilder().module("Module1", body).build());
+        Metadata md = new Metadata();
+        String text = parse(carrier, md);
+        assertEquals(400, text.split("a line of perfectly ordinary macro source", -1).length - 1,
+                "at the default 10 MB per-stream cap this module fits whole");
+        assertNull(md.get("msoffice:vba-capture-limit-reached"),
+                "nothing was withheld, so no flag");
+        assertFalse(text.contains(LenientVBAReader.INDICATORS_ONLY_MARKER + " (tail)"),
+                "and no truncation marker may appear on a module that fit");
+    }
+
+    /** The helper itself: bounded output, tail indicators preserved, short input untouched. */
+    @Test
+    void testTruncateKeepingIndicatorsIsBoundedAndKeepsTheTail() {
+        String text = "' filler\n".repeat(2000) + "  Shell \"powershell -enc TAIL\"\n";
+        String cut = LenientVBAReader.truncateKeepingIndicators(text, 4096);
+        assertTrue(cut.length() <= 4096, "must respect the bound; got " + cut.length());
+        assertTrue(cut.contains("TAIL"), "must keep the tail indicator; got: "
+                + cut.substring(Math.max(0, cut.length() - 120)));
+        assertTrue(cut.startsWith("' filler"), "and still lead with the module's own opening");
+        String short_ = "Sub S()\nEnd Sub\n";
+        assertEquals(short_, LenientVBAReader.truncateKeepingIndicators(short_, 4096),
+                "input under the bound must come back untouched");
+    }
 }
