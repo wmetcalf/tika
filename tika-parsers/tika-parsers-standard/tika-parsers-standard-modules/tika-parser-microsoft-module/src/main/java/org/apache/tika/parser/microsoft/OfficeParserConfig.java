@@ -70,6 +70,8 @@ public class OfficeParserConfig implements Serializable {
     private int xlmValueTotalMaxChars = 0;
     /** Max bytes in a single VBA project stream (raw or decompressed); 0 = built-in default. */
     private int vbaMaxStreamBytes = 0;
+    /** Max TOTAL VBA macro-source bytes per document, across all modules; 0 = default. */
+    private long vbaMaxTotalBytes = 0;
 
     private boolean includeGlossary = true;
     private String dateOverrideFormat = null;
@@ -489,9 +491,44 @@ public class OfficeParserConfig implements Serializable {
      * dropped and a decompressed body above it is truncated; either way the loss is reported
      * via the {@code msoffice:vba-capture-limit-reached} metadata flag. 0 = built-in default
      * ({@code 10 MB}).
+     *
+     * <p>This is NOT the effective ceiling on what a document yields:
+     * {@link #setVbaMaxTotalBytes} bounds the total across every module, every VBA storage and the
+     * UserForm text. Raising this alone does not raise what a document can yield -- above the
+     * default 32 MB total it has no observable effect -- and lowering the total below this value is
+     * honoured rather than clamped up to it. Set both when you mean to change what is captured.
+     *
+     * <p><b>KNOWN LIMITATION: this bound governs the LENIENT reader only.</b> When POI's
+     * {@code VBAMacroReader} succeeds -- the common case -- its output is charged against the
+     * document total but is NOT capped per stream, so a single module larger than this value is
+     * still emitted whole. An earlier version of this javadoc claimed the tighter of the two knobs
+     * wins; that was never true of the POI path, and saying so was the defect.
+     *
+     * <p>Heap is not the exposure: what decides whether POI's unbounded reader runs at all is the
+     * document total, via a pre-flight projection of the decompressed size. The gap is that an
+     * operator who lowers THIS knob expecting a tighter per-module bound will not get one on the
+     * primary path. Enforcing it there needs indicator-aware truncation rather than a prefix cut --
+     * cutting an oversize module's tail was measured dropping 10 of 11 exec indicators on a real
+     * document, because the payload sits at the end.
      */
     public void setVbaMaxStreamBytes(int vbaMaxStreamBytes) {
         this.vbaMaxStreamBytes = vbaMaxStreamBytes;
+    }
+
+    public long getVbaMaxTotalBytes() {
+        return vbaMaxTotalBytes;
+    }
+
+    /**
+     * Max TOTAL bytes of VBA macro source one document may yield, across every module and every
+     * VBA storage in it. The per-stream bound above says nothing at document scope: a project may
+     * hold any number of modules, so N modules each just under the stream cap cost N times the
+     * cap. This also decides whether POI's own VBA reader -- which has no size bound at all -- is
+     * allowed to run: a project projected to decompress past this ceiling is read by the bounded
+     * reader instead. 0 = built-in default ({@code 32 MB}).
+     */
+    public void setVbaMaxTotalBytes(long vbaMaxTotalBytes) {
+        this.vbaMaxTotalBytes = vbaMaxTotalBytes;
     }
 
     public int getXlmMaxFormulaRecordBytes() {

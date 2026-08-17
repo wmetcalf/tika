@@ -51,6 +51,7 @@ import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.apache.tika.exception.RuntimeSAXException;
@@ -163,6 +164,9 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     private final int cfgFormulaMaxLen;
     private final int cfgFormulaTotalMaxChars;
     private final int cfgMacroTextMaxChars;
+    /** Output bounds for the XML IOC scan; 0 = the XLSB path's defaults. */
+    private final int cfgIocMaxEntries;
+    private final int cfgIocMaxChars;
     private final int cfgValueMaxLen;
     private final int cfgValueTotalMaxChars;
     private final int cfgValuesMaxEntries;
@@ -238,6 +242,11 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         this.cfgMacroTextMaxChars = positiveOr(
                 officeParserConfig == null ? 0 : officeParserConfig.getXlmMacroTextMaxChars(),
                 MAX_XLM_MACRO_TEXT_CHARS);
+        // Same two knobs the XLSB emulator already honours.
+        this.cfgIocMaxEntries = officeParserConfig == null
+                ? 0 : officeParserConfig.getXlmMaxIocEntries();
+        this.cfgIocMaxChars = officeParserConfig == null
+                ? 0 : officeParserConfig.getXlmMaxIocChars();
         this.cfgValueMaxLen = positiveOr(
                 officeParserConfig == null ? 0 : officeParserConfig.getXlmWorkbookValueMaxLen(),
                 WORKBOOK_VALUE_MAX_LEN);
@@ -526,6 +535,25 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         Map<String, String> allValues = new HashMap<>(workbookCellValues);
 
         int processedMacroParts = 0;
+        // Guards against two macro parts reducing to the same cell-key namespace; see below.
+        // TWO sets, because the two collisions mean different things.
+        //
+        // Macro-part vs macro-part: SpreadsheetML never emits it, so it is an anomaly worth
+        // flagging. Macro-part vs WORKSHEET name: entirely NORMAL -- measured on 66 of 1,961 real
+        // xlsm documents, where a macro part and a worksheet legitimately share "sheet1". Both
+        // still need a distinct key namespace, because worksheet cell values are keyed on the
+        // worksheet's declared name and allValues.putAll() would otherwise let the macro part
+        // overwrite the worksheet's values (exactly where split-URL fragments live). So rename in
+        // both cases, but only FLAG the malformed one -- an anomaly signal that fires on ordinary
+        // documents is worse than none, and a first version of this reported all 66 as malformed.
+        java.util.Set<String> usedMacroSheetNames = new java.util.HashSet<>();
+        java.util.Set<String> worksheetNames = new java.util.HashSet<>();
+        for (String worksheetKey : workbookCellValues.keySet()) {
+            int firstColon = worksheetKey.indexOf(':');
+            if (firstColon > 0) {
+                worksheetNames.add(worksheetKey.substring(0, firstColon));
+            }
+        }
         // Document-wide, NOT per-macrosheet: see the loop below.
         // long: cfgFormulaTotalMaxChars is operator-settable up to Integer.MAX_VALUE, and
         // an int accumulator wraps negative there, defeating the document-wide cap.
@@ -544,16 +572,46 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 break;
             }
             processedMacroParts++;
+            // sheetNameFromPart keeps only the BASENAME, and the per-cell key is
+            // sheetName:row:col -- so /xl/a/m.xml and /xl/b/m.xml collided. Both parts were
+            // charged against the document budget while allFormulas.putAll() kept only the last
+            // writer, so a decoy part could delete a payload part's cells from the IOC scan with
+            // no flag. Uniquify ONLY on an actual collision, so the ordinary case keeps its
+            // human-readable heading and byte-identical keys.
             String sheetName = sheetNameFromPart(macroPart);
+            boolean macroCollision = !usedMacroSheetNames.add(sheetName);
+            boolean worksheetCollision = worksheetNames.contains(sheetName);
+            if (macroCollision || worksheetCollision) {
+                String disambiguated = sheetName;
+                for (int dup = 2; !usedMacroSheetNames.add(disambiguated)
+                        || worksheetNames.contains(disambiguated); dup++) {
+                    disambiguated = sheetName + "#" + dup;
+                }
+                if (macroCollision) {
+                    markXlmStructuralAnomaly("Two XLM macro parts share the basename \""
+                            + sheetName + "\"; SpreadsheetML does not produce this. Renamed to \""
+                            + disambiguated + "\" so neither part's cells are overwritten.");
+                }
+                sheetName = disambiguated;
+            }
             xhtml.startElement("div", "class", "xlm-macrosheet");
             xhtml.element("h1", sheetName);
 
+            // Declared outside the try so a mid-part failure can still harvest the cells
+            // that completed before it. See the recovery arm below.
+            XlmXmlMacrosheetParser parser = null;
+            // A separate BOOLEAN, not just the message: gating the report on
+            // `parseError != null` meant an exception whose getMessage() is null (plenty of
+            // message-less RuntimeExceptions come out of JAXP/POI stream code) aborted the
+            // part's capture with no xlm-parse-error text and NO metadata flag -- a clean-looking
+            // parse again. The error indicator must not be a message string.
+            boolean parseFailed = false;
+            String parseError = null;
             try (InputStream is = xlmInputBudget.limit(
                     macroPart.getInputStream(),
                     () -> markXlmCaptureLimit(
                             "XLM input capture limit reached"))) {
-                XlmXmlMacrosheetParser parser =
-                        new XlmXmlMacrosheetParser(
+                parser = new XlmXmlMacrosheetParser(
                                 is, xhtml, sheetName, sharedStrings,
                                 cfgValuesMaxEntries - allFormulas.size(),
                                 cfgValuesMaxEntries - allValues.size(),
@@ -564,6 +622,49 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                                         : (valueCharBudget =
                                                 new ValueCharBudget(cfgValueTotalMaxChars)));
                 parser.parse();
+            } catch (SecurityException e) {
+                throw e;
+            } catch (SAXParseException e) {
+                // MALFORMED CONTENT. One unreadable macrosheet must not destroy the WHOLE
+                // workbook's results. This used to rethrow, aborting the method and thereby
+                // skipping the cross-sheet IOC scan at the bottom, embedded-part extraction and
+                // endDocument(). Probe: sheet1 holding =EXEC("powershell -enc EVIL") plus a
+                // sheet2 truncated mid-tag reported NO exec IOC and no flag at all -- strictly
+                // worse than reporting nothing, because a silent empty result reads as a clean
+                // parse. A part truncated mid-tag is trivially attacker-supplied, so this was a
+                // one-sheet kill switch on XLM analysis for the entire workbook.
+                //
+                // MUST stay above the SAXException arm: SAXParseException is a subclass, so the
+                // order is what decides recover-vs-rethrow.
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseFailed = true;
+                parseError = e.getMessage();
+            } catch (SAXException e) {
+                // OUR OWN ContentHandler aborting -- a write limit, or a consumer refusing
+                // content. It must propagate unchanged, and a test pins the exact instance
+                // reaching the caller.
+                //
+                // This arm is narrower than it used to be. Its old justification, "a plain
+                // SAXException comes from our own ContentHandler", was FALSE: parse() wrapped
+                // ParserConfigurationException in a plain SAXException and setFeature /
+                // getXMLReader throw SAXNotRecognized/SAXNotSupportedException straight from
+                // JAXP, before any content is read -- so on a JAXP that does not recognise
+                // disallow-doctype-decl this arm silently killed the IOC scan for EVERY
+                // macro-bearing document in the deployment. parse() now reports setup failure
+                // as IOException, which lands in the recovery arm below, so the justification
+                // is finally true of what this arm actually catches.
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                throw e;
+            } catch (Exception e) {
+                // Everything else, including the IOException parse() now uses for factory-setup
+                // failure: per-part recovery, same as malformed content.
+                WriteLimitReachedException.throwIfWriteLimitReached(e);
+                parseFailed = true;
+                parseError = e.getMessage();
+            }
+            if (parser != null) {
+                // Harvest unconditionally -- including after a parse error, where the cells
+                // completed before the malformation are exactly the evidence we want.
                 // Carry the aggregate across parts. The parser's accumulator is per-sheet,
                 // so without this the budget reset on each of up to MAX_XLM_MACRO_PARTS
                 // parts and the document-wide total was 128x the documented bound.
@@ -574,18 +675,45 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                     markXlmCaptureLimit(
                             "XLM macrosheet formula or value capture limit reached");
                 }
+                if (parser.hasStructuralAnomaly()) {
+                    // Do NOT assert "Content preserved." -- the anomaly flag is also set on cells
+                    // whose formula was then refused by the aggregate cap, so the old text stated
+                    // content was preserved on the very documents where the payload was dropped.
+                    // isTruncated() is the authority on whether anything was withheld; say which.
+                    markXlmStructuralAnomaly("XLM macrosheet " + sheetName + ": nested or "
+                            + "duplicated <f>/<v>/<t>/<c> element; SpreadsheetML does not produce "
+                            + "this. All occurrences retained"
+                            + (parser.isTruncated()
+                                    ? ", EXCEPT where a capture limit also fired -- see "
+                                            + "msoffice:xlm-capture-limit-reached."
+                                    : "."));
+                }
                 // Parity with VBA: surface this macro sheet as a first-class MACRO
                 // entry (embeddedResourceType=MACRO) carrying its formula text.
-                emitMacroText(sheetName, "text/x-excel-macro",
-                        boundedMacroText(parser.getFormulas().values()), xhtml);
-            } catch (SecurityException e) {
-                throw e;
-            } catch (SAXException e) {
-                WriteLimitReachedException.throwIfWriteLimitReached(e);
-                throw e;
-            } catch (Exception e) {
-                WriteLimitReachedException.throwIfWriteLimitReached(e);
-                xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+                // Kept non-fatal, as it was when this lived inside the parse try/catch:
+                // failing to surface the MACRO entry must not cost us the IOC scan below.
+                try {
+                    emitMacroText(sheetName, "text/x-excel-macro",
+                            boundedMacroText(parser.getFormulas().values()), xhtml);
+                } catch (TikaException | IOException e) {
+                    // IOException too: emitMacroText writes to an embedded-document extractor, and
+                    // letting that abort the method would cost the cross-sheet IOC scan below --
+                    // the same whole-workbook loss this branch removed from the parse path.
+                    xhtml.element("p", "xlm-macro-emit-error: " + e.getMessage());
+                }
+            }
+            if (parseFailed) {
+                String detail = parseError != null ? parseError : "no message";
+                xhtml.element("p", "xlm-parse-error: " + detail);
+                // Deliberately does NOT include sheetName or the SAX detail: those vary per part,
+                // so with 128 macro parts allowed an attacker could mint 128 DISTINCT warnings and
+                // fill the 16-slot cap with decoy parse errors, crowding out the later IOC-scan and
+                // IOC-output diagnoses -- reproducing, with 16 cheap tricks instead of one, exactly
+                // the "attacker picks which diagnosis is seen" defect the accumulate change fixed.
+                // A constant string dedupes to one slot; the per-part detail is already emitted
+                // into the extracted text immediately above.
+                markXlmCaptureLimit("XLM macrosheet XML parse error: at least one macro part "
+                        + "could not be parsed (see xlm-parse-error entries in the text)");
             }
 
             xhtml.endElement("div");
@@ -596,7 +724,18 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         // Pattern-scan everything once we've seen all sheets. Cross-sheet
         // EXEC(Sheet1!A1) lookups resolve here.
-        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues);
+        // Bounded IOC scan. The ceiling tracks the effective CAPTURE cap, so raising
+        // xlmFormulaMaxLen for forensics cannot silently narrow scanning to the first 64 KB of each
+        // formula; the output budget uses the SAME two knobs and defaults as the XLSB path.
+        List<String> iocs = XlmXmlIocScanner.scan(allFormulas, allValues,
+                Math.max(cfgFormulaMaxLen, XlmXmlIocScanner.MAX_FORMULA_SCAN_LEN),
+                () -> markXlmCaptureLimit("XLM IOC scan input truncated: a formula exceeded "
+                        + "the scan ceiling, so IOCs in its tail were not extracted"),
+                cfgIocMaxEntries, cfgIocMaxChars,
+                () -> markXlmCaptureLimit("XLM IOC output limit reached: some indicators were "
+                        + "not emitted. EXEC(cellref) resolution amplifies a short formula into "
+                        + "a value-length indicator, so this bound is what stops a crafted "
+                        + "workbook exhausting heap after retention has already been capped."));
         if (!iocs.isEmpty()) {
             xhtml.startElement("div", "class", "xlm-iocs");
             xhtml.element("h2", "XLM Emulation");
@@ -607,11 +746,26 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
         }
     }
 
+    /**
+     * Document-scoped total of macro text emitted across ALL macro parts.
+     *
+     * <p>{@link #boundedMacroText} is called once per macro part, so measuring
+     * {@code cfgMacroTextMaxChars} against a fresh per-call buffer made the real ceiling
+     * N_parts x the cap -- up to {@link #MAX_XLM_MACRO_PARTS} times the documented bound.
+     * This is the FIFTH per-part/per-sheet scope slip in this family (formula aggregate,
+     * value aggregate, image budget, warning gate, and now macro text); the pattern is a
+     * budget compared against a buffer whose lifetime is narrower than the budget's scope.
+     */
+    private long emittedMacroTextCharsDoc;
+
     private String boundedMacroText(Iterable<String> formulas) {
         StringBuilder text = new StringBuilder();
         for (String formula : formulas) {
             int separator = text.length() == 0 ? 0 : 1;
-            int remaining = cfgMacroTextMaxChars - text.length() - separator;
+            // Charge against the DOCUMENT total, not just this part's buffer.
+            long remainingLong =
+                    cfgMacroTextMaxChars - emittedMacroTextCharsDoc - text.length() - separator;
+            int remaining = (int) Math.min(Integer.MAX_VALUE, remainingLong);
             if (remaining <= 0) {
                 markXlmCaptureLimit("XLM macro text retention limit reached");
                 break;
@@ -626,6 +780,7 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                 break;
             }
         }
+        emittedMacroTextCharsDoc += text.length();
         return text.toString();
     }
 
@@ -647,10 +802,27 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
 
         /** @return true if {@code len} chars were charged; false if that would exceed the cap. */
         boolean tryRetain(int len) {
-            if (retained + (long) len > max) {
+            return tryRetain(len, 0);
+        }
+
+        /**
+         * Charge the NET change when this value REPLACES one already retained.
+         *
+         * @param replacing chars currently occupied by the entry being overwritten, credited
+         *                  back. Both maps this budget guards are keyed by cell ref and
+         *                  {@code put()} REPLACES, so charging gross billed the document budget
+         *                  once per repetition while only one copy was kept: ~950 KB of
+         *                  duplicate shared-string cells exhausted the 32 MiB document value
+         *                  budget, after which every later cell value -- including the split
+         *                  URL/IP fragments this map exists to capture -- was refused. Same
+         *                  net-vs-gross error the formula path had, on the value path.
+         */
+        boolean tryRetain(int len, int replacing) {
+            long credited = retained - Math.min(retained, Math.max(0, replacing));
+            if (credited + (long) len > max) {
                 return false;
             }
-            retained += len;
+            retained = (int) Math.min(Integer.MAX_VALUE, credited + len);
             return true;
         }
     }
@@ -658,15 +830,55 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
     /** One per document; see {@link ValueCharBudget} for why this cannot live per-sheet. */
     private ValueCharBudget valueCharBudget;
 
-    private void markXlmCaptureLimit(String warning) {
-        if (metadata == null
-                || Boolean.parseBoolean(
-                        metadata.get("msoffice:xlm-capture-limit-reached"))) {
+    /**
+     * Structural anomaly in the macrosheet XML: something SpreadsheetML never emits, so the
+     * document was hand-built. Deliberately does NOT set TRUNCATED_METADATA or the
+     * capture-limit flag -- nothing was withheld, so claiming truncation would inflate the
+     * signal that drives re-analysis. This is an evasion tell, not a capture shortfall.
+     */
+    private void markXlmStructuralAnomaly(String detail) {
+        if (metadata == null) {
             return;
         }
-        metadata.set("msoffice:xlm-capture-limit-reached", "true");
-        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        // Flag idempotent, DETAILS accumulate -- the same shape already fixed in
+        // markXlmCaptureLimit and XlmMacroEmulator.markLimit, missed here. Returning early once
+        // the flag was set meant only the FIRST anomaly's text was ever published, so a
+        // basename-collision anomaly in part 1 hid the per-sheet nested-element detail for every
+        // later part. Shares reportedXlmWarnings, so the total warning count stays bounded.
+        if (!Boolean.parseBoolean(metadata.get("msoffice:xlm-structural-anomaly"))) {
+            metadata.set("msoffice:xlm-structural-anomaly", "true");
+        }
+        if (detail != null && reportedXlmWarnings.size() < MAX_XLM_WARNINGS
+                && reportedXlmWarnings.add(detail)) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, detail);
+        }
+    }
+
+    /** Distinct warnings already published, so each diagnosis is reported once and only once. */
+    private final java.util.Set<String> reportedXlmWarnings = new java.util.LinkedHashSet<>();
+    private static final int MAX_XLM_WARNINGS = 16;
+
+    private void markXlmCaptureLimit(String warning) {
+        if (metadata == null) {
+            return;
+        }
+        // The FLAG is idempotent; the WARNING accumulates. This used to return early once the
+        // flag was set, so exactly ONE reason was ever recorded per document -- and an attacker
+        // picks which one fires first. A cheap padding trick that trips the input budget would
+        // hide the far more serious "formula only partially decoded" or "macrosheet parse error"
+        // behind it. TIKA_META_EXCEPTION_WARNING is multi-valued and written with add(), so
+        // carrying every distinct reason is what the field is for. Bounded, and deduped so a
+        // per-cell condition cannot repeat itself into the metadata.
+        if (!Boolean.parseBoolean(metadata.get("msoffice:xlm-capture-limit-reached"))) {
+            metadata.set("msoffice:xlm-capture-limit-reached", "true");
+            metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        }
+        if (warning != null && reportedXlmWarnings.size() < MAX_XLM_WARNINGS
+                && reportedXlmWarnings.add(warning)) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        }
+        // ExploitClass is a single-valued triage bucket, so first-wins is correct for IT -- but the
+        // full reason list above is what carries the detail, which is why the warnings accumulate.
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "XLM analysis incomplete; macro content may not have been analyzed");
@@ -1757,7 +1969,13 @@ public class XSSFExcelExtractorDecorator extends AbstractOOXMLExtractor {
                                 : formattedValue;
                         // Aggregate guard. Without it the ceiling was entries x per-entry,
                         // both of which are operator-settable, so there was no ceiling.
-                        if (valueCharBudget != null && !valueCharBudget.tryRetain(v.length())) {
+                        // Credit the entry this replaces -- cellValueSink.put() overwrites on
+                        // a repeated cell ref, and gross charging let duplicates drain the
+                        // document budget and starve the real IOC fragments.
+                        String priorCellValue = cellValueSink.get(key);
+                        if (valueCharBudget != null
+                                && !valueCharBudget.tryRetain(v.length(),
+                                        priorCellValue == null ? 0 : priorCellValue.length())) {
                             signalCellValueCaptureLimit();
                         } else {
                             cellValueSink.put(key, v);

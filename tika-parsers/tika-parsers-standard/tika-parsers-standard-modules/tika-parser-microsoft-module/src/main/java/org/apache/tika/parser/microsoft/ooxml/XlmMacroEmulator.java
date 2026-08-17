@@ -291,6 +291,15 @@ class XlmMacroEmulator {
             retainIoc(ioc);
         }
 
+        // Per-cell problems, reported AFTER the loop so they can never abort it -- that abort
+        // was the regression this replaces.
+        //
+        // Each distinct reason is retained (see markLimit) and the decorator publishes all of
+        // them, so a per-cell diagnosis is no longer hidden behind an earlier budget warning.
+        for (String warning : ctx.getNonFatalWarnings()) {
+            markLimit(warning);
+        }
+
         // Emit any still-open file contents. The cap is driven by the configured budget
         // (floored at the historical 8192) rather than being hardcoded to it -- otherwise
         // raising maxFileContentChars retains payload that is never emitted.
@@ -308,6 +317,12 @@ class XlmMacroEmulator {
                 if (cut > 0) {
                     retainIoc(head + content.substring(0, cut)
                             + (content.length() > cut ? "…" : ""));
+                } else {
+                    // Report the drop WITHOUT emitting a content-free entry. Skipping the call
+                    // entirely made the loss silent; emitting  instead reported it but
+                    // consumed budget for zero evidence and starved later entries -- measured at 28
+                    // extracted URLs across the 1,043-document XLSB corpus. Mark and move on.
+                    markLimit("XLSB XLM reconstructed file content dropped: IOC budget exhausted");
                 }
             }
         }
@@ -479,10 +494,32 @@ class XlmMacroEmulator {
         return true;
     }
 
+    /**
+     * Record a reason. The FIRST becomes {@link #getLimitWarning()} (single-valued, for callers
+     * that want one line); every DISTINCT reason is also kept in {@link #getLimitWarnings()}.
+     *
+     * <p>Keeping only the first meant the per-cell "formula only partially decodable / unknown
+     * Ptg" diagnosis was discarded whenever any budget warning had already fired -- the same
+     * attacker-picks-the-diagnosis suppression that was fixed in the decorators, still live on
+     * the binary path. Bounded and deduped so a per-cell condition cannot repeat into metadata.
+     */
     private void markLimit(String warning) {
+        if (warning == null) {
+            return;
+        }
         if (limitWarning == null) {
             limitWarning = warning;
         }
+        if (limitWarnings.size() < 16) {
+            limitWarnings.add(warning);
+        }
+    }
+
+    private final java.util.LinkedHashSet<String> limitWarnings = new java.util.LinkedHashSet<>();
+
+    /** Every distinct reason recorded, in order. */
+    java.util.Collection<String> getLimitWarnings() {
+        return limitWarnings;
     }
 
     /**

@@ -246,23 +246,45 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
                                 xlmCfg == null ? 0 : xlmCfg.getXlmMaxFormulaRecordBytes(),
                                 () -> markXlmCaptureLimit(metadata,
                                         "XLSB XLM formula record exceeded the size bound "
-                                                + "and was dropped"));
+                                                + "and was dropped"),
+                                () -> markXlmCaptureLimit(metadata,
+                                        "XLSB XLM formula only partially decoded: unknown "
+                                                + "Ptg opcode or truncated operand, so the "
+                                                + "emitted formula is a PREFIX. A spliced "
+                                                + "unknown opcode can strip the function "
+                                                + "call and leave only its argument"));
                 parser.parse();
             } catch (SecurityException e) {
                 throw e;
             } catch (Exception e) {
                 WriteLimitReachedException.throwIfWriteLimitReached(e);
+                // Flag it. Emitting the note into the TEXT and nothing else meant a consumer
+                // reading metadata -- which is where every other capture shortfall is
+                // reported -- saw a clean parse. A macro part we failed to read is precisely
+                // the case where "no XLM IOCs found" must not be trusted, and a truncated
+                // .bin part is trivially attacker-supplied.
                 xhtml.element("p", "xlm-parse-error: " + e.getMessage());
+                // CONSTANT text, matching the XML path. Embedding e.getMessage() let 128 macro
+                // parts mint 128 distinct warnings and fill the 16-slot gate with decoys, so a
+                // genuine undecoded-Ptg diagnosis was crowded out -- measured, 16 truncated .bin
+                // parts suppressed it entirely. The per-part detail is already in the text.
+                markXlmCaptureLimit(metadata, "XLSB XLM macrosheet parse error: at least one "
+                        + "macro part could not be parsed (see xlm-parse-error entries in the "
+                        + "text)");
             }
             if (emulator.isLimitReached()) {
-                markXlmCaptureLimit(metadata, emulator.getLimitWarning());
+                for (String w : emulator.getLimitWarnings()) {
+                    markXlmCaptureLimit(metadata, w);
+                }
             }
 
             // Run emulation and emit resolved IOCs
             try {
                 emulator.emulate();
                 if (emulator.isLimitReached()) {
-                    markXlmCaptureLimit(metadata, emulator.getLimitWarning());
+                    for (String w : emulator.getLimitWarnings()) {
+                    markXlmCaptureLimit(metadata, w);
+                }
                 }
                 if (!emulator.iocs.isEmpty()) {
                     xhtml.startElement("div");
@@ -329,14 +351,26 @@ public class XSSFBExcelExtractorDecorator extends XSSFExcelExtractorDecorator {
     }
 
     private static void markXlmCaptureLimit(Metadata metadata, String warning) {
-        if (metadata == null
-                || Boolean.parseBoolean(
-                        metadata.get("msoffice:xlm-capture-limit-reached"))) {
+        if (metadata == null) {
             return;
         }
-        metadata.set("msoffice:xlm-capture-limit-reached", "true");
-        metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+        // Flag idempotent, warnings accumulate -- see the XML decorator for why keeping only the
+        // FIRST reason let an attacker choose which diagnosis an analyst gets to see.
+        if (!Boolean.parseBoolean(metadata.get("msoffice:xlm-capture-limit-reached"))) {
+            metadata.set("msoffice:xlm-capture-limit-reached", "true");
+            metadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        }
+        if (warning != null) {
+            for (String existing : metadata.getValues(
+                    TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)) {
+                if (warning.equals(existing)) {
+                    return;
+                }
+            }
+            if (metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length < 16) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, warning);
+            }
+        }
         if (metadata.get("ExploitClass") == null) {
             metadata.set("ExploitClass",
                     "XLM analysis incomplete; workbook values may not have been analyzed");

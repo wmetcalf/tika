@@ -99,10 +99,35 @@ public class OfficeParser extends AbstractOfficeParser {
     }
 
     /**
+     * Set on an emitted macro entry that is only a FRAGMENT of its module -- the indicator lines or
+     * a bounded prefix kept when the whole body did not fit the document budget.
+     */
+    static final String VBA_MODULE_FRAGMENT = "msoffice:vba-module-fragment";
+
+    /**
+     * Modules the VBA project's dir stream names but whose streams are absent from the file, so the
+     * extraction is knowably short of what the document declares.
+     */
+    static final String VBA_UNRESOLVED_MODULES = "msoffice:vba-unresolved-modules";
+
+    /**
+     * Modules carrying compiled VBA code with no source -- the "stomped" shape. Word runs the
+     * compiled code, so such a document executes macros while yielding an empty macro project to a
+     * source-only extractor. Detection only: no P-code is decoded, because emitting fabricated
+     * source would be worse than emitting none.
+     */
+    static final String VBA_STOMPED_MODULES = "msoffice:vba-stomped-modules";
+
+    /**
      * Helper to extract macros from an NPOIFS/vbaProject.bin
      * <p>
      * As of POI-3.15-final, there are still some bugs in VBAMacroReader.
      * For now, we are swallowing NPE and other runtime exceptions
+     *
+     * <p><b>Prefer the overload taking {@code parentMetadata}.</b> With no metadata to report on,
+     * a fired size bound is INVISIBLE to the caller: macro source that was dropped or truncated
+     * looks exactly like a document with short macros. This overload keeps working for
+     * compatibility and has no callers left in Tika itself.
      *
      * @param fs                        NPOIFS to extract from
      * @param xhtml                     SAX writer
@@ -124,20 +149,142 @@ public class OfficeParser extends AbstractOfficeParser {
      * the loss is invisible, and a caller cannot distinguish a 40-line macro from a 12 MB
      * module that was dropped whole.
      */
+    /**
+     * Surface a fired VBA size bound on the parent metadata.
+     *
+     * <p>MUST be called on EVERY exit from {@link #extractMacros}. The reporting used to sit only at
+     * the end, AFTER the early {@code return} taken when the lenient reader recovered nothing -- which
+     * is the PRIMARY lenient-reader path (the catch around POI's reader, the whole reason
+     * LenientVBAReader exists) and precisely the case a fired bound produces. A document whose VBA
+     * stream exceeded the bound was therefore reported as "no recoverable macros" with no truncation
+     * flag at all.
+     */
+    private static void reportVbaBounds(LenientVBAReader.Bounds bounds, Metadata parentMetadata) {
+        if (bounds == null || parentMetadata == null) {
+            return;
+        }
+        // Modules the project DECLARES but the file does not contain. Reported independently of the
+        // size bounds, and before the limit check below, because it is a different statement: not
+        // "we withheld something for space" but "the file is short of what it advertises". Folding
+        // it into the truncation flag would make two unrelated conditions indistinguishable.
+        // Measured at 139 refs across 48 of 6,574 corpus documents (0.73%), so it is signal.
+        if (!bounds.unresolvedModules().isEmpty()) {
+            parentMetadata.set(VBA_UNRESOLVED_MODULES,
+                    String.join(", ", bounds.unresolvedModules()));
+        }
+        // Compiled code with no source: the document runs macros we cannot show. Reported on its
+        // own field for the same reason as the missing-module one -- it is a statement about the
+        // FILE, not about a bound we imposed, and conflating them would cost an analyst the
+        // distinction at exactly the moment it matters.
+        if (!bounds.stompedModules().isEmpty()) {
+            parentMetadata.set(VBA_STOMPED_MODULES, String.join(", ", bounds.stompedModules()));
+        }
+        if (!bounds.isLimitReached()) {
+            return;
+        }
+        // One accumulator is shared across every macro part of a container and reported from each
+        // part's finally, so without this the same detail lands on the metadata once per part.
+        if (!bounds.claimReport()) {
+            return;
+        }
+        parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
+        parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+        parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, bounds.getLimitDetail());
+    }
+
     public static void extractMacros(POIFSFileSystem fs, ContentHandler xhtml,
                                      EmbeddedDocumentExtractor embeddedDocumentExtractor,
                                      ParseContext context, Metadata parentMetadata)
             throws IOException, SAXException, TikaException {
+        extractMacros(fs, xhtml, embeddedDocumentExtractor, context, parentMetadata, null);
+    }
+
+    /**
+     * As above, but reusing {@code sharedBounds} -- one accumulator for every macro-bearing part of
+     * ONE container -- instead of starting a fresh allowance for this call.
+     *
+     * <p>A container may hold several VBA projects: an OOXML package can declare any number of
+     * {@code vbaProject} relationships (walked by {@code AbstractOOXMLExtractor.handleMacrosEarly},
+     * deduplicated only by target part name) and a {@code .ppt} may hold several embedded objects
+     * under the author-chosen {@code persistId} the VBAInfoAtom names. Every one of those was a
+     * separate call and therefore a separate allowance, so what the bound's javadoc, its metadata
+     * message and its tests all called a per-DOCUMENT ceiling was really per macro part -- N parts
+     * cost N times the ceiling, at a cost to the author of a few kilobytes of zip entry each.
+     *
+     * <p>Callers with a single macro part should keep passing {@code null}: an unshared accumulator
+     * starting at zero is exactly what one part gets either way.
+     */
+    public static void extractMacros(POIFSFileSystem fs, ContentHandler xhtml,
+                                     EmbeddedDocumentExtractor embeddedDocumentExtractor,
+                                     ParseContext context, Metadata parentMetadata,
+                                     LenientVBAReader.Bounds sharedBounds)
+            throws IOException, SAXException, TikaException {
+
+        // Shared across every reader attempt below so a bound that fires in any one of them is
+        // reported once on the parent metadata -- from a finally, so no exit path can skip it.
+        LenientVBAReader.Bounds vbaBounds = sharedBounds != null ? sharedBounds
+                : LenientVBAReader.Bounds.fromConfig(context.get(OfficeParserConfig.class));
+        try {
+            extractMacrosBounded(fs, xhtml, embeddedDocumentExtractor, context, vbaBounds);
+        } finally {
+            reportVbaBounds(vbaBounds, parentMetadata);
+        }
+    }
+
+    private static void extractMacrosBounded(POIFSFileSystem fs, ContentHandler xhtml,
+                                             EmbeddedDocumentExtractor embeddedDocumentExtractor,
+                                             ParseContext context,
+                                             LenientVBAReader.Bounds vbaBounds)
+            throws IOException, SAXException, TikaException {
 
         VBAMacroReader reader = null;
         Map<String, String> macros = null;
-        // Shared across BOTH lenient-reader attempts below so a bound that fires in either
-        // one is reported once on the parent metadata.
-        LenientVBAReader.Bounds vbaBounds = LenientVBAReader.Bounds.fromConfig(
-                context.get(OfficeParserConfig.class));
+        // Whether the macros below came from POI's reader, which charges the budget nothing. The
+        // lenient reader charges as it retains, so only this case needs charging here -- and it
+        // needs it, or the accumulator reads zero after a full-size part and the next part of the
+        // same container gets the whole ceiling again.
+        boolean poiRead = false;
+
+        // POI's VBAMacroReader honours NO size bound: it decompresses every module into memory
+        // with an unbounded IOUtils.toByteArray. So the VBA bounds, which only the lenient reader
+        // below consults, did not constrain the PRIMARY path at all -- a small file whose modules
+        // decompress to hundreds of megabytes took the worker's heap with it, and no bound applied
+        // after that read could have prevented it. Project the decompressed size from chunk
+        // headers FIRST, and when the projection clears the document budget POI cannot exceed it.
+        //
+        // Against what is LEFT of the document budget, not against the whole of it: this
+        // accumulator may already hold an earlier macro part of the same container, and a
+        // projection tested against the full ceiling clears once per part however much has been
+        // retained. For the single-part case -- effectively every real document -- retained is 0
+        // here and this is the same comparison as before.
+        long allowance = vbaBounds.remainingTotal();
+        long projected = LenientVBAReader.projectDecompressedBytes(fs, allowance);
+        // The refusal sentinel is checked SEPARATELY from the comparison, because a comparison
+        // cannot express it: with a large configured budget nothing can exceed the allowance, and
+        // the old ceiling+1 refusal overflowed negative at Long.MAX_VALUE and read as "fits".
+        boolean overBudget = projected == LenientVBAReader.PROJECTION_CANNOT_VOUCH
+                || projected > allowance;
+        if (overBudget) {
+            // Deliberately NOT marked here: the projection is an upper bound, so a redirect is
+            // not by itself evidence that anything was withheld. The bounded reader marks if it
+            // actually drops or truncates, and the empty case is marked below.
+            try {
+                macros = LenientVBAReader.readMacros(fs, vbaBounds);
+            } catch (Exception | OutOfMemoryError ignore) {
+                macros = null;
+            }
+            if (macros == null || macros.isEmpty()) {
+                vbaBounds.mark("VBA project projected to decompress to more than "
+                        + allowance + " bytes (of a " + vbaBounds.totalMax()
+                        + "-byte per-document budget); the bounded reader recovered no macros");
+            }
+        }
         try {
-            reader = new VBAMacroReader(fs);
-            macros = reader.readMacros();
+            if (!overBudget) {
+                reader = new VBAMacroReader(fs);
+                macros = reader.readMacros();
+                poiRead = true;
+            }
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
@@ -160,15 +307,62 @@ public class OfficeParser extends AbstractOfficeParser {
                             //pass in space character so that we don't trigger a zero-byte exception
                             TikaInputStream.get(new byte[]{'\u0020'}), xhtml, m, context, true);
                 }
-                return;
+                return; // the caller's finally reports the bound on this path too
             }
+        }
+        // Charge what POI returned. Its reader consults no bound and charges nothing, so the
+        // accumulator sat at zero after a part POI had read in full -- and the form pass below, plus
+        // every later macro part of the same container, then got a whole second allowance. Not
+        // truncated here: POI ran only because the projection, an upper bound on what it can
+        // return, fitted the allowance, so what it did return fits as well. Charged BEFORE the
+        // orphan merge, which keeps the deliberately separate accumulator documented below.
+        if (poiRead && macros != null) {
+            long poiChars = 0;
+            for (String v : macros.values()) {
+                poiChars += v.length();
+            }
+            vbaBounds.charge(poiChars);
         }
         // Orphaned VBA storage returns empty WITHOUT throwing (its OLE directory entry was
         // corrupted to hide it from POI's tree-walking reader), so the catch above never fires.
         // Try the lenient reader's olevba-style all-entry / orphan recovery before concluding
         // there are no macros. LenientVBAReader.readMacros(fs) does the tree-walk first, then
         // falls back to scanning every raw directory entry for the orphaned dir + module streams.
-        if (macros == null || macros.isEmpty()) {
+        // Skipped when the projection already sent us down the bounded reader: that call WAS the
+        // lenient read, and repeating it would re-charge the document budget it already spent.
+        // ...and even when POI DID return modules, a project parked in a storage POI does not read
+        // (it only reads storages named "VBA") is still invisible to it. Making the orphan scan
+        // unconditional inside LenientVBAReader was not enough: on this path that reader is never
+        // called, so one tree-visible module -- an empty Sub is enough -- hid everything the property
+        // scan would have found. Only pay for the scan when the property table actually holds a dir
+        // stream the tree cannot reach.
+        if (!overBudget && macros != null && !macros.isEmpty()
+                && LenientVBAReader.hasUnreachableDirStream(fs)) {
+            try {
+                // A SEPARATE accumulator on purpose. Charging this recovery against the shared
+                // document budget was measured starving the extraction it is meant to supplement:
+                // the orphan scan resolves module names against a FLATTENED property map, so it can
+                // attribute unrelated streams as module bodies (a known finding), and those charges
+                // then cut the form pass -- one real document went 2,913,040 chars to 2,695,266 and
+                // gained a truncation flag with nothing actually withheld. Recovery must not be able
+                // to reduce what the primary path already produced.
+                //
+                // KNOWN, DELIBERATE SCOPE HOLE: modules merged here therefore do not count against
+                // vbaMaxTotalBytes. That is smaller than the alternative -- a live total-loss evasion
+                // where one decoy module hides an entire project -- and it collapses once the
+                // flattened-lookup finding is fixed, at which point this can share vbaBounds again.
+                Map<String, String> hidden = LenientVBAReader.readMacrosFromOrphans(fs,
+                        new LenientVBAReader.Bounds(0, vbaBounds.totalMax()));
+                for (Map.Entry<String, String> e : hidden.entrySet()) {
+                    if (!macros.containsValue(e.getValue())) {
+                        macros.put(uniqueKey(macros, e.getKey()), e.getValue());
+                    }
+                }
+            } catch (Exception | OutOfMemoryError ignore) {
+                // recovery is best-effort
+            }
+        }
+        if (!overBudget && (macros == null || macros.isEmpty())) {
             try {
                 Map<String, String> recovered =
                         LenientVBAReader.readMacros(fs, vbaBounds);
@@ -178,14 +372,6 @@ public class OfficeParser extends AbstractOfficeParser {
             } catch (Exception ignore) {
                 // recovery is best-effort
             }
-        }
-        if (vbaBounds.isLimitReached() && parentMetadata != null) {
-            // Mirrors markXlmCaptureLimit: a dedicated flag, TRUNCATED_METADATA so generic
-            // consumers see it, and the detail as a warning.
-            parentMetadata.set("msoffice:vba-capture-limit-reached", "true");
-            parentMetadata.set(TikaCoreProperties.TRUNCATED_METADATA, true);
-            parentMetadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                    vbaBounds.getLimitDetail());
         }
         if (macros == null) {
             return;
@@ -198,6 +384,16 @@ public class OfficeParser extends AbstractOfficeParser {
             if (!StringUtils.isBlank(e.getKey())) {
                 m.set(TikaCoreProperties.RESOURCE_NAME_KEY, e.getKey());
             }
+            // Say WHICH module is a fragment, on that module. The marker was only ever inside the
+            // text, so a consumer reading the entries as documents -- which is how they are emitted
+            // -- saw a short module body and one document-wide truncation flag, with no way to tell
+            // which of forty modules the flag was about. That is the difference between "something
+            // was cut" and "the module holding the Shell call is the part we cut".
+            if (e.getValue() != null
+                    && e.getValue().contains(LenientVBAReader.INDICATORS_ONLY_MARKER)) {
+                m.set(VBA_MODULE_FRAGMENT, "true");
+                m.set(TikaCoreProperties.TRUNCATED_METADATA, true);
+            }
             if (embeddedDocumentExtractor.shouldParseEmbedded(m)) {
                 try (TikaInputStream tis = TikaInputStream.get(e.getValue().getBytes(StandardCharsets.UTF_8))) {
                     embeddedDocumentExtractor.parseEmbedded(tis, xhtml, m, context, true);
@@ -207,8 +403,20 @@ public class OfficeParser extends AbstractOfficeParser {
         // Extract UserForm control properties (ControlTipText, Tag, Caption, Value).
         // These are stored in binary form resources and invisible in VBA source text —
         // a common technique to hide URLs or commands from static analysis.
+        //
+        // Form text is charged against the SAME document budget as macro source, not given a
+        // second allowance: two ceilings that each admit the full amount are not a document
+        // ceiling. This surface used to be bounded by nothing at all, which mattered more once
+        // OLE2 UserForm discovery started working -- documents that previously yielded no form
+        // output at all now yield hundreds of kilobytes.
+        //
+        // The charging moved INTO extractFormVariables and must not be repeated here. Doing it in
+        // this loop meant every form in the document was parsed and its control text built before
+        // the first byte was charged, so the ceiling bounded the emission and not the memory. What
+        // comes back has already been charged and already fits.
         try {
-            for (VbaFormParser.FormModuleResult form : VbaFormParser.extractFormVariables(fs)) {
+            for (VbaFormParser.FormModuleResult form
+                    : VbaFormParser.extractFormVariables(fs, vbaBounds)) {
                 String text = form.toText();
                 if (text.isBlank()) continue;
                 Metadata m = Metadata.newInstance(context);
@@ -225,6 +433,17 @@ public class OfficeParser extends AbstractOfficeParser {
         } catch (Exception ignore) {
             // Non-fatal: form binary parsing errors should never fail the overall extraction
         }
+    }
+
+    /** A key not already present in {@code macros}, so a merged module cannot replace one. */
+    private static String uniqueKey(Map<String, String> macros, String name) {
+        String base = (name == null || name.isEmpty()) ? "Module" : name;
+        String key = base;
+        int n = 1;
+        while (macros.containsKey(key)) {
+            key = base + "#" + (++n);
+        }
+        return key;
     }
 
     public Set<MediaType> getSupportedTypes(ParseContext context) {

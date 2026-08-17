@@ -42,14 +42,21 @@ public class LenientVBABoundsTest {
 
     /**
      * Build an MS-OVBA container of {@code chunks} UNCOMPRESSED chunks, each decompressing
-     * to 4096 bytes. Header 0x3FFD: signature bits (>>12)&0x07 == 0b011 as the format
-     * requires, compressed-flag (0x8000) clear, size field 4093 (+3 == 4096).
+     * to 4096 bytes. Header 0x3FFF: signature bits (>>12)&0x07 == 0b011 as the format
+     * requires, compressed-flag (0x8000) clear, size field 4095 -- which per MS-OVBA
+     * §2.4.1.1.5 declares a chunk 4095+3 == 4098 bytes long INCLUDING its own 2-byte header,
+     * i.e. 4096 bytes of data.
+     *
+     * <p>This fixture used to declare 4093 while writing 4096 bytes. POI's own decompressor
+     * rejects that header outright, so the fixture only ever agreed with the chunk-length bug
+     * it was written against -- see {@link LenientVBADecompressSpecTest}, which uses POI as an
+     * independent oracle for exactly this reason.
      */
     private static byte[] rawChunks(int chunks) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(0x01); // compressed-container signature
         for (int c = 0; c < chunks; c++) {
-            out.write(0xFD);
+            out.write(0xFF);
             out.write(0x3F);
             for (int i = 0; i < 4096; i++) {
                 out.write('A' + (c % 26));

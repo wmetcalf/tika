@@ -60,6 +60,8 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
     private final int maxFormulaRecordBytes;
     /** Invoked when a formula record is dropped for exceeding the bound. */
     private final Runnable onRecordDropped;
+    /** Invoked when a formula's Ptg stream could not be decoded to completion. */
+    private final Runnable onUndecodedFormula;
     private int currentRow = -1;
 
     Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml) {
@@ -74,12 +76,19 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
     Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
                                XlmMacroEmulator emulator, int maxFormulaRecordBytes,
                                Runnable onRecordDropped) {
+        this(stream, xhtml, emulator, maxFormulaRecordBytes, onRecordDropped, null);
+    }
+
+    Biff12XlmMacrosheetParser(InputStream stream, XHTMLContentHandler xhtml,
+                               XlmMacroEmulator emulator, int maxFormulaRecordBytes,
+                               Runnable onRecordDropped, Runnable onUndecodedFormula) {
         super(stream);
         this.xhtml = xhtml;
         this.emulator = emulator;
         this.maxFormulaRecordBytes = maxFormulaRecordBytes > 0
                 ? maxFormulaRecordBytes : DEFAULT_MAX_FORMULA_RECORD_BYTES;
         this.onRecordDropped = onRecordDropped;
+        this.onUndecodedFormula = onUndecodedFormula;
     }
 
     @Override
@@ -134,6 +143,18 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
             }
             return;
         }
+        // Bound the allocation by what the record ACTUALLY holds, not just by the knob.
+        // sz is attacker-controlled and maxFormulaRecordBytes is operator-settable up to
+        // Integer.MAX_VALUE, so a 22-byte record declaring sz=514MiB used to allocate 514MiB
+        // before readBytes noticed the shortfall and discarded the formula anyway -- pure
+        // amplification, paid per record. If sz exceeds what is left, the record is lying and
+        // the formula is unrecoverable either way; report the drop instead of allocating.
+        if (sz > buf.remaining()) {
+            if (onRecordDropped != null) {
+                onRecordDropped.run();
+            }
+            return;
+        }
         byte[] formulaBytes = new byte[(int) sz];
         if (buf.readBytes(formulaBytes) < (int) sz) {
             return;
@@ -145,7 +166,11 @@ class Biff12XlmMacrosheetParser extends XSSFBParser {
             return;
         }
 
-        String formula = Biff12XlmFormulaDecoder.decode(formulaBytes);
+        boolean[] undecoded = new boolean[1];
+        String formula = Biff12XlmFormulaDecoder.decode(formulaBytes, undecoded);
+        if (undecoded[0] && onUndecodedFormula != null) {
+            onUndecodedFormula.run();
+        }
         if (formula == null || formula.isEmpty()) {
             return;
         }

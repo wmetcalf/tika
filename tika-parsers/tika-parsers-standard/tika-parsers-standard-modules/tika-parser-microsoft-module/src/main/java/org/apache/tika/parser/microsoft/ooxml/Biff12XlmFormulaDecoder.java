@@ -41,6 +41,31 @@ import java.util.stream.Collectors;
  */
 final class Biff12XlmFormulaDecoder {
 
+    /**
+     * IOC chars an FCLOSE-time preview must leave for indicators evaluated after it.
+     *
+     * <p>FCLOSE is evaluated MID-MACRO, so whatever it takes is denied to every later EXEC/CALL/
+     * FOPEN -- and refusal marks the limit, which stopOnContextLimit turns into emulationAborted, so
+     * evaluation stops dead too. A budget-DERIVED preview (all remaining chars) reproducibly lost
+     * the EXEC on a >1 MB payload at default limits.
+     *
+     * <p>But a flat cap is worse on real data: pinning the preview to 8192 cost 159 extracted URLs
+     * across 52 documents of the 1,043-document XLSB corpus and halved retained file content
+     * (1,556,165 -> 799,270 chars), because real droppers reconstruct payloads well past 8 KB and the
+     * URLs live inside them. No document in that corpus gained an EXEC from the flat cap.
+     *
+     * <p>So reserve a fixed slice of the allowance instead of rationing the preview: the preview may
+     * grow to (remaining - RESERVE), which keeps the large payloads, while RESERVE guarantees room
+     * for the short high-value indicators (an EXEC line is tens of chars, so 64 KB is hundreds of
+     * them). Serves the probe and the corpus at once.
+     *
+     * <p>Sized from the corpus, not by feel. 64 KB was tried first and still cost 28 extracted URLs
+     * across the 1,043-document XLSB corpus, because the reserve is subtracted from every preview and
+     * in those documents a URL sat in the withheld tail. 4 KB keeps room for ~130 short indicators --
+     * an EXEC line is tens of chars -- while giving that tail back.
+     */
+    private static final int FCLOSE_IOC_RESERVE_CHARS = 4096;
+
     // ── Ptg type IDs (MS-XLSB §2.5.97) ────────────────────────────────────
     private static final int PTG_EXP          = 0x01;
     private static final int PTG_TABLE        = 0x02;
@@ -940,7 +965,7 @@ final class Biff12XlmFormulaDecoder {
                 retainedFileContentChars += retained;
             }
             if (retained < text.length()) {
-                markLimit("XLSB XLM reconstructed file-content retention limit reached");
+                markNonFatal("XLSB XLM reconstructed file-content retention limit reached");
             }
         }
 
@@ -975,8 +1000,47 @@ final class Biff12XlmFormulaDecoder {
             return limitWarning != null;
         }
 
+        /**
+         * Problems affecting ONE cell, which must be reported but must NOT stop emulation.
+         *
+         * <p>Deliberately separate from {@link #isLimitReached()}. That one means "a budget is
+         * spent, further work is wasted", and {@code XlmMacroEmulator.stopOnContextLimit}
+         * turns it into {@code emulationAborted}. Routing a per-cell problem through it made
+         * one bad formula suppress every LATER cell's IOCs -- measured: 3 EXEC indicators
+         * dropped to zero from a single spliced byte. Per-cell problems are independent;
+         * the remaining cells must still be emulated.
+         *
+         * <p>A list, not a flag, because {@code markLimit} keeps only the FIRST warning and
+         * these are materially different diagnoses an analyst needs to tell apart.
+         */
+        private final java.util.LinkedHashSet<String> nonFatalWarnings =
+                new java.util.LinkedHashSet<>();
+
+        /**
+         * NOTE for the file-content writer: it reports truncation through markNonFatal, NOT
+         * markLimit. markLimit sets limitWarning, isLimitReached() is `limitWarning != null`, and
+         * XlmMacroEmulator.stopOnContextLimit turns that into emulationAborted -- so an oversized
+         * FWRITE aborted every LATER macro cell and the EXEC command line was never evaluated
+         * (measured with xlmMaxFileContentChars=2000: execEmitted=false). Same "report, do not
+         * abort" defect already fixed in FCLOSE two methods away, left in the writer.
+         */
+        void markNonFatal(String warning) {
+            if (warning != null && nonFatalWarnings.size() < 32) {
+                nonFatalWarnings.add(warning);
+            }
+        }
+
+        java.util.Collection<String> getNonFatalWarnings() {
+            return nonFatalWarnings;
+        }
+
         String getLimitWarning() {
             return limitWarning;
+        }
+
+        /** Drop a handle's reconstructed content once it has been emitted, so it is not re-emitted. */
+        void closeFileHandle(int handle) {
+            fileContents.remove(handle);
         }
 
         private void markLimit(String warning) {
@@ -1018,9 +1082,28 @@ final class Biff12XlmFormulaDecoder {
             return null;
         }
         try {
-            List<PtgNode> tokens = parseTokens(data);
+            TokenStream ts = parseTokens(data);
+            if (ts.incomplete && ctx != null) {
+                // Emulating a PREFIX of a formula yields IOCs for an expression the document
+                // does not contain, so it must be reported -- but NOT through markLimit().
+                // markLimit() sets limitWarning, isLimitReached() is `limitWarning != null`,
+                // and XlmMacroEmulator.stopOnContextLimit turns that into
+                // emulationAborted = true. Routing a PER-FORMULA decode failure through it
+                // therefore aborted evaluation of every REMAINING macro cell: measured, one
+                // spliced junk byte took a macrosheet from 3 EXEC IOCs to zero. That is the
+                // same one-part kill switch this branch removed from the XML path, and the
+                // corpus could not catch it because no sample hits an unknown Ptg.
+                //
+                // A budget being exhausted means "stop, further work is wasted". One
+                // undecodable formula means "this cell is untrustworthy"; the other cells are
+                // independent and must still be emulated. Different conditions, different
+                // signals.
+                ctx.markNonFatal("XLSB XLM formula only partially decodable: unknown Ptg "
+                        + "opcode or truncated operand; that cell's emulated result is a "
+                        + "prefix. Other cells were still emulated.");
+            }
             Deque<Object> stack = new ArrayDeque<>();
-            for (PtgNode node : tokens) {
+            for (PtgNode node : ts.tokens) {
                 node.pushValue(stack, ctx);
             }
             return stack.isEmpty() ? null : stack.getLast();
@@ -1106,24 +1189,78 @@ final class Biff12XlmFormulaDecoder {
                     String content = ctx.getFileContent(handle);
                     if (content != null && !content.isEmpty()) {
                         String path = ctx.getFilePath(handle);
-                        // Was a hardcoded 300. That made maxFileContentChars (and its
-                        // OfficeParserConfig knob) inert: retention was never the binding
-                        // constraint, this emission preview was -- a dropper's URL/C2 sits
-                        // past char 300 and never reached the analyst, with no limit flagged.
+                        // This runs DURING evaluation, so whatever it takes is denied to every
+                        // EXEC/CALL/FOPEN evaluated later. It must therefore be a FIXED, modest
+                        // slice -- never derived from the remaining IOC budget.
                         //
-                        // Size the preview to the IOC budget too. addIoc() rejects an
-                        // over-budget entry ENTIRELY rather than keeping a prefix, so with
-                        // maxFileContentChars (10 MB) above maxIocChars (1 MB) an unbounded
-                        // preview loses the whole entry -- strictly less evidence than the
-                        // old 300-char cut. Emit the largest prefix that will be retained.
+                        // A budget-derived preview (min(fileContentCap, len, remaining - head - 1))
+                        // was tried and is strictly worse than the 300-char cut it replaced: it
+                        // claims ALL remaining chars, so at DEFAULT limits (maxIocChars 1 MB) a
+                        // >1 MB reconstructed payload consumed the entire allowance, every later
+                        // EXEC/CALL was rejected, and because rejection calls markLimit ->
+                        // stopOnContextLimit, emulation ABORTED at that point. Measured: preview
+                        // 1,048,549 chars and no EXEC at all, on an ordinary
+                        // FOPEN/FWRITE*/FCLOSE/EXEC dropper. The EXEC command line is the single
+                        // most valuable indicator in that document.
+                        //
+                        // So the preview is bounded by a RESERVE: it may spend what is left MINUS
+                        // FCLOSE_IOC_RESERVE_CHARS, keeping that much guaranteed room for the
+                        // short high-value indicators (EXEC/CALL/FOPEN) evaluated afterwards.
+                        // Bounded by maxFileContentChars when an operator lowers it.
                         String head = "FILE_CONTENT[" + path + "]: ";
-                        int budget = ctx.remainingIocChars() - head.length() - 1;
+                        int spendable = ctx.remainingIocChars()
+                                - FCLOSE_IOC_RESERVE_CHARS - head.length() - 1;
                         int preview = Math.min(
                                 Math.min(ctx.maxFileContentChars(), content.length()),
-                                Math.max(0, budget));
-                        if (preview > 0) {
-                            ctx.addIoc(head + content.substring(0, preview)
-                                    + (content.length() > preview ? "…" : ""));
+                                Math.max(0, spendable));
+                        if (preview >= content.length()) {
+                            // Complete: emit here and close, so the drain cannot duplicate it.
+                            ctx.addIoc(head + content);
+                        } else if (preview > 0) {
+                            // CUT. Do not emit the prefix: the post-loop drain restarts at offset
+                            // 0, so the two emissions overlap completely on the shorter one and the
+                            // budget pays twice for the same bytes while the payload TAIL is lost.
+                            // Measured at xlmMaxIocChars=6096: two entries spending 6,043 chars to
+                            // cover 4,043 unique chars of a 5,016-char payload, second C2 URL never
+                            // emitted. The drain runs after the high-value indicators are secured
+                            // and may spend the whole remainder, so it is strictly the better
+                            // emitter here -- leave the content to it.
+                            // NO warning: deferral is not a loss. The post-loop drain always runs
+                            // and reports its own failure if it cannot emit, whereas warning here
+                            // promoted a DEFERRAL into a capture limit and TRUNCATED_METADATA on
+                            // documents whose content the drain then emitted in full -- measured
+                            // with a 6,096-char budget and a 5,000-char payload: complete
+                            // FILE_CONTENT, no ellipsis, later EXEC preserved, and a capture-limit
+                            // flag anyway.
+                        } else {
+                            // Do NOT emit a content-free "FILE_CONTENT[path]: …". It carries zero
+                            // evidence, spends budget on an attacker-chosen path string, and when
+                            // it is REFUSED addIoc calls markLimit -> stopOnContextLimit, so
+                            // emulation aborted here and the later EXEC command line -- the single
+                            // most valuable indicator in a dropper -- was never evaluated. Report,
+                            // do not abort.
+                            ctx.markNonFatal("XLSB XLM reconstructed file content dropped at "
+                                    + "FCLOSE: IOC budget exhausted. Other indicators were "
+                                    + "still emulated.");
+                        }
+                        // Close the handle ONLY when this emission was COMPLETE.
+                        //
+                        // The handle used to stay open unconditionally, so the post-loop drain in
+                        // XlmMacroEmulator re-emitted the same payload -- measured as two
+                        // byte-identical 480,040-char entries eating 91% of the 1 MiB IOC
+                        // allowance for one file. But closing it unconditionally was WORSE, and
+                        // the corpus proved it: FILE_CONTENT across 1,123 XLSB documents fell from
+                        // 1,556,505 chars to 779,927 (-207 IOC lines, -142 URLs on 30 documents).
+                        // The two emitters are NOT equivalent -- this one is capped by
+                        // FCLOSE_IOC_RESERVE_CHARS so it can be CUT, while the drain runs after
+                        // the high-value indicators are secured and may spend the whole remainder.
+                        // A synthetic probe showed them identical; real droppers write payloads
+                        // large enough that only the drain gets it all.
+                        //
+                        // So: if we emitted the content in full, closing removes a pure duplicate.
+                        // If we cut it, leave the handle open so the drain can do better.
+                        if (preview >= content.length()) {
+                            ctx.closeFileHandle(handle);
                         }
                     }
                 }
@@ -1207,14 +1344,11 @@ final class Biff12XlmFormulaDecoder {
                 // lets time-gate comparisons in droppers actually resolve.
                 // Surface to IOCs so analysts notice the time-gated logic even
                 // when the comparison happens to be true at parse time.
-                //
-                // UTC because forbiddenapis blocks the default-timezone form;
-                // Excel's display timezone is irrelevant when comparing serials.
                 if (ctx != null) ctx.addIoc("TIME_GATE: NOW()");
-                return excelSerialDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+                return EMULATION_CLOCK_SERIAL;
             case "TODAY":
                 if (ctx != null) ctx.addIoc("TIME_GATE: TODAY()");
-                return (double) excelSerialDay(java.time.LocalDate.now(java.time.ZoneOffset.UTC));
+                return (double) (long) EMULATION_CLOCK_SERIAL;
             case "DATE": {
                 // DATE(year, month, day) → Excel serial. Pure constructor, no
                 // IOC — but the resolved serial enables `=IF(NOW()>DATE(2023,1,1), …)`
@@ -1253,17 +1387,36 @@ final class Biff12XlmFormulaDecoder {
      * 1899-12-30 rather than 1900-01-01 cancels the offset for any date
      * past March 1900, which covers every conceivable modern dropper.
      */
+    /**
+     * Fixed clock for emulated {@code NOW()}/{@code TODAY()}: Excel serial for
+     * 2100-01-01T00:00:00Z.
+     *
+     * <p>These used to read the WALL CLOCK, which put the parse timestamp into the extracted
+     * TEXT -- a {@code REGISTER: 46244.7446875} line whose value changed on every parse.
+     * Measured directly: two runs of the same binary over the same 1,123-document XLSB corpus
+     * disagreed on 47 documents. That makes extraction irreproducible, so anything keyed on
+     * the extracted text (dedup, caches, "did this build change detection?" A/B runs) is
+     * unreliable, and the differing value is analyst-irrelevant noise -- the actionable signal
+     * is the {@code TIME_GATE} IOC, which still fires.
+     *
+     * <p>A FAR-FUTURE instant is the conservative choice: real droppers gate on
+     * {@code NOW() > <some past date>} to stop detonating after a campaign window, so a late
+     * clock takes the same branch the wall clock took, preserving the emulation's reach.
+     */
+    static final double EMULATION_CLOCK_SERIAL =
+            excelSerialDay(java.time.LocalDate.of(2100, 1, 1));
+
     private static int excelSerialDay(java.time.LocalDate date) {
         java.time.LocalDate epoch = java.time.LocalDate.of(1899, 12, 30);
         return (int) java.time.temporal.ChronoUnit.DAYS.between(epoch, date);
     }
 
-    /** Excel serial date with fractional day for the time component. */
-    private static double excelSerialDate(java.time.LocalDateTime dt) {
-        double day = excelSerialDay(dt.toLocalDate());
-        double fraction = dt.toLocalTime().toSecondOfDay() / 86400.0;
-        return day + fraction;
-    }
+    // excelSerialDate(LocalDateTime) was removed along with the wall-clock NOW(), which was
+    // its only caller. Worth recording WHY: its resolution was toSecondOfDay(), so repeated
+    // NOW() calls inside the same second returned an IDENTICAL double. A "call it twice and
+    // compare" test therefore could not detect the wall-clock read at all -- it passed against
+    // the bug. See EMULATION_CLOCK_SERIAL and the test that asserts NOW() is nowhere near
+    // today's serial instead.
 
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -1273,20 +1426,50 @@ final class Biff12XlmFormulaDecoder {
      * @return formula string (no leading {@code =}), or {@code null} if decoding fails.
      */
     static String decode(byte[] data) {
+        return decode(data, null);
+    }
+
+    /**
+     * Marks a formula whose Ptg stream could not be fully decoded. Presenting a PREFIX of a
+     * formula as the whole formula is the worst possible output -- a spliced unknown opcode
+     * turned {@code =EXEC("powershell -enc EVIL")} into {@code ="powershell -enc EVIL"},
+     * which reads as inert data rather than execution.
+     */
+    static final String XLSB_UNDECODED_PTG_MARKER = "[...TIKA-XLM-PTG-UNDECODED]";
+
+    /**
+     * @param incompleteSink optional 1-element sink; {@code [0]} is set true when the Ptg
+     *                       stream did not decode to completion (see {@link TokenStream}).
+     *                       The returned text then carries
+     *                       {@link #XLSB_UNDECODED_PTG_MARKER}.
+     */
+    static String decode(byte[] data, boolean[] incompleteSink) {
         if (data == null || data.length == 0) {
             return null;
         }
         try {
-            List<PtgNode> tokens = parseTokens(data);
+            TokenStream ts = parseTokens(data);
+            List<PtgNode> tokens = ts.tokens;
+            if (ts.incomplete && incompleteSink != null && incompleteSink.length > 0) {
+                incompleteSink[0] = true;
+            }
             if (tokens.isEmpty()) {
-                return null;
+                // Nothing decoded at all. Still report the marker when the caller asked for
+                // a signal, so "undecodable" is distinguishable from "no formula here".
+                return ts.incomplete ? XLSB_UNDECODED_PTG_MARKER : null;
             }
             Deque<PtgNode> stack = new ArrayDeque<>(tokens);
             PtgNode top = removeLast(stack);
             if (top == null) {
                 return null;
             }
-            return top.stringify(stack);
+            String text = top.stringify(stack);
+            if (ts.incomplete && text != null) {
+                // Append, do not prepend: downstream IOC regexes anchor on the formula's
+                // leading function name.
+                text = text + " " + XLSB_UNDECODED_PTG_MARKER;
+            }
+            return text;
         } catch (Exception | StackOverflowError e) {
             // stringify() recurses one frame per token; a crafted formula of ~65k
             // unary Ptg tokens overflows the stack. StackOverflowError is an Error,
@@ -1298,9 +1481,29 @@ final class Biff12XlmFormulaDecoder {
 
     // ── Ptg token parsing ────────────────────────────────────────────────────
 
-    private static List<PtgNode> parseTokens(byte[] data) {
+    /**
+     * Token stream plus whether the decode ran to completion.
+     *
+     * <p>{@code incomplete} means the walk stopped with bytes left over -- an unknown Ptg
+     * opcode (unknown operand length, so the cursor cannot be advanced correctly) or an
+     * operand truncated mid-read. In both cases every byte after that point would decode
+     * from a MISALIGNED cursor, so the tokens collected so far are a PREFIX of the formula,
+     * not the formula. Callers must not present a prefix as a complete formula.
+     */
+    private static final class TokenStream {
+        final List<PtgNode> tokens;
+        final boolean incomplete;
+
+        TokenStream(List<PtgNode> tokens, boolean incomplete) {
+            this.tokens = tokens;
+            this.incomplete = incomplete;
+        }
+    }
+
+    private static TokenStream parseTokens(byte[] data) {
         Buf buf = new Buf(data);
         List<PtgNode> tokens = new ArrayList<>();
+        boolean incomplete = false;
         while (buf.hasRemaining()) {
             int raw = buf.readByte();
             if (raw < 0) {
@@ -1310,11 +1513,13 @@ final class Biff12XlmFormulaDecoder {
             int base = ((raw & 0x40) != 0) ? ((raw | 0x20) & 0x3F) : (raw & 0x3F);
             PtgNode node = readPtg(base, raw, buf);
             if (node == null) {
+                // Unknown opcode or truncated operand: the cursor is now untrustworthy.
+                incomplete = true;
                 break;
             }
             tokens.add(node);
         }
-        return tokens;
+        return new TokenStream(tokens, incomplete);
     }
 
     @SuppressWarnings("fallthrough")
@@ -1576,7 +1781,17 @@ final class Biff12XlmFormulaDecoder {
             }
 
             default:
-                return new LiteralNode("?PTG" + raw + "?");
+                // We know ~40 of ~200 Ptg opcodes. An unknown one has an unknown OPERAND
+                // LENGTH, so we cannot skip it correctly and the byte cursor DESYNCHRONIZES:
+                // every token after this point is decoded from misaligned bytes and is
+                // fiction. Observed consequence -- splicing one unknown opcode turned
+                //   =EXEC("powershell -enc EVIL")   into   ="powershell -enc EVIL"
+                // i.e. the call vanished and the result was emitted as a COMPLETE formula
+                // with no marker and no flag. We cannot recover the bytes, but we must never
+                // present a desynchronized decode as trustworthy: record it and stop, rather
+                // than manufacturing further structure from garbage. Returning null makes
+                // parseTokens stop; it reports the unconsumed tail as an incomplete decode.
+                return null;
         }
     }
 
@@ -1874,6 +2089,11 @@ final class Biff12XlmFormulaDecoder {
 
         boolean hasRemaining() {
             return b.hasRemaining();
+        }
+
+        /** Bytes actually left in this record -- the real ceiling on any length field. */
+        int remaining() {
+            return b.remaining();
         }
 
         /** Read 1 unsigned byte; returns -1 if buffer exhausted. */
