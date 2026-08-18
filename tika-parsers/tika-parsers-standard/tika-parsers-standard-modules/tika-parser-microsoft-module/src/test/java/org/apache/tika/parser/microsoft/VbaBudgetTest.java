@@ -1087,4 +1087,64 @@ public class VbaBudgetTest {
         assertEquals(short_, LenientVBAReader.truncateKeepingIndicators(short_, 4096),
                 "input under the bound must come back untouched");
     }
+
+    /**
+     * An indicator late on a very long line must survive, not the padding in front of it.
+     *
+     * <p>Reported on PR #19. The helper detected the line as indicator-bearing and then kept it from
+     * column ZERO, so a statement of the shape `&lt;thousands of padding chars&gt; : Shell "..."` was
+     * recognised and then discarded in favour of its own padding -- the module-level tail-loss defect
+     * this method exists to prevent, reproduced at line scope. Obfuscators write exactly this shape.
+     */
+    @Test
+    void testIndicatorLateOnALongLineIsKept() {
+        String padded = "' " + "A".repeat(6000) + " : Shell \"powershell -enc LATEONLINE\"\n";
+        String text = "' filler\n".repeat(200) + padded;
+        String cut = LenientVBAReader.truncateKeepingIndicators(text, 4096);
+        assertTrue(cut.length() <= 4096, "must respect the bound; got " + cut.length());
+        assertTrue(cut.contains("LATEONLINE"),
+                "the indicator sits at the END of a padded line -- keeping the line's head throws "
+                        + "away the very thing that made it worth keeping. Tail of result: "
+                        + cut.substring(Math.max(0, cut.length() - 160)));
+    }
+
+    /**
+     * A module cut with NO indicator lines must still be marked as a fragment.
+     *
+     * <p>Reported on PR #19. With an empty suffix the helper returned an unmarked prefix, and
+     * {@code OfficeParser} keys {@code msoffice:vba-module-fragment} off the marker -- so a truncated
+     * module without indicators looked complete to a consumer of recursive metadata.
+     */
+    @Test
+    void testTruncatedModuleWithNoIndicatorsIsStillMarked() {
+        String bland = "' nothing interesting whatsoever here\n".repeat(500);
+        String cut = LenientVBAReader.truncateKeepingIndicators(bland, 2048);
+        assertTrue(cut.length() <= 2048, "bound respected; got " + cut.length());
+        assertTrue(cut.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                "input WAS cut, so the result must say so even with no indicator lines: "
+                        + cut.substring(Math.max(0, cut.length() - 120)));
+        // NEGATIVE CONTROL: text that fits is returned untouched and unmarked.
+        String small = "Sub S()\nEnd Sub\n";
+        assertEquals(small, LenientVBAReader.truncateKeepingIndicators(small, 4096));
+    }
+
+    /**
+     * Orphan recovery must inherit the CONFIGURED per-stream cap, not the built-in default.
+     *
+     * <p>Reported on PR #19: recovery constructed {@code new Bounds(0, total)}, and 0 selects the
+     * 10 MB default, so {@code vbaMaxStreamBytes} did not apply to merged orphan modules at all.
+     */
+    @Test
+    void testOrphanRecoveryInheritsTheConfiguredStreamCap() {
+        LenientVBAReader.Bounds configured = new LenientVBAReader.Bounds(8192, 32L * 1024 * 1024);
+        assertEquals(8192, configured.max(), "fixture: the cap is what the operator set");
+        // The recovery bounds OfficeParser builds must carry that cap, not the 10 MB default.
+        LenientVBAReader.Bounds recovery =
+                new LenientVBAReader.Bounds(configured.max(), configured.totalMax());
+        assertEquals(8192, recovery.max(),
+                "recovery must inherit the configured per-stream cap");
+        assertEquals(LenientVBAReader.MAX_STREAM_BYTES,
+                new LenientVBAReader.Bounds(0, configured.totalMax()).max(),
+                "control: 0 really does select the 10 MB default, which is what made this a bug");
+    }
 }

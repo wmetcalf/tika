@@ -550,7 +550,22 @@ public final class LenientVBAReader {
                 String line = text.substring(from, end);
                 if (m.reset(line).find()) {
                     int room = indicatorRoom - indicators.length();
-                    indicators.append(line, 0, Math.min(line.length(), room)).append('\n');
+                    // Slice AROUND the match, not from column zero. Taking the head of the line
+                    // reproduces the very defect this method exists to prevent, one scope down: a
+                    // line of padding ending in `: Shell "..."` is DETECTED as indicator-bearing and
+                    // then the padding is what gets kept. Obfuscators write exactly that shape.
+                    // Reported on PR #19.
+                    int ms = m.start();
+                    int me = m.end();
+                    int span = Math.min(room, line.length());
+                    int start = Math.max(0, Math.min(ms - span / 4, line.length() - span));
+                    indicators.append(line, start, Math.min(line.length(), start + span))
+                            .append('\n');
+                    if (start > 0 || start + span < line.length()) {
+                        // The kept slice is a window into a longer line; say so rather than let it
+                        // read as the whole statement.
+                        indicators.append("[TIKA-VBA-LINE-WINDOW]\n");
+                    }
                 }
             }
             from = end + 1;
@@ -559,7 +574,12 @@ public final class LenientVBAReader {
         // trimming the result to `max` at the end cuts off the very indicators this exists to keep:
         // the marker and the collected lines land past the limit and get chopped. The suffix is the
         // part that must survive, so it is the part that gets its room first.
-        String suffix = indicators.length() == 0 ? ""
+        // Marked whenever this method CUTS, not only when it found indicators. With an empty suffix
+        // the result was an unmarked prefix, and OfficeParser keys msoffice:vba-module-fragment off
+        // the marker -- so a truncated module with no indicator lines was indistinguishable from a
+        // complete one to a consumer of recursive metadata. Reported on PR #19.
+        String suffix = indicators.length() == 0
+                ? "\n" + INDICATORS_ONLY_MARKER + " (truncated, no indicator lines)\n"
                 : "\n" + INDICATORS_ONLY_MARKER + " (tail)\n" + indicators;
         int prefixRoom = Math.max(0, max - suffix.length());
         StringBuilder out = new StringBuilder(max);

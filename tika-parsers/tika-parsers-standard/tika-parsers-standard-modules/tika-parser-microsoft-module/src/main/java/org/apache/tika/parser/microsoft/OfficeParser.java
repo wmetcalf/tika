@@ -368,8 +368,14 @@ public class OfficeParser extends AbstractOfficeParser {
                 // vbaMaxTotalBytes. That is smaller than the alternative -- a live total-loss evasion
                 // where one decoy module hides an entire project -- and it collapses once the
                 // flattened-lookup finding is fixed, at which point this can share vbaBounds again.
+                // Carry the CONFIGURED per-stream cap into recovery. Passing 0 restored the
+                // 10 MB built-in default, so an operator who set vbaMaxStreamBytes=8192 still got
+                // multi-megabyte orphan modules merged in unbounded -- the same "the knob does not
+                // apply on every path" defect this branch fixed for the POI reader. Only the
+                // document TOTAL stays separate here, which is the deliberate scope hole documented
+                // below. Reported on PR #19.
                 Map<String, String> hidden = LenientVBAReader.readMacrosFromOrphans(fs,
-                        new LenientVBAReader.Bounds(0, vbaBounds.totalMax()));
+                        new LenientVBAReader.Bounds(vbaBounds.max(), vbaBounds.totalMax()));
                 for (Map.Entry<String, String> e : hidden.entrySet()) {
                     if (!macros.containsValue(e.getValue())) {
                         macros.put(uniqueKey(macros, e.getKey()), e.getValue());
