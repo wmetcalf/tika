@@ -540,35 +540,62 @@ public final class LenientVBAReader {
             return text;
         }
         int indicatorRoom = max / 2;
-        StringBuilder indicators = new StringBuilder();
+        // Scan the WHOLE body and keep indicator lines from BOTH ENDS.
+        //
+        // Collecting head-first and stopping when the budget filled let the document's author decide
+        // what survives: a few hundred harmless CreateObject lines at the TOP of an oversize module
+        // consumed the budget, and the loop never reached the real payload at the bottom. That is
+        // the same ordering-starvation shape as the module-level reserve and the XLM per-cell quota,
+        // in the one method whose entire purpose is to stop tail loss -- which it had already been
+        // fixed for twice. Reported by the review panel on PR #19.
+        //
+        // Both buffers are bounded, so this is one pass in O(indicatorRoom) memory regardless of how
+        // many indicator lines the body holds.
+        java.util.ArrayDeque<String> head = new java.util.ArrayDeque<>();
+        java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
+        int headChars = 0;
+        int tailChars = 0;
+        int halfRoom = Math.max(1, indicatorRoom / 2);
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
         int from = 0;
-        while (from < text.length() && indicators.length() < indicatorRoom) {
+        while (from < text.length()) {
             int nl = text.indexOf('\n', from);
             int end = nl < 0 ? text.length() : nl;
             if (end > from) {
                 String line = text.substring(from, end);
                 if (m.reset(line).find()) {
-                    int room = indicatorRoom - indicators.length();
-                    // Slice AROUND the match, not from column zero. Taking the head of the line
-                    // reproduces the very defect this method exists to prevent, one scope down: a
-                    // line of padding ending in `: Shell "..."` is DETECTED as indicator-bearing and
-                    // then the padding is what gets kept. Obfuscators write exactly that shape.
-                    // Reported on PR #19.
-                    int ms = m.start();
-                    int me = m.end();
-                    int span = Math.min(room, line.length());
-                    int start = Math.max(0, Math.min(ms - span / 4, line.length() - span));
-                    indicators.append(line, start, Math.min(line.length(), start + span))
-                            .append('\n');
-                    if (start > 0 || start + span < line.length()) {
-                        // The kept slice is a window into a longer line; say so rather than let it
-                        // read as the whole statement.
-                        indicators.append("[TIKA-VBA-LINE-WINDOW]\n");
+                    // Slice AROUND the match, not from column zero: a line of padding ending in
+                    // `: Shell "..."` is detected as indicator-bearing, and keeping its head throws
+                    // away the very thing that made it worth keeping.
+                    int span = Math.min(halfRoom, line.length());
+                    int start = Math.max(0, Math.min(m.start() - span / 4, line.length() - span));
+                    String kept = line.substring(start, Math.min(line.length(), start + span))
+                            + (start > 0 || start + span < line.length()
+                                    ? " [TIKA-VBA-LINE-WINDOW]" : "");
+                    if (headChars < halfRoom) {
+                        head.addLast(kept);
+                        headChars += kept.length() + 1;
+                    } else {
+                        // Ring the tail so the LAST indicators are the ones retained.
+                        tail.addLast(kept);
+                        tailChars += kept.length() + 1;
+                        while (tailChars > halfRoom && tail.size() > 1) {
+                            tailChars -= tail.removeFirst().length() + 1;
+                        }
                     }
                 }
             }
             from = end + 1;
+        }
+        StringBuilder indicators = new StringBuilder();
+        // TAIL FIRST. Whatever trimming happens later removes from the END, so ordering the payload
+        // ahead of the early decoys is what makes a small cap lose the decoys instead of the
+        // evidence -- the second finding from the same review.
+        for (String t : tail) {
+            indicators.append(t).append('\n');
+        }
+        for (String h : head) {
+            indicators.append(h).append('\n');
         }
         // Build the SUFFIX first and size the prefix against it. Assembling prefix-then-suffix and
         // trimming the result to `max` at the end cuts off the very indicators this exists to keep:

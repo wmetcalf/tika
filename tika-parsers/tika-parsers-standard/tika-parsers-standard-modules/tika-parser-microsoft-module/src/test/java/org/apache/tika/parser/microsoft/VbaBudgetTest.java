@@ -1171,4 +1171,53 @@ public class VbaBudgetTest {
                 "a module under the cap in UTF-16 units but far over it in BYTES must still be "
                         + "capped -- the knob is named and documented in bytes");
     }
+
+    /**
+     * DECOYS AT THE TOP MUST NOT SUPPRESS THE PAYLOAD AT THE BOTTOM.
+     *
+     * <p>Reported as HIGH by the review panel on PR #19. Indicator collection ran head-first and
+     * stopped as soon as its budget filled, so the document's AUTHOR decided what survived: a few
+     * hundred harmless {@code CreateObject} lines at the top consumed the budget and the loop never
+     * reached the real {@code Shell} at the tail. That is the same ordering-starvation shape as the
+     * module-level reserve and the XLM per-cell quota -- in the one method whose entire purpose is
+     * to prevent tail loss, which had already been fixed for it twice.
+     */
+    @Test
+    void testEarlyDecoyIndicatorsDoNotSuppressTheTailPayload() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            sb.append("  Set o").append(i).append(" = CreateObject(\"Scripting.Dictionary\")\n");
+        }
+        sb.append("' ").append("filler\n".repeat(2000));
+        sb.append("  Shell \"powershell -w hidden -enc TAILPAYLOAD\"\n");
+        String cut = LenientVBAReader.truncateKeepingIndicators(sb.toString(), 4096);
+
+        assertTrue(cut.length() <= 4096, "bound respected; got " + cut.length());
+        assertTrue(cut.contains("TAILPAYLOAD"),
+                "400 decoy CreateObject lines precede the payload; collecting head-first lets the "
+                        + "author starve the tail. Got: "
+                        + cut.substring(Math.max(0, cut.length() - 200)));
+    }
+
+    /**
+     * When the cap is too small for everything, the DECOYS go first, not the payload.
+     *
+     * <p>The companion MED finding: indicator text -- not merely the marker -- was dropped once the
+     * cap fell below the suffix. Ordering the tail ahead of the head means later trimming removes
+     * early decoys and keeps the evidence.
+     */
+    @Test
+    void testTightCapKeepsThePayloadAndDropsTheDecoys() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            sb.append("  Set d").append(i).append(" = CreateObject(\"DECOY").append(i)
+                    .append("\")\n");
+        }
+        sb.append("  Shell \"powershell -enc REALPAYLOAD\"\n");
+        String cut = LenientVBAReader.truncateKeepingIndicators(sb.toString(), 400);
+
+        assertTrue(cut.length() <= 400, "bound respected; got " + cut.length());
+        assertTrue(cut.contains("REALPAYLOAD"),
+                "at a tight cap the payload must outrank the decoys; got: " + cut);
+    }
 }
