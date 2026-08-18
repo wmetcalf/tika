@@ -1220,4 +1220,31 @@ public class VbaBudgetTest {
         assertTrue(cut.contains("REALPAYLOAD"),
                 "at a tight cap the payload must outrank the decoys; got: " + cut);
     }
+
+    /**
+     * The RESULT must fit the cap in BYTES, not merely be detected as over it.
+     *
+     * <p>Four independent reviewers raised this on PR #19: the caller detected the overflow in UTF-8
+     * bytes and then truncated to that number of CHARACTERS, so multi-byte source came back at two
+     * to three times the configured cap. The knob moved the boundary without changing the unit.
+     *
+     * <p>My earlier test asserted only that the truncation FLAG fired, which is exactly why the
+     * defect survived it: a flag says something was cut, not that what remains fits.
+     */
+    @Test
+    void testTruncationResultFitsTheCapInBytes() {
+        // U+00E9 is one byte in the ISO-8859-1 stream and two in UTF-8.
+        String multibyte = "\u00e9".repeat(4000)
+                + "\n  Shell \"powershell -enc BYTECAP\"\n";
+        for (int cap : new int[] {512, 2048, 4096}) {
+            String cut = LenientVBAReader.truncateKeepingIndicators(multibyte, cap);
+            int bytes = cut.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            assertTrue(bytes <= cap,
+                    "cap " + cap + " is BYTES: result must fit it, got " + bytes + " bytes ("
+                            + cut.length() + " chars)");
+        }
+        // NEGATIVE CONTROL: ASCII input under the cap is still returned untouched.
+        String ascii = "Sub S()\n  MsgBox 1\nEnd Sub\n";
+        assertEquals(ascii, LenientVBAReader.truncateKeepingIndicators(ascii, 4096));
+    }
 }

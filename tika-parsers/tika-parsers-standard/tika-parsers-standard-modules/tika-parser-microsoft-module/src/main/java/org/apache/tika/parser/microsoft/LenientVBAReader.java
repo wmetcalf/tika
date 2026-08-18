@@ -535,8 +535,39 @@ public final class LenientVBAReader {
      * output POI has already materialised, and POI runs only when the pre-flight projection cleared
      * the document budget -- so the text scanned is bounded by that budget, not by the file.
      */
+    /** UTF-8 byte length -- the unit vbaMaxStreamBytes is named and documented in. */
+    private static int utf8Len(String s) {
+        return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    }
+
+    /** The longest prefix of {@code s} that fits {@code maxBytes} in UTF-8, cut on a char boundary. */
+    private static String headWithinBytes(String s, int maxBytes) {
+        if (maxBytes <= 0) {
+            return "";
+        }
+        if (utf8Len(s) <= maxBytes) {
+            return s;
+        }
+        int lo = 0;
+        int hi = s.length();
+        while (lo < hi) {
+            int mid = (lo + hi + 1) >>> 1;
+            if (utf8Len(s.substring(0, mid)) <= maxBytes) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return s.substring(0, lo);
+    }
+
     static String truncateKeepingIndicators(String text, int max) {
-        if (text == null || max <= 0 || text.length() <= max) {
+        // Measured in BYTES throughout. The caller detected the overflow in UTF-8 bytes and then
+        // truncated to `max` CHARACTERS, so multi-byte source was cut to 2-3x the configured cap --
+        // the knob moved the boundary without changing the unit. Reported by FOUR independent
+        // reviewers (agy, hy3, codex, deepseek) on PR #19; my own test only asserted that the flag
+        // fired, never that the result fit, which is why it survived.
+        if (text == null || max <= 0 || utf8Len(text) <= max) {
             return text;
         }
         int indicatorRoom = max / 2;
@@ -614,11 +645,12 @@ public final class LenientVBAReader {
         // (mutating it away left every test green, because the plain trim already keeps the marker
         // at every cap where one fits), and removed rather than shipped as a fix. The real ceiling
         // is that a cap shorter than the marker cannot describe itself; document it, do not pretend.
-        int prefixRoom = Math.max(0, max - suffix.length());
-        StringBuilder out = new StringBuilder(max);
-        out.append(text, 0, Math.min(text.length(), prefixRoom));
-        out.append(suffix);
-        return out.length() > max ? out.substring(0, max) : out.toString();
+        // Sized in BYTES so the result fits the cap by construction, with no final trim that could
+        // cut the suffix the tail-first ordering exists to protect.
+        int suffixBytes = utf8Len(suffix);
+        String prefix = headWithinBytes(text, Math.max(0, max - suffixBytes));
+        String out = prefix + suffix;
+        return utf8Len(out) > max ? headWithinBytes(out, max) : out;
     }
 
     /** One module as the dir stream describes it. */
