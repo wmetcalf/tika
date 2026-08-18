@@ -1147,4 +1147,28 @@ public class VbaBudgetTest {
                 new LenientVBAReader.Bounds(0, configured.totalMax()).max(),
                 "control: 0 really does select the 10 MB default, which is what made this a bug");
     }
+
+    /** PR #19 re-review: the cap is documented in BYTES, so multi-byte source must be measured so. */
+    @Test
+    void testPerStreamCapIsMeasuredInBytesNotUtf16Units() throws Exception {
+        // VbaProjectBuilder encodes source as ISO-8859-1, so the fixture must use a character that
+        // EXISTS in Latin-1 yet costs more than one byte in UTF-8 -- U+00E9 is 1 byte in the stream
+        // and 2 bytes once emitted. 5,000 of them: 5,000 UTF-16 units, 10,000 UTF-8 bytes.
+        // (A Japanese fixture silently degraded to "?" in the builder and tested nothing.)
+        String jp = "\u00e9".repeat(5000);
+        byte[] carrier = replaceVbaProject(readResource("/test-documents/testWORD_macros.docm"),
+                new VbaProjectBuilder().module("Module1", jp).build());
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxStreamBytes(6000);       // above the UTF-16 length, below the UTF-8 byte count
+        ParseContext context = new ParseContext();
+        context.set(OfficeParserConfig.class, cfg);
+        Metadata md = new Metadata();
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        try (TikaInputStream tis = TikaInputStream.get(carrier)) {
+            new AutoDetectParser().parse(tis, handler, md, context);
+        }
+        assertEquals("true", md.get("msoffice:vba-capture-limit-reached"),
+                "a module under the cap in UTF-16 units but far over it in BYTES must still be "
+                        + "capped -- the knob is named and documented in bytes");
+    }
 }

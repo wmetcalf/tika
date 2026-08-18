@@ -581,6 +581,12 @@ public final class LenientVBAReader {
         String suffix = indicators.length() == 0
                 ? "\n" + INDICATORS_ONLY_MARKER + " (truncated, no indicator lines)\n"
                 : "\n" + INDICATORS_ONLY_MARKER + " (tail)\n" + indicators;
+        // NOTE on the small-cap case (PR #19 review): below about 27 characters no output can
+        // carry a complete INDICATORS_ONLY_MARKER, so OfficeParser cannot set the fragment
+        // metadata however this is arranged. A marker-first variant was written, MEASURED AS INERT
+        // (mutating it away left every test green, because the plain trim already keeps the marker
+        // at every cap where one fits), and removed rather than shipped as a fix. The real ceiling
+        // is that a cap shorter than the marker cannot describe itself; document it, do not pretend.
         int prefixRoom = Math.max(0, max - suffix.length());
         StringBuilder out = new StringBuilder(max);
         out.append(text, 0, Math.min(text.length(), prefixRoom));
@@ -647,11 +653,13 @@ public final class LenientVBAReader {
     private static void collectFromOrphans(POIFSFileSystem fs, Bounds bounds,
                                            ModuleSink result) {
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
+        // One pass, reused for every dir stream below (see siblingIndex).
+        Map<Property, Map<String, DocumentProperty>> siblings = siblingIndex(fs);
         // EVERY dir stream, not just the first. Keying by name kept only one, so a document with a
         // tree-visible VBA storage next to an orphaned one had the orphan's dir shadowed -- and
         // the orphan is where the payload is put, that being the whole point of orphaning it.
         for (DocumentProperty dirProp : dirPropsOf(fs, streams)) {
-            if (!collectFromOneOrphanDir(fs, dirProp, streams, bounds, result)) {
+            if (!collectFromOneOrphanDir(fs, dirProp, streams, siblings, bounds, result)) {
                 return; // document budget exhausted
             }
         }
@@ -660,6 +668,7 @@ public final class LenientVBAReader {
     /** @return false when the document budget is exhausted and the caller must stop. */
     private static boolean collectFromOneOrphanDir(POIFSFileSystem fs, DocumentProperty dirProp,
                                                    Map<String, DocumentProperty> streams,
+                                                   Map<Property, Map<String, DocumentProperty>> siblings,
                                                    Bounds bounds, ModuleSink result) {
         try {
             byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
@@ -671,7 +680,8 @@ public final class LenientVBAReader {
             // Resolve within THIS dir stream's own storage. Falling back to the flat map only when
             // the storage cannot be determined keeps recall on files whose property table we cannot
             // walk, without letting a neighbouring project's stream answer for this one.
-            Map<String, DocumentProperty> scoped = siblingStreamsOf(fs, dirProp);
+            Map<String, DocumentProperty> scoped =
+                    siblings.getOrDefault(dirProp, java.util.Collections.emptyMap());
             Map<String, DocumentProperty> lookup = scoped.isEmpty() ? streams : scoped;
             for (ModuleRef ref : dir.modules) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
@@ -803,6 +813,37 @@ public final class LenientVBAReader {
      * <p>Returns empty when the containing storage cannot be determined, which the caller treats as
      * "fall back to the flat map" rather than "extract nothing".
      */
+    /**
+     * Property -> its storage's streams, built ONCE for the whole file.
+     *
+     * <p>{@link #siblingStreamsOf} rebuilt {@link #allProps} and re-walked every directory's children
+     * for EACH dir stream, and {@code dirPropsOf} caps nothing, so a crafted CFBF with many entries
+     * named {@code dir} turned orphan discovery into O(dirs x properties) before any per-project cap
+     * could help. Reported on PR #19. One pass over the property table answers every lookup.
+     */
+    private static Map<Property, Map<String, DocumentProperty>> siblingIndex(POIFSFileSystem fs) {
+        Map<Property, Map<String, DocumentProperty>> index = new java.util.HashMap<>();
+        for (Property p : allProps(fs)) {
+            if (!(p instanceof DirectoryProperty)) {
+                continue;
+            }
+            Map<String, DocumentProperty> kids = new LinkedHashMap<>();
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                Property child = it.next();
+                if (child instanceof DocumentProperty && child.getName() != null) {
+                    kids.putIfAbsent(child.getName().toLowerCase(Locale.ROOT),
+                            (DocumentProperty) child);
+                }
+            }
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                index.put(it.next(), kids);
+            }
+        }
+        return index;
+    }
+
     private static Map<String, DocumentProperty> siblingStreamsOf(POIFSFileSystem fs,
                                                                   DocumentProperty dirProp) {
         Map<String, DocumentProperty> out = new LinkedHashMap<>();

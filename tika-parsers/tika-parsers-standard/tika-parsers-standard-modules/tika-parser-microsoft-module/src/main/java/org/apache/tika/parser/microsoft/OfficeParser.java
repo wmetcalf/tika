@@ -326,11 +326,16 @@ public class OfficeParser extends AbstractOfficeParser {
             // and reverted: it took lol.xlsm from 11 exec indicators to 1 at DEFAULT settings,
             // because a dropper's payload sits at the END of a long module. truncateKeepingIndicators
             // collects the tail's indicator lines before spending the rest of the budget on a prefix.
+            // Compared in BYTES, which is what the knob is named and documented in. String.length()
+            // counts UTF-16 code units, so 8,192 Japanese characters passed an 8,192-BYTE cap while
+            // occupying roughly twice that in the DBCS stream and three times it as the UTF-8 we
+            // emit downstream. Reported on PR #19. UTF-8 is the right unit here because that is the
+            // encoding the module is handed to the embedded-document extractor in, below.
             int perStream = vbaBounds.max();
             long poiChars = 0;
             for (Map.Entry<String, String> e : macros.entrySet()) {
                 String v = e.getValue();
-                if (v != null && v.length() > perStream) {
+                if (v != null && v.getBytes(StandardCharsets.UTF_8).length > perStream) {
                     e.setValue(LenientVBAReader.truncateKeepingIndicators(v, perStream));
                     vbaBounds.mark("VBA module '" + e.getKey() + "' exceeded the " + perStream
                             + "-byte per-stream bound; kept a prefix plus its indicator lines");
@@ -374,12 +379,23 @@ public class OfficeParser extends AbstractOfficeParser {
                 // apply on every path" defect this branch fixed for the POI reader. Only the
                 // document TOTAL stays separate here, which is the deliberate scope hole documented
                 // below. Reported on PR #19.
-                Map<String, String> hidden = LenientVBAReader.readMacrosFromOrphans(fs,
-                        new LenientVBAReader.Bounds(vbaBounds.max(), vbaBounds.totalMax()));
+                LenientVBAReader.Bounds recoveryBounds =
+                        new LenientVBAReader.Bounds(vbaBounds.max(), vbaBounds.totalMax());
+                Map<String, String> hidden =
+                        LenientVBAReader.readMacrosFromOrphans(fs, recoveryBounds);
                 for (Map.Entry<String, String> e : hidden.entrySet()) {
                     if (!macros.containsValue(e.getValue())) {
                         macros.put(uniqueKey(macros, e.getKey()), e.getValue());
                     }
+                }
+                // Carry the recovery's loss report back. The accumulator is deliberately separate
+                // (see above), but its VERDICT is not: giving recovery the configured per-stream cap
+                // made it able to hit that cap, and its Bounds was built inline and discarded, so a
+                // dropped orphan module produced no msoffice:vba-capture-limit-reached at all. A
+                // bound without a voice is a silent loss, which is the one outcome this parser must
+                // not produce. Reported on PR #19 as a consequence of the previous fix.
+                if (recoveryBounds.isLimitReached()) {
+                    vbaBounds.mark(recoveryBounds.getLimitDetail());
                 }
             } catch (Exception | OutOfMemoryError ignore) {
                 // recovery is best-effort
