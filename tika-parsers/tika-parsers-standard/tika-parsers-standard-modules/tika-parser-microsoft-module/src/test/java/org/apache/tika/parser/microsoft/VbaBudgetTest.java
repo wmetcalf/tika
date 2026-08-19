@@ -1247,4 +1247,70 @@ public class VbaBudgetTest {
         String ascii = "Sub S()\n  MsgBox 1\nEnd Sub\n";
         assertEquals(ascii, LenientVBAReader.truncateKeepingIndicators(ascii, 4096));
     }
+
+    /**
+     * Truncation must never emit an unpaired surrogate.
+     *
+     * <p>Raised as MEDIUM by the review panel on the byte-aware helper: it binary-searched a
+     * CHARACTER index, so the cut could fall between a high and low surrogate, and Java then encoded
+     * the orphan as '?'. That is the same corruption class the PROJECTCODEPAGE fix removed. Cutting
+     * the ENCODED array and walking off continuation bytes makes it structural.
+     */
+    @Test
+    void testTruncationNeverSplitsASurrogatePair() {
+        // U+1F4A9 is a surrogate pair in UTF-16 and four bytes in UTF-8.
+        String astral = "\uD83D\uDCA9".repeat(3000) + "\n  Shell \"powershell -enc X\"\n";
+        for (int cap = 61; cap <= 96; cap++) {          // sweep so a cut lands mid-character
+            String cut = LenientVBAReader.truncateKeepingIndicators(astral, cap);
+            assertTrue(cut.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= cap,
+                    "cap " + cap + ": must fit in bytes");
+            // Cutting the ENCODED array can never yield an unpaired surrogate -- Java decodes a
+            // partial sequence to U+FFFD instead -- so THAT is what discriminates: backing off the
+            // continuation bytes drops the split character cleanly, while cutting mid-sequence
+            // injects a replacement character that was never in the macro source.
+            assertEquals(-1, cut.indexOf('\uFFFD'),
+                    "cap " + cap + ": a split code point must be DROPPED, not replaced with U+FFFD "
+                            + "-- an invented character in extracted macro source. Got: "
+                            + cut.substring(Math.max(0, cut.length() - 40)));
+            for (int i = 0; i < cut.length(); i++) {
+                char c = cut.charAt(i);
+                if (Character.isHighSurrogate(c)) {
+                    assertTrue(i + 1 < cut.length() && Character.isLowSurrogate(cut.charAt(i + 1)),
+                            "cap " + cap + ": unpaired HIGH surrogate at " + i);
+                } else if (Character.isLowSurrogate(c)) {
+                    assertTrue(i > 0 && Character.isHighSurrogate(cut.charAt(i - 1)),
+                            "cap " + cap + ": unpaired LOW surrogate at " + i);
+                }
+            }
+        }
+    }
+
+    /**
+     * COST SHAPE: truncation must not re-encode the whole module per candidate cut.
+     *
+     * <p>Raised as HIGH by the review panel: the helper binary-searched the character index and
+     * re-encoded {@code s.substring(0, mid)} at every step -- two dozen full encodings per call, once
+     * per indicator line plus once for the prefix. Encoding once makes the cost linear in the module,
+     * so quadrupling the module must not quadruple-and-then-some the time.
+     */
+    @Test
+    void testTruncationCostIsLinearInModuleSize() {
+        long small = timeTruncate(250_000);
+        long large = timeTruncate(1_000_000);
+        assertTrue(large < Math.max(small * 8, 2_000),
+                "4x the module must not cost far more than 4x the time: " + small + " ms vs "
+                        + large + " ms");
+    }
+
+    private static long timeTruncate(int chars) {
+        StringBuilder sb = new StringBuilder(chars + 64);
+        while (sb.length() < chars) {
+            sb.append("  Set o = CreateObject(\"Scripting.Dictionary\")\n");
+        }
+        sb.append("  Shell \"powershell -enc TAIL\"\n");
+        String text = sb.toString();
+        long t0 = System.nanoTime();
+        LenientVBAReader.truncateKeepingIndicators(text, 8192);
+        return (System.nanoTime() - t0) / 1_000_000;
+    }
 }

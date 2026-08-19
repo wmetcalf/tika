@@ -540,25 +540,35 @@ public final class LenientVBAReader {
         return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
     }
 
-    /** The longest prefix of {@code s} that fits {@code maxBytes} in UTF-8, cut on a char boundary. */
+    /**
+     * The longest prefix of {@code s} that fits {@code maxBytes} in UTF-8.
+     *
+     * <p>ENCODE ONCE. The previous version binary-searched the character index and called
+     * {@code utf8Len(s.substring(0, mid))} at every step, so each call allocated a substring AND
+     * re-encoded it -- about two dozen times per call, on strings up to the per-stream cap, once per
+     * indicator line plus once for the prefix. That is a CPU and allocation amplifier introduced
+     * while fixing the byte-UNIT defect, and it was raised as HIGH by the review panel.
+     *
+     * <p>Cutting the encoded array also makes this surrogate-safe by construction, which the
+     * character-index search was not: it could land between a high and low surrogate, and Java then
+     * encoded the orphan as '?' -- the same corruption class the PROJECTCODEPAGE fix removed.
+     * Walking back off a UTF-8 continuation byte (10xxxxxx) lands on a whole code point, so a split
+     * astral character is dropped rather than mangled.
+     */
     private static String headWithinBytes(String s, int maxBytes) {
-        if (maxBytes <= 0) {
+        if (s == null || maxBytes <= 0) {
             return "";
         }
-        if (utf8Len(s) <= maxBytes) {
+        byte[] enc = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (enc.length <= maxBytes) {
             return s;
         }
-        int lo = 0;
-        int hi = s.length();
-        while (lo < hi) {
-            int mid = (lo + hi + 1) >>> 1;
-            if (utf8Len(s.substring(0, mid)) <= maxBytes) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
+        int cut = maxBytes;
+        // Back off any continuation bytes so the cut falls on a code-point boundary.
+        while (cut > 0 && (enc[cut] & 0xC0) == 0x80) {
+            cut--;
         }
-        return s.substring(0, lo);
+        return new String(enc, 0, cut, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     static String truncateKeepingIndicators(String text, int max) {
