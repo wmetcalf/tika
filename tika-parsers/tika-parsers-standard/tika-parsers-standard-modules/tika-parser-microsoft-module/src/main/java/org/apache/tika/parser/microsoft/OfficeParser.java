@@ -379,8 +379,15 @@ public class OfficeParser extends AbstractOfficeParser {
                 // apply on every path" defect this branch fixed for the POI reader. Only the
                 // document TOTAL stays separate here, which is the deliberate scope hole documented
                 // below. Reported on PR #19.
-                LenientVBAReader.Bounds recoveryBounds =
-                        new LenientVBAReader.Bounds(vbaBounds.max(), vbaBounds.totalMax());
+                // Bounded by what is LEFT of the document total, not by the whole of it. Handing
+                // recovery the full allowance let a document emit up to twice vbaMaxTotalBytes when
+                // POI had already retained visible macros -- and the comment below promises this
+                // exemption collapses once the flattened lookup is fixed, which d7b991c2a4 did. The
+                // ACCUMULATOR stays separate (recovery must not be able to starve the extraction it
+                // supplements); only its ceiling now respects what has already been spent.
+                // Reported by codex on PR #19.
+                LenientVBAReader.Bounds recoveryBounds = new LenientVBAReader.Bounds(
+                        vbaBounds.max(), Math.max(1, vbaBounds.remainingTotal()));
                 Map<String, String> hidden =
                         LenientVBAReader.readMacrosFromOrphans(fs, recoveryBounds);
                 for (Map.Entry<String, String> e : hidden.entrySet()) {

@@ -605,11 +605,24 @@ public final class LenientVBAReader {
             if (end > from) {
                 String line = text.substring(from, end);
                 if (m.reset(line).find()) {
-                    // Slice AROUND the match, not from column zero: a line of padding ending in
+                    // Window on the LAST match on the line, not the first.
+                    //
+                    // One find() call centred the window on match #1, so a line shaped
+                    // `CreateObject(...) : <long statement> : Shell "..."` was recognised as
+                    // indicator-bearing and then had its window placed on the DECOY -- prefix and
+                    // window could both end before the Shell. Same author-controlled ordering that
+                    // starved the module tail, one level further in: the decoy is simply written
+                    // first. VBA statement separators mean the payload tends to be last on such a
+                    // line. Reported by codex on PR #19.
+                    int lastMatch = m.start();
+                    while (m.find()) {
+                        lastMatch = m.start();
+                    }
+                    // Slice AROUND that match, not from column zero: a line of padding ending in
                     // `: Shell "..."` is detected as indicator-bearing, and keeping its head throws
                     // away the very thing that made it worth keeping.
                     int span = Math.min(halfRoom, line.length());
-                    int start = Math.max(0, Math.min(m.start() - span / 4, line.length() - span));
+                    int start = Math.max(0, Math.min(lastMatch - span / 4, line.length() - span));
                     String kept = line.substring(start, Math.min(line.length(), start + span))
                             + (start > 0 || start + span < line.length()
                                     ? " [TIKA-VBA-LINE-WINDOW]" : "");

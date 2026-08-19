@@ -856,9 +856,18 @@ public class VbaBudgetTest {
     // ── helpers ─────────────────────────────────────────────────────────────
 
     private static String parse(byte[] bytes, Metadata md) throws Exception {
+        return parse(bytes, md, null);
+    }
+
+    private static String parse(byte[] bytes, Metadata md, OfficeParserConfig cfg)
+            throws Exception {
         BodyContentHandler handler = new BodyContentHandler(-1);
+        ParseContext context = new ParseContext();
+        if (cfg != null) {
+            context.set(OfficeParserConfig.class, cfg);
+        }
         try (TikaInputStream tis = TikaInputStream.get(bytes)) {
-            new AutoDetectParser().parse(tis, handler, md, new ParseContext());
+            new AutoDetectParser().parse(tis, handler, md, context);
         }
         return handler.toString();
     }
@@ -1132,20 +1141,47 @@ public class VbaBudgetTest {
      * Orphan recovery must inherit the CONFIGURED per-stream cap, not the built-in default.
      *
      * <p>Reported on PR #19: recovery constructed {@code new Bounds(0, total)}, and 0 selects the
-     * 10 MB default, so {@code vbaMaxStreamBytes} did not apply to merged orphan modules at all.
+     * 10 MB default, so {@code vbaMaxStreamBytes} did not apply to merged orphan modules at all --
+     * an operator who set 8 KB still got multi-megabyte orphan modules.
+     *
+     * <p>SEPARATE DEFECT THIS TEST PINS BUT DOES NOT FIX: at {@code vbaMaxStreamBytes=512} the
+     * orphan module is merged as ZERO characters, not truncated to 512 -- uncapped the same fixture
+     * yields all 200,000. So configuring a per-stream cap currently costs an analyst the ENTIRE
+     * hidden module rather than its first N bytes, which is silent total loss on exactly the path
+     * an operator tightens the knob to inspect. Filed on PR #19; the assertion below is written as
+     * "at most the cap" so it stays correct once that is fixed to truncate.
+     *
+     * <p>END-TO-END ON PURPOSE. The original version of this test constructed two {@code Bounds}
+     * by hand and asserted on their arithmetic; it never called {@link OfficeParser}, so it was
+     * GREEN with the fix reverted and could not have caught a regression. It is rewritten to drive
+     * a real parse through the unreachable-storage path, and is mutation-checked: passing 0 for the
+     * per-stream cap turns it RED.
      */
     @Test
-    void testOrphanRecoveryInheritsTheConfiguredStreamCap() {
-        LenientVBAReader.Bounds configured = new LenientVBAReader.Bounds(8192, 32L * 1024 * 1024);
-        assertEquals(8192, configured.max(), "fixture: the cap is what the operator set");
-        // The recovery bounds OfficeParser builds must carry that cap, not the 10 MB default.
-        LenientVBAReader.Bounds recovery =
-                new LenientVBAReader.Bounds(configured.max(), configured.totalMax());
-        assertEquals(8192, recovery.max(),
-                "recovery must inherit the configured per-stream cap");
-        assertEquals(LenientVBAReader.MAX_STREAM_BYTES,
-                new LenientVBAReader.Bounds(0, configured.totalMax()).max(),
-                "control: 0 really does select the 10 MB default, which is what made this a bug");
+    void testOrphanRecoveryInheritsTheConfiguredStreamCap() throws Exception {
+        final int streamCap = 512;
+        byte[] doc = withUnreachableProject(
+                new VbaProjectBuilder().module("Visible", "x".repeat(1000)).build(),
+                new VbaProjectBuilder().module("Hidden", "y".repeat(200_000)).build());
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc))) {
+            assertTrue(LenientVBAReader.hasUnreachableDirStream(fs),
+                    "fixture precondition: the grafted project must be invisible to the tree walk, "
+                            + "or this test stops exercising orphan recovery entirely");
+        }
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxStreamBytes(streamCap);
+        cfg.setVbaMaxTotalBytes(16 * 1024 * 1024);   // total must not be what bounds this
+        long hidden = count(parse(doc, new Metadata(), cfg), 'y');
+
+        // Control: with no caps configured the whole 200,000-char orphan module IS merged, so a
+        // zero/low reading above is the CAP acting, not the fixture failing to reach recovery.
+        assertEquals(200_000, count(parse(doc, new Metadata(), null), 'y'),
+                "control: uncapped, recovery merges the entire hidden module");
+
+        assertTrue(hidden <= streamCap,
+                "the operator set vbaMaxStreamBytes=" + streamCap + "; orphan modules merged by "
+                        + "recovery must obey it. Passing 0 restores the 10 MB built-in default and "
+                        + "the knob silently does not apply on this path. merged=" + hidden);
     }
 
     /** PR #19 re-review: the cap is documented in BYTES, so multi-byte source must be measured so. */
@@ -1312,5 +1348,103 @@ public class VbaBudgetTest {
         long t0 = System.nanoTime();
         LenientVBAReader.truncateKeepingIndicators(text, 8192);
         return (System.nanoTime() - t0) / 1_000_000;
+    }
+
+    /**
+     * A decoy indicator EARLIER ON THE SAME LINE must not steal the window from the payload.
+     *
+     * <p>Reported by codex on PR #19. One {@code find()} call centred the retained window on match
+     * #1, so `CreateObject(...) : &lt;long statement&gt; : Shell "..."` was recognised as
+     * indicator-bearing and then had its window placed on the DECOY -- prefix and window could both
+     * end before the Shell. Same author-controlled ordering that starved the module tail, one level
+     * further in: the decoy is simply written first, on the same physical line.
+     */
+    @Test
+    void testDecoyEarlierOnTheLineDoesNotStealTheWindow() {
+        String line = "  Set d = CreateObject(\"DECOY\") : " + "x".repeat(6000)
+                + " : Shell \"powershell -enc SAMELINEPAYLOAD\"\n";
+        String text = "' filler\n".repeat(300) + line;
+        String cut = LenientVBAReader.truncateKeepingIndicators(text, 4096);
+        assertTrue(cut.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 4096,
+                "bound respected; got " + cut.length());
+        assertTrue(cut.contains("SAMELINEPAYLOAD"),
+                "the payload sits AFTER a decoy on the same line; windowing on the first match "
+                        + "keeps the decoy and drops the evidence. Got: "
+                        + cut.substring(Math.max(0, cut.length() - 180)));
+    }
+
+    /**
+     * Orphan recovery runs and its output stays within {@code vbaMaxTotalBytes}.
+     *
+     * <p>HONEST SCOPE -- READ BEFORE TRUSTING THIS TEST. It does NOT discriminate the PR #19 fix
+     * that bounds recovery by {@code remainingTotal()} instead of {@code totalMax()}: it is GREEN
+     * with that fix reverted. {@link VbaProjectBuilder} caps each module near 2 KB, so the
+     * remainder never binds on a synthetic fixture and both arms emit identical bytes. It is kept
+     * as a REACHABILITY guard -- it proves the unreachable-storage path is actually entered
+     * ({@code hasUnreachableDirStream} true, hidden module merged), which several earlier tests on
+     * this class only appeared to do.
+     *
+     * <p>MEASURED (2026-08-19, this fixture): the codex finding's stated consequence -- a document
+     * emitting up to TWICE {@code vbaMaxTotalBytes} -- does NOT reproduce. Orphan merge is
+     * all-or-nothing: the hidden module yields 2,048 chars until the remainder covers the WHOLE
+     * module, then all 200,000. The fix does change behaviour at tight budgets (total 40,000:
+     * 34,096 chars with it, 32,048 without) but in the direction of emitting slightly MORE, so no
+     * honest assertion here proves the ceiling. The fix is kept because bounding by the remainder
+     * is correct by construction, not because this test demonstrates it.
+     *
+     * <p>Two earlier versions of this test were worse and are recorded so they are not rewritten:
+     * the first built two {@code Bounds} by hand and asserted on their arithmetic, re-implementing
+     * the fix rather than exercising it; {@code testOrphanRecoveryInheritsTheConfiguredStreamCap}
+     * still has that defect and should be rewritten or dropped.
+     */
+    @Test
+    void testOrphanRecoveryStaysWithinTheDocumentTotal() throws Exception {
+        final int total = 32_200;
+        byte[] doc = withUnreachableProject(
+                new VbaProjectBuilder().module("Visible", "x".repeat(30_000)).build(),
+                new VbaProjectBuilder().module("Hidden", "y".repeat(200_000)).build());
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxTotalBytes(total);
+        Metadata md = new Metadata();
+        String text = parse(doc, md, cfg);
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc))) {
+            assertTrue(LenientVBAReader.hasUnreachableDirStream(fs),
+                    "fixture precondition: the grafted storage must be unreachable to the tree "
+                            + "walk, or this test silently stops exercising orphan recovery");
+        }
+        assertTrue(text.indexOf('y') >= 0,
+                "fixture precondition: the hidden project must actually be merged");
+        long emitted = text.chars().filter(c -> c == 'x' || c == 'y').count();
+        assertTrue(emitted <= total,
+                "the document total is the OPERATOR's ceiling; orphan recovery handed the full "
+                        + "allowance instead of the remainder lets one hidden project double it. "
+                        + "vbaMaxTotalBytes=" + total + ", emitted=" + emitted);
+    }
+
+    private static long count(String s, char c) {
+        return s.chars().filter(ch -> ch == c).count();
+    }
+
+    /** Graft {@code hidden}'s VBA storage into {@code visible} under a name POI will not walk. */
+    private static byte[] withUnreachableProject(byte[] visible, byte[] hidden) throws Exception {
+        try (POIFSFileSystem vis = new POIFSFileSystem(new ByteArrayInputStream(visible));
+                POIFSFileSystem hid = new POIFSFileSystem(new ByteArrayInputStream(hidden))) {
+            org.apache.poi.poifs.filesystem.DirectoryNode src =
+                    (org.apache.poi.poifs.filesystem.DirectoryNode) hid.getRoot().getEntry("VBA");
+            org.apache.poi.poifs.filesystem.DirectoryNode dst =
+                    (org.apache.poi.poifs.filesystem.DirectoryNode) vis.getRoot()
+                            .createDirectory("Zz");   // not "VBA": findVBADirs will not reach it
+            for (org.apache.poi.poifs.filesystem.Entry e : src) {
+                if (e instanceof org.apache.poi.poifs.filesystem.DocumentEntry) {
+                    try (java.io.InputStream in = new org.apache.poi.poifs.filesystem
+                            .DocumentInputStream((org.apache.poi.poifs.filesystem.DocumentEntry) e)) {
+                        dst.createDocument(e.getName(), in);
+                    }
+                }
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            vis.writeFilesystem(bos);
+            return bos.toByteArray();
+        }
     }
 }
