@@ -194,9 +194,50 @@ public class MojibusterEncodingDetector implements EncodingDetector {
      * classpath at {@link #DEFAULT_MODEL_RESOURCE}.  The UTF-16
      * specialist loads its own model the same way.
      */
+    /**
+     * Lazily-loaded, shared default model.
+     *
+     * The SPI constructor runs once per {@code new DefaultEncodingDetector()}, which in turn
+     * runs once per parser instance built by {@code new DefaultParser()} — so re-parsing the
+     * classpath model here costs ~190ms on EVERY parser construction, ~3.1s per DefaultParser.
+     * The model is immutable once loaded (all fields final; per-probe scratch is local to
+     * {@code detect}), and Tika already shares one detector chain across threads via TikaConfig,
+     * so one instance can back every default-constructed detector.
+     */
+    private static volatile NaiveBayesBigramEncodingDetector defaultNb;
+    private static volatile Utf16SpecialistEncodingDetector defaultUtf16;
+
+    private static NaiveBayesBigramEncodingDetector defaultNb() throws IOException {
+        NaiveBayesBigramEncodingDetector local = defaultNb;
+        if (local == null) {
+            synchronized (MojibusterEncodingDetector.class) {
+                if (defaultNb == null) {
+                    // Publish only after the load fully succeeds, so a failed load cannot
+                    // leave a half-built model visible to another thread.
+                    defaultNb = loadFromClasspath();
+                }
+                local = defaultNb;
+            }
+        }
+        return local;
+    }
+
+    private static Utf16SpecialistEncodingDetector defaultUtf16() throws IOException {
+        Utf16SpecialistEncodingDetector local = defaultUtf16;
+        if (local == null) {
+            synchronized (MojibusterEncodingDetector.class) {
+                if (defaultUtf16 == null) {
+                    defaultUtf16 = new Utf16SpecialistEncodingDetector();
+                }
+                local = defaultUtf16;
+            }
+        }
+        return local;
+    }
+
     public MojibusterEncodingDetector() throws IOException {
-        this.nb = loadFromClasspath();
-        this.utf16 = new Utf16SpecialistEncodingDetector();
+        this.nb = defaultNb();
+        this.utf16 = defaultUtf16();
     }
 
     public MojibusterEncodingDetector(Path nbModelPath) throws IOException {

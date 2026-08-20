@@ -108,19 +108,48 @@ public class JunkFilterEncodingDetector implements MetaEncodingDetector {
 
     private int readLimit = DEFAULT_READ_LIMIT;
 
+    /**
+     * Lazily-loaded, shared default model.
+     *
+     * The SPI constructor runs once per {@code new DefaultEncodingDetector()}, hence once per
+     * parser instance built by {@code new DefaultParser()} — so reloading the classpath model
+     * here costs ~165ms on EVERY parser construction. The loaded detector is immutable (all
+     * JunkDetector fields are final) and Tika already shares one detector chain across threads
+     * via TikaConfig, so one instance can back every default-constructed detector.
+     *
+     * A failed load is cached as a NEGATIVE result too: the failure is deterministic (a missing
+     * or dimension-mismatched model on this classpath), so retrying it per construction would
+     * re-pay the cost and re-log the warning for every parser, forever.
+     */
+    private static volatile TextQualityDetector defaultQualityDetector;
+    private static volatile boolean defaultQualityDetectorLoaded;
+
+    private static TextQualityDetector defaultQualityDetector() {
+        if (!defaultQualityDetectorLoaded) {
+            synchronized (JunkFilterEncodingDetector.class) {
+                if (!defaultQualityDetectorLoaded) {
+                    try {
+                        defaultQualityDetector = JunkDetector.loadFromClasspath();
+                    } catch (Throwable t) {
+                        LOG.warn("Failed to load JunkDetector; JunkFilterEncodingDetector "
+                                + "will operate as a no-op: {}", t.toString());
+                        defaultQualityDetector = null;
+                    }
+                    // Set last: readers gate on this flag, so it must not become true until
+                    // the detector reference above is fully published.
+                    defaultQualityDetectorLoaded = true;
+                }
+            }
+        }
+        return defaultQualityDetector;
+    }
+
     public JunkFilterEncodingDetector() {
         // JunkDetector is hardcoded rather than ServiceLoader-discovered so
         // construction never silently leaves this meta detector as a no-op.
         // A model-load failure (e.g. block-table dimension mismatch across
         // JVM Unicode versions) is logged and the detector becomes a no-op.
-        TextQualityDetector q = null;
-        try {
-            q = JunkDetector.loadFromClasspath();
-        } catch (Throwable t) {
-            LOG.warn("Failed to load JunkDetector; JunkFilterEncodingDetector "
-                    + "will operate as a no-op: {}", t.toString());
-        }
-        this.qualityDetector = q;
+        this.qualityDetector = defaultQualityDetector();
     }
 
     /** Test-only / deterministic-wiring constructor. */
