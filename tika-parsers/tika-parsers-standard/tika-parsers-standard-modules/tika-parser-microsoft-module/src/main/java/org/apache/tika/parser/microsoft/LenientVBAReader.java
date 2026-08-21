@@ -734,10 +734,18 @@ public final class LenientVBAReader {
      * of five then landed mid-container and produced garbled fragments, stored under {@code #2},
      * {@code #3} family names.
      *
-     * <p>Measured against olevba over 300 stratified macro documents: the signature is 3x the
-     * modules and 1/3 the characters (one document 69 modules / 416,844 chars against olevba's
-     * 26 / 1,147,642). It affects ~5% of macro-bearing documents, and it is the largest known
-     * recall gap on this branch.
+     * <p>The signature is 3x the modules and 1/3 the characters (one document 69 modules /
+     * 416,844 chars against olevba's 26 / 1,147,642).
+     *
+     * <p>PREVALENCE, corrected. An earlier version of this comment said "~5% of macro-bearing
+     * documents", taken from a 300-document stratified sample against olevba. The FULL corpus of
+     * 6,574 says 5 documents -- 0.08%, a 60x overstatement -- and those five are the only ones
+     * whose printable ratio moved at all (every one of them to exactly 1.000). The fix is still
+     * worth having, because fabricated source is worse for triage than absent source and one of
+     * the five was emitting a CORRUPTED URL an analyst could have pivoted on. But it is not the
+     * largest recall gap on this branch, and a stratified sample is not a prevalence measurement.
+     * Reported by codex on PR #19, against a commit that corrected this number everywhere EXCEPT
+     * the comment a maintainer actually reads.
      *
      * <p>Returns empty when the containing storage cannot be determined, which the caller treats as
      * "fall back to the flat map" rather than "extract nothing".
