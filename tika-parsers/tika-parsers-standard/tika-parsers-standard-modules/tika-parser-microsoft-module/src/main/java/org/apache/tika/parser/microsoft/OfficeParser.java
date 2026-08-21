@@ -332,18 +332,29 @@ public class OfficeParser extends AbstractOfficeParser {
             // emit downstream. Reported on PR #19. UTF-8 is the right unit here because that is the
             // encoding the module is handed to the embedded-document extractor in, below.
             int perStream = vbaBounds.max();
-            long poiChars = 0;
+            // Charged in BYTES, in the same unit as the ceiling. String.length() counts UTF-16
+            // code units, so Latin-1 source full of accented characters -- or any CJK module --
+            // was charged roughly half to a third of the UTF-8 it actually costs downstream, and
+            // vbaMaxTotalBytes admitted that much over its own limit. Same byte-vs-unit defect
+            // already fixed in headWithinBytes and in the per-stream comparison above; this was
+            // the remaining call site. Reported by codex on PR #19.
+            long poiBytes = 0;
             for (Map.Entry<String, String> e : macros.entrySet()) {
                 String v = e.getValue();
-                if (v != null && v.getBytes(StandardCharsets.UTF_8).length > perStream) {
+                if (v == null) {
+                    continue;
+                }
+                long bytes = v.getBytes(StandardCharsets.UTF_8).length;
+                if (bytes > perStream) {
                     e.setValue(LenientVBAReader.truncateKeepingIndicators(v, perStream));
                     vbaBounds.mark("VBA module '" + e.getKey() + "' exceeded the " + perStream
                             + "-byte per-stream bound; kept a prefix plus its indicator lines");
                     v = e.getValue();
+                    bytes = v == null ? 0 : v.getBytes(StandardCharsets.UTF_8).length;
                 }
-                poiChars += v == null ? 0 : v.length();
+                poiBytes += bytes;
             }
-            vbaBounds.charge(poiChars);
+            vbaBounds.charge(poiBytes);
         }
         // Orphaned VBA storage returns empty WITHOUT throwing (its OLE directory entry was
         // corrupted to hide it from POI's tree-walking reader), so the catch above never fires.
@@ -388,13 +399,29 @@ public class OfficeParser extends AbstractOfficeParser {
                 // Reported by codex on PR #19.
                 LenientVBAReader.Bounds recoveryBounds = new LenientVBAReader.Bounds(
                         vbaBounds.max(), Math.max(1, vbaBounds.remainingTotal()));
+                // Hand recovery what POI already read. Without it the scan walked the
+                // tree-reachable project too and spent the whole recovery allowance re-reading a
+                // module we already had, leaving nothing for the orphan it was called to find.
                 Map<String, String> hidden =
-                        LenientVBAReader.readMacrosFromOrphans(fs, recoveryBounds);
+                        LenientVBAReader.readMacrosFromOrphans(fs, recoveryBounds, macros);
+                long mergedBytes = 0;
                 for (Map.Entry<String, String> e : hidden.entrySet()) {
                     if (!macros.containsValue(e.getValue())) {
                         macros.put(uniqueKey(macros, e.getKey()), e.getValue());
+                        mergedBytes += e.getValue() == null
+                                ? 0 : e.getValue().getBytes(StandardCharsets.UTF_8).length;
                     }
                 }
+                // Charge what recovery actually MERGED against the shared document budget, before
+                // anything downstream spends the rest of it. The separate accumulator above stops
+                // recovery from starving the primary path DURING recovery; it was never meant to
+                // exempt recovered modules from the document ceiling afterwards. Because
+                // recoveryBounds was built inline and discarded, extractFormVariables below then
+                // charged the unchanged vbaBounds again from the same remainder, so recovered
+                // modules plus form text could jointly exceed vbaMaxTotalBytes. Reported by codex
+                // on PR #19. Only merged values are charged -- duplicates that were dropped cost
+                // the document nothing.
+                vbaBounds.charge(mergedBytes);
                 // Carry the recovery's loss report back. The accumulator is deliberately separate
                 // (see above), but its VERDICT is not: giving recovery the configured per-stream cap
                 // made it able to hit that cap, and its Bounds was built inline and discarded, so a

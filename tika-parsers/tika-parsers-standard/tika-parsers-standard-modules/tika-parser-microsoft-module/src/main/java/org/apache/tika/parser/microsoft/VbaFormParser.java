@@ -131,13 +131,17 @@ public final class VbaFormParser {
                     if (text.isBlank()) {
                         continue;
                     }
-                    if (!bounds.hasRoomFor(text.length())) {
+                    // Bytes, not UTF-16 code units: control text is where non-ASCII actually
+                    // lives (captions, locale strings), so this is the site the unit mismatch hit
+                    // hardest -- the same defect codex reported in OfficeParser on PR #19.
+                    long textBytes = LenientVBAReader.utf8Len(text);
+                    if (!bounds.hasRoomFor(textBytes)) {
                         bounds.mark("UserForm control properties reached the " + bounds.totalMax()
                                 + "-byte per-document bound at '" + name + "'; that form and any "
                                 + "later one were not read");
                         break;
                     }
-                    bounds.charge(text.length());
+                    bounds.charge(textBytes);
                     results.add(result);
                 } catch (Exception | OutOfMemoryError e) {
                     LOG.fine("VbaFormParser: error parsing form '" + name + "': "

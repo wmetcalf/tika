@@ -129,6 +129,15 @@ public final class LenientVBAReader {
     /** Marks a module kept only as its indicator lines, so no consumer reads it as complete. */
     public static final String INDICATORS_ONLY_MARKER = "[TIKA-VBA-INDICATORS-ONLY]";
 
+    /** Marks a gap where {@link #windowLine} dropped part of an over-long indicator line. */
+    private static final String LINE_WINDOW_MARKER = " [TIKA-VBA-LINE-WINDOW] ";
+
+    /** Narrowest per-match window worth emitting; below this the surrounding call is unreadable. */
+    private static final int MIN_LINE_WINDOW = 64;
+
+    /** Cap on match positions held per line, so a line of 100k indicators stays O(1) in memory. */
+    private static final int MAX_LINE_MATCHES = 32;
+
     /**
      * Lines worth keeping when a module cannot be kept whole: the calls that make a macro do
      * something observable, plus URLs and UNC paths.
@@ -423,9 +432,45 @@ public final class LenientVBAReader {
         final Map<String, String> out = new LinkedHashMap<>();
         final Map<String, Set<String>> bodiesByKey = new java.util.HashMap<>();
         final Map<String, Integer> nextSuffix = new java.util.HashMap<>();
+        /**
+         * Bodies the CALLER already holds, seeded before the scan so recovery neither re-emits
+         * nor re-charges for them. Name-agnostic on purpose: the orphan scan derives its key from
+         * the dir stream's MODULENAME record while POI derives its own, and two byte-identical
+         * bodies are the same evidence to an analyst whatever they are called.
+         */
+        final Set<String> knownBodies = new java.util.HashSet<>();
+
+        /**
+         * Tell the sink what has already been extracted by another path.
+         *
+         * <p>Without this the orphan scan re-read every TREE-REACHABLE project as well as the
+         * orphaned one and paid full budget for the duplicate. Measured on the fixture in
+         * {@code testOrphanRecoveryDoesNotStarveOnAVisibleDecoy}: a 20,000-char visible module
+         * consumed the entire recovery allowance and the hidden project was never reached at all,
+         * so a decoy in the VISIBLE project hid the orphaned one completely. That is a total-loss
+         * evasion, not a cosmetic duplicate -- and it is the same author-controlled ordering
+         * starvation this branch has now fixed at the module, line and cell levels.
+         */
+        void seedKnown(Map<String, String> known) {
+            if (known == null) {
+                return;
+            }
+            for (Map.Entry<String, String> e : known.entrySet()) {
+                if (e.getValue() == null) {
+                    continue;
+                }
+                knownBodies.add(e.getValue());
+                bodiesByKey.computeIfAbsent(
+                        (e.getKey() == null || e.getKey().isEmpty()) ? "Module" : e.getKey(),
+                        k -> new java.util.HashSet<>()).add(e.getValue());
+            }
+        }
 
         /** Whether this exact body is already stored under this name -- a NON-mutating check. */
         boolean alreadyStored(String name, String text) {
+            if (knownBodies.contains(text)) {
+                return true;
+            }
             Set<String> bodies =
                     bodiesByKey.get((name == null || name.isEmpty()) ? "Module" : name);
             return bodies != null && bodies.contains(text);
@@ -450,13 +495,19 @@ public final class LenientVBAReader {
         if (sink.alreadyStored(name, text)) {
             return true;
         }
-        if (!bounds.hasRoomFor(text.length())) {
+        // Compared and charged in UTF-8 BYTES. vbaMaxTotalBytes is a BYTE ceiling and every
+        // consumer receives this text as UTF-8, but String.length() counts UTF-16 code units, so
+        // non-ASCII source was booked at half to a third of what it costs and the ceiling admitted
+        // that much more than the operator asked for. Reported by codex on PR #19 against
+        // OfficeParser's copy of the same mistake; the whole class shared it.
+        long textBytes = utf8Len(text);
+        if (!bounds.hasRoomFor(textBytes)) {
             bounds.mark("VBA macro source reached the " + bounds.totalMax()
                     + "-byte per-document bound; later modules were dropped");
             return false;
         }
         if (putUnique(sink, name, text)) {
-            bounds.charge(text.length());
+            bounds.charge(textBytes);
         }
         return true;
     }
@@ -504,40 +555,99 @@ public final class LenientVBAReader {
             kept.append(text, 0, Math.min(text.length(), INDICATOR_CHARS_PER_MODULE));
         }
         String value = INDICATORS_ONLY_MARKER + "\n" + kept;
+        // Bytes, not code units -- see the note in the main charging path above.
+        long valueBytes = utf8Len(value);
         boolean room = prefixOnly
-                ? bounds.hasPrefixReserveFor(value.length())
-                : bounds.hasReserveFor(value.length());
+                ? bounds.hasPrefixReserveFor(valueBytes)
+                : bounds.hasReserveFor(valueBytes);
         if (!room) {
             // A prefix that cannot fit its half of the reserve is skipped, NOT a stop: stopping here
             // would abandon the modules after it, and one of them may carry indicators that do fit.
             return prefixOnly;
         }
         if (putUnique(sink, name, value)) {
-            bounds.charge(value.length());
+            bounds.charge(valueBytes);
         }
         return true;
     }
 
-    /**
-     * Truncate {@code text} to {@code max} characters WITHOUT discarding its tail indicators.
-     *
-     * <p>A plain prefix cut is the wrong shape for macro source and this was measured, not
-     * reasoned: capping POI's output with {@code substring(0, max)} took one corpus document
-     * (lol.xlsm) from 11 exec indicators to 1, because a dropper's payload sits at the END of a
-     * long module -- after the padding, the decoys and the dead code. The same
-     * reject-the-tail defect is why {@link #retainIndicators} exists for the lenient path.
-     *
-     * <p>So the budget is split: indicator-bearing lines are collected from the WHOLE body first,
-     * and the prefix gets whatever remains. The result still respects {@code max}, which is what
-     * the knob promises, while what survives is what an analyst would have chosen to keep.
-     *
-     * <p>Scanning the whole body is affordable here because the caller only reaches this for
-     * output POI has already materialised, and POI runs only when the pre-flight projection cleared
-     * the document budget -- so the text scanned is bounded by that budget, not by the file.
-     */
     /** UTF-8 byte length -- the unit vbaMaxStreamBytes is named and documented in. */
-    private static int utf8Len(String s) {
+    static int utf8Len(String s) {
         return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    }
+
+    /**
+     * The parts of an over-long line worth keeping: windows around the indicator matches
+     * themselves, spread across the line so that neither end can be starved.
+     *
+     * <p>Attacker model: the author controls the ORDER of statements on a line, so any rule that
+     * picks one match by position (first, last) is defeated by writing the decoy in that position.
+     * This keeps {@code k} windows anchored on evenly-spaced matches, and {@code k} is at least 2
+     * whenever the line holds more than one match -- so the first and last match are always both
+     * represented, no matter which of them is the real one.
+     *
+     * <p>Bounded: at most {@link #MAX_LINE_MATCHES} match positions are held (the first half and
+     * the last half of them), and the emitted text is {@code span} characters plus the elision
+     * markers, regardless of how many indicators the line contains.
+     */
+    private static String windowLine(String line, int span, java.util.regex.Matcher m) {
+        if (span >= line.length()) {
+            return line;
+        }
+        java.util.ArrayDeque<Integer> firstHalf = new java.util.ArrayDeque<>();
+        java.util.ArrayDeque<Integer> lastHalf = new java.util.ArrayDeque<>();
+        m.reset(line);
+        while (m.find()) {
+            if (firstHalf.size() < MAX_LINE_MATCHES / 2) {
+                firstHalf.addLast(m.start());
+            } else {
+                lastHalf.addLast(m.start());
+                if (lastHalf.size() > MAX_LINE_MATCHES / 2) {
+                    lastHalf.removeFirst();
+                }
+            }
+        }
+        java.util.List<Integer> matches = new java.util.ArrayList<>(firstHalf);
+        matches.addAll(lastHalf);
+        if (matches.isEmpty()) {
+            // The caller only reaches here after a successful find(), but a silent empty return
+            // would be a total loss if that ever stopped holding; keep a prefix instead.
+            return line.substring(0, span) + LINE_WINDOW_MARKER;
+        }
+        int n = matches.size();
+        // One window per match while each can still be MIN_LINE_WINDOW wide, but never fewer than
+        // two when there is more than one match: two narrow windows covering both ends beat one
+        // wide window whose contents the author gets to choose.
+        int k = n == 1 ? 1 : Math.max(2, Math.min(n, span / MIN_LINE_WINDOW));
+        int w = Math.max(1, span / k);
+        java.util.List<int[]> windows = new java.util.ArrayList<>();
+        for (int i = 0; i < k; i++) {
+            int idx = k == 1 ? 0 : (int) ((long) i * (n - 1) / (k - 1));
+            int pos = matches.get(idx);
+            // Bias LEFT of the match: the indicator token starts the interesting text
+            // (`Shell "..."`), so most of the window should fall after it.
+            int start = Math.max(0, Math.min(pos - w / 4, line.length() - w));
+            int end = Math.min(line.length(), start + w);
+            if (!windows.isEmpty() && start <= windows.get(windows.size() - 1)[1]) {
+                int[] prev = windows.get(windows.size() - 1);
+                prev[1] = Math.max(prev[1], end);
+            } else {
+                windows.add(new int[] {start, end});
+            }
+        }
+        StringBuilder sb = new StringBuilder(span + 64);
+        int prevEnd = 0;
+        for (int[] wnd : windows) {
+            if (wnd[0] > prevEnd) {
+                sb.append(LINE_WINDOW_MARKER);
+            }
+            sb.append(line, wnd[0], wnd[1]);
+            prevEnd = wnd[1];
+        }
+        if (prevEnd < line.length()) {
+            sb.append(LINE_WINDOW_MARKER);
+        }
+        return sb.toString();
     }
 
     /**
@@ -571,6 +681,23 @@ public final class LenientVBAReader {
         return new String(enc, 0, cut, java.nio.charset.StandardCharsets.UTF_8);
     }
 
+    /**
+     * Truncate {@code text} to {@code max} characters WITHOUT discarding its tail indicators.
+     *
+     * <p>A plain prefix cut is the wrong shape for macro source and this was measured, not
+     * reasoned: capping POI's output with {@code substring(0, max)} took one corpus document
+     * (lol.xlsm) from 11 exec indicators to 1, because a dropper's payload sits at the END of a
+     * long module -- after the padding, the decoys and the dead code. The same
+     * reject-the-tail defect is why {@link #retainIndicators} exists for the lenient path.
+     *
+     * <p>So the budget is split: indicator-bearing lines are collected from the WHOLE body first,
+     * and the prefix gets whatever remains. The result still respects {@code max}, which is what
+     * the knob promises, while what survives is what an analyst would have chosen to keep.
+     *
+     * <p>Scanning the whole body is affordable here because the caller only reaches this for
+     * output POI has already materialised, and POI runs only when the pre-flight projection cleared
+     * the document budget -- so the text scanned is bounded by that budget, not by the file.
+     */
     static String truncateKeepingIndicators(String text, int max) {
         // Measured in BYTES throughout. The caller detected the overflow in UTF-8 bytes and then
         // truncated to `max` CHARACTERS, so multi-byte source was cut to 2-3x the configured cap --
@@ -605,27 +732,20 @@ public final class LenientVBAReader {
             if (end > from) {
                 String line = text.substring(from, end);
                 if (m.reset(line).find()) {
-                    // Window on the LAST match on the line, not the first.
+                    // Keep windows around indicators from BOTH ENDS of the line (and, when the
+                    // budget allows, from the middle), never a single match chosen by position.
                     //
-                    // One find() call centred the window on match #1, so a line shaped
-                    // `CreateObject(...) : <long statement> : Shell "..."` was recognised as
-                    // indicator-bearing and then had its window placed on the DECOY -- prefix and
-                    // window could both end before the Shell. Same author-controlled ordering that
-                    // starved the module tail, one level further in: the decoy is simply written
-                    // first. VBA statement separators mean the payload tends to be last on such a
-                    // line. Reported by codex on PR #19.
-                    int lastMatch = m.start();
-                    while (m.find()) {
-                        lastMatch = m.start();
-                    }
-                    // Slice AROUND that match, not from column zero: a line of padding ending in
-                    // `: Shell "..."` is detected as indicator-bearing, and keeping its head throws
-                    // away the very thing that made it worth keeping.
+                    // History, because this line has now been wrong in two opposite directions.
+                    // One find() call centred the window on match #1, so `CreateObject(decoy) :
+                    // <long filler> : Shell "payload"` placed the window on the DECOY and lost the
+                    // payload. Selecting the LAST match instead merely reversed that: write the
+                    // line the other way round -- `Shell "payload" : <long filler> : ' CreateObject`
+                    // -- and the window lands on the trailing decoy and loses the payload again.
+                    // Reported by codex on PR #19 against the fix for the previous round of the
+                    // same defect. ANY fixed choice of one match is author-controlled, because the
+                    // author writes the order; the only stable answer is not to choose.
                     int span = Math.min(halfRoom, line.length());
-                    int start = Math.max(0, Math.min(lastMatch - span / 4, line.length() - span));
-                    String kept = line.substring(start, Math.min(line.length(), start + span))
-                            + (start > 0 || start + span < line.length()
-                                    ? " [TIKA-VBA-LINE-WINDOW]" : "");
+                    String kept = windowLine(line, span, m);
                     if (headChars < halfRoom) {
                         head.addLast(kept);
                         headChars += kept.length() + 1;
@@ -727,7 +847,18 @@ public final class LenientVBAReader {
     }
 
     static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs, Bounds bounds) {
+        return readMacrosFromOrphans(fs, bounds, null);
+    }
+
+    /**
+     * @param known modules the caller has already extracted by another path; recovery will not
+     *              re-emit or re-charge for a byte-identical body. See
+     *              {@link ModuleSink#seedKnown(Map)} for why this is not merely a de-duplication.
+     */
+    static Map<String, String> readMacrosFromOrphans(POIFSFileSystem fs, Bounds bounds,
+                                                     Map<String, String> known) {
         ModuleSink result = new ModuleSink();
+        result.seedKnown(known);
         collectFromOrphans(fs, bounds, result);
         return result.out;
     }
@@ -1014,15 +1145,25 @@ public final class LenientVBAReader {
                                        Bounds bounds) {
         try {
             int size = prop.getSize();
-            if (size < 0 || size > bounds.max()) {
-                // Dropping the stream discards the WHOLE module source. Say so.
-                if (size > bounds.max()) {
-                    bounds.mark("VBA stream exceeded the size bound and was dropped");
-                }
+            if (size < 0) {
                 return null;
             }
+            // TRUNCATE, do not drop. An over-cap stream used to return null, and the caller then
+            // skipped the module entirely -- so configuring vbaMaxStreamBytes cost the analyst the
+            // WHOLE module rather than bounding it, on the one path that exists for deliberately
+            // hidden projects. A prefix is genuinely useful here because MS-OVBA module streams are
+            // CHUNK-compressed (2.4.1.1.3): the leading chunks of a truncated stream decode exactly
+            // as they would from the intact stream, so the bytes we keep are real source and not a
+            // corrupt fragment. decompress() already bounds its OUTPUT by the same cap, so this
+            // bounds the input side, which is what was missing.
+            int cap = bounds.max();
+            int want = Math.min(size, cap);
+            if (size > cap) {
+                bounds.mark("VBA stream '" + prop.getName() + "' exceeded the " + cap
+                        + "-byte per-stream bound; only its leading chunks were read");
+            }
             POIFSDocument doc = new POIFSDocument(prop, fs);
-            byte[] data = new byte[size];
+            byte[] data = new byte[want];
             try (DocumentInputStream dis = new DocumentInputStream(doc)) {
                 int read = 0;
                 while (read < data.length) {
