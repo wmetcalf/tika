@@ -573,7 +573,38 @@ public final class LenientVBAReader {
 
     /** UTF-8 byte length -- the unit vbaMaxStreamBytes is named and documented in. */
     static int utf8Len(String s) {
-        return s == null ? 0 : s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        // COUNT, do not encode. This used to be s.getBytes(UTF_8).length, which allocates a byte
+        // array up to 3x the string purely to read its length -- and the commit that denominated
+        // this class in bytes multiplied the call sites, so it now runs for every module in
+        // retain(), every value in retainIndicators() and every form body. At the 10 MB default
+        // per-stream cap that is a transient 30 MB allocation per module, on a triage fleet, to
+        // compute a number. Raised independently by two reviewers (deepseek, codex) on PR #19.
+        //
+        // Exactly mirrors Java's UTF_8 encoder, including its substitution of '?' (ONE byte) for an
+        // unpaired surrogate -- see testUtf8LenMatchesTheEncoderExactly, which asserts equality
+        // against getBytes(UTF_8).length over ASCII, 2-byte, 3-byte, paired and UNPAIRED surrogate
+        // input. If that equality ever breaks, every budget in this class silently shifts.
+        if (s == null) {
+            return 0;
+        }
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) {
+                n += 1;
+            } else if (c < 0x800) {
+                n += 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < s.length()
+                    && Character.isLowSurrogate(s.charAt(i + 1))) {
+                n += 4;   // one supplementary code point, two chars
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                n += 1;   // unpaired: the encoder emits '?'
+            } else {
+                n += 3;
+            }
+        }
+        return n;
     }
 
     /**
@@ -651,34 +682,53 @@ public final class LenientVBAReader {
     }
 
     /**
-     * The longest prefix of {@code s} that fits {@code maxBytes} in UTF-8.
+     * The longest PREFIX of {@code s} whose UTF-8 encoding fits {@code maxBytes}.
      *
-     * <p>ENCODE ONCE. The previous version binary-searched the character index and called
-     * {@code utf8Len(s.substring(0, mid))} at every step, so each call allocated a substring AND
-     * re-encoded it -- about two dozen times per call, on strings up to the per-stream cap, once per
-     * indicator line plus once for the prefix. That is a CPU and allocation amplifier introduced
-     * while fixing the byte-UNIT defect, and it was raised as HIGH by the review panel.
+     * <p>Counts as it walks rather than encoding: the previous version encoded the whole string,
+     * sliced the byte array back to the budget, walked off any continuation byte and DECODED the
+     * result, which allocated proportionally to the input twice over to answer a question about
+     * length. Two reviewers flagged the allocation on PR #19.
      *
-     * <p>Cutting the encoded array also makes this surrogate-safe by construction, which the
-     * character-index search was not: it could land between a high and low surrogate, and Java then
-     * encoded the orphan as '?' -- the same corruption class the PROJECTCODEPAGE fix removed.
-     * Walking back off a UTF-8 continuation byte (10xxxxxx) lands on a whole code point, so a split
-     * astral character is dropped rather than mangled.
+     * <p>A surrogate pair is refused as a unit, so an astral character is never half-emitted.
+     * One deliberate behaviour change from the byte-slicing version: an UNPAIRED surrogate is now
+     * preserved verbatim instead of being replaced by the literal {@code '?'} that a
+     * getBytes/decode round trip substituted -- so the result is a true prefix of the input, which
+     * the old one was not. Byte accounting is identical either way ({@link #utf8Len} counts an
+     * unpaired surrogate as the encoder does, one byte).
      */
-    private static String headWithinBytes(String s, int maxBytes) {
+    static String headWithinBytes(String s, int maxBytes) {
         if (s == null || maxBytes <= 0) {
             return "";
         }
-        byte[] enc = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        if (enc.length <= maxBytes) {
-            return s;
+        // Walk the chars and stop before the budget is exceeded, rather than encoding the WHOLE
+        // string, slicing the array and decoding it back. Same output, but no allocation
+        // proportional to the input and no round-trip through a byte[] -- and a surrogate pair is
+        // never split, which the byte-level continuation-byte backoff only handled by accident.
+        int bytes = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            int cost;
+            int step = 1;
+            if (c < 0x80) {
+                cost = 1;
+            } else if (c < 0x800) {
+                cost = 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < s.length()
+                    && Character.isLowSurrogate(s.charAt(i + 1))) {
+                cost = 4;
+                step = 2;
+            } else if (Character.isSurrogate(c)) {
+                cost = 1;
+            } else {
+                cost = 3;
+            }
+            if (bytes + cost > maxBytes) {
+                return s.substring(0, i);
+            }
+            bytes += cost;
+            i += step - 1;
         }
-        int cut = maxBytes;
-        // Back off any continuation bytes so the cut falls on a code-point boundary.
-        while (cut > 0 && (enc[cut] & 0xC0) == 0x80) {
-            cut--;
-        }
-        return new String(enc, 0, cut, java.nio.charset.StandardCharsets.UTF_8);
+        return s;
     }
 
     /**
@@ -917,6 +967,19 @@ public final class LenientVBAReader {
                 try {
                     byte[] raw = readPropBytes(fs, modProp, bounds);
                     int offset = ref.offset;
+                    if (raw != null && offset >= raw.length && offset < modProp.getSize()) {
+                        // The stream was TRUNCATED short of where its source actually starts.
+                        // MS-OVBA puts the source container at MODULEOFFSET, after the compiled
+                        // performance cache, and the author controls that cache's size -- so a
+                        // module can be padded until MODULEOFFSET lands past the per-stream cap.
+                        // readPropBytes has already marked "only its leading chunks were read",
+                        // which asserts PARTIAL recovery; for this module recovery was TOTAL loss,
+                        // and saying otherwise is the one thing this parser must not do. Report it
+                        // as a module the file names but did not yield. Panel finding on PR #19,
+                        // against the truncate-don't-drop fix in this same commit.
+                        bounds.noteUnresolved(ref.expectedBodyName());
+                        continue;
+                    }
                     if (raw == null || offset < 3 || offset >= raw.length) {
                         continue;
                     }
@@ -1517,6 +1580,18 @@ public final class LenientVBAReader {
                     bounds.noteUnresolved(ref.expectedBodyName());
                     continue;
                 }
+                if (ref.offset >= raw.length && ref.offset < streamSizeOf(vbaDir, resolvedName)) {
+                    // Truncated SHORT of where the source begins. Until readStream started
+                    // bounding rather than dropping, an over-cap stream arrived here as null and
+                    // the branch above reported it; truncation silently routed it into the bare
+                    // `continue` below instead, so the module vanished with nothing said but a
+                    // mark claiming its "leading chunks were read". That is the very report this
+                    // branch's twin in collectFromOneOrphanDir was added to prevent -- the fix for
+                    // one route introduced the defect on the other. Caught by the code-review lens
+                    // on PR #19.
+                    bounds.noteUnresolved(ref.expectedBodyName());
+                    continue;
+                }
                 if (ref.offset < 3 || ref.offset >= raw.length) {
                     continue;
                 }
@@ -2055,18 +2130,36 @@ public final class LenientVBAReader {
         return null;
     }
 
+    /** Declared size of a stream in this storage, or 0 -- used to tell TRUNCATED from SHORT. */
+    private static int streamSizeOf(DirectoryNode dir, String name) {
+        try {
+            DocumentEntry de = findEntry(dir, name);
+            return de == null ? 0 : de.getSize();
+        } catch (Exception ignore) {
+            return 0;
+        }
+    }
+
     private static byte[] readStream(DirectoryNode dir, String name, Bounds bounds) {
         try {
             DocumentEntry de = findEntry(dir, name);
             if (de == null) {
                 return null;
             }
-            if (de.getSize() > bounds.max()) {
-                bounds.mark("VBA stream '" + name
-                        + "' exceeded the size bound and was dropped");
-                return null;
+            // TRUNCATE, matching readPropBytes. These two are the same read on two routes -- this
+            // one for tree-reachable storages, readPropBytes for orphaned ones -- and only the
+            // orphan route was taught to bound rather than discard. That left vbaMaxStreamBytes
+            // meaning two different things depending on which route reached the stream: a bound on
+            // one, a total-loss switch on the other. Reported by the review panel on PR #19 as a
+            // missing companion change to that fix. Same MS-OVBA chunk-compression argument: the
+            // leading chunks of a truncated stream decode exactly as from the intact stream.
+            int cap = bounds.max();
+            int want = Math.min(de.getSize(), cap);
+            if (de.getSize() > cap) {
+                bounds.mark("VBA stream '" + name + "' exceeded the " + cap
+                        + "-byte per-stream bound; only its leading chunks were read");
             }
-            byte[] data = new byte[de.getSize()];
+            byte[] data = new byte[want];
             try (DocumentInputStream dis = new DocumentInputStream(de)) {
                 int read = 0;
                 while (read < data.length) {

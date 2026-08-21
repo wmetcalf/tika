@@ -431,6 +431,16 @@ public class OfficeParser extends AbstractOfficeParser {
                 if (recoveryBounds.isLimitReached()) {
                     vbaBounds.mark(recoveryBounds.getLimitDetail());
                 }
+                // Carry the UNRESOLVED list back too, not just the limit verdict. Copying only
+                // isLimitReached/getLimitDetail propagated recovery's "only its leading chunks
+                // were read" warning while discarding the correction that says the module in fact
+                // yielded nothing -- so the analyst was told a module was partially recovered on
+                // exactly the documents where it was not recovered at all. The report that a
+                // project names modules the file does not contain was being dropped on this path
+                // for the same reason. Caught by the code-review lens on PR #19.
+                for (String missing : recoveryBounds.unresolvedModules()) {
+                    vbaBounds.noteUnresolved(missing);
+                }
             } catch (Exception | OutOfMemoryError ignore) {
                 // recovery is best-effort
             }

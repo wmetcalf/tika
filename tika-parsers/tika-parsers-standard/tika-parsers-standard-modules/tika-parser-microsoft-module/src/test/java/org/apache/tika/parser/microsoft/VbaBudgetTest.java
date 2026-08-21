@@ -926,6 +926,169 @@ public class VbaBudgetTest {
         assertTrue(cut.contains("Shell \"p39\""), "the LAST of forty indicators must survive");
     }
 
+    @Test
+    @DisplayName("utf8Len equals the encoder byte-for-byte, including unpaired surrogates")
+    void testUtf8LenMatchesTheEncoderExactly() {
+        // utf8Len stopped calling getBytes(UTF_8) so it would stop allocating. That is only safe if
+        // it returns the IDENTICAL number: it is the denominator of every budget in this class, so
+        // a one-byte drift silently moves every ceiling. Property, not a point: ASCII, 2-byte,
+        // 3-byte, supplementary pairs, and the unpaired surrogates Java substitutes '?' for.
+        java.util.List<String> cases = new java.util.ArrayList<>(java.util.Arrays.asList(
+                "", "a", "\u00e9", "\u00e9\u00e9\u00e9", "\u65e5\u672c\u8a9e",
+                "Sub AutoOpen()\nShell \"cmd\"\nEnd Sub\n",
+                "\ud83d\ude00", "a\ud83d\ude00b", "\ud83d\ude00".repeat(50),
+                "\ud800",                       // lone HIGH surrogate
+                "\udc00",                       // lone LOW surrogate
+                "a\ud800b", "a\udc00b",
+                "\ud800\ud800", "\udc00\ud800", "\ud800a\udc00",
+                "\u0000\u007f\u0080\u07ff\u0800\uffff"));
+        // Generate real CODE POINTS across every encoder width, including above the BMP.
+        // The first version of this loop was `rnd.nextInt(0x11000 > 0xFFFF ? 0xFFFF : 0xFFFF)`
+        // cast to char: both ternary arms are the same constant and a char cannot hold a
+        // supplementary code point anyway, so 400 "random" cases produced exactly ONE surrogate
+        // pair and never exceeded U+FFEE. The 4-byte branch of utf8Len -- the only place it does
+        // `n += 4; i++` -- was covered by the hand-written list alone. A property test that looks
+        // thorough and is not is worse than an obviously narrow one.
+        java.util.Random rnd = new java.util.Random(20260821L);
+        int pairs = 0;
+        for (int t = 0; t < 400; t++) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0, n = rnd.nextInt(40); i < n; i++) {
+                int bucket = rnd.nextInt(5);
+                if (bucket == 0) {
+                    sb.append((char) rnd.nextInt(0x80));                       // 1 byte
+                } else if (bucket == 1) {
+                    sb.append((char) (0x80 + rnd.nextInt(0x800 - 0x80)));      // 2 bytes
+                } else if (bucket == 2) {
+                    sb.appendCodePoint(0x800 + rnd.nextInt(0xD800 - 0x800));   // 3 bytes
+                } else if (bucket == 3) {
+                    sb.appendCodePoint(0x10000 + rnd.nextInt(0x100000));       // 4 bytes, a PAIR
+                    pairs++;
+                } else {
+                    // Lone surrogate: malformed input the encoder replaces with a 1-byte '?'.
+                    sb.append((char) (0xD800 + rnd.nextInt(0x800)));
+                }
+            }
+            cases.add(sb.toString());
+        }
+        assertTrue(pairs > 500,
+                "the generator must actually exercise the 4-byte/supplementary branch; got "
+                        + pairs + " pairs");
+        for (String c : cases) {
+            assertEquals(c.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                    LenientVBAReader.utf8Len(c),
+                    "utf8Len drifted from the encoder on " + describeCodePoints(c));
+        }
+    }
+
+    @Test
+    @DisplayName("headWithinBytes still fits the budget and never splits a surrogate pair")
+    void testHeadWithinBytesFitsAndKeepsPairsIntact() {
+        String[] bodies = {
+            "a".repeat(500),
+            "\u00e9".repeat(500),
+            "\u65e5".repeat(500),
+            "\ud83d\ude00".repeat(200),
+            "abc\ud83d\ude00def\u65e5\u00e9".repeat(60),
+            "x\ud800y".repeat(100),
+        };
+        for (String body : bodies) {
+            // cap 0 and the exactly-fits case are the two boundaries the rewrite touches and the
+            // first version of this test never reached: it ran caps 1..64 over bodies of 500+
+            // chars, so the terminal `return s` was never executed and an off-by-one from
+            // `> maxBytes` to `>= maxBytes` would have survived.
+            assertEquals("", LenientVBAReader.headWithinBytes(body, 0), "cap 0 must yield empty");
+            assertEquals("", LenientVBAReader.headWithinBytes(body, -5), "negative cap is empty");
+            int exact = LenientVBAReader.utf8Len(body);
+            assertEquals(body, LenientVBAReader.headWithinBytes(body, exact),
+                    "a string that exactly fits its budget must come back whole");
+            assertEquals(body, LenientVBAReader.headWithinBytes(body, exact + 1),
+                    "a string under its budget must come back whole");
+            for (int cap = 1; cap <= 64; cap++) {
+                String head = LenientVBAReader.headWithinBytes(body, cap);
+                int got = head.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                assertTrue(got <= cap,
+                        "headWithinBytes overshot its byte budget: cap=" + cap + " got=" + got);
+                assertTrue(body.startsWith(head),
+                        "headWithinBytes must return a PREFIX of its input");
+                if (!head.isEmpty()) {
+                    char last = head.charAt(head.length() - 1);
+                    // A trailing high surrogate is only a SPLIT if the source had a pair there.
+                    // An UNPAIRED one is malformed input that the encoder counts as a 1-byte '?',
+                    // and keeping it verbatim is what makes the result a true prefix -- the old
+                    // encode/slice/decode version substituted a literal '?' into the CONTENT, so
+                    // its output was not a prefix of its input at all.
+                    boolean sourceHadAPairHere = Character.isHighSurrogate(last)
+                            && head.length() < body.length()
+                            && Character.isLowSurrogate(body.charAt(head.length()));
+                    assertFalse(sourceHadAPairHere,
+                            "a surrogate pair was split at cap=" + cap);
+                }
+            }
+        }
+    }
+
+    private static String describeCodePoints(String s) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < s.length(); i++) {
+            sb.append(String.format(java.util.Locale.ROOT, "%04X ", (int) s.charAt(i)));
+            if (i > 24) {
+                sb.append("...");
+                break;
+            }
+        }
+        return sb.append(']').toString();
+    }
+
+    @Test
+    @DisplayName("a module truncated short of its source is reported, not silently skipped (tree route)")
+    void testOverCapModuleTruncatedBeforeItsSourceIsReported() throws Exception {
+        // MS-OVBA puts a module's source at MODULEOFFSET, AFTER the compiled performance cache,
+        // and the author controls that cache's size. Pad it past the per-stream cap and the
+        // truncated read holds no source at all. Until readStream started truncating, such a
+        // stream arrived as null and was reported as unresolved; truncation routed it into a bare
+        // `continue`, so the module vanished while the bound still claimed "leading chunks were
+        // read". The fix for the orphan route introduced that defect on the tree route.
+        byte[] doc = new VbaProjectBuilder()
+                .module("Benign", "Sub A()\nEnd Sub\n")
+                .stompedModule("Payload", 40000)
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(4096, 1 << 20);
+            LenientVBAReader.readMacros(fs.getRoot(), bounds);
+            assertTrue(bounds.unresolvedModules().contains("Payload"),
+                    "a module whose stream was cut before its source begins yielded NOTHING; "
+                            + "saying only that its leading chunks were read asserts a partial "
+                            + "recovery that did not happen. unresolved="
+                            + bounds.unresolvedModules());
+        }
+    }
+
+    @Test
+    @DisplayName("orphan recovery's unresolved report reaches the document metadata")
+    void testRecoveryUnresolvedModulesReachMetadata() throws Exception {
+        // Recovery runs on a SEPARATE Bounds. Only isLimitReached/getLimitDetail were copied back,
+        // so the misleading "leading chunks were read" warning propagated while the correction
+        // that the module yielded nothing was discarded -- the fix existed but could not be seen.
+        byte[] doc = withUnreachableProject(
+                new VbaProjectBuilder().module("Visible", "Sub V()\nEnd Sub\n").build(),
+                new VbaProjectBuilder().stompedModule("HiddenPayload", 40000).build());
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(doc))) {
+            assertTrue(LenientVBAReader.hasUnreachableDirStream(fs),
+                    "fixture precondition: the grafted project must be invisible to the tree walk");
+        }
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setVbaMaxStreamBytes(4096);
+        Metadata md = new Metadata();
+        parse(doc, md, cfg);
+        String unresolved = md.get(OfficeParser.VBA_UNRESOLVED_MODULES);
+        assertNotNull(unresolved,
+                "recovery found a module it could not yield; the document metadata must say so "
+                        + "rather than only carrying the limit warning");
+        assertTrue(unresolved.contains("HiddenPayload"),
+                "the unresolved module must be NAMED; got " + unresolved);
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {

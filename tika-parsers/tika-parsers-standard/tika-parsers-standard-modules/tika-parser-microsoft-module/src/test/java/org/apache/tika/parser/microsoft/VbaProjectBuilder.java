@@ -164,7 +164,7 @@ final class VbaProjectBuilder {
                 body.append('A');
             }
             // Differ only at the very end, and keep every body the same length.
-            body.append(String.format("%06d", i));
+            body.append(String.format(java.util.Locale.ROOT, "%06d", i));
             module(moduleName, "s" + i, "s" + i, body.toString());
         }
         return this;
@@ -177,7 +177,7 @@ final class VbaProjectBuilder {
             for (int c = 0; c < bodyLen - 6; c++) {
                 body.append('A');
             }
-            body.append(String.format("%06d", i));
+            body.append(String.format(java.util.Locale.ROOT, "%06d", i));
             module("Module" + i, "s" + i, "s" + i, body.toString());
         }
         return this;
