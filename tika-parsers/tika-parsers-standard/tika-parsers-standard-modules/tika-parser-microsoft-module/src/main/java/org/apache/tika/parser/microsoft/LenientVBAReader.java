@@ -577,11 +577,17 @@ public final class LenientVBAReader {
     private static void collectFromOrphans(POIFSFileSystem fs, Bounds bounds,
                                            ModuleSink result) {
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
+        // Built ONCE for the whole file and reused for every dir stream below. siblingStreamsOf
+        // rebuilt allProps() and re-walked every directory's children for EACH dir stream, and
+        // dirPropsOf caps nothing, so a crafted CFBF carrying many entries named `dir` turned
+        // orphan discovery into O(dirs x properties) before any per-project cap could help --
+        // a denial-of-service surface on the recall fix itself. Reported by codex on PR #19.
+        Map<Property, Map<String, DocumentProperty>> siblings = siblingIndex(fs);
         // EVERY dir stream, not just the first. Keying by name kept only one, so a document with a
         // tree-visible VBA storage next to an orphaned one had the orphan's dir shadowed -- and
         // the orphan is where the payload is put, that being the whole point of orphaning it.
         for (DocumentProperty dirProp : dirPropsOf(fs, streams)) {
-            if (!collectFromOneOrphanDir(fs, dirProp, streams, bounds, result)) {
+            if (!collectFromOneOrphanDir(fs, dirProp, streams, siblings, bounds, result)) {
                 return; // document budget exhausted
             }
         }
@@ -590,6 +596,8 @@ public final class LenientVBAReader {
     /** @return false when the document budget is exhausted and the caller must stop. */
     private static boolean collectFromOneOrphanDir(POIFSFileSystem fs, DocumentProperty dirProp,
                                                    Map<String, DocumentProperty> streams,
+                                                   Map<Property, Map<String, DocumentProperty>>
+                                                           siblings,
                                                    Bounds bounds, ModuleSink result) {
         try {
             byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
@@ -601,7 +609,8 @@ public final class LenientVBAReader {
             // Resolve within THIS dir stream's own storage. Falling back to the flat map only when
             // the storage cannot be determined keeps recall on files whose property table we cannot
             // walk, without letting a neighbouring project's stream answer for this one.
-            Map<String, DocumentProperty> scoped = siblingStreamsOf(fs, dirProp);
+            Map<String, DocumentProperty> scoped =
+                    siblings.getOrDefault(dirProp, java.util.Collections.emptyMap());
             Map<String, DocumentProperty> lookup = scoped.isEmpty() ? streams : scoped;
             for (ModuleRef ref : dir.modules) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
@@ -733,6 +742,35 @@ public final class LenientVBAReader {
      * <p>Returns empty when the containing storage cannot be determined, which the caller treats as
      * "fall back to the flat map" rather than "extract nothing".
      */
+    /**
+     * Property -> its storage's streams, built ONCE for the whole file.
+     *
+     * <p>One pass over the property table answers every dir stream's lookup, instead of
+     * {@link #siblingStreamsOf} re-walking the table per dir. See the note at the call site.
+     */
+    private static Map<Property, Map<String, DocumentProperty>> siblingIndex(POIFSFileSystem fs) {
+        Map<Property, Map<String, DocumentProperty>> index = new java.util.HashMap<>();
+        for (Property p : allProps(fs)) {
+            if (!(p instanceof DirectoryProperty)) {
+                continue;
+            }
+            Map<String, DocumentProperty> kids = new LinkedHashMap<>();
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                Property child = it.next();
+                if (child instanceof DocumentProperty && child.getName() != null) {
+                    kids.putIfAbsent(child.getName().toLowerCase(Locale.ROOT),
+                            (DocumentProperty) child);
+                }
+            }
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                index.put(it.next(), kids);
+            }
+        }
+        return index;
+    }
+
     private static Map<String, DocumentProperty> siblingStreamsOf(POIFSFileSystem fs,
                                                                   DocumentProperty dirProp) {
         Map<String, DocumentProperty> out = new LinkedHashMap<>();
