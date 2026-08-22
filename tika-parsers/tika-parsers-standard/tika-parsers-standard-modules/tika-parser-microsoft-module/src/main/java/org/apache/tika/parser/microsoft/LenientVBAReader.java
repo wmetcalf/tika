@@ -30,6 +30,7 @@ import org.apache.poi.poifs.filesystem.DocumentEntry;
 import org.apache.poi.poifs.filesystem.DocumentInputStream;
 import org.apache.poi.poifs.filesystem.POIFSDocument;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.apache.poi.poifs.property.DirectoryProperty;
 import org.apache.poi.poifs.property.DocumentProperty;
 import org.apache.poi.poifs.property.Property;
 
@@ -576,11 +577,17 @@ public final class LenientVBAReader {
     private static void collectFromOrphans(POIFSFileSystem fs, Bounds bounds,
                                            ModuleSink result) {
         Map<String, DocumentProperty> streams = collectAllStreamProps(fs);
+        // Built ONCE for the whole file and reused for every dir stream below. siblingStreamsOf
+        // rebuilt allProps() and re-walked every directory's children for EACH dir stream, and
+        // dirPropsOf caps nothing, so a crafted CFBF carrying many entries named `dir` turned
+        // orphan discovery into O(dirs x properties) before any per-project cap could help --
+        // a denial-of-service surface on the recall fix itself. Reported by codex on PR #19.
+        Map<Property, Map<String, DocumentProperty>> siblings = siblingIndex(fs);
         // EVERY dir stream, not just the first. Keying by name kept only one, so a document with a
         // tree-visible VBA storage next to an orphaned one had the orphan's dir shadowed -- and
         // the orphan is where the payload is put, that being the whole point of orphaning it.
         for (DocumentProperty dirProp : dirPropsOf(fs, streams)) {
-            if (!collectFromOneOrphanDir(fs, dirProp, streams, bounds, result)) {
+            if (!collectFromOneOrphanDir(fs, dirProp, streams, siblings, bounds, result)) {
                 return; // document budget exhausted
             }
         }
@@ -589,6 +596,8 @@ public final class LenientVBAReader {
     /** @return false when the document budget is exhausted and the caller must stop. */
     private static boolean collectFromOneOrphanDir(POIFSFileSystem fs, DocumentProperty dirProp,
                                                    Map<String, DocumentProperty> streams,
+                                                   Map<Property, Map<String, DocumentProperty>>
+                                                           siblings,
                                                    Bounds bounds, ModuleSink result) {
         try {
             byte[] dirRaw = readPropBytes(fs, dirProp, bounds);
@@ -597,6 +606,12 @@ public final class LenientVBAReader {
             }
             DirInfo dir = parseDir(decompress(dirRaw, 0, bounds), bounds);
             Charset charset = dir.charset;
+            // Resolve within THIS dir stream's own storage. Falling back to the flat map only when
+            // the storage cannot be determined keeps recall on files whose property table we cannot
+            // walk, without letting a neighbouring project's stream answer for this one.
+            Map<String, DocumentProperty> scoped =
+                    siblings.getOrDefault(dirProp, java.util.Collections.emptyMap());
+            Map<String, DocumentProperty> lookup = scoped.isEmpty() ? streams : scoped;
             for (ModuleRef ref : dir.modules) {
                 // Case-insensitive lookup (see collectAllStreamProps); keep the dir-stream's
                 // original-case module name as the result key.
@@ -605,7 +620,7 @@ public final class LenientVBAReader {
                     if (candidate == null) {
                         continue;
                     }
-                    modProp = streams.get(candidate.toLowerCase(Locale.ROOT));
+                    modProp = lookup.get(candidate.toLowerCase(Locale.ROOT));
                     if (modProp != null) {
                         break;
                     }
@@ -709,6 +724,111 @@ public final class LenientVBAReader {
     }
 
     /** The raw property-table stream entries, in table order, duplicates included. */
+    /**
+     * Streams in the SAME STORAGE as {@code dirProp}, keyed case-insensitively.
+     *
+     * <p>Module resolution used a single FLATTENED map of every stream in the file, built with
+     * {@code putIfAbsent}, so in a document holding several VBA projects -- each with its own
+     * {@code ThisDocument} -- only the first survived and every dir stream resolved
+     * {@code ThisDocument} to that one stream while applying its OWN MODULEOFFSET. Four reads out
+     * of five then landed mid-container and produced garbled fragments, stored under {@code #2},
+     * {@code #3} family names.
+     *
+     * <p>The signature is 3x the modules and 1/3 the characters (one document 69 modules /
+     * 416,844 chars against olevba's 26 / 1,147,642).
+     *
+     * <p>PREVALENCE, corrected. An earlier version of this comment said "~5% of macro-bearing
+     * documents", taken from a 300-document stratified sample against olevba. The FULL corpus of
+     * 6,574 says 5 documents -- 0.08%, a 60x overstatement -- and those five are the only ones
+     * whose printable ratio moved at all (every one of them to exactly 1.000). The fix is still
+     * worth having, because fabricated source is worse for triage than absent source and one of
+     * the five was emitting a CORRUPTED URL an analyst could have pivoted on. But it is not the
+     * largest recall gap on this branch, and a stratified sample is not a prevalence measurement.
+     * Reported by codex on PR #19, against a commit that corrected this number everywhere EXCEPT
+     * the comment a maintainer actually reads.
+     *
+     * <p>Returns empty when the containing storage cannot be determined, which the caller treats as
+     * "fall back to the flat map" rather than "extract nothing".
+     */
+    /**
+     * Property -> its storage's streams, built ONCE for the whole file.
+     *
+     * <p>One pass over the property table answers every dir stream's lookup, instead of
+     * {@link #siblingStreamsOf} re-walking the table per dir. See the note at the call site.
+     */
+    private static Map<Property, Map<String, DocumentProperty>> siblingIndex(POIFSFileSystem fs) {
+        Map<Property, Map<String, DocumentProperty>> index = new java.util.HashMap<>();
+        for (Property p : allProps(fs)) {
+            if (!(p instanceof DirectoryProperty)) {
+                continue;
+            }
+            Map<String, DocumentProperty> kids = new LinkedHashMap<>();
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                Property child = it.next();
+                if (child instanceof DocumentProperty && child.getName() != null) {
+                    kids.putIfAbsent(child.getName().toLowerCase(Locale.ROOT),
+                            (DocumentProperty) child);
+                }
+            }
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                index.put(it.next(), kids);
+            }
+        }
+        return index;
+    }
+
+    private static Map<String, DocumentProperty> siblingStreamsOf(POIFSFileSystem fs,
+                                                                  DocumentProperty dirProp) {
+        Map<String, DocumentProperty> out = new LinkedHashMap<>();
+        for (Property p : allProps(fs)) {
+            if (!(p instanceof DirectoryProperty)) {
+                continue;
+            }
+            Map<String, DocumentProperty> kids = new LinkedHashMap<>();
+            boolean holdsThisDir = false;
+            for (java.util.Iterator<Property> it = ((DirectoryProperty) p).getChildren();
+                    it.hasNext(); ) {
+                Property child = it.next();
+                if (child == dirProp) {
+                    holdsThisDir = true;
+                }
+                if (child instanceof DocumentProperty && child.getName() != null) {
+                    kids.putIfAbsent(child.getName().toLowerCase(Locale.ROOT),
+                            (DocumentProperty) child);
+                }
+            }
+            if (holdsThisDir) {
+                return kids;
+            }
+        }
+        return out;
+    }
+
+    /** Every property in the raw table, directories included. */
+    private static List<Property> allProps(POIFSFileSystem fs) {
+        List<Property> out = new java.util.ArrayList<>();
+        try {
+            Field ptField = POIFSFileSystem.class.getDeclaredField("_property_table");
+            ptField.setAccessible(true);
+            Object pt = ptField.get(fs);
+            Field propsField = pt.getClass().getDeclaredField("_properties");
+            propsField.setAccessible(true);
+            Object raw = propsField.get(pt);
+            if (raw instanceof List<?>) {
+                for (Object o : (List<?>) raw) {
+                    if (o instanceof Property) {
+                        out.add((Property) o);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            // POI internals not reachable; caller falls back to the flat map.
+        }
+        return out;
+    }
+
     private static List<DocumentProperty> allStreamProps(POIFSFileSystem fs) {
         List<DocumentProperty> out = new java.util.ArrayList<>();
         try {
