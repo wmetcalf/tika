@@ -896,6 +896,34 @@ public class VbaBudgetTest {
         arrangements.put("tier3-unique-flood-payload-last",
                 loudUnique + filler + "  " + payload + "\n");
 
+        // THE BOUNDS THEMSELVES WERE POSITIONAL. Every cap added to keep this O(1) admitted the
+        // FIRST n things it met and refused the rest, which restores head-first starvation above
+        // the cap -- the exact evasion the selection logic removes. Reported by codex on PR #20.
+        //   (a) MAX_INDICATOR_LINES stopped the SCAN after n distinct candidates
+        //   (b) primaryIndicatorToken keys a powershell slice as "shell" (the alternation matches
+        //       inside it), so the payload shares the decoys' group and loses on document order
+        //   (c) MAX_STATEMENTS_PER_LINE broke after the first n statements on a line
+        StringBuilder many = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            many.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-candidate-cap", many + filler + "  " + payload + "\n");
+
+        StringBuilder shells = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            shells.append("  Shell \"benign")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\"\n");
+        }
+        arrangements.put("same-group-shell-decoys", shells + filler + "  " + payload + "\n");
+
+        StringBuilder stmts = new StringBuilder("  ");
+        for (int i = 0; i < 70; i++) {
+            stmts.append("Set s").append(i).append(" = CreateObject(\"E")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\") : ");
+        }
+        arrangements.put("beyond-statement-cap", filler + stmts + payload + "\n");
+
         java.util.List<String> lost = new java.util.ArrayList<>();
         java.util.List<String> over = new java.util.ArrayList<>();
         for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {

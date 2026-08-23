@@ -126,8 +126,14 @@ public final class LenientVBAReader {
      */
     private static final int INDICATOR_SCAN_BUDGET = 2 * 1024 * 1024;
 
-    /** Cap on DISTINCT indicator lines ranked per module, so a crafted body stays bounded. */
-    private static final int MAX_INDICATOR_LINES = 512;
+    /** Cap on distinct TECHNIQUES held per module; when full the least alarming is evicted. */
+    private static final int MAX_TECHNIQUES = 256;
+
+    /** Cap on slices held per technique; when full the least alarming is evicted. */
+    private static final int MAX_SLICES_PER_TECHNIQUE = 16;
+
+    /** Cap on slices tracked for de-duplication, purely to bound memory on a crafted body. */
+    private static final int MAX_DEDUP_TRACKED = 20_000;
 
     /** Cap on indicator-bearing statements held per line, so one crafted line stays O(1). */
     private static final int MAX_STATEMENTS_PER_LINE = 64;
@@ -475,6 +481,53 @@ public final class LenientVBAReader {
      * <p>A module with nothing indicator-like in it costs nothing and is skipped, so the reserve is
      * spent on the modules an analyst would actually want.
      */
+    /**
+     * Admit a candidate into the bounded group map, evicting by SEVERITY when full.
+     *
+     * <p>The caps here exist to keep a crafted body O(1) in memory. Enforcing them by refusing
+     * whatever arrives after the cap is what made them exploitable: the author writes the order, so
+     * "the first 512" is "whatever the author put first". When a bound must bite, it drops the
+     * least alarming thing held, not the most recent thing seen.
+     */
+    private static void admitCandidate(Map<String, java.util.List<String>> byToken,
+                                       Map<String, Integer> tokenSeverity, String token,
+                                       String slice, int severity) {
+        java.util.List<String> group = byToken.get(token);
+        if (group == null) {
+            if (byToken.size() >= MAX_TECHNIQUES) {
+                String weakest = null;
+                int weakestSeverity = Integer.MAX_VALUE;
+                for (Map.Entry<String, Integer> e : tokenSeverity.entrySet()) {
+                    if (e.getValue() < weakestSeverity) {
+                        weakestSeverity = e.getValue();
+                        weakest = e.getKey();
+                    }
+                }
+                if (weakest == null || weakestSeverity >= severity) {
+                    return;   // nothing held is less alarming than this; keep what we have
+                }
+                byToken.remove(weakest);
+                tokenSeverity.remove(weakest);
+            }
+            group = new java.util.ArrayList<>();
+            byToken.put(token, group);
+        }
+        if (group.size() < MAX_SLICES_PER_TECHNIQUE) {
+            group.add(slice);
+        } else {
+            int weakest = 0;
+            for (int i = 1; i < group.size(); i++) {
+                if (severityOf(group.get(i)) < severityOf(group.get(weakest))) {
+                    weakest = i;
+                }
+            }
+            if (severity > severityOf(group.get(weakest))) {
+                group.set(weakest, slice);
+            }
+        }
+        tokenSeverity.merge(token, severity, Math::max);
+    }
+
     /** The url starting at {@code at}, up to the first character that cannot be part of one. */
     private static String urlSpanAt(String slice, int at) {
         int end = slice.length();
@@ -535,6 +588,20 @@ public final class LenientVBAReader {
      * exactly how a flood of them crowds out a lone {@code powershell}.
      */
     private static String primaryIndicatorToken(String slice, java.util.regex.Matcher m) {
+        // NOTE, and it is a residual rather than a fix. codex observed that VBA_INDICATOR's
+        // alternation matches `shell` INSIDE "powershell", so a powershell payload takes "shell"
+        // as its group key and shares a bucket with every benign Shell call. A separate key was
+        // written for it and then REMOVED: mutating it away left every arrangement green, because
+        // per-group eviction already covers the case -- the payload is severity 4, the benign
+        // Shell decoys are 3, so it displaces the weakest slot whichever bucket it lands in.
+        // Shipping an ungated change because it feels more correct is how the other defects on
+        // this branch got in.
+        //
+        // What IS still open: within ONE technique at EQUAL severity, the first
+        // MAX_SLICES_PER_TECHNIQUE win, so a module with more than sixteen distinct powershell
+        // invocations reports sixteen of them and the rest are chosen by position. That is a much
+        // smaller exposure -- the module is unambiguously flagged and the analyst has sixteen
+        // examples -- but it is not closed, and it is the one place a positional rule survives.
         String best = "";
         int bestSeverity = -1;
         m.reset(slice);
@@ -632,9 +699,21 @@ public final class LenientVBAReader {
             } else if (c == ':' && !inQuote) {
                 String stmt = line.substring(start, atEnd ? line.length() : i).trim();
                 if (!stmt.isEmpty() && m.reset(stmt).find()) {
-                    hits.add(stmt);
-                    if (hits.size() >= MAX_STATEMENTS_PER_LINE) {
-                        break;
+                    // Bounded by EVICTION, not by stopping. Breaking after the first n statements
+                    // let an author put n decoy statements ahead of the payload on one line and
+                    // have it never collected at all. Reported by codex on PR #20.
+                    if (hits.size() < MAX_STATEMENTS_PER_LINE) {
+                        hits.add(stmt);
+                    } else {
+                        int weakest = 0;
+                        for (int k = 1; k < hits.size(); k++) {
+                            if (severityOf(hits.get(k)) < severityOf(hits.get(weakest))) {
+                                weakest = k;
+                            }
+                        }
+                        if (severityOf(stmt) > severityOf(hits.get(weakest))) {
+                            hits.set(weakest, stmt);
+                        }
                     }
                 }
                 start = i + 1;
@@ -718,7 +797,11 @@ public final class LenientVBAReader {
         java.util.Set<String> seen = new java.util.HashSet<>();
         int from = 0;
         int candidateCount = 0;
-        while (from < scanLimit && candidateCount < MAX_INDICATOR_LINES) {
+        // Scan to scanLimit ALWAYS. Stopping at a candidate cap admitted the first n things met
+        // and refused everything after, which restores head-first starvation above the cap -- the
+        // very evasion the selection below removes. The bound now lives in ADMISSION (evict the
+        // lowest-severity group when full), not in how far we are willing to look.
+        while (from < scanLimit) {
             int nl = text.indexOf('\n', from);
             int end = nl < 0 || nl > scanLimit ? scanLimit : nl;
             if (end > from) {
@@ -726,15 +809,11 @@ public final class LenientVBAReader {
                 if (m.reset(line).find()) {
                     String slice = keepIndicatorStatements(line, INDICATOR_CHARS_PER_MODULE, m);
                     // First sighting wins; a repeat adds no information and must not add cost.
-                    if (seen.add(slice)) {
+                    if (seen.size() < MAX_DEDUP_TRACKED && seen.add(slice)) {
                         candidateCount++;
                         String token = primaryIndicatorToken(slice, m);
-                        byToken.computeIfAbsent(token, k -> new java.util.ArrayList<>()).add(slice);
-                        // Severity from the SLICE, not the group key. Keying normalises a url to
-                        // "url:host", which matches none of severityOf's patterns and scored 0 --
-                        // so urls ranked LOWEST and were dropped first. That, not the grouping,
-                        // is what cost thirteen complete urls on the corpus.
-                        tokenSeverity.merge(token, severityOf(slice), Math::max);
+                        int sliceSeverity = severityOf(slice);
+                        admitCandidate(byToken, tokenSeverity, token, slice, sliceSeverity);
                     }
                 }
             }
