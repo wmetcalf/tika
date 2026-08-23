@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,6 +34,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.apache.poi.poifs.macros.VBAMacroReader;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.io.TikaInputStream;
@@ -826,6 +828,161 @@ public class VbaBudgetTest {
             assertNull(m.get(OfficeParser.VBA_MODULE_FRAGMENT),
                     "no bound fired, so no entry may be marked a fragment");
         }
+    }
+
+    /**
+     * THE property for the reserve path: a payload survives regardless of WHERE its author put it.
+     *
+     * <p>Written before the fix, deliberately. Every bound defect on this branch has come from
+     * asserting an invariant at one convenient point -- a ceiling checked at 20,000 characters that
+     * broke at 30,000, a "400 random cases" generator that produced one surrogate pair, two tests
+     * that re-implemented the fix instead of exercising it. The author picks the arrangement, so
+     * the arrangement is what the test has to range over.
+     */
+    @Test
+    @DisplayName("PROPERTY: the reserve keeps the payload wherever the author puts it")
+    void testReservePayloadSurvivesEveryArrangement() throws Exception {
+        final String payload = "Shell \"powershell -enc PAYLOADMARKER\"";
+        final String decoy = "Set d = CreateObject(\"DECOY\")";
+        String decoyLines = ("  " + decoy + "\n").repeat(120);   // ~3.6 KB of indicator lines
+        String filler = "' filler\n".repeat(12000);
+        String pad = "y".repeat(6000);
+
+        java.util.Map<String, String> arrangements = new java.util.LinkedHashMap<>();
+        // -- payload on its OWN line, varying position among decoy lines --
+        arrangements.put("own-line-first", "  " + payload + "\n" + decoyLines + filler);
+        arrangements.put("own-line-last", decoyLines + filler + "  " + payload + "\n");
+        arrangements.put("own-line-middle",
+                decoyLines + "  " + payload + "\n" + decoyLines + filler);
+        // -- payload SHARING a long physical line with decoys, varying position on it --
+        arrangements.put("same-line-first",
+                filler + "  " + payload + " : " + pad + " : " + decoy + "\n");
+        arrangements.put("same-line-last",
+                filler + "  " + decoy + " : " + pad + " : " + payload + "\n");
+        arrangements.put("same-line-middle",
+                filler + "  " + decoy + " : " + pad + " : " + payload + " : " + pad + " : "
+                        + decoy + "\n");
+
+        // DISTINCT decoys, so de-duplication cannot collapse them and only the severity ranking
+        // can save the payload. Without this the previous six cases are all carried by dedup and
+        // the ranking is untested -- one mechanism silently doing another's job.
+        StringBuilder unique = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            unique.append("  Set d").append(i).append(" = CreateObject(\"DECOY")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\")\n");
+        }
+        arrangements.put("unique-decoys-payload-middle",
+                unique + "  " + payload + "\n" + unique + filler);
+        arrangements.put("unique-decoys-payload-last", unique + filler + "  " + payload + "\n");
+
+        // SAME-SEVERITY flood. The ranking cannot separate these from the payload -- they are all
+        // powershell/Shell, tier 3 -- so only de-duplication leaves room for it. Without this case
+        // the ranking silently carries every arrangement and the dedup is untested; the mutation
+        // gate proved exactly that, so this case exists to make the second mechanism load-bearing.
+        String loudDecoy = "  Shell \"powershell -enc SAMEDECOY\"\n".repeat(400);
+        arrangements.put("same-severity-flood-middle",
+                loudDecoy + "  " + payload + "\n" + loudDecoy + filler);
+
+        // DISTINCT decoys AT THE PAYLOAD'S OWN SEVERITY. Dedup cannot collapse them (all differ)
+        // and the ranking cannot separate them (all tier 3, like the payload), so the only thing
+        // left deciding the outcome is order within the tier -- which is document order, which the
+        // author writes. If this arrangement loses, the rule is still positional one level down.
+        StringBuilder loudUnique = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            loudUnique.append("  x").append(i).append(" = \"http://decoy")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\"\n");
+        }
+        arrangements.put("tier3-unique-flood-payload-last",
+                loudUnique + filler + "  " + payload + "\n");
+
+        java.util.List<String> lost = new java.util.ArrayList<>();
+        java.util.List<String> over = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
+            byte[] project = new VbaProjectBuilder().module("Payload", e.getValue()).build();
+            try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+                LenientVBAReader.Bounds bounds =
+                        new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+                Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+                String all = String.join("\n", macros.values());
+                assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                        e.getKey() + ": fixture precondition -- the module must be too big to keep "
+                                + "whole, so the reserve path actually runs");
+                if (!all.contains("PAYLOADMARKER")) {
+                    lost.add(e.getKey());
+                }
+                if (totalChars(macros) > 60_000) {
+                    over.add(e.getKey() + " (" + totalChars(macros) + ")");
+                }
+            }
+        }
+        assertTrue(over.isEmpty(), "the document ceiling must hold in every arrangement: " + over);
+        assertTrue(lost.isEmpty(),
+                "the author chooses the arrangement, so any arrangement that loses the payload is "
+                        + "an evasion. Lost in: " + lost + " of " + arrangements.keySet());
+    }
+
+    /**
+     * The invariant the arrangement property does NOT cover: the reserve must SPEND its allowance.
+     *
+     * <p>Added after a corpus run caught what the arrangement test could not. That test asks "does
+     * the payload survive"; a change can keep every payload and still retain far less overall. It
+     * did: capping each line at half the per-module allowance took one corpus document from 305
+     * distinct URLs to 181, and skipping any candidate that did not fit whole left the tail of the
+     * allowance unspent. Both passed the arrangement test. Volume is a separate property and needs
+     * a separate assertion.
+     */
+    @Test
+    @DisplayName("PROPERTY: the reserve spends its allowance rather than leaving it unused")
+    void testReserveFillsItsAllowance() throws Exception {
+        // One long line carrying many DISTINCT urls -- the shape that exposed the halved cap.
+        StringBuilder oneLine = new StringBuilder("  u = ");
+        for (int i = 0; i < 300; i++) {
+            oneLine.append("\"http://evil").append(String.format(java.util.Locale.ROOT, "%03d", i))
+                    .append(".example/a\" & ");
+        }
+        String filler = "' filler\n".repeat(12000);
+        byte[] project = new VbaProjectBuilder()
+                .module("Payload", filler + oneLine + "\n").build();
+
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+
+            long urls = java.util.regex.Pattern.compile("http://evil\\d{3}\\.example")
+                    .matcher(all).results().count();
+            // The allowance is 2,048 chars and each url costs ~30, so a full spend is ~65 urls.
+            // Assert we are in that neighbourhood rather than a fixed number, so the test states
+            // the PROPERTY (the budget is spent) and not an implementation detail.
+            assertTrue(urls >= 40,
+                    "the per-module allowance is " + 2048 + " characters and each url costs about "
+                            + "30, so a reserve that spends its allowance keeps roughly 65 of them. "
+                            + "Retaining " + urls + " means the allowance is going unused -- which "
+                            + "is what halving the per-line cap did on the corpus.");
+        }
+    }
+
+    @Test
+    @DisplayName("host keying actually distinguishes hosts (it silently did not)")
+    void testUrlHostKeyingIsNotANoOp() {
+        // This exists because the first version of host keying WAS a no-op and every test stayed
+        // green: VBA_INDICATOR matches only the scheme, so the key was computed from "http://",
+        // every url hashed to the same bucket, and nothing changed. A grouping key that cannot
+        // distinguish its inputs needs its own assertion.
+        assertEquals("evil.example", LenientVBAReader.hostOf("http://evil.example/a/b?c=1"));
+        assertEquals("good.example", LenientVBAReader.hostOf("https://good.example"));
+        assertNotEquals(LenientVBAReader.hostOf("http://a.example/p"),
+                LenientVBAReader.hostOf("http://b.example/p"),
+                "two different hosts must not share a grouping key");
+        assertEquals(LenientVBAReader.hostOf("http://a.example/one"),
+                LenientVBAReader.hostOf("http://a.example/two"),
+                "one host with many paths is ONE fact and must share a key");
+        // Malformed by RFC -- a real corpus sample carries a literal '|'. URI throws; the fallback
+        // must still produce the host rather than dropping the grouping.
+        assertEquals("speedgov.com.br", LenientVBAReader.hostOf("http://speedgov.com.br/wshor/Nfes|1.0"));
     }
 
     private static String describe(List<Metadata> list) {

@@ -126,6 +126,12 @@ public final class LenientVBAReader {
      */
     private static final int INDICATOR_SCAN_BUDGET = 2 * 1024 * 1024;
 
+    /** Cap on DISTINCT indicator lines ranked per module, so a crafted body stays bounded. */
+    private static final int MAX_INDICATOR_LINES = 512;
+
+    /** Cap on indicator-bearing statements held per line, so one crafted line stays O(1). */
+    private static final int MAX_STATEMENTS_PER_LINE = 64;
+
     /** Marks a module kept only as its indicator lines, so no consumer reads it as complete. */
     public static final String INDICATORS_ONLY_MARKER = "[TIKA-VBA-INDICATORS-ONLY]";
 
@@ -469,6 +475,191 @@ public final class LenientVBAReader {
      * <p>A module with nothing indicator-like in it costs nothing and is skipped, so the reserve is
      * spent on the modules an analyst would actually want.
      */
+    /** The url starting at {@code at}, up to the first character that cannot be part of one. */
+    private static String urlSpanAt(String slice, int at) {
+        int end = slice.length();
+        for (int i = at; i < slice.length(); i++) {
+            char c = slice.charAt(i);
+            if (c == '"' || c == '\'' || c == ' ' || c == '\t' || c == '<' || c == '>'
+                    || c == ')' || c == ']' || c == ',' || c == ';') {
+                end = i;
+                break;
+            }
+        }
+        return slice.substring(at, end);
+    }
+
+    /**
+     * The host a url-ish token points at, as a grouping key -- NOT validation, and never a lookup.
+     *
+     * <p>Keying every url as one technique killed the flood case but cost the ordinary one: a
+     * module citing twenty genuinely different hosts got a single slot for all of them and the
+     * corpus lost thirteen complete, well-formed urls. Keying by HOST keeps both properties --
+     * four hundred {@code decoy0001..0400.example} paths on one host still collapse to one group,
+     * while twenty distinct hosts are twenty facts and are retained as such. An author who answers
+     * with four hundred DISTINCT hosts has published four hundred real indicators.
+     *
+     * <p>{@link java.net.URI} rather than {@code java.net.URL} on purpose: URL's equals/hashCode
+     * resolve DNS, and a malware parser must never touch the network. URI is strict and malware
+     * urls frequently are not legal URIs (a corpus example carries a literal {@code |}), so a
+     * failed parse falls back to the raw authority span rather than discarding the grouping.
+     */
+    static String hostOf(String token) {
+        try {
+            String host = new java.net.URI(token).getHost();
+            if (host != null && !host.isEmpty()) {
+                return host.toLowerCase(Locale.ROOT);
+            }
+        } catch (java.net.URISyntaxException | IllegalArgumentException ignore) {
+            // malformed by RFC, which is common in real samples: fall through to the span scan
+        }
+        int start = token.indexOf("://");
+        start = start < 0 ? 0 : start + 3;
+        int end = token.length();
+        for (int i = start; i < token.length(); i++) {
+            char c = token.charAt(i);
+            if (c == '/' || c == '\\' || c == '?' || c == '#' || c == '"' || c == '\'') {
+                end = i;
+                break;
+            }
+        }
+        String host = token.substring(start, end).toLowerCase(Locale.ROOT);
+        return host.isEmpty() ? "url" : host;
+    }
+
+    /**
+     * The most alarming indicator token a slice carries, normalised into a technique key.
+     *
+     * <p>Every url collapses to one key on purpose: a module listing four hundred distinct
+     * addresses is making ONE claim about itself, and letting each address hold its own slot is
+     * exactly how a flood of them crowds out a lone {@code powershell}.
+     */
+    private static String primaryIndicatorToken(String slice, java.util.regex.Matcher m) {
+        String best = "";
+        int bestSeverity = -1;
+        m.reset(slice);
+        while (m.find()) {
+            String token = m.group().toLowerCase(Locale.ROOT);
+            int severity = severityOf(token);
+            if (token.contains("://") || token.startsWith("\\\\")) {
+                // VBA_INDICATOR matches only the SCHEME ("http://"), so the match itself carries no
+                // host. Widen to the end of the url before keying, or every url keys identically
+                // and host grouping is a silent no-op -- which is exactly what it was until this
+                // line existed, with the tests passing throughout because behaviour never changed.
+                token = "url:" + hostOf(urlSpanAt(slice, m.start()));
+                severity = 3;
+            }
+            if (severity > bestSeverity) {
+                bestSeverity = severity;
+                best = token;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * How much an indicator-bearing slice is worth when the reserve cannot hold them all.
+     *
+     * <p>Tiers, highest first: outbound-execution and download primitives; process launch and
+     * late binding; everything else the indicator pattern matches (Environ, Chr, a bare UNC).
+     * The point is not precision -- it is that an author who wants to crowd out a payload must
+     * now flood with indicators as alarming as the payload.
+     */
+    private static int severityOf(String slice) {
+        String s = slice.toLowerCase(Locale.ROOT);
+        // EXECUTION and download primitives first. A lone powershell must outrank any number of
+        // bare urls: a url is data, and a module can cite four hundred of them, but the primitive
+        // that runs something is the rarer and more decisive fact for triage. Ranking urls level
+        // with execution let a flood of hosts bury the one call that matters.
+        //
+        // Note powershell is tested on the SLICE. As a token it never matches: VBA_INDICATOR's
+        // alternation tries `shell` first and matches INSIDE "powershell", so the most dangerous
+        // indicator in the pattern was being scored as a plain Shell.
+        if (s.contains("powershell") || s.contains("urldownloadtofile") || s.contains("cmd.exe")
+                || s.contains("rundll32") || s.contains("shellexecute")) {
+            return 4;
+        }
+        if (s.contains("shell") || s.contains("wscript") || s.contains("winhttp")
+                || s.contains("xmlhttp") || s.contains("msxml2") || s.contains("callbyname")
+                || s.contains("declare")) {
+            return 3;
+        }
+        if (s.contains("://") || s.contains("createobject") || s.contains("getobject")) {
+            return 2;
+        }
+        return 1;
+    }
+
+    /** Marks a gap where {@link #keepIndicatorStatements} dropped part of an over-long line. */
+    private static final String STATEMENT_CUT_MARKER = " [TIKA-VBA-STMT-CUT] ";
+
+    /** Narrowest statement slice worth emitting. */
+    private static final int MIN_STATEMENT_SLICE = 48;
+
+    /**
+     * The parts of an over-long line worth keeping: the STATEMENTS that carry an indicator.
+     *
+     * <p>VBA separates statements on one physical line with {@code :}, so
+     * {@code CreateObject("DECOY") : <6 KB of padding> : Shell "..."} is three statements, not one
+     * line. Selecting by structure rather than by position is what makes this
+     * order-independent: every indicator-bearing statement is a candidate no matter where the
+     * author put it, and the budget is shared evenly between them instead of being spent
+     * left-to-right. A character window anchored on match positions was tried on the sibling path
+     * and defeated three times running -- first match, then last match, then evenly-spaced
+     * anchors, each beaten by an author who moved the payload somewhere the rule did not look.
+     *
+     * <p>Colons inside string literals do not separate statements, so {@code Shell "cmd: /c"} stays
+     * one statement; VBA escapes a quote by doubling it, which the scan honours.
+     */
+    private static String keepIndicatorStatements(String line, int budget,
+                                                  java.util.regex.Matcher m) {
+        if (line.length() <= budget) {
+            return line;
+        }
+        java.util.List<String> hits = new java.util.ArrayList<>();
+        boolean inQuote = false;
+        int start = 0;
+        for (int i = 0; i <= line.length(); i++) {
+            boolean atEnd = i == line.length();
+            char c = atEnd ? ':' : line.charAt(i);
+            if (!atEnd && c == '"') {
+                // A doubled quote is an escaped quote INSIDE the literal, not a close-then-open.
+                if (inQuote && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    i++;
+                    continue;
+                }
+                inQuote = !inQuote;
+            } else if (c == ':' && !inQuote) {
+                String stmt = line.substring(start, atEnd ? line.length() : i).trim();
+                if (!stmt.isEmpty() && m.reset(stmt).find()) {
+                    hits.add(stmt);
+                    if (hits.size() >= MAX_STATEMENTS_PER_LINE) {
+                        break;
+                    }
+                }
+                start = i + 1;
+            }
+        }
+        if (hits.isEmpty()) {
+            // Indicator matched the line but no single statement carries it -- it straddles a
+            // separator, or the line has none. Keep a prefix rather than nothing.
+            return line.substring(0, budget) + STATEMENT_CUT_MARKER;
+        }
+        // Share the budget EVENLY across the carrying statements. Spending it left-to-right would
+        // let the author reinstate the same starvation one level down.
+        int per = Math.max(MIN_STATEMENT_SLICE, budget / hits.size());
+        StringBuilder sb = new StringBuilder(budget + 64);
+        for (String h : hits) {
+            if (sb.length() >= budget) {
+                sb.append(STATEMENT_CUT_MARKER);
+                break;
+            }
+            sb.append(h.length() <= per ? h : h.substring(0, per) + STATEMENT_CUT_MARKER);
+            sb.append(" : ");
+        }
+        return sb.toString();
+    }
+
     private static boolean retainIndicators(ModuleSink sink, String name, String text,
                                             Bounds bounds) {
         if (sink.alreadyStored(name, text)) {
@@ -480,27 +671,114 @@ public final class LenientVBAReader {
             return false;
         }
         bounds.chargeScan(scanLimit);
-        StringBuilder kept = new StringBuilder();
+        // Scan the WHOLE body and keep indicator lines from BOTH ENDS, then keep the indicator
+        // STATEMENTS within each line rather than its first characters.
+        //
+        // Both halves of this were author-controlled. The loop stopped as soon as the 2,048-char
+        // quota filled while scanning from offset 0, so a few hundred harmless CreateObject lines
+        // at the TOP of a module consumed the reserve and the payload at the bottom was never
+        // examined. And an over-long line was kept as `line[0..room]`, a pure prefix cut, so a
+        // payload written after a decoy on the same physical line was discarded even when the line
+        // was selected. Measured by testReservePayloadSurvivesEveryArrangement: of six placements
+        // of one payload, FOUR lost it, and the two that survived were the two where the author
+        // had written it first.
+        //
+        // Both buffers are bounded, so this is one pass in O(INDICATOR_CHARS_PER_MODULE) memory
+        // however many indicator lines the body holds.
+        // Select by WHAT the line contains, never by WHERE it sits.
+        //
+        // A head-plus-tail ring was tried here first and is what the sibling path still uses. It
+        // fails the same way: with decoys before AND after the payload, the head fills with the
+        // early ones, the ring keeps the late ones, and the middle is squeezed out -- the exact
+        // defect codex found in windowLine, rebuilt one level up. Even spacing across the
+        // candidates does not fix it either; the author simply places the payload off-anchor.
+        //
+        // ANY positional rule loses, because the author writes the positions. So: de-duplicate
+        // (repetition is the cheapest flood, and 240 identical CreateObject lines are ONE fact),
+        // then fill the budget by indicator SEVERITY. To crowd out a powershell/download payload
+        // an author must now spend high-severity decoys -- and a module full of those is itself
+        // worth reporting, which is the property that makes this stable rather than another round
+        // of the same game.
+        // Group candidates by the INDICATOR THEY CARRY, then take one from each group in turn.
+        //
+        // Severity ranking alone was still positional one level down: within a tier the sort is
+        // stable, stable means insertion order, and insertion order is document order, which the
+        // author writes. Measured -- 400 DISTINCT tier-3 decoy urls placed before the payload
+        // pushed it out, and on the corpus this is what dropped two complete, well-formed urls (a
+        // github.io docs link and a youtube playlist) while keeping 400 near-identical decoys.
+        //
+        // Round-robin over distinct indicator tokens fixes the incentive: the reserve now buys
+        // COVERAGE of the techniques present, not volume of whichever one appears first. Four
+        // hundred urls occupy the url slot; a lone powershell keeps its own. To hide a payload an
+        // author must now avoid using any indicator the rest of the module does not already use --
+        // which is a real constraint on the payload, not on us.
+        java.util.Map<String, java.util.List<String>> byToken = new LinkedHashMap<>();
+        java.util.Map<String, Integer> tokenSeverity = new java.util.HashMap<>();
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
+        java.util.Set<String> seen = new java.util.HashSet<>();
         int from = 0;
-        while (from < scanLimit && kept.length() < INDICATOR_CHARS_PER_MODULE) {
+        int candidateCount = 0;
+        while (from < scanLimit && candidateCount < MAX_INDICATOR_LINES) {
             int nl = text.indexOf('\n', from);
             int end = nl < 0 || nl > scanLimit ? scanLimit : nl;
-            String line = text.substring(from, end);
-            if (m.reset(line).find()) {
-                int room = INDICATOR_CHARS_PER_MODULE - kept.length();
-                kept.append(line, 0, Math.min(line.length(), room)).append('\n');
+            if (end > from) {
+                String line = text.substring(from, end);
+                if (m.reset(line).find()) {
+                    String slice = keepIndicatorStatements(line, INDICATOR_CHARS_PER_MODULE, m);
+                    // First sighting wins; a repeat adds no information and must not add cost.
+                    if (seen.add(slice)) {
+                        candidateCount++;
+                        String token = primaryIndicatorToken(slice, m);
+                        byToken.computeIfAbsent(token, k -> new java.util.ArrayList<>()).add(slice);
+                        // Severity from the SLICE, not the group key. Keying normalises a url to
+                        // "url:host", which matches none of severityOf's patterns and scored 0 --
+                        // so urls ranked LOWEST and were dropped first. That, not the grouping,
+                        // is what cost thirteen complete urls on the corpus.
+                        tokenSeverity.merge(token, severityOf(slice), Math::max);
+                    }
+                }
             }
             from = end + 1;
         }
+        java.util.List<String> tokens = new java.util.ArrayList<>(byToken.keySet());
+        // Highest-severity technique first, so if the allowance runs out mid-round it runs out on
+        // the least alarming thing present.
+        tokens.sort((x, y) -> Integer.compare(tokenSeverity.getOrDefault(y, 0),
+                tokenSeverity.getOrDefault(x, 0)));
+        StringBuilder kept = new StringBuilder();
+        for (int round = 0; ; round++) {
+            boolean progressed = false;
+            for (String token : tokens) {
+                java.util.List<String> g = byToken.get(token);
+                if (round >= g.size()) {
+                    continue;
+                }
+                progressed = true;
+                int remaining = INDICATOR_CHARS_PER_MODULE - kept.length();
+                if (remaining <= 1) {
+                    break;
+                }
+                String slice = g.get(round);
+                if (slice.length() + 1 > remaining) {
+                    // FILL the remaining allowance rather than skipping to something smaller.
+                    slice = keepIndicatorStatements(slice, remaining - 1, m);
+                    if (slice.length() + 1 > remaining) {
+                        slice = slice.substring(0, remaining - 1);
+                    }
+                }
+                kept.append(slice).append('\n');
+            }
+            if (!progressed || kept.length() >= INDICATOR_CHARS_PER_MODULE) {
+                break;
+            }
+        }
         boolean prefixOnly = kept.length() == 0;
         if (prefixOnly) {
-            // No indicator line, but this module does NOT fit, so we ARE withholding it: keep a
-            // bounded PREFIX rather than nothing. Rejecting an over-budget body whole is the same
-            // defect the XLM path had ("the point of raising the cap was more payload reaching the
-            // analyst, not none") -- measured here as a 4-module bomb carrier yielding 21 characters
-            // in total, i.e. the budget acting as a total-loss switch. A prefix carries the module
-            // header and its first statements, which is what triage reads first.
+            // No indicator line at all, but this module does NOT fit, so we ARE withholding it:
+            // keep a bounded PREFIX rather than nothing. Rejecting an over-budget body whole is the
+            // same defect the XLM path had ("the point of raising the cap was more payload reaching
+            // the analyst, not none") -- measured as a 4-module bomb carrier yielding 21 characters
+            // in total, i.e. the budget acting as a total-loss switch.
             kept.append(text, 0, Math.min(text.length(), INDICATOR_CHARS_PER_MODULE));
         }
         String value = INDICATORS_ONLY_MARKER + "\n" + kept;
