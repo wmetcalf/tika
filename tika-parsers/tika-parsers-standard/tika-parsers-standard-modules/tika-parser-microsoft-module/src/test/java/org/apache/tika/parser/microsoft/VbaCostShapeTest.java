@@ -353,4 +353,60 @@ public class VbaCostShapeTest {
         }
         return best;
     }
+    /**
+     * The reserve's eviction must not rescan what it already knows.
+     *
+     * <p>Both eviction paths used to call {@code severityOf} on every RETAINED entry for every new
+     * candidate, and severityOf lowercases and scans the whole string. Cost was therefore
+     * {@code candidates x retained bytes}, both of which the author controls: 64 retained ~16 KB
+     * statements and 20,000 candidates measured ~35 s inside the code whose job is to bound
+     * hostile input. Reported by codex on PR #20.
+     *
+     * <p>VARY BOTH AXES. The first version of this test doubled only the candidate count and
+     * PASSED under the defect -- each candidate does a fixed-size rescan, so that axis alone looks
+     * linear (2x work, ratio 2). The product only shows up when both grow: doubling each should
+     * cost ~2x if severity is remembered and ~4x if it is recomputed.
+     */
+    @Test
+    void testReserveEvictionDoesNotRescanRetainedStatements() throws Exception {
+        // Vary ONLY the retained statement SIZE, holding the candidate count fixed. That is the
+        // axis the defect actually scales on -- cost was (candidates x retained bytes) because
+        // every candidate rescanned every retained string -- so a 160x size increase shows up
+        // directly, while machine load cancels between the two runs in the same JVM.
+        //
+        // Two earlier instruments failed here and both are worth remembering. A ratio over the
+        // CANDIDATE count passed under the defect (each candidate does a fixed-size rescan, so
+        // that axis alone looks linear). A ratio over BOTH axes also passed (the inflation divides
+        // out). An absolute 10 s bound caught it but was FLAKY: green alone at 6.9 s, red inside
+        // the full suite where tests compete for CPU.
+        long tiny = timeCraftedLine(100, 10_000);
+        long huge = timeCraftedLine(16_000, 10_000);
+        double ratio = (double) huge / Math.max(tiny, 1L);
+        assertTrue(ratio < 8.0,
+                "160x the retained statement bytes cost "
+                        + String.format(Locale.ROOT, "%.1fx", ratio)
+                        + " at the same candidate count -- eviction is rescanning retained "
+                        + "statements instead of remembering their severity, which is quadratic "
+                        + "in (retained bytes x candidates), both attacker-controlled. tiny="
+                        + tiny / 1_000_000 + "ms huge=" + huge / 1_000_000 + "ms");
+    }
+
+    /** One physical line: 64 Shell statements of {@code stmtBytes}, then {@code candidates} short ones. */
+    private static long timeCraftedLine(int stmtBytes, int candidates) throws Exception {
+        StringBuilder line = new StringBuilder("  ");
+        for (int i = 0; i < 64; i++) {
+            line.append("Shell \"").append("A".repeat(stmtBytes)).append(i).append("\" : ");
+        }
+        for (int i = 0; i < candidates; i++) {
+            line.append("Set c").append(i).append(" = CreateObject(\"D\") : ");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", "' filler\n".repeat(12000) + line + "\n").build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            long t0 = System.nanoTime();
+            LenientVBAReader.readMacros(fs, new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            return System.nanoTime() - t0;
+        }
+    }
+
 }

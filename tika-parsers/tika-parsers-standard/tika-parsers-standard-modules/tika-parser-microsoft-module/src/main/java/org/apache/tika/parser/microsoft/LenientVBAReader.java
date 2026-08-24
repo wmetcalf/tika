@@ -500,6 +500,7 @@ public final class LenientVBAReader {
      * least alarming thing held, not the most recent thing seen.
      */
     private static void admitCandidate(Map<String, java.util.List<String>> byToken,
+                                       Map<String, java.util.List<Integer>> groupSeverities,
                                        Map<String, Integer> tokenSeverity, String token,
                                        String slice, int severity) {
         java.util.List<String> group = byToken.get(token);
@@ -517,22 +518,30 @@ public final class LenientVBAReader {
                     return;   // nothing held is less alarming than this; keep what we have
                 }
                 byToken.remove(weakest);
+                groupSeverities.remove(weakest);
                 tokenSeverity.remove(weakest);
             }
             group = new java.util.ArrayList<>();
             byToken.put(token, group);
         }
+        // Same fix as the per-line bucket: the severity of a retained slice is remembered, never
+        // recomputed. Slices here run to INDICATOR_CHARS_PER_MODULE, so rescanning the group for
+        // every candidate had the same quadratic-in-bytes shape.
+        java.util.List<Integer> severities = groupSeverities.computeIfAbsent(
+                token, k -> new java.util.ArrayList<>());
         if (group.size() < MAX_SLICES_PER_TECHNIQUE) {
             group.add(slice);
+            severities.add(severity);
         } else {
             int weakest = 0;
-            for (int i = 1; i < group.size(); i++) {
-                if (severityOf(group.get(i)) < severityOf(group.get(weakest))) {
+            for (int i = 1; i < severities.size(); i++) {
+                if (severities.get(i) < severities.get(weakest)) {
                     weakest = i;
                 }
             }
-            if (severity > severityOf(group.get(weakest))) {
+            if (severity > severities.get(weakest)) {
                 group.set(weakest, slice);
+                severities.set(weakest, severity);
             }
         }
         tokenSeverity.merge(token, severity, Math::max);
@@ -693,6 +702,7 @@ public final class LenientVBAReader {
             return line;
         }
         java.util.List<String> hits = new java.util.ArrayList<>();
+        java.util.List<Integer> hitSeverities = new java.util.ArrayList<>();
         boolean inQuote = false;
         int start = 0;
         for (int i = 0; i <= line.length(); i++) {
@@ -711,17 +721,25 @@ public final class LenientVBAReader {
                     // Bounded by EVICTION, not by stopping. Breaking after the first n statements
                     // let an author put n decoy statements ahead of the payload on one line and
                     // have it never collected at all. Reported by codex on PR #20.
+                    // Severity is computed ONCE per statement and carried alongside it. Rescanning
+                    // the retained bucket for every later candidate re-lowercased and re-scanned
+                    // every retained string: with 64 retained ~16 KB statements and 20,000 later
+                    // candidates that is tens of gigabytes of scanning -- ~35 s measured -- inside
+                    // the very code meant to bound hostile input. Reported by codex on PR #20.
+                    int stmtSeverity = severityOf(stmt);
                     if (hits.size() < MAX_STATEMENTS_PER_LINE) {
                         hits.add(stmt);
+                        hitSeverities.add(stmtSeverity);
                     } else {
                         int weakest = 0;
-                        for (int k = 1; k < hits.size(); k++) {
-                            if (severityOf(hits.get(k)) < severityOf(hits.get(weakest))) {
+                        for (int k = 1; k < hitSeverities.size(); k++) {
+                            if (hitSeverities.get(k) < hitSeverities.get(weakest)) {
                                 weakest = k;
                             }
                         }
-                        if (severityOf(stmt) > severityOf(hits.get(weakest))) {
+                        if (stmtSeverity > hitSeverities.get(weakest)) {
                             hits.set(weakest, stmt);
+                            hitSeverities.set(weakest, stmtSeverity);
                         }
                     }
                 }
@@ -801,6 +819,7 @@ public final class LenientVBAReader {
         // author must now avoid using any indicator the rest of the module does not already use --
         // which is a real constraint on the payload, not on us.
         java.util.Map<String, java.util.List<String>> byToken = new LinkedHashMap<>();
+        java.util.Map<String, java.util.List<Integer>> groupSeverities = new java.util.HashMap<>();
         java.util.Map<String, Integer> tokenSeverity = new java.util.HashMap<>();
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -820,7 +839,8 @@ public final class LenientVBAReader {
                     if (seen.size() < MAX_DEDUP_TRACKED && seen.add(slice)) {
                         String token = primaryIndicatorToken(slice, m);
                         int sliceSeverity = severityOf(slice);
-                        admitCandidate(byToken, tokenSeverity, token, slice, sliceSeverity);
+                        admitCandidate(byToken, groupSeverities, tokenSeverity, token, slice,
+                                sliceSeverity);
                     }
                 }
             }
