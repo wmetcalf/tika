@@ -924,6 +924,17 @@ public class VbaBudgetTest {
         }
         arrangements.put("beyond-statement-cap", filler + stmts + payload + "\n");
 
+        // REGRESSION the old code did NOT have. MAX_SLICES_PER_TECHNIQUE was 16, below the ~42
+        // slices the 2,048-char allowance can emit, so sixteen short lines merely MENTIONING a
+        // technique filled its group and the real payload was refused -- while the old head-first
+        // code kept all seventeen, because they fit. A bound that discards evidence the budget
+        // could have held is a bug, not a bound.
+        StringBuilder mentions = new StringBuilder();
+        for (int i = 0; i < 16; i++) {
+            mentions.append("  ' note ").append(i).append(": powershell is not used here\n");
+        }
+        arrangements.put("technique-cap-below-budget", mentions + filler + "  " + payload + "\n");
+
         java.util.List<String> lost = new java.util.ArrayList<>();
         java.util.List<String> over = new java.util.ArrayList<>();
         for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {

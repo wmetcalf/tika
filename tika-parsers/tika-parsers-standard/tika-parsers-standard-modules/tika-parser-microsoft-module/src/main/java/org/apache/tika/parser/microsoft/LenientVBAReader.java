@@ -129,8 +129,18 @@ public final class LenientVBAReader {
     /** Cap on distinct TECHNIQUES held per module; when full the least alarming is evicted. */
     private static final int MAX_TECHNIQUES = 256;
 
-    /** Cap on slices held per technique; when full the least alarming is evicted. */
-    private static final int MAX_SLICES_PER_TECHNIQUE = 16;
+    /**
+     * Cap on slices held per technique; when full the least alarming is evicted.
+     *
+     * <p>Must stay ABOVE what the allowance can ever emit, or it bites for no reason. At 16 it sat
+     * BELOW that ceiling ({@code INDICATOR_CHARS_PER_MODULE / MIN_STATEMENT_SLICE} is about 42), so
+     * sixteen short lines mentioning a technique filled its group and the real payload was refused
+     * -- a case the OLD head-first code kept, because seventeen short lines fit in 2,048 characters
+     * and it had no per-technique cap at all. A bound that discards evidence the budget could have
+     * held is not a bound, it is a bug. This is a memory guard against a crafted body, and it
+     * should only ever engage where the emission budget already would.
+     */
+    private static final int MAX_SLICES_PER_TECHNIQUE = 64;
 
     /** Cap on slices tracked for de-duplication, purely to bound memory on a crafted body. */
     private static final int MAX_DEDUP_TRACKED = 20_000;
@@ -588,14 +598,13 @@ public final class LenientVBAReader {
      * exactly how a flood of them crowds out a lone {@code powershell}.
      */
     private static String primaryIndicatorToken(String slice, java.util.regex.Matcher m) {
-        // NOTE, and it is a residual rather than a fix. codex observed that VBA_INDICATOR's
-        // alternation matches `shell` INSIDE "powershell", so a powershell payload takes "shell"
-        // as its group key and shares a bucket with every benign Shell call. A separate key was
-        // written for it and then REMOVED: mutating it away left every arrangement green, because
-        // per-group eviction already covers the case -- the payload is severity 4, the benign
-        // Shell decoys are 3, so it displaces the weakest slot whichever bucket it lands in.
-        // Shipping an ungated change because it feels more correct is how the other defects on
-        // this branch got in.
+        // CORRECTION, because the note that stood here was wrong and was load-bearing. It claimed
+        // VBA_INDICATOR's alternation matches `shell` INSIDE "powershell", so a powershell payload
+        // would key as "shell". Two reviewers independently disproved it: Java alternation is
+        // leftmost-first PER START POSITION, and at the 'p' the `powershell` branch matches. On
+        // `Shell "powershell -enc X"` the matches are `Shell` and `powershell`, and this method
+        // returns "powershell". A dedicated key was therefore never needed -- but the reason
+        // recorded for not adding one was false, and the next person would have reasoned from it.
         //
         // What IS still open: within ONE technique at EQUAL severity, the first
         // MAX_SLICES_PER_TECHNIQUE win, so a module with more than sixteen distinct powershell
@@ -639,9 +648,9 @@ public final class LenientVBAReader {
         // that runs something is the rarer and more decisive fact for triage. Ranking urls level
         // with execution let a flood of hosts bury the one call that matters.
         //
-        // Note powershell is tested on the SLICE. As a token it never matches: VBA_INDICATOR's
-        // alternation tries `shell` first and matches INSIDE "powershell", so the most dangerous
-        // indicator in the pattern was being scored as a plain Shell.
+        // Tested on the SLICE rather than the matched token, so a line is scored by everything it
+        // contains. (An earlier comment here claimed powershell "never matches as a token" because
+        // the alternation finds `shell` inside it -- that is false; see primaryIndicatorToken.)
         if (s.contains("powershell") || s.contains("urldownloadtofile") || s.contains("cmd.exe")
                 || s.contains("rundll32") || s.contains("shellexecute")) {
             return 4;
@@ -796,7 +805,6 @@ public final class LenientVBAReader {
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
         java.util.Set<String> seen = new java.util.HashSet<>();
         int from = 0;
-        int candidateCount = 0;
         // Scan to scanLimit ALWAYS. Stopping at a candidate cap admitted the first n things met
         // and refused everything after, which restores head-first starvation above the cap -- the
         // very evasion the selection below removes. The bound now lives in ADMISSION (evict the
@@ -810,7 +818,6 @@ public final class LenientVBAReader {
                     String slice = keepIndicatorStatements(line, INDICATOR_CHARS_PER_MODULE, m);
                     // First sighting wins; a repeat adds no information and must not add cost.
                     if (seen.size() < MAX_DEDUP_TRACKED && seen.add(slice)) {
-                        candidateCount++;
                         String token = primaryIndicatorToken(slice, m);
                         int sliceSeverity = severityOf(slice);
                         admitCandidate(byToken, tokenSeverity, token, slice, sliceSeverity);
