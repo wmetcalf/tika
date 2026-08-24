@@ -1056,6 +1056,69 @@ public class VbaBudgetTest {
         }
     }
 
+    @Test
+    @DisplayName("an evicted-in slice is emitted, not just admitted")
+    void testEvictedInSliceIsActuallyEmitted() throws Exception {
+        // Admission and emission are different things, and my first eviction test conflated them.
+        // It filled the bucket with 64 EQUAL-severity decoys, so the payload displaced index 0 and
+        // was emitted first by luck of where the weakest slot happened to be.
+        //
+        // Put the one weak slot LAST and the payload takes index 63. Emission walks the group in
+        // insertion order, so the allowance expires long before round 63: the payload is correctly
+        // admitted and then never emitted. Reported by codex on PR #20.
+        StringBuilder g = new StringBuilder();
+        for (int i = 0; i < 63; i++) {                       // severity 4, fills the bucket
+            g.append("  Shell \"x").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(200)).append("\n");
+        }
+        g.append("  Shell \"benign\"\n");                    // severity 3, the ONLY weak slot, last
+        String payload = "  Shell \"p\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", g + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the payload displaced the bucket's weakest slice, so admission worked -- but "
+                            + "it inherited that slice's LATE index and emission ran out of "
+                            + "allowance before reaching it. Admitting evidence and then not "
+                            + "emitting it is the same loss as refusing it.");
+        }
+    }
+
+    @Test
+    @DisplayName("a late high-severity slice is emitted before earlier weaker ones in its group")
+    void testHigherSeverityIsEmittedFirstWithinAGroup() throws Exception {
+        // The eviction path is not the only way a slice lands late. Here the bucket NEVER fills
+        // (40 entries against a cap of 64), so nothing is ever evicted and front-insertion cannot
+        // help -- the payload is simply appended at index 40. Emission walks each group by index,
+        // and with 200-char slices the 2,048-char allowance is gone after ~10 rounds.
+        //
+        // Ordering each group by severity is what carries this case: the payload is the only tier-4
+        // entry in a bucket of tier-3 ones, so it goes first regardless of when it arrived.
+        StringBuilder g = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            g.append("  Shell \"benign").append(i).append(" ").append("z".repeat(200)).append("\"\n");
+        }
+        String payload = "  Shell \"p\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", g + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the bucket never filled, so no eviction occurred and the payload was simply "
+                            + "appended late. Emitting a group in arrival order spends the "
+                            + "allowance on the tier-3 entries the author wrote first.");
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {

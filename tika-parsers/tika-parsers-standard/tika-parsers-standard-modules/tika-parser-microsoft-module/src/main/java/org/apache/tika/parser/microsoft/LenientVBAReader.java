@@ -540,8 +540,18 @@ public final class LenientVBAReader {
                 }
             }
             if (severity > severities.get(weakest)) {
-                group.set(weakest, slice);
-                severities.set(weakest, severity);
+                // Drop the weakest and put the newcomer FIRST, not in the vacated slot.
+                //
+                // Writing it into the evicted index handed it that slot's position, so a bucket
+                // whose only weak entry sat late gave the payload a late index and the allowance
+                // expired before its round -- admitted, then never emitted. Severity ordering does
+                // not rescue it either, because after the swap every entry ties at the same tier.
+                // A slice that DISPLACED another has demonstrated it outranks something present,
+                // and that is the one ordering fact here the author does not control.
+                group.remove(weakest);
+                severities.remove(weakest);
+                group.add(0, slice);
+                severities.add(0, severity);
             }
         }
         tokenSeverity.merge(token, severity, Math::max);
@@ -851,6 +861,31 @@ public final class LenientVBAReader {
         // the least alarming thing present.
         tokens.sort((x, y) -> Integer.compare(tokenSeverity.getOrDefault(y, 0),
                 tokenSeverity.getOrDefault(x, 0)));
+        // Emit each group in SEVERITY order, not insertion order.
+        //
+        // Admission and emission are different things and this code conflated them. Eviction writes
+        // an admitted slice into the evicted slot's INDEX, so a bucket whose only weak slot sits
+        // late hands the payload a late index -- and the allowance expires long before that round.
+        // The payload was correctly admitted and then never emitted, which costs the analyst
+        // exactly as much as refusing it. Admission already knows which slices matter; emission
+        // must not throw that away. Reported by codex on PR #20.
+        Map<String, int[]> emitOrder = new java.util.HashMap<>();
+        for (Map.Entry<String, java.util.List<String>> e : byToken.entrySet()) {
+            java.util.List<Integer> sev = groupSeverities.get(e.getKey());
+            Integer[] idx = new Integer[e.getValue().size()];
+            for (int i = 0; i < idx.length; i++) {
+                idx[i] = i;
+            }
+            // Stable, so equal severities keep insertion order and the result stays deterministic.
+            java.util.Arrays.sort(idx, (x, y) -> Integer.compare(
+                    sev == null || y >= sev.size() ? 0 : sev.get(y),
+                    sev == null || x >= sev.size() ? 0 : sev.get(x)));
+            int[] order = new int[idx.length];
+            for (int i = 0; i < idx.length; i++) {
+                order[i] = idx[i];
+            }
+            emitOrder.put(e.getKey(), order);
+        }
         StringBuilder kept = new StringBuilder();
         for (int round = 0; ; round++) {
             boolean progressed = false;
@@ -864,7 +899,8 @@ public final class LenientVBAReader {
                 if (remaining <= 1) {
                     break;
                 }
-                String slice = g.get(round);
+                int[] order = emitOrder.get(token);
+                String slice = g.get(order == null || round >= order.length ? round : order[round]);
                 if (slice.length() + 1 > remaining) {
                     // FILL the remaining allowance rather than skipping to something smaller.
                     slice = keepIndicatorStatements(slice, remaining - 1, m);
