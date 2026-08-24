@@ -1024,6 +1024,38 @@ public class VbaBudgetTest {
         assertEquals("speedgov.com.br", LenientVBAReader.hostOf("http://speedgov.com.br/wshor/Nfes|1.0"));
     }
 
+    @Test
+    @DisplayName("a full technique bucket evicts its weakest slice for a more alarming one")
+    void testFullTechniqueBucketEvictsForHigherSeverity() throws Exception {
+        // Closes a coverage gap a reviewer found: replacing per-group eviction with a plain refusal
+        // ("bucket full -> drop the newcomer") left the ENTIRE suite green, so the mechanism the
+        // commit was named for had no test at all.
+        //
+        // The fixture needs one bucket holding slices of DIFFERENT severity, which is possible
+        // because the group token is scored on the matched WORD while the severity is scored on the
+        // whole SLICE. `Shell "benign"` matches `shell` -> token "shell", severity 3. A slice that
+        // also contains the word "shellexecute" still matches only `shell` (so the token stays
+        // "shell") but severityOf reads the slice and returns 4. Same bucket, higher severity.
+        StringBuilder benign = new StringBuilder();
+        for (int i = 0; i < 64; i++) {
+            benign.append("  Shell \"benign").append(i).append("\"\n");
+        }
+        String payload = "  Shell \"x\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", benign + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the bucket was full of severity-3 slices when a severity-4 one arrived; "
+                            + "refusing the newcomer because the bucket is full lets the author "
+                            + "pre-fill it with the least alarming thing that shares the token");
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {
