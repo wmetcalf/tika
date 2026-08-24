@@ -515,9 +515,15 @@ public final class LenientVBAReader {
                         weakest = e.getKey();
                     }
                 }
-                if (weakest == null || weakestSeverity >= severity) {
-                    return;   // nothing held is less alarming than this; keep what we have
+                if (weakest == null || weakestSeverity > severity) {
+                    return;   // everything held is MORE alarming than this; keep what we have
                 }
+                // A TIE displaces. Refusing ties sealed the map permanently: severityOf ceilings
+                // at 4, so an author who fills all 256 slots at tier 4 -- 256 invented hostnames
+                // with the word "shellexecute" on the line -- locked out every later technique,
+                // however alarming, because nothing can outrank the ceiling. Displacing on a tie
+                // keeps the map open; the cost is churn among equals, which is the documented
+                // equal-severity floor rather than a lockout.
                 byToken.remove(weakest);
                 groupSeverities.remove(weakest);
                 promoted.remove(weakest);
@@ -570,6 +576,20 @@ public final class LenientVBAReader {
         tokenSeverity.merge(token, severity, Math::max);
     }
 
+    /**
+     * How alarming a TECHNIQUE is in itself, independent of the line that carried it.
+     *
+     * <p>Used only to break ties between groups whose best lines score the same. A url key carries
+     * no scheme text, so it is scored as the scheme it came from rather than falling through to
+     * the floor -- which is the bug that made urls rank lowest in an earlier revision.
+     */
+    private static int techniqueSeverity(String token) {
+        if (token.startsWith("url:")) {
+            return severityOf("http://");
+        }
+        return severityOf(token);
+    }
+
     /** The url starting at {@code at}, up to the first character that cannot be part of one. */
     private static String urlSpanAt(String slice, int at) {
         int end = slice.length();
@@ -607,6 +627,24 @@ public final class LenientVBAReader {
             }
         } catch (java.net.URISyntaxException | IllegalArgumentException ignore) {
             // malformed by RFC, which is common in real samples: fall through to the span scan
+        }
+        // UNC first: \\server\share. URI throws on the backslashes, and the generic fallback below
+        // used to hit the leading separator at index 0 and yield an empty host -- so EVERY UNC path
+        // in existence keyed as the literal "url" and a hundred distinct servers shared one group.
+        // That is the inversion of what host keying is for, on the indicator class where the host
+        // is the whole fact.
+        if (token.startsWith("\\\\")) {
+            int from = 2;
+            int to = token.length();
+            for (int i = from; i < token.length(); i++) {
+                char c = token.charAt(i);
+                if (c == '\\' || c == '/' || c == '"' || c == '\'') {
+                    to = i;
+                    break;
+                }
+            }
+            String unc = token.substring(from, to).toLowerCase(Locale.ROOT);
+            return unc.isEmpty() ? "url" : unc;
         }
         int start = token.indexOf("://");
         start = start < 0 ? 0 : start + 3;
@@ -692,6 +730,13 @@ public final class LenientVBAReader {
                 || s.contains("declare")) {
             return 3;
         }
+        if (s.contains("\\\\") && s.indexOf("\\\\") + 2 < s.length()) {
+            // A UNC path is a staging, drop or exfil target -- a movement primitive, and one of
+            // the highest-value facts a macro can carry. It used to fall through to the floor,
+            // BELOW an ordinary http link, so it was the first thing evicted and the last thing
+            // emitted. Ranked with the other capability indicators.
+            return 3;
+        }
         if (s.contains("://") || s.contains("createobject") || s.contains("getobject")) {
             return 2;
         }
@@ -738,7 +783,15 @@ public final class LenientVBAReader {
                     continue;
                 }
                 inQuote = !inQuote;
-            } else if (c == ':' && !inQuote) {
+            } else if ((c == ':' || c == '&') && !inQuote) {
+                // '&' as well as ':'. VBA chains statements with ':' but CONCATENATES with '&',
+                // and concatenation is the more common way a long line is actually built --
+                // `u = "<3 KB of padding>" & "powershell -enc ..."`. Splitting only on ':' meant
+                // such a line had exactly one "statement" (the whole line) and fell through to the
+                // prefix cut this method exists to replace: measured, the ':'-chained twin kept its
+                // payload and the '&'-joined one did not. Splitting on '&' costs only that hex
+                // literals (&H1234) and type suffixes produce a few extra short fragments, which
+                // the indicator filter then discards.
                 String stmt = line.substring(start, atEnd ? line.length() : i).trim();
                 if (!stmt.isEmpty() && m.reset(stmt).find()) {
                     // Bounded by EVICTION, not by stopping. Breaking after the first n statements
@@ -844,6 +897,7 @@ public final class LenientVBAReader {
         java.util.Map<String, java.util.List<String>> byToken = new LinkedHashMap<>();
         java.util.Map<String, java.util.List<Integer>> groupSeverities = new java.util.HashMap<>();
         java.util.Map<String, Integer> promoted = new java.util.HashMap<>();
+        java.util.Map<String, Integer> tokenKind = new java.util.HashMap<>();
         java.util.Map<String, Integer> tokenSeverity = new java.util.HashMap<>();
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -860,8 +914,16 @@ public final class LenientVBAReader {
                 if (m.reset(line).find()) {
                     String slice = keepIndicatorStatements(line, INDICATOR_CHARS_PER_MODULE, m);
                     // First sighting wins; a repeat adds no information and must not add cost.
-                    if (seen.size() < MAX_DEDUP_TRACKED && seen.add(slice)) {
+                    // Past the tracking cap we stop REMEMBERING slices, but we keep admitting
+                    // them. The short-circuit here made the size check gate admission itself, so
+                    // beyond 20,000 distinct slices nothing was ever offered to admitCandidate
+                    // again -- the first-n-wins cap this design claims to have removed, rebuilt one
+                    // line lower and directly beneath the comment saying it was gone. Dedup
+                    // degrades past the cap (a repeat may be admitted twice); admission does not.
+                    boolean fresh = seen.size() >= MAX_DEDUP_TRACKED || seen.add(slice);
+                    if (fresh) {
                         String token = primaryIndicatorToken(slice, m);
+                        tokenKind.putIfAbsent(token, techniqueSeverity(token));
                         int sliceSeverity = severityOf(slice);
                         admitCandidate(byToken, groupSeverities, promoted, tokenSeverity, token,
                                 slice, sliceSeverity);
@@ -873,8 +935,24 @@ public final class LenientVBAReader {
         java.util.List<String> tokens = new java.util.ArrayList<>(byToken.keySet());
         // Highest-severity technique first, so if the allowance runs out mid-round it runs out on
         // the least alarming thing present.
-        tokens.sort((x, y) -> Integer.compare(tokenSeverity.getOrDefault(y, 0),
-                tokenSeverity.getOrDefault(x, 0)));
+        // Primary key: the most alarming LINE the technique carries. Tie-break: how alarming the
+        // TECHNIQUE itself is.
+        //
+        // Without the tie-break, 300 invented hostnames each carrying the word "shellexecute" all
+        // score tier 4 on the slice, tie with a powershell payload, and ties keep document order --
+        // so the author writes 300 fake techniques first and the real one is emitted last, after
+        // the allowance is gone. The slices are genuinely indistinguishable there; the TECHNIQUES
+        // are not. `powershell` is an execution primitive, `url:host` is data.
+        //
+        // Only a tie-break, deliberately: making technique severity the primary key would demote
+        // every url group below every Shell group and cost distinct urls, which an earlier revision
+        // measured at thirteen complete addresses lost on the corpus.
+        tokens.sort((x, y) -> {
+            int bySlice = Integer.compare(tokenSeverity.getOrDefault(y, 0),
+                    tokenSeverity.getOrDefault(x, 0));
+            return bySlice != 0 ? bySlice
+                    : Integer.compare(tokenKind.getOrDefault(y, 0), tokenKind.getOrDefault(x, 0));
+        });
         // Emit each group in SEVERITY order, not insertion order.
         //
         // Admission and emission are different things and this code conflated them. Eviction writes

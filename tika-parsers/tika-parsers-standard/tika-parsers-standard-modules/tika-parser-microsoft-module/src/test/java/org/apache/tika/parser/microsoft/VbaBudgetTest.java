@@ -935,6 +935,37 @@ public class VbaBudgetTest {
         }
         arrangements.put("technique-cap-below-budget", mentions + filler + "  " + payload + "\n");
 
+        // RESIDUAL 3: MAX_DEDUP_TRACKED short-circuits admission, not just dedup tracking. Past
+        // 20,000 distinct slices NOTHING is offered to admitCandidate again -- the first-n-wins
+        // cap this design claims to have removed, rebuilt one line lower.
+        StringBuilder flood = new StringBuilder();
+        for (int i = 0; i < 20_001; i++) {
+            flood.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%06d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-dedup-cap", flood + "  " + payload + "\n");
+
+        // RESIDUAL 4: severityOf ceilings at 4, and admitCandidate refuses a newcomer whose
+        // severity merely TIES the weakest group held. 256 tier-4 groups therefore seal the map
+        // against every later technique, however alarming.
+        StringBuilder seal = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            seal.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\" ' shellexecute\n");
+        }
+        arrangements.put("technique-map-sealed", seal + filler + "  " + payload + "\n");
+
+        // RESIDUAL 5: a UNC drop path buried under ordinary urls, because UNC scored the lowest
+        // tier -- below a plain http link -- and every UNC shared one group.
+        StringBuilder urls = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            urls.append("  u").append(i).append(" = \"http://h")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/a\"\n");
+        }
+        arrangements.put("unc-payload-under-urls",
+                urls + filler + "  Open \"\\\\10.0.0.5\\c$\\PAYLOADMARKER.exe\" For Binary\n");
+
         java.util.List<String> lost = new java.util.ArrayList<>();
         java.util.List<String> over = new java.util.ArrayList<>();
         for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
@@ -1022,6 +1053,14 @@ public class VbaBudgetTest {
         // Malformed by RFC -- a real corpus sample carries a literal '|'. URI throws; the fallback
         // must still produce the host rather than dropping the grouping.
         assertEquals("speedgov.com.br", LenientVBAReader.hostOf("http://speedgov.com.br/wshor/Nfes|1.0"));
+        // UNC. Every one of these used to yield the literal "url": URI throws on the backslashes
+        // and the fallback scan hit the leading separator at index 0, so a hundred distinct UNC
+        // servers shared ONE group -- the exact inversion of what host keying is for, on the
+        // indicator class (lateral movement, staging, exfil) where the host IS the fact.
+        assertEquals("evil.example", LenientVBAReader.hostOf("\\\\evil.example\\share\\a.exe"));
+        assertNotEquals(LenientVBAReader.hostOf("\\\\a.example\\s\\x"),
+                LenientVBAReader.hostOf("\\\\b.example\\s\\x"),
+                "two different UNC servers must not share a grouping key");
     }
 
     @Test
