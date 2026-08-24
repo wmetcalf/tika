@@ -379,11 +379,17 @@ public class VbaCostShapeTest {
         // that axis alone looks linear). A ratio over BOTH axes also passed (the inflation divides
         // out). An absolute 10 s bound caught it but was FLAKY: green alone at 6.9 s, red inside
         // the full suite where tests compete for CPU.
-        long tiny = timeCraftedLine(100, 10_000);
+        // The control run must do enough work to dominate scheduler noise. At 100 bytes it took
+        // ~600 ms, and under full-suite CPU contention that varied enough to push the ratio past a
+        // tight threshold -- green alone, red in the suite. 1,000 bytes keeps the size gap at 16x
+        // while making both runs substantial.
+        long tiny = timeCraftedLine(1_000, 10_000);
         long huge = timeCraftedLine(16_000, 10_000);
         double ratio = (double) huge / Math.max(tiny, 1L);
-        assertTrue(ratio < 8.0,
-                "160x the retained statement bytes cost "
+        // 16x the retained bytes: ~1x if severity is remembered, ~16x if it is recomputed. A
+        // threshold of 6 sits well clear of both, rather than hugging the healthy value.
+        assertTrue(ratio < 6.0,
+                "16x the retained statement bytes cost "
                         + String.format(Locale.ROOT, "%.1fx", ratio)
                         + " at the same candidate count -- eviction is rescanning retained "
                         + "statements instead of remembering their severity, which is quadratic "

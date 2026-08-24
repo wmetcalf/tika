@@ -1119,6 +1119,40 @@ public class VbaBudgetTest {
         }
     }
 
+    @Test
+    @DisplayName("later promotions do not bury an earlier one")
+    void testPromotionsKeepTheOrderTheyEarned() throws Exception {
+        // The bucket is filled with 64 weak slices, the payload is promoted past one of them, and
+        // then 63 decoys are promoted behind it. With `add(0, ...)` each of those shoved the
+        // payload back a slot, so it drifted from index 0 to index 63 and the allowance expired
+        // before its round -- promoted, then buried by the promotions that followed. This is the
+        // ONE arrangement where this branch was worse than the code it replaces: the old head-first
+        // reader reached the payload at ~1,453 characters, inside its 2,048 quota, and kept it.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 64; i++) {
+            b.append("  Shell \"benign").append(i).append("\"\n");          // severity 3, fills it
+        }
+        b.append("  Shell \"p\" ' shellexecute PAYLOADMARKER\n");            // severity 4, promoted
+        for (int i = 0; i < 63; i++) {                                       // promoted BEHIND it
+            b.append("  Shell \"d").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(120)).append("\n");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", b + "' filler\n".repeat(12000)).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the payload earned its place by displacing a weaker slice; promotions that "
+                            + "came AFTER it must not push it out of the allowance. Otherwise an "
+                            + "author buries a promoted payload simply by promoting more things "
+                            + "behind it.");
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {

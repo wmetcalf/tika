@@ -501,6 +501,7 @@ public final class LenientVBAReader {
      */
     private static void admitCandidate(Map<String, java.util.List<String>> byToken,
                                        Map<String, java.util.List<Integer>> groupSeverities,
+                                       Map<String, Integer> promoted,
                                        Map<String, Integer> tokenSeverity, String token,
                                        String slice, int severity) {
         java.util.List<String> group = byToken.get(token);
@@ -519,6 +520,7 @@ public final class LenientVBAReader {
                 }
                 byToken.remove(weakest);
                 groupSeverities.remove(weakest);
+                promoted.remove(weakest);
                 tokenSeverity.remove(weakest);
             }
             group = new java.util.ArrayList<>();
@@ -550,8 +552,19 @@ public final class LenientVBAReader {
                 // and that is the one ordering fact here the author does not control.
                 group.remove(weakest);
                 severities.remove(weakest);
-                group.add(0, slice);
-                severities.add(0, severity);
+                // Insert AFTER the promotions already made, not at index 0.
+                //
+                // add(0, ...) made each new promotion shove the previous ones back, so an author
+                // could bury an already-promoted payload by submitting more promotions behind it:
+                // fill a bucket with 64 weak slices, promote the payload, then promote 63 decoys
+                // and the payload drifts from index 0 to index 63. Reported by codex on PR #20,
+                // answering a question I had asked it to attack. Promotions now keep the order in
+                // which they earned their place, which is the property "displaced something" was
+                // supposed to buy.
+                int promotedHere = promoted.merge(token, 1, Integer::sum) - 1;
+                int at = Math.min(promotedHere, group.size());
+                group.add(at, slice);
+                severities.add(at, severity);
             }
         }
         tokenSeverity.merge(token, severity, Math::max);
@@ -830,6 +843,7 @@ public final class LenientVBAReader {
         // which is a real constraint on the payload, not on us.
         java.util.Map<String, java.util.List<String>> byToken = new LinkedHashMap<>();
         java.util.Map<String, java.util.List<Integer>> groupSeverities = new java.util.HashMap<>();
+        java.util.Map<String, Integer> promoted = new java.util.HashMap<>();
         java.util.Map<String, Integer> tokenSeverity = new java.util.HashMap<>();
         java.util.regex.Matcher m = VBA_INDICATOR.matcher("");
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -849,8 +863,8 @@ public final class LenientVBAReader {
                     if (seen.size() < MAX_DEDUP_TRACKED && seen.add(slice)) {
                         String token = primaryIndicatorToken(slice, m);
                         int sliceSeverity = severityOf(slice);
-                        admitCandidate(byToken, groupSeverities, tokenSeverity, token, slice,
-                                sliceSeverity);
+                        admitCandidate(byToken, groupSeverities, promoted, tokenSeverity, token,
+                                slice, sliceSeverity);
                     }
                 }
             }
