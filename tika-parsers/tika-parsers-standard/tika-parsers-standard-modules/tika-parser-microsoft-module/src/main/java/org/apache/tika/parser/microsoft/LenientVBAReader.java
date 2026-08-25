@@ -295,18 +295,17 @@ public final class LenientVBAReader {
          * rather than the omission being silent.
          */
         private final Map<String, Integer> techniques = new LinkedHashMap<>();
-        private final Set<Long> countedLines = new java.util.HashSet<>();
+        private final Set<String> countedLines = new java.util.HashSet<>();
         private final Set<String> omittedTechniques = new java.util.HashSet<>();
         private boolean inventoryTruncated;
+        private boolean dedupExhausted;
+        private int part;
 
-        /**
-         * @param identity the LINE this technique was seen on, so the same line counted twice does
-         *                 not inflate the tally. readMacros deliberately runs BOTH the tree walk
-         *                 and the orphan scan -- a decoy module must not be able to suppress orphan
-         *                 recovery -- so both routes reach the same module. retain() collapses the
-         *                 duplicate TEXT; without this the inventory reported everything twice
-         *                 (400 decoy lines came back as shell=800).
-         */
+        /** Distinguishes macro parts of one container; Bounds is shared across them all. */
+        void beginPart() {
+            part++;
+        }
+
         /**
          * Inventory every indicator technique in one accepted macro body.
          *
@@ -316,10 +315,15 @@ public final class LenientVBAReader {
          * reached only when a module OVERFLOWS the budget, so ordinary documents reported nothing
          * at all and the tests passed because every fixture was deliberately over-budget.
          *
-         * @param moduleName the module this body came from; with the match offset it forms a stable
-         *                   identity, so the SAME line reached by two extraction routes is counted
-         *                   once while a line that genuinely repeats is counted twice. Keying on
-         *                   the text alone collapsed real repetitions.
+         * <p>Counts are per LINE per technique. Identity is (part, module, line, technique), so the
+         * same module reached by both the tree walk and the orphan scan is counted once, two macro
+         * parts carrying an identical module count twice, and a line genuinely repeated counts
+         * twice. It is a String rather than a packed hash because the packed form was a linear
+         * equation over two String hashes with an attacker-chosen component -- a collision was
+         * brute-forced in seconds, and on collision the occurrence was silently dropped.
+         *
+         * @param moduleName names the module for that identity; may be null.
+         * @param body the accepted macro text, scanned in full up to INVENTORY_SCAN_LIMIT.
          */
         void inventory(String moduleName, String body) {
             if (body == null || body.isEmpty()) {
@@ -327,33 +331,82 @@ public final class LenientVBAReader {
             }
             java.util.regex.Matcher m = VBA_INDICATOR.matcher(body);
             String name = moduleName == null ? "" : moduleName;
+            int lineCursor = 0;
+            int lineNumber = 0;
             while (m.find()) {
                 if (m.start() > INVENTORY_SCAN_LIMIT) {
                     inventoryTruncated = true;
                     break;
                 }
                 String technique = techniqueKeyAt(body, m);
-                long identity = (name.hashCode() * 31L + m.start()) * 31L + technique.hashCode();
-                if (countedLines.size() < MAX_COUNTED_LINES && !countedLines.add(identity)) {
-                    continue;   // this exact position in this module, already counted
+                // A STRING identity, not a packed hash. The hash form
+                // (h(name)*31 + start)*31 + h(technique) never wraps, so it is a linear equation
+                // over two String hashes with the technique component attacker-chosen whenever it
+                // is url:<host> -- a collision is brute-forced in seconds, and on collision the
+                // occurrence was silently dropped, which can remove a technique's ONLY sighting.
+                // The part counter is included because Bounds is shared across every macro part of
+                // a container: without it two parts carrying an identical module collapsed to one.
+                // Keyed on the LINE, not the match offset. VBA_INDICATOR has a `shell`
+                // alternative and no `shellexecute` one, so `Shell "x" ' shellexecute` matches
+                // twice and one line reported 2. The field says "occurrence counts", this set is
+                // called countedLines and the test is testInventoryCountsEachLineOnce -- all three
+                // meant lines, and an analyst reading shell=802 for 401 call sites is being
+                // misled. Counting lines makes the behaviour and the three descriptions agree.
+                // ADVANCE the line cursor; never rescan from zero. Matcher.find() returns matches
+                // in increasing offset order, so counting newlines only between the previous match
+                // and this one makes the whole walk O(body). Computing it from offset 0 per match
+                // is O(matches x offset) -- I wrote exactly that and measured 4x per doubling
+                // again, the third appearance of this shape in this file today.
+                while (lineCursor < m.start()) {
+                    if (body.charAt(lineCursor) == '\n') {
+                        lineNumber++;
+                    }
+                    lineCursor++;
+                }
+                int line = lineNumber;
+                String identity = part + "\u0000" + name + "\u0000" + line + "\u0000" + technique;
+                if (countedLines.size() < MAX_COUNTED_LINES) {
+                    if (!countedLines.add(identity)) {
+                        continue;   // this exact position, already counted
+                    }
+                } else if (!dedupExhausted) {
+                    // Say so. Past the cap de-duplication stops working and both extraction routes
+                    // count again -- measured as exactly 2x -- and an inflated count with nothing
+                    // announcing it is the silent-bound defect this class exists to prevent.
+                    dedupExhausted = true;
                 }
                 if (techniques.containsKey(technique)) {
                     techniques.merge(technique, 1, Integer::sum);
                 } else if (techniques.size() < MAX_INVENTORY) {
                     techniques.put(technique, 1);
-                } else if (omittedTechniques.size() < MAX_INVENTORY) {
-                    // DISTINCT omitted techniques, not omitted occurrences. Counting occurrences
-                    // reported "(+100 more techniques)" for one host seen a hundred times.
-                    omittedTechniques.add(technique);
+                } else {
+                    // EVICT THE LEAST ALARMING, do not refuse the newcomer. Admitting by arrival
+                    // order let an author write 512 invented hosts ahead of the payload and keep
+                    // its technique out of the named list entirely. This file's own admitCandidate
+                    // javadoc states the rule: "When a bound must bite, it drops the least alarming
+                    // thing held, not the most recent thing seen." The inventory was not following it.
+                    String weakest = null;
+                    int weakestSeverity = Integer.MAX_VALUE;
+                    for (String held : techniques.keySet()) {
+                        int sev = techniqueSeverity(held);
+                        if (sev < weakestSeverity) {
+                            weakestSeverity = sev;
+                            weakest = held;
+                        }
+                    }
+                    if (weakest != null && weakestSeverity < techniqueSeverity(technique)) {
+                        techniques.remove(weakest);
+                        omittedTechniques.add(weakest);
+                        techniques.put(technique, 1);
+                    } else if (omittedTechniques.size() < MAX_INVENTORY) {
+                        omittedTechniques.add(technique);
+                    }
                 }
             }
         }
 
         /** Techniques and counts, most frequent first, plus any omitted tail. */
         public String indicatorInventory() {
-            if (techniques.isEmpty()) {
-                return null;
-            }
             java.util.List<Map.Entry<String, Integer>> out =
                     new java.util.ArrayList<>(techniques.entrySet());
             out.sort((x, y) -> Integer.compare(y.getValue(), x.getValue()));
@@ -365,15 +418,23 @@ public final class LenientVBAReader {
                 sb.append(e.getKey()).append('=').append(e.getValue());
             }
             if (!omittedTechniques.isEmpty()) {
-                sb.append(", (+").append(omittedTechniques.size())
-                        .append(" more techniques not listed)");
+                sb.append(sb.length() > 0 ? ", " : "").append("(+")
+                        .append(omittedTechniques.size()).append(" more techniques not listed)");
             }
             if (inventoryTruncated) {
-                // Say so rather than letting a bounded scan masquerade as a complete inventory.
-                sb.append(", (inventory truncated: module exceeded the ")
-                        .append(INVENTORY_SCAN_LIMIT).append("-character scan limit)");
+                // Emitted even when NOTHING was inventoried. Returning null on an empty technique
+                // list threw this away exactly when it mattered most: a module whose first
+                // indicator sits past the scan limit produced no field at all, indistinguishable
+                // from a document with no macros.
+                sb.append(sb.length() > 0 ? ", " : "").append("(inventory truncated: a module "
+                        + "exceeded the ").append(INVENTORY_SCAN_LIMIT)
+                        .append("-character scan limit)");
             }
-            return sb.toString();
+            if (dedupExhausted) {
+                sb.append(sb.length() > 0 ? ", " : "")
+                        .append("(counts above the de-duplication cap may be inflated)");
+            }
+            return sb.length() == 0 ? null : sb.toString();
         }
 
         /** Record a module named by the dir stream that the file does not contain. */
@@ -704,9 +765,7 @@ public final class LenientVBAReader {
         if (token.startsWith("url:")) {
             return severityOf("http://");
         }
-        if (token.startsWith("unc:")) {
-            return severityOf("\\\\host\\share");
-        }
+
         return severityOf(token);
     }
 
@@ -725,8 +784,18 @@ public final class LenientVBAReader {
         int end = slice.length();
         for (int i = at; i < slice.length(); i++) {
             char c = slice.charAt(i);
-            if (c == '"' || c == '\'' || c == ' ' || c == '\t' || c == '<' || c == '>'
-                    || c == ')' || c == ']' || c == ',' || c == ';') {
+            // NEWLINE IS A TERMINATOR. Without it a url span ran to the end of the module body,
+            // and since techniqueKeyAt widens on EVERY match that is O(matches x body) --
+            // measured 4x per doubling, 256 KB of `http://a\nq=1\n` taking 13.4 s, and hours at
+            // the 10 MB default cap. It is the same rescan-inside-a-loop shape already found and
+            // fixed in this file once; I reintroduced it in a different guise.
+            //
+            // It also made the technique KEY unbounded: keys swallowed the following lines, so one
+            // host became hundreds of distinct keys, the metadata value echoed the module body
+            // back (measured 10,003,683 characters), raw newlines landed in a `k=v, k=v` field,
+            // and the junk filled MAX_INVENTORY so the real technique was dropped.
+            if (c == '"' || c == '\'' || c == ' ' || c == '\t' || c == '\n' || c == '\r'
+                    || c == '<' || c == '>' || c == ')' || c == ']' || c == ',' || c == ';') {
                 end = i;
                 break;
             }
@@ -822,11 +891,13 @@ public final class LenientVBAReader {
                 // host. Widen to the end of the url before keying, or every url keys identically
                 // and host grouping is a silent no-op -- which is exactly what it was until this
                 // line existed, with the tests passing throughout because behaviour never changed.
-                // Label UNC distinctly from http. Both key by host, but they are different facts
-                // to an analyst reading the inventory: one is a fetch, the other is lateral
-                // movement or staging on the network.
-                boolean unc = token.startsWith("\\\\");
-                token = (unc ? "unc:" : "url:") + hostOf(urlSpanAt(slice, m.start()));
+                // Keyed "url:" for BOTH http and UNC here, deliberately. The inventory labels
+                // them apart (techniqueKeyAt), but this key feeds the excerpt's group map and
+                // severity eviction, so changing it changes WHICH LINES ARE EXTRACTED. I split it
+                // here as well and claimed the change was inventory-only; measured on one fixture
+                // that was false -- 2,075 characters retained against the parent's 1,637, with
+                // different content. A metadata feature must not quietly move the extracted text.
+                token = "url:" + hostOf(urlSpanAt(slice, m.start()));
                 severity = 3;
             }
             if (severity > bestSeverity) {
@@ -1006,15 +1077,18 @@ public final class LenientVBAReader {
         if (sink.alreadyStored(name, text)) {
             return true; // already stored in full; the reserve must not pay for a duplicate
         }
+        // Inventory FIRST, before the document-wide scan budget can abort this module. The
+        // inventory is meant to have exactly one bound of its own; letting INDICATOR_SCAN_BUDGET
+        // decide what appears here reintroduced a second, undeclared, silent one -- measured, a
+        // document whose first two modules exhausted the 2 MB scan budget reported only their
+        // techniques while a powershell dropper in the third was absent with no truncation notice.
+        bounds.inventory(name, text);
         int scanLimit = Math.min(text.length(), bounds.remainingScan());
         if (scanLimit <= 0) {
             // The document has had all the scanning it is going to get.
             return false;
         }
         bounds.chargeScan(scanLimit);
-        // The FULL body, not the excerpt: inventorying the excerpt would inherit exactly the
-        // starvation the inventory exists to escape.
-        bounds.inventory(name, text);
         // Scan the WHOLE body and keep indicator lines from BOTH ENDS, then keep the indicator
         // STATEMENTS within each line rather than its first characters.
         //

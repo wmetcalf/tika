@@ -415,4 +415,41 @@ public class VbaCostShapeTest {
         }
     }
 
+    /**
+     * The inventory walk must stay linear in the module body.
+     *
+     * <p>This exact shape -- a rescan inside a per-match loop -- has now appeared THREE times in
+     * this file: severityOf over retained slices, urlSpanAt widening with no newline terminator,
+     * and a line counter restarting from offset zero. Each was quadratic, each measured 4x per
+     * doubling, and the second reached 13.4 s on a 256 KB body. This gate exists so the fourth is
+     * caught by CI rather than by a reviewer.
+     *
+     * <p>The fixture deliberately contains NO span terminators (no quotes, no spaces) so a url
+     * match has nothing to stop at -- that is what made the widening version blow up, and a
+     * fixture with quotes in it misses the defect entirely, as one of mine did.
+     */
+    @Test
+    void testInventoryWalkIsLinearInBodySize() throws Exception {
+        long small = timeInventory(64);
+        long large = timeInventory(256);
+        double ratio = (double) large / Math.max(small, 1L);
+        assertTrue(ratio < 8.0,
+                "4x the body cost " + String.format(Locale.ROOT, "%.1fx", ratio)
+                        + " -- the inventory walk is rescanning per match instead of advancing "
+                        + "(small=" + small / 1_000_000 + "ms large=" + large / 1_000_000 + "ms)");
+    }
+
+    private static long timeInventory(int kb) throws Exception {
+        StringBuilder b = new StringBuilder();
+        while (b.length() < kb * 1024) {
+            b.append("http://a\nq=1\n");
+        }
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            long t0 = System.nanoTime();
+            LenientVBAReader.readMacros(fs, new LenientVBAReader.Bounds());
+            return System.nanoTime() - t0;
+        }
+    }
+
 }

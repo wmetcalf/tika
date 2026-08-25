@@ -1320,6 +1320,51 @@ public class VbaBudgetTest {
         }
     }
 
+    @Test
+    @DisplayName("the lenient reader's normal accept path is inventoried")
+    void testLenientRetainPathIsInventoried() throws Exception {
+        // The retain() hook had NO coverage: a reviewer showed that deleting it left all tests
+        // green, because every existing fixture reached either the POI path or the over-budget
+        // reserve path. This drives the lenient reader directly with a module that FITS, which is
+        // the one route retain() owns.
+        byte[] project = new VbaProjectBuilder()
+                .module("M", "Sub AutoOpen()\n  Shell \"powershell -enc RETAINPATH\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "the lenient retain path must inventory what it accepts");
+            assertTrue(inv.contains("powershell"), "got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("a full technique map evicts the least alarming, not the newest arrival")
+    void testInventoryEvictsWeakestTechniqueNotNewest() throws Exception {
+        // MAX_INVENTORY admitted by ARRIVAL ORDER, which the author writes: 512 invented hosts
+        // ahead of the payload kept its technique out of the named list entirely. This file's own
+        // admitCandidate javadoc states the rule the inventory was not following -- "it drops the
+        // least alarming thing held, not the most recent thing seen".
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            b.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/p\"\n");
+        }
+        b.append("  Shell \"powershell -enc EVICTME\"\n");
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "inventory must be populated");
+            assertTrue(inv.contains("powershell"),
+                    "600 invented hosts were written before the payload; admitting by arrival "
+                            + "order keeps the author's decoys and drops the one technique that "
+                            + "matters. Inventory: " + inv.substring(0, Math.min(200, inv.length())));
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {

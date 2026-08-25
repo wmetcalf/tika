@@ -249,6 +249,10 @@ public class OfficeParser extends AbstractOfficeParser {
                                              ParseContext context,
                                              LenientVBAReader.Bounds vbaBounds)
             throws IOException, SAXException, TikaException {
+        // Bounds is shared across every macro part of a container, so the inventory needs a part
+        // discriminator: without one, two parts carrying an identical module collapsed to a single
+        // counted occurrence.
+        vbaBounds.beginPart();
 
         VBAMacroReader reader = null;
         Map<String, String> macros = null;
@@ -378,6 +382,13 @@ public class OfficeParser extends AbstractOfficeParser {
                 for (Map.Entry<String, String> e : hidden.entrySet()) {
                     if (!macros.containsValue(e.getValue())) {
                         macros.put(uniqueKey(macros, e.getKey()), e.getValue());
+                        // Inventory into vbaBounds, the accumulator that is actually REPORTED.
+                        // Recovery deliberately runs on a throwaway Bounds so it cannot starve the
+                        // primary path's budget -- but that meant every technique it recovered was
+                        // inventoried into an object that is discarded, so the extracted text
+                        // carried the hidden payload while the inventory showed only the decoy.
+                        // That is the exact evasive shape this whole recovery path exists for.
+                        vbaBounds.inventory(e.getKey(), e.getValue());
                     }
                 }
             } catch (Exception | OutOfMemoryError ignore) {
@@ -441,6 +452,11 @@ public class OfficeParser extends AbstractOfficeParser {
                     : VbaFormParser.extractFormVariables(fs, vbaBounds)) {
                 String text = form.toText();
                 if (text.isBlank()) continue;
+                // Form control properties are emitted as MACRO content, and the comment above says
+                // they are "a common technique to hide URLs or commands from static analysis" --
+                // which is precisely what the inventory exists to surface. It was the one emission
+                // path with no inventory call.
+                vbaBounds.inventory(form.moduleName + ".frm", text);
                 Metadata m = Metadata.newInstance(context);
                 m.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
                         TikaCoreProperties.EmbeddedResourceType.MACRO.toString());
