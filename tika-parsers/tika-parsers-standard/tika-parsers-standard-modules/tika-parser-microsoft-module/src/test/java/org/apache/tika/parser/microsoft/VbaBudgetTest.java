@@ -1227,6 +1227,88 @@ public class VbaBudgetTest {
         }
     }
 
+    /**
+     * THE guarantee a fixed-size text excerpt cannot give: every technique present is REPORTED,
+     * whether or not an example of it survives the budget.
+     *
+     * <p>Everything before this competed for one 2,048-character excerpt, so something always had
+     * to be dropped and the author influenced what. Seven rounds of review found seven different
+     * ways to be the thing that got dropped. The excerpt is the wrong shape for the question "what
+     * does this module do": an inventory answers it in ~20 bytes per technique and never has to
+     * choose. The excerpt stays, as EXAMPLES, and is allowed to be incomplete.
+     */
+    @Test
+    @DisplayName("PROPERTY: every technique present is reported, even when its text is dropped")
+    void testTechniqueInventoryIsCompleteRegardlessOfBudget() throws Exception {
+        final String payload = "Shell \"powershell -enc PAYLOADMARKER\"";
+        String filler = "' filler\n".repeat(12000);
+        java.util.Map<String, String> arrangements = new java.util.LinkedHashMap<>();
+
+        StringBuilder loud = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            loud.append("  Shell \"d").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(200)).append("\n");
+        }
+        arrangements.put("buried-under-same-technique", loud + filler + "  " + payload + "\n");
+
+        StringBuilder hosts = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            hosts.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\" ' shellexecute\n");
+        }
+        arrangements.put("buried-under-400-techniques", hosts + filler + "  " + payload + "\n");
+
+        StringBuilder dedup = new StringBuilder();
+        for (int i = 0; i < 20_001; i++) {
+            dedup.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%06d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-every-cap", dedup + filler + "  " + payload + "\n");
+
+        java.util.List<String> unreported = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
+            byte[] doc = new VbaProjectBuilder().module("P", e.getValue()).build();
+            OfficeParserConfig cfg = new OfficeParserConfig();
+            cfg.setVbaMaxTotalBytes(60_000);
+            Metadata md = new Metadata();
+            parse(doc, md, cfg);
+            String inventory = md.get(OfficeParser.VBA_INDICATOR_INVENTORY);
+            if (inventory == null || !inventory.contains("powershell")) {
+                unreported.add(e.getKey() + " (inventory=" + inventory + ")");
+            }
+        }
+        assertTrue(unreported.isEmpty(),
+                "an inventory entry costs about twenty bytes and never has to compete with the "
+                        + "excerpt, so there is no budget reason to omit a technique that is "
+                        + "present. Missing from: " + unreported);
+    }
+
+    @Test
+    @DisplayName("inventory counts each line once, though both extraction routes see it")
+    void testInventoryCountsEachLineOnce() throws Exception {
+        // readMacros deliberately runs BOTH the tree walk and the orphan scan -- a decoy module
+        // must not be able to suppress orphan recovery -- so both routes reach the same module.
+        // retain() collapses the duplicate TEXT; the inventory needs its own collapsing or it
+        // reports everything twice. Measured before the fix: 400 decoy lines came back as
+        // shell=800, and an inflated count is a misleading fact, not a harmless one.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            b.append("  Shell \"d").append(i).append("\"\n");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", b + "' filler\n".repeat(12000)).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds =
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "the inventory must be populated");
+            assertTrue(inv.contains("shell=40"),
+                    "40 distinct Shell lines must be reported as 40, not 80. Got: " + inv);
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {
@@ -1253,6 +1335,19 @@ public class VbaBudgetTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private static String parse(byte[] bytes, Metadata md, OfficeParserConfig cfg)
+            throws Exception {
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        ParseContext context = new ParseContext();
+        if (cfg != null) {
+            context.set(OfficeParserConfig.class, cfg);
+        }
+        try (TikaInputStream tis = TikaInputStream.get(bytes)) {
+            new AutoDetectParser().parse(tis, handler, md, context);
+        }
+        return handler.toString();
+    }
 
     private static String parse(byte[] bytes, Metadata md) throws Exception {
         BodyContentHandler handler = new BodyContentHandler(-1);

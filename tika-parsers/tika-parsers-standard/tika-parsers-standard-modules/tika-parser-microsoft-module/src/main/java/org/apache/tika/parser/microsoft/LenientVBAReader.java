@@ -79,6 +79,12 @@ public final class LenientVBAReader {
     /** Cap on how many missing-module names are reported; the names go on the metadata. */
     private static final int MAX_UNRESOLVED_REPORTED = 32;
 
+    /** Distinct techniques listed in the inventory before the tail is summarised as a count. */
+    private static final int MAX_INVENTORY = 512;
+
+    /** Cap on line identities held for inventory de-duplication, to bound memory. */
+    private static final int MAX_COUNTED_LINES = 50_000;
+
     /** Depth cap on the search for VBA storages; a crafted CFBF child tree can be cyclic. */
     private static final int MAX_STORAGE_DEPTH = 32;
     /** Cap on how many VBA storages one document may contribute. */
@@ -263,6 +269,71 @@ public final class LenientVBAReader {
          * idempotent. One shared accumulator is reported from every macro part's {@code finally}
          * and {@link #mark} is first-wins, so without this the same detail is added once per part.
          */
+        /**
+         * Every indicator TECHNIQUE seen in this document, with how often it occurred.
+         *
+         * <p>Separate from the reserve's text excerpt on purpose, and this is the whole point of
+         * the shape. The excerpt is a fixed 2,048 characters per module, so something always has to
+         * be dropped and the document's author influences what -- seven rounds of review found
+         * seven different ways to make the payload be the thing dropped. An inventory entry costs
+         * about twenty bytes and answers the question triage actually asks first ("does this module
+         * run powershell?") without ever choosing between techniques. The excerpt stays, as
+         * EXAMPLES, and is allowed to be incomplete.
+         *
+         * <p>Recorded at SCAN time, before any budget, cap or eviction decision. Bounded by
+         * MAX_INVENTORY distinct techniques; beyond that the count of omitted ones is reported
+         * rather than the omission being silent.
+         */
+        private final Map<String, Integer> techniques = new LinkedHashMap<>();
+        private final Set<Long> countedLines = new java.util.HashSet<>();
+        private int techniquesOmitted;
+
+        /**
+         * @param identity the LINE this technique was seen on, so the same line counted twice does
+         *                 not inflate the tally. readMacros deliberately runs BOTH the tree walk
+         *                 and the orphan scan -- a decoy module must not be able to suppress orphan
+         *                 recovery -- so both routes reach the same module. retain() collapses the
+         *                 duplicate TEXT; without this the inventory reported everything twice
+         *                 (400 decoy lines came back as shell=800).
+         */
+        void noteTechnique(String technique, String identity) {
+            if (technique == null || technique.isEmpty()) {
+                return;
+            }
+            if (identity != null && countedLines.size() < MAX_COUNTED_LINES
+                    && !countedLines.add(technique.hashCode() * 31L + identity.hashCode())) {
+                return;   // this exact line, under this technique, is already counted
+            }
+            if (techniques.containsKey(technique)) {
+                techniques.merge(technique, 1, Integer::sum);
+            } else if (techniques.size() < MAX_INVENTORY) {
+                techniques.put(technique, 1);
+            } else {
+                techniquesOmitted++;
+            }
+        }
+
+        /** Techniques and counts, most frequent first, plus any omitted tail. */
+        public String indicatorInventory() {
+            if (techniques.isEmpty()) {
+                return null;
+            }
+            java.util.List<Map.Entry<String, Integer>> out =
+                    new java.util.ArrayList<>(techniques.entrySet());
+            out.sort((x, y) -> Integer.compare(y.getValue(), x.getValue()));
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Integer> e : out) {
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(e.getKey()).append('=').append(e.getValue());
+            }
+            if (techniquesOmitted > 0) {
+                sb.append(", (+").append(techniquesOmitted).append(" more techniques not listed)");
+            }
+            return sb.toString();
+        }
+
         /** Record a module named by the dir stream that the file does not contain. */
         void noteUnresolved(String name) {
             if (name == null || name.isEmpty() || unresolved.size() >= MAX_UNRESOLVED_REPORTED) {
@@ -587,6 +658,9 @@ public final class LenientVBAReader {
         if (token.startsWith("url:")) {
             return severityOf("http://");
         }
+        if (token.startsWith("unc:")) {
+            return severityOf("\\\\host\\share");
+        }
         return severityOf(token);
     }
 
@@ -692,7 +766,11 @@ public final class LenientVBAReader {
                 // host. Widen to the end of the url before keying, or every url keys identically
                 // and host grouping is a silent no-op -- which is exactly what it was until this
                 // line existed, with the tests passing throughout because behaviour never changed.
-                token = "url:" + hostOf(urlSpanAt(slice, m.start()));
+                // Label UNC distinctly from http. Both key by host, but they are different facts
+                // to an analyst reading the inventory: one is a fetch, the other is lateral
+                // movement or staging on the network.
+                boolean unc = token.startsWith("\\\\");
+                token = (unc ? "unc:" : "url:") + hostOf(urlSpanAt(slice, m.start()));
                 severity = 3;
             }
             if (severity > bestSeverity) {
@@ -948,6 +1026,9 @@ public final class LenientVBAReader {
                     boolean fresh = seen.size() >= MAX_DEDUP_TRACKED || seen.add(slice);
                     if (fresh) {
                         String token = primaryIndicatorToken(slice, m);
+                        // BEFORE any cap, eviction or budget decision. Whatever the excerpt ends
+                        // up showing, the inventory records that this technique was present.
+                        bounds.noteTechnique(token, slice);
                         tokenKind.putIfAbsent(token, techniqueSeverity(token));
                         int sliceSeverity = severityOf(slice);
                         admitCandidate(byToken, groupSeverities, promoted, tokenSeverity, token,

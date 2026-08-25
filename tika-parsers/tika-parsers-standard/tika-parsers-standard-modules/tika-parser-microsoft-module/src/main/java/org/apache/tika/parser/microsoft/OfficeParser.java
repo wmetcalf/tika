@@ -119,6 +119,15 @@ public class OfficeParser extends AbstractOfficeParser {
     static final String VBA_STOMPED_MODULES = "msoffice:vba-stomped-modules";
 
     /**
+     * Every indicator technique the document's macros use, with occurrence counts.
+     *
+     * <p>Complete by construction: it is recorded before any size bound is applied, so unlike the
+     * extracted text it cannot be starved by an author who pads the module. The text answers "show
+     * me the code"; this answers "what does it do", which is the question triage asks first.
+     */
+    static final String VBA_INDICATOR_INVENTORY = "msoffice:vba-indicator-inventory";
+
+    /**
      * Helper to extract macros from an NPOIFS/vbaProject.bin
      * <p>
      * As of POI-3.15-final, there are still some bugs in VBAMacroReader.
@@ -176,6 +185,10 @@ public class OfficeParser extends AbstractOfficeParser {
         // own field for the same reason as the missing-module one -- it is a statement about the
         // FILE, not about a bound we imposed, and conflating them would cost an analyst the
         // distinction at exactly the moment it matters.
+        String inventory = bounds.indicatorInventory();
+        if (inventory != null) {
+            parentMetadata.set(VBA_INDICATOR_INVENTORY, inventory);
+        }
         if (!bounds.stompedModules().isEmpty()) {
             parentMetadata.set(VBA_STOMPED_MODULES, String.join(", ", bounds.stompedModules()));
         }
