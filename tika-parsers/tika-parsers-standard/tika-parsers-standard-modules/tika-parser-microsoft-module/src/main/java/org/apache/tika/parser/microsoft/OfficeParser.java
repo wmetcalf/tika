@@ -297,6 +297,15 @@ public class OfficeParser extends AbstractOfficeParser {
                 reader = new VBAMacroReader(fs);
                 macros = reader.readMacros();
                 poiRead = true;
+                // The POI path is what ORDINARY documents take, and it never enters
+                // LenientVBAReader. Hooking the inventory only inside the lenient reader left it
+                // EMPTY for every document that is not over budget -- i.e. almost all of them --
+                // while the tests passed because every fixture was deliberately over-budget.
+                if (macros != null) {
+                    for (Map.Entry<String, String> e : macros.entrySet()) {
+                        vbaBounds.inventory(e.getKey(), e.getValue());
+                    }
+                }
             }
         } catch (SecurityException e) {
             throw e;

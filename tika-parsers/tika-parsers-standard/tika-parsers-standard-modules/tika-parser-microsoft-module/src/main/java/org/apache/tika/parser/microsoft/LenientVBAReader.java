@@ -85,6 +85,16 @@ public final class LenientVBAReader {
     /** Cap on line identities held for inventory de-duplication, to bound memory. */
     private static final int MAX_COUNTED_LINES = 50_000;
 
+    /**
+     * How far into one module body the inventory scans.
+     *
+     * <p>Deliberately its OWN bound, an order of magnitude above INDICATOR_SCAN_BUDGET, because the
+     * inventory is cheap (a regex walk, no retention) and reusing the excerpt's scan budget let an
+     * author hide a technique past that limit. Where it does bite, the inventory SAYS it was
+     * truncated instead of reading as complete.
+     */
+    private static final int INVENTORY_SCAN_LIMIT = 16 * 1024 * 1024;
+
     /** Depth cap on the search for VBA storages; a crafted CFBF child tree can be cyclic. */
     private static final int MAX_STORAGE_DEPTH = 32;
     /** Cap on how many VBA storages one document may contribute. */
@@ -286,7 +296,8 @@ public final class LenientVBAReader {
          */
         private final Map<String, Integer> techniques = new LinkedHashMap<>();
         private final Set<Long> countedLines = new java.util.HashSet<>();
-        private int techniquesOmitted;
+        private final Set<String> omittedTechniques = new java.util.HashSet<>();
+        private boolean inventoryTruncated;
 
         /**
          * @param identity the LINE this technique was seen on, so the same line counted twice does
@@ -296,20 +307,45 @@ public final class LenientVBAReader {
          *                 duplicate TEXT; without this the inventory reported everything twice
          *                 (400 decoy lines came back as shell=800).
          */
-        void noteTechnique(String technique, String identity) {
-            if (technique == null || technique.isEmpty()) {
+        /**
+         * Inventory every indicator technique in one accepted macro body.
+         *
+         * <p>Called from EVERY site that accepts a module -- the lenient reader's retain path, its
+         * reserve path, and OfficeParser's POI path -- because an inventory that only covers one of
+         * them is not an inventory. The first version hooked the reserve path alone, which is
+         * reached only when a module OVERFLOWS the budget, so ordinary documents reported nothing
+         * at all and the tests passed because every fixture was deliberately over-budget.
+         *
+         * @param moduleName the module this body came from; with the match offset it forms a stable
+         *                   identity, so the SAME line reached by two extraction routes is counted
+         *                   once while a line that genuinely repeats is counted twice. Keying on
+         *                   the text alone collapsed real repetitions.
+         */
+        void inventory(String moduleName, String body) {
+            if (body == null || body.isEmpty()) {
                 return;
             }
-            if (identity != null && countedLines.size() < MAX_COUNTED_LINES
-                    && !countedLines.add(technique.hashCode() * 31L + identity.hashCode())) {
-                return;   // this exact line, under this technique, is already counted
-            }
-            if (techniques.containsKey(technique)) {
-                techniques.merge(technique, 1, Integer::sum);
-            } else if (techniques.size() < MAX_INVENTORY) {
-                techniques.put(technique, 1);
-            } else {
-                techniquesOmitted++;
+            java.util.regex.Matcher m = VBA_INDICATOR.matcher(body);
+            String name = moduleName == null ? "" : moduleName;
+            while (m.find()) {
+                if (m.start() > INVENTORY_SCAN_LIMIT) {
+                    inventoryTruncated = true;
+                    break;
+                }
+                String technique = techniqueKeyAt(body, m);
+                long identity = (name.hashCode() * 31L + m.start()) * 31L + technique.hashCode();
+                if (countedLines.size() < MAX_COUNTED_LINES && !countedLines.add(identity)) {
+                    continue;   // this exact position in this module, already counted
+                }
+                if (techniques.containsKey(technique)) {
+                    techniques.merge(technique, 1, Integer::sum);
+                } else if (techniques.size() < MAX_INVENTORY) {
+                    techniques.put(technique, 1);
+                } else if (omittedTechniques.size() < MAX_INVENTORY) {
+                    // DISTINCT omitted techniques, not omitted occurrences. Counting occurrences
+                    // reported "(+100 more techniques)" for one host seen a hundred times.
+                    omittedTechniques.add(technique);
+                }
             }
         }
 
@@ -328,8 +364,14 @@ public final class LenientVBAReader {
                 }
                 sb.append(e.getKey()).append('=').append(e.getValue());
             }
-            if (techniquesOmitted > 0) {
-                sb.append(", (+").append(techniquesOmitted).append(" more techniques not listed)");
+            if (!omittedTechniques.isEmpty()) {
+                sb.append(", (+").append(omittedTechniques.size())
+                        .append(" more techniques not listed)");
+            }
+            if (inventoryTruncated) {
+                // Say so rather than letting a bounded scan masquerade as a complete inventory.
+                sb.append(", (inventory truncated: module exceeded the ")
+                        .append(INVENTORY_SCAN_LIMIT).append("-character scan limit)");
             }
             return sb.toString();
         }
@@ -551,6 +593,10 @@ public final class LenientVBAReader {
         if (putUnique(sink, name, text)) {
             bounds.charge(text.length());
         }
+        // Inventory EVERY accepted body, not just over-budget ones. Identity is (module, offset),
+        // so a module both extraction routes reach is counted once while a genuinely repeated line
+        // is counted twice.
+        bounds.inventory(name, text);
         return true;
     }
 
@@ -662,6 +708,16 @@ public final class LenientVBAReader {
             return severityOf("\\\\host\\share");
         }
         return severityOf(token);
+    }
+
+    /** The technique key for one indicator match, normalising urls and UNC paths by host. */
+    private static String techniqueKeyAt(String body, java.util.regex.Matcher m) {
+        String token = m.group().toLowerCase(Locale.ROOT);
+        if (token.contains("://") || token.startsWith("\\\\")) {
+            boolean unc = token.startsWith("\\\\");
+            return (unc ? "unc:" : "url:") + hostOf(urlSpanAt(body, m.start()));
+        }
+        return token;
     }
 
     /** The url starting at {@code at}, up to the first character that cannot be part of one. */
@@ -956,6 +1012,9 @@ public final class LenientVBAReader {
             return false;
         }
         bounds.chargeScan(scanLimit);
+        // The FULL body, not the excerpt: inventorying the excerpt would inherit exactly the
+        // starvation the inventory exists to escape.
+        bounds.inventory(name, text);
         // Scan the WHOLE body and keep indicator lines from BOTH ENDS, then keep the indicator
         // STATEMENTS within each line rather than its first characters.
         //
@@ -1028,7 +1087,7 @@ public final class LenientVBAReader {
                         String token = primaryIndicatorToken(slice, m);
                         // BEFORE any cap, eviction or budget decision. Whatever the excerpt ends
                         // up showing, the inventory records that this technique was present.
-                        bounds.noteTechnique(token, slice);
+
                         tokenKind.putIfAbsent(token, techniqueSeverity(token));
                         int sliceSeverity = severityOf(slice);
                         admitCandidate(byToken, groupSeverities, promoted, tokenSeverity, token,

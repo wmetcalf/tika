@@ -1266,6 +1266,17 @@ public class VbaBudgetTest {
         }
         arrangements.put("beyond-every-cap", dedup + filler + "  " + payload + "\n");
 
+        // THE ORDINARY DOCUMENT, and its absence is why the first version of this feature shipped
+        // broken. Every arrangement above deliberately OVERFLOWS the budget, which is the only path
+        // the inventory was hooked into -- so the test passed while the inventory was null for
+        // every document that is not over-budget, i.e. almost all of them. A property test whose
+        // fixtures all exercise the same path proves that path, not the property.
+        arrangements.put("ordinary-document-well-under-budget",
+                "Sub AutoOpen()\n"
+                        + "  Set w = CreateObject(\"WScript.Shell\")\n"
+                        + "  w.Run \"powershell -enc SGVsbG8=\"\n"
+                        + "End Sub\n");
+
         java.util.List<String> unreported = new java.util.ArrayList<>();
         for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
             byte[] doc = new VbaProjectBuilder().module("P", e.getValue()).build();
