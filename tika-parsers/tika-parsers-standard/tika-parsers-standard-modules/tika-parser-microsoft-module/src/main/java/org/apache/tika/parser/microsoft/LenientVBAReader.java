@@ -827,17 +827,42 @@ public final class LenientVBAReader {
             // separator, or the line has none. Keep a prefix rather than nothing.
             return line.substring(0, budget) + STATEMENT_CUT_MARKER;
         }
-        // Share the budget EVENLY across the carrying statements. Spending it left-to-right would
-        // let the author reinstate the same starvation one level down.
-        int per = Math.max(MIN_STATEMENT_SLICE, budget / hits.size());
+        // Emit statements WHOLE, most alarming first, until the budget runs out -- do not divide
+        // the budget evenly and truncate them all.
+        //
+        // Even division guaranteed mangled output on exactly the lines this is for. A
+        // url-dense concatenated line splits into many statements, so `budget / hits` collapses to
+        // the MIN_STATEMENT_SLICE floor and every url is cut mid-path. Measured on a 40-url line:
+        // 14 urls present, ZERO of them complete. That is the corrupt-IOC failure this parser was
+        // criticised for producing elsewhere -- an analyst pivoting on a half address chases a
+        // host that does not exist -- and it is worse than emitting fewer whole ones. It also cost
+        // real recall: corpus distinct-url gains fell from 97 to 82 when '&' splitting started
+        // fragmenting these lines.
+        //
+        // Severity order, not source order: the author writes the source order, so emitting whole
+        // statements front-to-back would just hand the budget to whatever decoys were written
+        // first.
+        Integer[] byRank = new Integer[hits.size()];
+        for (int i = 0; i < byRank.length; i++) {
+            byRank[i] = i;
+        }
+        java.util.Arrays.sort(byRank, (x, y) ->
+                Integer.compare(hitSeverities.get(y), hitSeverities.get(x)));
         StringBuilder sb = new StringBuilder(budget + 64);
-        for (String h : hits) {
-            if (sb.length() >= budget) {
-                sb.append(STATEMENT_CUT_MARKER);
+        for (int rank : byRank) {
+            String h = hits.get(rank);
+            int cost = h.length() + 3;
+            if (sb.length() + cost <= budget) {
+                sb.append(h).append(" : ");
+            } else if (sb.length() == 0) {
+                // Nothing fits whole: keep a prefix of the most alarming one rather than nothing.
+                sb.append(h, 0, Math.min(h.length(), Math.max(1, budget - 1)))
+                        .append(STATEMENT_CUT_MARKER);
                 break;
             }
-            sb.append(h.length() <= per ? h : h.substring(0, per) + STATEMENT_CUT_MARKER);
-            sb.append(" : ");
+        }
+        if (sb.length() == 0) {
+            sb.append(line, 0, Math.min(line.length(), budget)).append(STATEMENT_CUT_MARKER);
         }
         return sb.toString();
     }

@@ -1192,6 +1192,41 @@ public class VbaBudgetTest {
         }
     }
 
+    @Test
+    @DisplayName("concatenated urls come out whole, not sliced into unusable fragments")
+    void testConcatenatedUrlsAreEmittedWhole() throws Exception {
+        // Splitting long lines on '&' was necessary -- it is how VBA actually builds them -- but
+        // dividing the line's budget evenly across the resulting statements truncated every one of
+        // them. Measured on this fixture before the fix: 14 urls present, ZERO complete. A half
+        // address is not weaker evidence, it is WRONG evidence: an analyst pivoting on it chases a
+        // host that does not exist, which is the same corrupt-IOC failure this parser was
+        // criticised for producing elsewhere.
+        StringBuilder line = new StringBuilder("  u = ");
+        for (int i = 0; i < 40; i++) {
+            line.append("\"https://evil").append(String.format(java.util.Locale.ROOT, "%03d", i))
+                    .append(".example/path/to/a/fairly/long/resource\" & ");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", "' filler\n".repeat(12000) + line + "\n").build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            long complete = java.util.regex.Pattern
+                    .compile("https://evil\\d{3}\\.example/path/to/a/fairly/long/resource")
+                    .matcher(all).results().count();
+            long anyAtAll = java.util.regex.Pattern.compile("https://evil\\d{3}\\.example")
+                    .matcher(all).results().count();
+            assertTrue(complete >= 20,
+                    "the allowance holds about 34 of these whole; keeping " + complete
+                            + " complete means statements are being sliced instead of emitted");
+            assertEquals(anyAtAll, complete,
+                    "every url that appears must be COMPLETE. " + (anyAtAll - complete)
+                            + " were truncated mid-address, which is worse than omitting them: a "
+                            + "partial host reads as a real one and sends an analyst nowhere.");
+        }
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {
