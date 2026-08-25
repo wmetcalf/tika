@@ -18,6 +18,7 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,6 +34,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.apache.poi.poifs.macros.VBAMacroReader;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.io.TikaInputStream;
@@ -825,6 +827,403 @@ public class VbaBudgetTest {
         for (Metadata m : recursiveMetadata(whole, null)) {
             assertNull(m.get(OfficeParser.VBA_MODULE_FRAGMENT),
                     "no bound fired, so no entry may be marked a fragment");
+        }
+    }
+
+    /**
+     * THE property for the reserve path: a payload survives regardless of WHERE its author put it.
+     *
+     * <p>Written before the fix, deliberately. Every bound defect on this branch has come from
+     * asserting an invariant at one convenient point -- a ceiling checked at 20,000 characters that
+     * broke at 30,000, a "400 random cases" generator that produced one surrogate pair, two tests
+     * that re-implemented the fix instead of exercising it. The author picks the arrangement, so
+     * the arrangement is what the test has to range over.
+     */
+    @Test
+    @DisplayName("PROPERTY: the reserve keeps the payload wherever the author puts it")
+    void testReservePayloadSurvivesEveryArrangement() throws Exception {
+        final String payload = "Shell \"powershell -enc PAYLOADMARKER\"";
+        final String decoy = "Set d = CreateObject(\"DECOY\")";
+        String decoyLines = ("  " + decoy + "\n").repeat(120);   // ~3.6 KB of indicator lines
+        String filler = "' filler\n".repeat(12000);
+        String pad = "y".repeat(6000);
+
+        java.util.Map<String, String> arrangements = new java.util.LinkedHashMap<>();
+        // -- payload on its OWN line, varying position among decoy lines --
+        arrangements.put("own-line-first", "  " + payload + "\n" + decoyLines + filler);
+        arrangements.put("own-line-last", decoyLines + filler + "  " + payload + "\n");
+        arrangements.put("own-line-middle",
+                decoyLines + "  " + payload + "\n" + decoyLines + filler);
+        // -- payload SHARING a long physical line with decoys, varying position on it --
+        arrangements.put("same-line-first",
+                filler + "  " + payload + " : " + pad + " : " + decoy + "\n");
+        arrangements.put("same-line-last",
+                filler + "  " + decoy + " : " + pad + " : " + payload + "\n");
+        arrangements.put("same-line-middle",
+                filler + "  " + decoy + " : " + pad + " : " + payload + " : " + pad + " : "
+                        + decoy + "\n");
+
+        // DISTINCT decoys, so de-duplication cannot collapse them and only the severity ranking
+        // can save the payload. Without this the previous six cases are all carried by dedup and
+        // the ranking is untested -- one mechanism silently doing another's job.
+        StringBuilder unique = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            unique.append("  Set d").append(i).append(" = CreateObject(\"DECOY")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\")\n");
+        }
+        arrangements.put("unique-decoys-payload-middle",
+                unique + "  " + payload + "\n" + unique + filler);
+        arrangements.put("unique-decoys-payload-last", unique + filler + "  " + payload + "\n");
+
+        // SAME-SEVERITY flood. The ranking cannot separate these from the payload -- they are all
+        // powershell/Shell, tier 3 -- so only de-duplication leaves room for it. Without this case
+        // the ranking silently carries every arrangement and the dedup is untested; the mutation
+        // gate proved exactly that, so this case exists to make the second mechanism load-bearing.
+        String loudDecoy = "  Shell \"powershell -enc SAMEDECOY\"\n".repeat(400);
+        arrangements.put("same-severity-flood-middle",
+                loudDecoy + "  " + payload + "\n" + loudDecoy + filler);
+
+        // DISTINCT decoys AT THE PAYLOAD'S OWN SEVERITY. Dedup cannot collapse them (all differ)
+        // and the ranking cannot separate them (all tier 3, like the payload), so the only thing
+        // left deciding the outcome is order within the tier -- which is document order, which the
+        // author writes. If this arrangement loses, the rule is still positional one level down.
+        StringBuilder loudUnique = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            loudUnique.append("  x").append(i).append(" = \"http://decoy")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\"\n");
+        }
+        arrangements.put("tier3-unique-flood-payload-last",
+                loudUnique + filler + "  " + payload + "\n");
+
+        // THE BOUNDS THEMSELVES WERE POSITIONAL. Every cap added to keep this O(1) admitted the
+        // FIRST n things it met and refused the rest, which restores head-first starvation above
+        // the cap -- the exact evasion the selection logic removes. Reported by codex on PR #20.
+        //   (a) MAX_INDICATOR_LINES stopped the SCAN after n distinct candidates
+        //   (b) primaryIndicatorToken keys a powershell slice as "shell" (the alternation matches
+        //       inside it), so the payload shares the decoys' group and loses on document order
+        //   (c) MAX_STATEMENTS_PER_LINE broke after the first n statements on a line
+        StringBuilder many = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            many.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-candidate-cap", many + filler + "  " + payload + "\n");
+
+        StringBuilder shells = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            shells.append("  Shell \"benign")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\"\n");
+        }
+        arrangements.put("same-group-shell-decoys", shells + filler + "  " + payload + "\n");
+
+        StringBuilder stmts = new StringBuilder("  ");
+        for (int i = 0; i < 70; i++) {
+            stmts.append("Set s").append(i).append(" = CreateObject(\"E")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append("\") : ");
+        }
+        arrangements.put("beyond-statement-cap", filler + stmts + payload + "\n");
+
+        // REGRESSION the old code did NOT have. MAX_SLICES_PER_TECHNIQUE was 16, below the ~42
+        // slices the 2,048-char allowance can emit, so sixteen short lines merely MENTIONING a
+        // technique filled its group and the real payload was refused -- while the old head-first
+        // code kept all seventeen, because they fit. A bound that discards evidence the budget
+        // could have held is a bug, not a bound.
+        StringBuilder mentions = new StringBuilder();
+        for (int i = 0; i < 16; i++) {
+            mentions.append("  ' note ").append(i).append(": powershell is not used here\n");
+        }
+        arrangements.put("technique-cap-below-budget", mentions + filler + "  " + payload + "\n");
+
+        // RESIDUAL 3: MAX_DEDUP_TRACKED short-circuits admission, not just dedup tracking. Past
+        // 20,000 distinct slices NOTHING is offered to admitCandidate again -- the first-n-wins
+        // cap this design claims to have removed, rebuilt one line lower.
+        StringBuilder flood = new StringBuilder();
+        for (int i = 0; i < 20_001; i++) {
+            flood.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%06d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-dedup-cap", flood + "  " + payload + "\n");
+
+        // RESIDUAL 4: severityOf ceilings at 4, and admitCandidate refuses a newcomer whose
+        // severity merely TIES the weakest group held. 256 tier-4 groups therefore seal the map
+        // against every later technique, however alarming.
+        StringBuilder seal = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            seal.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\" ' shellexecute\n");
+        }
+        arrangements.put("technique-map-sealed", seal + filler + "  " + payload + "\n");
+
+        // RESIDUAL 5: a UNC drop path buried under ordinary urls, because UNC scored the lowest
+        // tier -- below a plain http link -- and every UNC shared one group.
+        StringBuilder urls = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            urls.append("  u").append(i).append(" = \"http://h")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/a\"\n");
+        }
+        arrangements.put("unc-payload-under-urls",
+                urls + filler + "  Open \"\\\\10.0.0.5\\c$\\PAYLOADMARKER.exe\" For Binary\n");
+
+        java.util.List<String> lost = new java.util.ArrayList<>();
+        java.util.List<String> over = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
+            byte[] project = new VbaProjectBuilder().module("Payload", e.getValue()).build();
+            try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+                LenientVBAReader.Bounds bounds =
+                        new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+                Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+                String all = String.join("\n", macros.values());
+                assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                        e.getKey() + ": fixture precondition -- the module must be too big to keep "
+                                + "whole, so the reserve path actually runs");
+                if (!all.contains("PAYLOADMARKER")) {
+                    lost.add(e.getKey());
+                }
+                if (totalChars(macros) > 60_000) {
+                    over.add(e.getKey() + " (" + totalChars(macros) + ")");
+                }
+            }
+        }
+        assertTrue(over.isEmpty(), "the document ceiling must hold in every arrangement: " + over);
+        assertTrue(lost.isEmpty(),
+                "the author chooses the arrangement, so any arrangement that loses the payload is "
+                        + "an evasion. Lost in: " + lost + " of " + arrangements.keySet());
+    }
+
+    /**
+     * The invariant the arrangement property does NOT cover: the reserve must SPEND its allowance.
+     *
+     * <p>Added after a corpus run caught what the arrangement test could not. That test asks "does
+     * the payload survive"; a change can keep every payload and still retain far less overall. It
+     * did: capping each line at half the per-module allowance took one corpus document from 305
+     * distinct URLs to 181, and skipping any candidate that did not fit whole left the tail of the
+     * allowance unspent. Both passed the arrangement test. Volume is a separate property and needs
+     * a separate assertion.
+     */
+    @Test
+    @DisplayName("PROPERTY: the reserve spends its allowance rather than leaving it unused")
+    void testReserveFillsItsAllowance() throws Exception {
+        // One long line carrying many DISTINCT urls -- the shape that exposed the halved cap.
+        StringBuilder oneLine = new StringBuilder("  u = ");
+        for (int i = 0; i < 300; i++) {
+            oneLine.append("\"http://evil").append(String.format(java.util.Locale.ROOT, "%03d", i))
+                    .append(".example/a\" & ");
+        }
+        String filler = "' filler\n".repeat(12000);
+        byte[] project = new VbaProjectBuilder()
+                .module("Payload", filler + oneLine + "\n").build();
+
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+
+            long urls = java.util.regex.Pattern.compile("http://evil\\d{3}\\.example")
+                    .matcher(all).results().count();
+            // The allowance is 2,048 chars and each url costs ~30, so a full spend is ~65 urls.
+            // Assert we are in that neighbourhood rather than a fixed number, so the test states
+            // the PROPERTY (the budget is spent) and not an implementation detail.
+            assertTrue(urls >= 40,
+                    "the per-module allowance is " + 2048 + " characters and each url costs about "
+                            + "30, so a reserve that spends its allowance keeps roughly 65 of them. "
+                            + "Retaining " + urls + " means the allowance is going unused -- which "
+                            + "is what halving the per-line cap did on the corpus.");
+        }
+    }
+
+    @Test
+    @DisplayName("host keying actually distinguishes hosts (it silently did not)")
+    void testUrlHostKeyingIsNotANoOp() {
+        // This exists because the first version of host keying WAS a no-op and every test stayed
+        // green: VBA_INDICATOR matches only the scheme, so the key was computed from "http://",
+        // every url hashed to the same bucket, and nothing changed. A grouping key that cannot
+        // distinguish its inputs needs its own assertion.
+        assertEquals("evil.example", LenientVBAReader.hostOf("http://evil.example/a/b?c=1"));
+        assertEquals("good.example", LenientVBAReader.hostOf("https://good.example"));
+        assertNotEquals(LenientVBAReader.hostOf("http://a.example/p"),
+                LenientVBAReader.hostOf("http://b.example/p"),
+                "two different hosts must not share a grouping key");
+        assertEquals(LenientVBAReader.hostOf("http://a.example/one"),
+                LenientVBAReader.hostOf("http://a.example/two"),
+                "one host with many paths is ONE fact and must share a key");
+        // Malformed by RFC -- a real corpus sample carries a literal '|'. URI throws; the fallback
+        // must still produce the host rather than dropping the grouping.
+        assertEquals("speedgov.com.br", LenientVBAReader.hostOf("http://speedgov.com.br/wshor/Nfes|1.0"));
+        // UNC. Every one of these used to yield the literal "url": URI throws on the backslashes
+        // and the fallback scan hit the leading separator at index 0, so a hundred distinct UNC
+        // servers shared ONE group -- the exact inversion of what host keying is for, on the
+        // indicator class (lateral movement, staging, exfil) where the host IS the fact.
+        assertEquals("evil.example", LenientVBAReader.hostOf("\\\\evil.example\\share\\a.exe"));
+        assertNotEquals(LenientVBAReader.hostOf("\\\\a.example\\s\\x"),
+                LenientVBAReader.hostOf("\\\\b.example\\s\\x"),
+                "two different UNC servers must not share a grouping key");
+    }
+
+    @Test
+    @DisplayName("a full technique bucket evicts its weakest slice for a more alarming one")
+    void testFullTechniqueBucketEvictsForHigherSeverity() throws Exception {
+        // Closes a coverage gap a reviewer found: replacing per-group eviction with a plain refusal
+        // ("bucket full -> drop the newcomer") left the ENTIRE suite green, so the mechanism the
+        // commit was named for had no test at all.
+        //
+        // The fixture needs one bucket holding slices of DIFFERENT severity, which is possible
+        // because the group token is scored on the matched WORD while the severity is scored on the
+        // whole SLICE. `Shell "benign"` matches `shell` -> token "shell", severity 3. A slice that
+        // also contains the word "shellexecute" still matches only `shell` (so the token stays
+        // "shell") but severityOf reads the slice and returns 4. Same bucket, higher severity.
+        StringBuilder benign = new StringBuilder();
+        for (int i = 0; i < 64; i++) {
+            benign.append("  Shell \"benign").append(i).append("\"\n");
+        }
+        String payload = "  Shell \"x\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", benign + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the bucket was full of severity-3 slices when a severity-4 one arrived; "
+                            + "refusing the newcomer because the bucket is full lets the author "
+                            + "pre-fill it with the least alarming thing that shares the token");
+        }
+    }
+
+    @Test
+    @DisplayName("an evicted-in slice is emitted, not just admitted")
+    void testEvictedInSliceIsActuallyEmitted() throws Exception {
+        // Admission and emission are different things, and my first eviction test conflated them.
+        // It filled the bucket with 64 EQUAL-severity decoys, so the payload displaced index 0 and
+        // was emitted first by luck of where the weakest slot happened to be.
+        //
+        // Put the one weak slot LAST and the payload takes index 63. Emission walks the group in
+        // insertion order, so the allowance expires long before round 63: the payload is correctly
+        // admitted and then never emitted. Reported by codex on PR #20.
+        StringBuilder g = new StringBuilder();
+        for (int i = 0; i < 63; i++) {                       // severity 4, fills the bucket
+            g.append("  Shell \"x").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(200)).append("\n");
+        }
+        g.append("  Shell \"benign\"\n");                    // severity 3, the ONLY weak slot, last
+        String payload = "  Shell \"p\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", g + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the payload displaced the bucket's weakest slice, so admission worked -- but "
+                            + "it inherited that slice's LATE index and emission ran out of "
+                            + "allowance before reaching it. Admitting evidence and then not "
+                            + "emitting it is the same loss as refusing it.");
+        }
+    }
+
+    @Test
+    @DisplayName("a late high-severity slice is emitted before earlier weaker ones in its group")
+    void testHigherSeverityIsEmittedFirstWithinAGroup() throws Exception {
+        // The eviction path is not the only way a slice lands late. Here the bucket NEVER fills
+        // (40 entries against a cap of 64), so nothing is ever evicted and front-insertion cannot
+        // help -- the payload is simply appended at index 40. Emission walks each group by index,
+        // and with 200-char slices the 2,048-char allowance is gone after ~10 rounds.
+        //
+        // Ordering each group by severity is what carries this case: the payload is the only tier-4
+        // entry in a bucket of tier-3 ones, so it goes first regardless of when it arrived.
+        StringBuilder g = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            g.append("  Shell \"benign").append(i).append(" ").append("z".repeat(200)).append("\"\n");
+        }
+        String payload = "  Shell \"p\" ' shellexecute PAYLOADMARKER\n";
+        byte[] project = new VbaProjectBuilder()
+                .module("P", g + "' filler\n".repeat(12000) + payload).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the bucket never filled, so no eviction occurred and the payload was simply "
+                            + "appended late. Emitting a group in arrival order spends the "
+                            + "allowance on the tier-3 entries the author wrote first.");
+        }
+    }
+
+    @Test
+    @DisplayName("later promotions do not bury an earlier one")
+    void testPromotionsKeepTheOrderTheyEarned() throws Exception {
+        // The bucket is filled with 64 weak slices, the payload is promoted past one of them, and
+        // then 63 decoys are promoted behind it. With `add(0, ...)` each of those shoved the
+        // payload back a slot, so it drifted from index 0 to index 63 and the allowance expired
+        // before its round -- promoted, then buried by the promotions that followed. This is the
+        // ONE arrangement where this branch was worse than the code it replaces: the old head-first
+        // reader reached the payload at ~1,453 characters, inside its 2,048 quota, and kept it.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 64; i++) {
+            b.append("  Shell \"benign").append(i).append("\"\n");          // severity 3, fills it
+        }
+        b.append("  Shell \"p\" ' shellexecute PAYLOADMARKER\n");            // severity 4, promoted
+        for (int i = 0; i < 63; i++) {                                       // promoted BEHIND it
+            b.append("  Shell \"d").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(120)).append("\n");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", b + "' filler\n".repeat(12000)).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            assertTrue(all.contains(LenientVBAReader.INDICATORS_ONLY_MARKER),
+                    "fixture precondition: the reserve path must run");
+            assertTrue(all.contains("PAYLOADMARKER"),
+                    "the payload earned its place by displacing a weaker slice; promotions that "
+                            + "came AFTER it must not push it out of the allowance. Otherwise an "
+                            + "author buries a promoted payload simply by promoting more things "
+                            + "behind it.");
+        }
+    }
+
+    @Test
+    @DisplayName("concatenated urls come out whole, not sliced into unusable fragments")
+    void testConcatenatedUrlsAreEmittedWhole() throws Exception {
+        // Splitting long lines on '&' was necessary -- it is how VBA actually builds them -- but
+        // dividing the line's budget evenly across the resulting statements truncated every one of
+        // them. Measured on this fixture before the fix: 14 urls present, ZERO complete. A half
+        // address is not weaker evidence, it is WRONG evidence: an analyst pivoting on it chases a
+        // host that does not exist, which is the same corrupt-IOC failure this parser was
+        // criticised for producing elsewhere.
+        StringBuilder line = new StringBuilder("  u = ");
+        for (int i = 0; i < 40; i++) {
+            line.append("\"https://evil").append(String.format(java.util.Locale.ROOT, "%03d", i))
+                    .append(".example/path/to/a/fairly/long/resource\" & ");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", "' filler\n".repeat(12000) + line + "\n").build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            Map<String, String> macros = LenientVBAReader.readMacros(fs,
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            String all = String.join("\n", macros.values());
+            long complete = java.util.regex.Pattern
+                    .compile("https://evil\\d{3}\\.example/path/to/a/fairly/long/resource")
+                    .matcher(all).results().count();
+            long anyAtAll = java.util.regex.Pattern.compile("https://evil\\d{3}\\.example")
+                    .matcher(all).results().count();
+            assertTrue(complete >= 20,
+                    "the allowance holds about 34 of these whole; keeping " + complete
+                            + " complete means statements are being sliced instead of emitted");
+            assertEquals(anyAtAll, complete,
+                    "every url that appears must be COMPLETE. " + (anyAtAll - complete)
+                            + " were truncated mid-address, which is worse than omitting them: a "
+                            + "partial host reads as a real one and sends an analyst nowhere.");
         }
     }
 
