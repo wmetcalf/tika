@@ -329,15 +329,19 @@ public final class LenientVBAReader {
             if (body == null || body.isEmpty()) {
                 return;
             }
+            // Bound the MATCHER's region, do not merely check the offset after the fact. find()
+            // searched the whole body first, so a module over the limit with no indicator past it
+            // paid the full unbounded scan AND never set the truncation flag -- the CPU bound and
+            // the promised notice were both bypassed by the same line.
             java.util.regex.Matcher m = VBA_INDICATOR.matcher(body);
+            if (body.length() > INVENTORY_SCAN_LIMIT) {
+                m.region(0, INVENTORY_SCAN_LIMIT);
+                inventoryTruncated = true;   // from the BODY LENGTH, not from finding a match
+            }
             String name = moduleName == null ? "" : moduleName;
             int lineCursor = 0;
             int lineNumber = 0;
             while (m.find()) {
-                if (m.start() > INVENTORY_SCAN_LIMIT) {
-                    inventoryTruncated = true;
-                    break;
-                }
                 String technique = techniqueKeyAt(body, m);
                 // A STRING identity, not a packed hash. The hash form
                 // (h(name)*31 + start)*31 + h(technique) never wraps, so it is a linear equation
@@ -418,8 +422,13 @@ public final class LenientVBAReader {
                 sb.append(e.getKey()).append('=').append(e.getValue());
             }
             if (!omittedTechniques.isEmpty()) {
+                // "at least", because this set is itself capped: past MAX_INVENTORY omissions we
+                // stop remembering keys, and reporting the capped size as the exact number of
+                // omitted techniques under-reports (1,500 distinct hosts said 512, not 988).
+                boolean capped = omittedTechniques.size() >= MAX_INVENTORY;
                 sb.append(sb.length() > 0 ? ", " : "").append("(+")
-                        .append(omittedTechniques.size()).append(" more techniques not listed)");
+                        .append(capped ? "at least " : "").append(omittedTechniques.size())
+                        .append(" more techniques not listed)");
             }
             if (inventoryTruncated) {
                 // Emitted even when NOTHING was inventoried. Returning null on an empty technique
@@ -615,10 +624,73 @@ public final class LenientVBAReader {
      * document, shared by the tree walk and the orphan scan so a module both reach is retained --
      * and charged -- exactly once.
      */
-    private static final class ModuleSink {
+    static final class ModuleSink {   // package-private so a test can gate its retention shape
         final Map<String, String> out = new LinkedHashMap<>();
         final Map<String, Set<String>> bodiesByKey = new java.util.HashMap<>();
         final Map<String, Integer> nextSuffix = new java.util.HashMap<>();
+        /** Per-name body ids backing {@link #inventoryKey}; bounded by the module count. */
+        final Map<String, Map<String, Integer>> inventoryIds = new java.util.HashMap<>();
+
+        /**
+         * A stable inventory identity for one (module name, body) pair.
+         *
+         * <p>Not the storage key. Storage keys are assigned per successful store, so a caller that
+         * inventories before it knows whether the store happens cannot use one: retainIndicators
+         * visits a module twice (a prefix pass, then a full pass), and a store-attempt counter
+         * handed those two visits DIFFERENT keys -- two real call sites reported three. Keyed on
+         * the body instead, the second visit resolves to the same id and collapses, while a second
+         * distinct body called "Mod" still gets an id of its own.
+         *
+         * <p>Keyed on a DIGEST of the body, not the body. retainIndicators hands us the raw
+         * module, which the output deliberately does not keep -- holding it here for the life of
+         * the sink would turn a bounded-output path into unbounded retention (10k modules of 64 KB
+         * reduced to indicators-only would still pin 640 MB). A digest and not length+hashCode
+         * because this parser's input is hostile: a hashCode collision is trivially craftable and
+         * would silently merge two payload bodies into one inventory entry.
+         */
+        String inventoryKey(String name, String text) {
+            Map<String, Integer> ids = inventoryIds.computeIfAbsent(name, k -> new java.util.HashMap<>());
+            String probe = digest(text);
+            Integer id = ids.get(probe);
+            if (id == null) {
+                id = ids.size() + 1;   // computed BEFORE the put, so ids are 1-based and dense
+                ids.put(probe, id);
+            }
+            return id == 1 ? name : name + "#" + id;
+        }
+
+        /**
+         * Fed in bounded slices rather than {@code text.getBytes(UTF_8)}, which would materialise
+         * a second full copy of every module body. retainIndicators digests each module TWICE (a
+         * prefix pass and a full pass), so on 40 modules of 1 MB the whole-array form churned
+         * ~80 MB per read for an identity that is 32 bytes wide.
+         */
+        private static String digest(String text) {
+            try {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                java.nio.charset.CharsetEncoder enc =
+                        java.nio.charset.StandardCharsets.UTF_8.newEncoder();
+                int at = 0;
+                while (at < text.length()) {
+                    int end = Math.min(text.length(), at + DIGEST_SLICE);
+                    // encode() resets the encoder per call, so each slice stands alone -- which
+                    // makes a surrogate pair split across the boundary encode as replacement
+                    // chars. Pull the low surrogate into this slice so the result equals the
+                    // body's ordinary UTF-8 encoding rather than merely being self-consistent.
+                    if (end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))) {
+                        end++;
+                    }
+                    md.update(enc.encode(java.nio.CharBuffer.wrap(text, at, end)));
+                    at = end;
+                }
+                return java.util.Base64.getEncoder().encodeToString(md.digest());
+            } catch (java.security.NoSuchAlgorithmException
+                    | java.nio.charset.CharacterCodingException e) {
+                throw new IllegalStateException("SHA-256 and UTF-8 are required of every JRE", e);
+            }
+        }
+
+        private static final int DIGEST_SLICE = 8 * 1024;
 
         /** Whether this exact body is already stored under this name -- a NON-mutating check. */
         boolean alreadyStored(String name, String text) {
@@ -653,11 +725,11 @@ public final class LenientVBAReader {
         }
         if (putUnique(sink, name, text)) {
             bounds.charge(text.length());
+            // Inventory under a body-keyed identity, not the raw name. putUnique deliberately
+            // keeps distinct same-named bodies as `name` and `name#2`; inventorying both under the
+            // unsuffixed name made the identity collide, so two real call sites reported one.
+            bounds.inventory(sink.inventoryKey(name, text), text);
         }
-        // Inventory EVERY accepted body, not just over-budget ones. Identity is (module, offset),
-        // so a module both extraction routes reach is counted once while a genuinely repeated line
-        // is counted twice.
-        bounds.inventory(name, text);
         return true;
     }
 
@@ -765,7 +837,14 @@ public final class LenientVBAReader {
         if (token.startsWith("url:")) {
             return severityOf("http://");
         }
-
+        if (token.startsWith("unc:")) {
+            // Reconstruct the shape severityOf recognises. The normalised key has no backslashes,
+            // so it fell through to the FLOOR -- below an ordinary http link -- and UNC staging
+            // targets were evicted first. That is the exact defect fixed for extraction in #20,
+            // reintroduced here because I reverted the unc:/url: split in TWO places when only the
+            // extraction-side one was the violation.
+            return severityOf("\\\\host\\share");
+        }
         return severityOf(token);
     }
 
@@ -1082,7 +1161,12 @@ public final class LenientVBAReader {
         // decide what appears here reintroduced a second, undeclared, silent one -- measured, a
         // document whose first two modules exhausted the 2 MB scan budget reported only their
         // techniques while a powershell dropper in the third was absent with no truncation notice.
-        bounds.inventory(name, text);
+        //
+        // Body-keyed, not the raw name: a second distinct body called "Mod" must not collapse
+        // into the first. Deliberately independent of whether the store happens -- this path can
+        // still bail on the reserve below, and an indicator in a body that never reached the
+        // output is exactly what the inventory exists to report.
+        bounds.inventory(sink.inventoryKey(name, text), text);
         int scanLimit = Math.min(text.length(), bounds.remainingScan());
         if (scanLimit <= 0) {
             // The document has had all the scanning it is going to get.

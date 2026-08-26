@@ -1365,6 +1365,131 @@ public class VbaBudgetTest {
         }
     }
 
+    @Test
+    @DisplayName("a UNC staging path survives a flood of urls in the inventory")
+    void testUncSurvivesUrlFloodInInventory() throws Exception {
+        // techniqueSeverity understood "url:" but not the "unc:" keys the inventory hands it, so a
+        // normalised UNC key had no backslashes, fell through severityOf to the FLOOR -- below an
+        // ordinary http link -- and was evicted first. That is the defect fixed for EXTRACTION in
+        // PR #20, reintroduced here because I reverted the unc:/url: split in two places when only
+        // the extraction-side one was the violation.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            b.append("  u").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/p\"\n");
+        }
+        b.append("  Open \"\\\\10.0.0.5\\c$\\UNCPAYLOAD.exe\" For Binary\n");
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "inventory must be populated");
+            assertTrue(inv.contains("unc:10.0.0.5"),
+                    "a UNC staging target must outrank 600 invented http hosts; got: "
+                            + inv.substring(0, Math.min(160, inv.length())));
+        }
+    }
+
+    @Test
+    @DisplayName("modules sharing a name are counted separately in the inventory")
+    void testSameNamedModulesCountSeparately() throws Exception {
+        // putUnique deliberately keeps distinct same-named bodies as `name` and `name#2` -- the
+        // second is where a payload goes. Inventorying both under the UNSUFFIXED name made the
+        // identity collide, so two real call sites at the same line reported one occurrence.
+        byte[] project = new VbaProjectBuilder()
+                .module("Mod", "s1", "s1", "Sub A()\n  Shell \"powershell -enc ONE\"\nEnd Sub\n")
+                .module("Mod", "s2", "s2", "Sub A()\n  Shell \"powershell -enc TWO\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            assertEquals(2, macros.size(),
+                    "fixture precondition: both bodies must be retained; got " + macros.keySet());
+            String inv = bounds.indicatorInventory();
+            assertTrue(inv != null && inv.contains("powershell=2"),
+                    "two distinct powershell call sites must report 2; got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("same-named modules count separately on the RESERVE path too")
+    void testSameNamedModulesCountSeparatelyOnTheReservePath() throws Exception {
+        // The sibling of testSameNamedModulesCountSeparately. retainIndicators must inventory
+        // BEFORE the scan budget can abort it, so it cannot wait for putUnique to hand back a
+        // key -- it peeks. Peek it wrong and the two bodies collide exactly as they did on the
+        // full-retention path, on the route that only runs once the document budget is spent.
+        String filler = "  x = 1\n".repeat(9000);
+        byte[] project = new VbaProjectBuilder()
+                .module("Mod", "s1", "s1",
+                        "Sub A()\n" + filler + "  Shell \"powershell -enc ONE\"\nEnd Sub\n")
+                .module("Mod", "s2", "s2",
+                        "Sub A()\n" + filler + "  Shell \"powershell -enc TWO\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(1024 * 1024, 20_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(macros.values().stream()
+                            .anyMatch(v -> v.startsWith(LenientVBAReader.INDICATORS_ONLY_MARKER)),
+                    "fixture precondition: the reserve path must be the one that ran; got "
+                            + macros.keySet());
+            String inv = bounds.indicatorInventory();
+            assertTrue(inv != null && inv.contains("powershell=2"),
+                    "two distinct powershell call sites must report 2; got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("the inventory identity does not retain module bodies")
+    void testInventoryIdentityDoesNotRetainModuleBodies() {
+        // retainIndicators inventories the RAW body, which the output deliberately drops -- it
+        // stores only a truncated indicators-only value. Keying the identity on the body itself
+        // (my first version of this fix) pinned every rejected module for the life of the sink,
+        // turning a bounded-output path into unbounded retention. Structural, not a heap probe:
+        // what must hold is that the identity map's keys are digests, whatever their size.
+        // Deliberately MODEST (8 KB, not the 400 KB I first wrote). A body-keyed map would retain
+        // 8192 chars against a 1024 budget -- an 8x separation is all the proof this needs -- and
+        // the big version perturbed VbaCostShapeTest in the shared surefire JVM badly enough to
+        // flip its decompress gate to 10x in 3 of 3 runs. A structural assertion should not have
+        // to allocate to make its point.
+        LenientVBAReader.ModuleSink sink = new LenientVBAReader.ModuleSink();
+        String big = "Sub A()\n" + "  x = 1\n".repeat(1_000) + "End Sub\n";
+        sink.inventoryKey("M", big);
+        sink.inventoryKey("M", big + "' distinct\n");
+        assertEquals(2, sink.inventoryIds.get("M").size(), "two distinct bodies must get two ids");
+        long retained = 0;
+        for (Map<String, Integer> ids : sink.inventoryIds.values()) {
+            for (String key : ids.keySet()) {
+                retained += key.length();
+            }
+        }
+        assertTrue(retained < 1024,
+                "the identity map must not retain module bodies: retained " + retained
+                        + " chars for " + (2L * big.length()) + " chars of input");
+    }
+
+    @Test
+    @DisplayName("the sliced digest sees the whole body, including across slice boundaries")
+    void testSlicedDigestSeesTheWholeBody() {
+        // The identity digest is fed in 8 KB slices to avoid copying whole module bodies. Three
+        // ways that loop can be wrong, all silent: stop after the first slice (two payloads that
+        // share a long prefix become one entry), double-count a slice, or split a surrogate pair
+        // and make the same body hash differently on two visits.
+        LenientVBAReader.ModuleSink sink = new LenientVBAReader.ModuleSink();
+        String head = "a".repeat(20_000);   // spans three slices
+        assertEquals("M", sink.inventoryKey("M", head + "ONE"));
+        assertEquals("M#2", sink.inventoryKey("M", head + "TWO"),
+                "bodies differing only PAST the first slice must not collide");
+        assertEquals("M", sink.inventoryKey("M", head + "ONE"),
+                "a repeat visit to the same body must collapse onto its first id");
+
+        String straddling = "b".repeat(8191) + "\uD83D\uDCA9" + "c".repeat(100);
+        String first = sink.inventoryKey("S", straddling);
+        assertEquals("S", first);
+        assertEquals(first, sink.inventoryKey("S", straddling),
+                "a surrogate pair on the slice boundary must hash the same on every visit");
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {
