@@ -344,15 +344,32 @@ public class VbaCostShapeTest {
     }
 
     /** Fastest of three runs: the minimum is the least noise-contaminated estimate. */
+    /**
+     * Minimum of {@value #SAMPLES} timed runs -- "how fast can this go", which is the estimator a
+     * cost-SHAPE gate wants: a genuinely super-linear path is slow in every sample, while a single
+     * full GC landing inside one sample is worth the entire growth budget on its own.
+     *
+     * <p>Five samples and a collection hint between them, not three and none, because the largest
+     * fixture here allocates ~268 MB per sample against a 256 MB cap: this gate was flipping to
+     * 9-11x purely on GC scheduling, reproducibly enough to correlate with the mere PRESENCE of an
+     * unrelated fast test elsewhere in the shared surefire JVM. Deliberately NOT a looser
+     * threshold -- 8.0 stays, because raising it is how a real quadratic hid here before. Reducing
+     * measurement noise makes the gate sharper; raising the bar makes it blinder.
+     */
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
         long best = Long.MAX_VALUE;
-        for (int rep = 0; rep < 3; rep++) {
+        for (int rep = 0; rep < SAMPLES; rep++) {
+            // A hint, not a guarantee, and that is fine: it only has to make a collection DURING
+            // the timed region less likely across five tries, not impossible in any one of them.
+            System.gc();
             long t0 = System.nanoTime();
             run.accept(input);
             best = Math.min(best, System.nanoTime() - t0);
         }
         return best;
     }
+
+    private static final int SAMPLES = 5;
     /**
      * The reserve's eviction must not rescan what it already knows.
      *
