@@ -110,7 +110,11 @@ public class WMFParser implements Parser {
 
             boolean hashEnabled = isImageHashingEnabled(context);
             if (hashEnabled || EMFParser.hasMetafileOcr(context)) {
-                BufferedImage raster = rasterizeWmf(picture);
+                int[] simplified = new int[1];
+                BufferedImage raster = rasterizeWmf(picture, simplified);
+                if (simplified[0] > 0) {
+                    metadata.set(EMFParser.RENDER_SIMPLIFIED, simplified[0]);
+                }
                 EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
                 if (hashEnabled) {
                     ImageHashUtils.setHashes(raster, metadata);
@@ -147,7 +151,7 @@ public class WMFParser implements Parser {
      * Rasterize a WMF to a BufferedImage at up to OCR_RASTER_MAX_PX on the longest side.
      * Returns null if the size is invalid or rendering fails.
      */
-    private static BufferedImage rasterizeWmf(HwmfPicture wmf) {
+    private static BufferedImage rasterizeWmf(HwmfPicture wmf, int[] simplified) {
         try {
             Dimension2D size = wmf.getSize();
             double pw = size.getWidth(), ph = size.getHeight();
@@ -160,7 +164,11 @@ public class WMFParser implements Parser {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g.setColor(Color.WHITE);
             g.fillRect(0, 0, w, h);
-            wmf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+            // Same render bound as the EMF path -- WMF replays through Java2D identically, so it
+            // carries the identical unbounded dashed-stroke cost.
+            BoundedRenderGraphics2D bounded = new BoundedRenderGraphics2D(g);
+            wmf.draw(bounded, new Rectangle2D.Double(0, 0, w, h));
+            simplified[0] = bounded.substitutionCount();
             g.dispose();
             return img;
         } catch (Exception e) {

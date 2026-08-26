@@ -87,6 +87,11 @@ public class EMFParser implements Parser {
     /** Maximum pixel dimension when rasterizing for OCR. */
     private static final int OCR_RASTER_MAX_PX = 1200;
 
+    /** Metadata key: how many dashed strokes the render bound had to simplify. */
+    static final Property RENDER_SIMPLIFIED =
+            Property.externalInteger("msoffice:metafile-render-simplified");
+
+
     private boolean imageHashingEnabled = false;
 
     private static void handleEmbedded(byte[] data,
@@ -156,7 +161,13 @@ public class EMFParser implements Parser {
 
             boolean hashEnabled = isImageHashingEnabled(context);
             if (hashEnabled || hasMetafileOcr(context)) {
-                BufferedImage raster = rasterizeEmf(ex);
+                int[] simplified = new int[1];
+                BufferedImage raster = rasterizeEmf(ex, simplified);
+                if (simplified[0] > 0) {
+                    // Never silent: a simplified render is reported, so a consumer can tell it
+                    // from a faithful one rather than trusting OCR output from a bounded draw.
+                    metadata.set(RENDER_SIMPLIFIED, simplified[0]);
+                }
                 tryMetafileOcr(raster, xhtml, metadata, context);
                 if (hashEnabled) {
                     ImageHashUtils.setHashes(raster, metadata);
@@ -194,8 +205,11 @@ public class EMFParser implements Parser {
     /**
      * Rasterize an EMF to a BufferedImage at up to OCR_RASTER_MAX_PX on the longest side.
      * Returns null if the size is invalid or rendering fails.
+     *
+     * @param simplified single-element out-param receiving the number of dashed strokes the
+     *                   render bound had to simplify; 0 means the render was faithful
      */
-    private static BufferedImage rasterizeEmf(HemfPicture emf) {
+    private static BufferedImage rasterizeEmf(HemfPicture emf, int[] simplified) {
         try {
             Dimension2D size = emf.getSize();
             double pw = size.getWidth(), ph = size.getHeight();
@@ -208,7 +222,12 @@ public class EMFParser implements Parser {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g.setColor(Color.WHITE);
             g.fillRect(0, 0, w, h);
-            emf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+            // Replay through the render bound. A dashed stroke costs pathLength/dashPeriod
+            // segments, both document-controlled and invisible in any cheap property of the
+            // input; measured on real samples, four dashed strokes were ~95% of a 10.5 s render.
+            BoundedRenderGraphics2D bounded = new BoundedRenderGraphics2D(g);
+            emf.draw(bounded, new Rectangle2D.Double(0, 0, w, h));
+            simplified[0] = bounded.substitutionCount();
             g.dispose();
             return img;
         } catch (Exception e) {
