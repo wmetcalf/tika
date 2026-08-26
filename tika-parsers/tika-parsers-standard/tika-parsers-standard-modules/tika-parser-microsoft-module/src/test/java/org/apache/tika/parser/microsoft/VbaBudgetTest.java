@@ -1227,6 +1227,269 @@ public class VbaBudgetTest {
         }
     }
 
+    /**
+     * THE guarantee a fixed-size text excerpt cannot give: every technique present is REPORTED,
+     * whether or not an example of it survives the budget.
+     *
+     * <p>Everything before this competed for one 2,048-character excerpt, so something always had
+     * to be dropped and the author influenced what. Seven rounds of review found seven different
+     * ways to be the thing that got dropped. The excerpt is the wrong shape for the question "what
+     * does this module do": an inventory answers it in ~20 bytes per technique and never has to
+     * choose. The excerpt stays, as EXAMPLES, and is allowed to be incomplete.
+     */
+    @Test
+    @DisplayName("PROPERTY: every technique present is reported, even when its text is dropped")
+    void testTechniqueInventoryIsCompleteRegardlessOfBudget() throws Exception {
+        final String payload = "Shell \"powershell -enc PAYLOADMARKER\"";
+        String filler = "' filler\n".repeat(12000);
+        java.util.Map<String, String> arrangements = new java.util.LinkedHashMap<>();
+
+        StringBuilder loud = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            loud.append("  Shell \"d").append(i).append("\" ' shellexecute ")
+                    .append("z".repeat(200)).append("\n");
+        }
+        arrangements.put("buried-under-same-technique", loud + filler + "  " + payload + "\n");
+
+        StringBuilder hosts = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            hosts.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i))
+                    .append(".example/p\" ' shellexecute\n");
+        }
+        arrangements.put("buried-under-400-techniques", hosts + filler + "  " + payload + "\n");
+
+        StringBuilder dedup = new StringBuilder();
+        for (int i = 0; i < 20_001; i++) {
+            dedup.append("  Set q").append(i).append(" = CreateObject(\"D")
+                    .append(String.format(java.util.Locale.ROOT, "%06d", i)).append("\")\n");
+        }
+        arrangements.put("beyond-every-cap", dedup + filler + "  " + payload + "\n");
+
+        // THE ORDINARY DOCUMENT, and its absence is why the first version of this feature shipped
+        // broken. Every arrangement above deliberately OVERFLOWS the budget, which is the only path
+        // the inventory was hooked into -- so the test passed while the inventory was null for
+        // every document that is not over-budget, i.e. almost all of them. A property test whose
+        // fixtures all exercise the same path proves that path, not the property.
+        arrangements.put("ordinary-document-well-under-budget",
+                "Sub AutoOpen()\n"
+                        + "  Set w = CreateObject(\"WScript.Shell\")\n"
+                        + "  w.Run \"powershell -enc SGVsbG8=\"\n"
+                        + "End Sub\n");
+
+        java.util.List<String> unreported = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : arrangements.entrySet()) {
+            byte[] doc = new VbaProjectBuilder().module("P", e.getValue()).build();
+            OfficeParserConfig cfg = new OfficeParserConfig();
+            cfg.setVbaMaxTotalBytes(60_000);
+            Metadata md = new Metadata();
+            parse(doc, md, cfg);
+            String inventory = md.get(OfficeParser.VBA_INDICATOR_INVENTORY);
+            if (inventory == null || !inventory.contains("powershell")) {
+                unreported.add(e.getKey() + " (inventory=" + inventory + ")");
+            }
+        }
+        assertTrue(unreported.isEmpty(),
+                "an inventory entry costs about twenty bytes and never has to compete with the "
+                        + "excerpt, so there is no budget reason to omit a technique that is "
+                        + "present. Missing from: " + unreported);
+    }
+
+    @Test
+    @DisplayName("inventory counts each line once, though both extraction routes see it")
+    void testInventoryCountsEachLineOnce() throws Exception {
+        // readMacros deliberately runs BOTH the tree walk and the orphan scan -- a decoy module
+        // must not be able to suppress orphan recovery -- so both routes reach the same module.
+        // retain() collapses the duplicate TEXT; the inventory needs its own collapsing or it
+        // reports everything twice. Measured before the fix: 400 decoy lines came back as
+        // shell=800, and an inflated count is a misleading fact, not a harmless one.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            b.append("  Shell \"d").append(i).append("\"\n");
+        }
+        byte[] project = new VbaProjectBuilder()
+                .module("P", b + "' filler\n".repeat(12000)).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds =
+                    new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000);
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "the inventory must be populated");
+            assertTrue(inv.contains("shell=40"),
+                    "40 distinct Shell lines must be reported as 40, not 80. Got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("the lenient reader's normal accept path is inventoried")
+    void testLenientRetainPathIsInventoried() throws Exception {
+        // The retain() hook had NO coverage: a reviewer showed that deleting it left all tests
+        // green, because every existing fixture reached either the POI path or the over-budget
+        // reserve path. This drives the lenient reader directly with a module that FITS, which is
+        // the one route retain() owns.
+        byte[] project = new VbaProjectBuilder()
+                .module("M", "Sub AutoOpen()\n  Shell \"powershell -enc RETAINPATH\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "the lenient retain path must inventory what it accepts");
+            assertTrue(inv.contains("powershell"), "got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("a full technique map evicts the least alarming, not the newest arrival")
+    void testInventoryEvictsWeakestTechniqueNotNewest() throws Exception {
+        // MAX_INVENTORY admitted by ARRIVAL ORDER, which the author writes: 512 invented hosts
+        // ahead of the payload kept its technique out of the named list entirely. This file's own
+        // admitCandidate javadoc states the rule the inventory was not following -- "it drops the
+        // least alarming thing held, not the most recent thing seen".
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            b.append("  x").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/p\"\n");
+        }
+        b.append("  Shell \"powershell -enc EVICTME\"\n");
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "inventory must be populated");
+            assertTrue(inv.contains("powershell"),
+                    "600 invented hosts were written before the payload; admitting by arrival "
+                            + "order keeps the author's decoys and drops the one technique that "
+                            + "matters. Inventory: " + inv.substring(0, Math.min(200, inv.length())));
+        }
+    }
+
+    @Test
+    @DisplayName("a UNC staging path survives a flood of urls in the inventory")
+    void testUncSurvivesUrlFloodInInventory() throws Exception {
+        // techniqueSeverity understood "url:" but not the "unc:" keys the inventory hands it, so a
+        // normalised UNC key had no backslashes, fell through severityOf to the FLOOR -- below an
+        // ordinary http link -- and was evicted first. That is the defect fixed for EXTRACTION in
+        // PR #20, reintroduced here because I reverted the unc:/url: split in two places when only
+        // the extraction-side one was the violation.
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 600; i++) {
+            b.append("  u").append(i).append(" = \"http://d")
+                    .append(String.format(java.util.Locale.ROOT, "%04d", i)).append(".example/p\"\n");
+        }
+        b.append("  Open \"\\\\10.0.0.5\\c$\\UNCPAYLOAD.exe\" For Binary\n");
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            LenientVBAReader.readMacros(fs, bounds);
+            String inv = bounds.indicatorInventory();
+            assertNotNull(inv, "inventory must be populated");
+            assertTrue(inv.contains("unc:10.0.0.5"),
+                    "a UNC staging target must outrank 600 invented http hosts; got: "
+                            + inv.substring(0, Math.min(160, inv.length())));
+        }
+    }
+
+    @Test
+    @DisplayName("modules sharing a name are counted separately in the inventory")
+    void testSameNamedModulesCountSeparately() throws Exception {
+        // putUnique deliberately keeps distinct same-named bodies as `name` and `name#2` -- the
+        // second is where a payload goes. Inventorying both under the UNSUFFIXED name made the
+        // identity collide, so two real call sites at the same line reported one occurrence.
+        byte[] project = new VbaProjectBuilder()
+                .module("Mod", "s1", "s1", "Sub A()\n  Shell \"powershell -enc ONE\"\nEnd Sub\n")
+                .module("Mod", "s2", "s2", "Sub A()\n  Shell \"powershell -enc TWO\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds();
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            assertEquals(2, macros.size(),
+                    "fixture precondition: both bodies must be retained; got " + macros.keySet());
+            String inv = bounds.indicatorInventory();
+            assertTrue(inv != null && inv.contains("powershell=2"),
+                    "two distinct powershell call sites must report 2; got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("same-named modules count separately on the RESERVE path too")
+    void testSameNamedModulesCountSeparatelyOnTheReservePath() throws Exception {
+        // The sibling of testSameNamedModulesCountSeparately. retainIndicators must inventory
+        // BEFORE the scan budget can abort it, so it cannot wait for putUnique to hand back a
+        // key -- it peeks. Peek it wrong and the two bodies collide exactly as they did on the
+        // full-retention path, on the route that only runs once the document budget is spent.
+        String filler = "  x = 1\n".repeat(9000);
+        byte[] project = new VbaProjectBuilder()
+                .module("Mod", "s1", "s1",
+                        "Sub A()\n" + filler + "  Shell \"powershell -enc ONE\"\nEnd Sub\n")
+                .module("Mod", "s2", "s2",
+                        "Sub A()\n" + filler + "  Shell \"powershell -enc TWO\"\nEnd Sub\n")
+                .build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            LenientVBAReader.Bounds bounds = new LenientVBAReader.Bounds(1024 * 1024, 20_000);
+            Map<String, String> macros = LenientVBAReader.readMacros(fs, bounds);
+            assertTrue(macros.values().stream()
+                            .anyMatch(v -> v.startsWith(LenientVBAReader.INDICATORS_ONLY_MARKER)),
+                    "fixture precondition: the reserve path must be the one that ran; got "
+                            + macros.keySet());
+            String inv = bounds.indicatorInventory();
+            assertTrue(inv != null && inv.contains("powershell=2"),
+                    "two distinct powershell call sites must report 2; got: " + inv);
+        }
+    }
+
+    @Test
+    @DisplayName("the inventory identity does not retain module bodies")
+    void testInventoryIdentityDoesNotRetainModuleBodies() {
+        // retainIndicators inventories the RAW body, which the output deliberately drops -- it
+        // stores only a truncated indicators-only value. Keying the identity on the body itself
+        // (my first version of this fix) pinned every rejected module for the life of the sink,
+        // turning a bounded-output path into unbounded retention. Structural, not a heap probe:
+        // what must hold is that the identity map's keys are digests, whatever their size.
+        // Deliberately MODEST (8 KB, not the 400 KB I first wrote). A body-keyed map would retain
+        // 8192 chars against a 1024 budget -- an 8x separation is all the proof this needs -- and
+        // the big version perturbed VbaCostShapeTest in the shared surefire JVM badly enough to
+        // flip its decompress gate to 10x in 3 of 3 runs. A structural assertion should not have
+        // to allocate to make its point.
+        LenientVBAReader.ModuleSink sink = new LenientVBAReader.ModuleSink();
+        String big = "Sub A()\n" + "  x = 1\n".repeat(1_000) + "End Sub\n";
+        sink.inventoryKey("M", big);
+        sink.inventoryKey("M", big + "' distinct\n");
+        assertEquals(2, sink.inventoryIds.get("M").size(), "two distinct bodies must get two ids");
+        long retained = 0;
+        for (Map<String, Integer> ids : sink.inventoryIds.values()) {
+            for (String key : ids.keySet()) {
+                retained += key.length();
+            }
+        }
+        assertTrue(retained < 1024,
+                "the identity map must not retain module bodies: retained " + retained
+                        + " chars for " + (2L * big.length()) + " chars of input");
+    }
+
+    @Test
+    @DisplayName("the sliced digest sees the whole body, including across slice boundaries")
+    void testSlicedDigestSeesTheWholeBody() {
+        // The identity digest is fed in 8 KB slices to avoid copying whole module bodies. Three
+        // ways that loop can be wrong, all silent: stop after the first slice (two payloads that
+        // share a long prefix become one entry), double-count a slice, or split a surrogate pair
+        // and make the same body hash differently on two visits.
+        LenientVBAReader.ModuleSink sink = new LenientVBAReader.ModuleSink();
+        String head = "a".repeat(20_000);   // spans three slices
+        assertEquals("M", sink.inventoryKey("M", head + "ONE"));
+        assertEquals("M#2", sink.inventoryKey("M", head + "TWO"),
+                "bodies differing only PAST the first slice must not collide");
+        assertEquals("M", sink.inventoryKey("M", head + "ONE"),
+                "a repeat visit to the same body must collapse onto its first id");
+
+        String straddling = "b".repeat(8191) + "\uD83D\uDCA9" + "c".repeat(100);
+        String first = sink.inventoryKey("S", straddling);
+        assertEquals("S", first);
+        assertEquals(first, sink.inventoryKey("S", straddling),
+                "a surrogate pair on the slice boundary must hash the same on every visit");
+    }
+
     private static String describe(List<Metadata> list) {
         StringBuilder sb = new StringBuilder();
         for (Metadata m : list) {
@@ -1253,6 +1516,19 @@ public class VbaBudgetTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private static String parse(byte[] bytes, Metadata md, OfficeParserConfig cfg)
+            throws Exception {
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        ParseContext context = new ParseContext();
+        if (cfg != null) {
+            context.set(OfficeParserConfig.class, cfg);
+        }
+        try (TikaInputStream tis = TikaInputStream.get(bytes)) {
+            new AutoDetectParser().parse(tis, handler, md, context);
+        }
+        return handler.toString();
+    }
 
     private static String parse(byte[] bytes, Metadata md) throws Exception {
         BodyContentHandler handler = new BodyContentHandler(-1);

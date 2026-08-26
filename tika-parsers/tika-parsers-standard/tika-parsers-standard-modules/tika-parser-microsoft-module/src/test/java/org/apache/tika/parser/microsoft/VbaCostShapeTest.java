@@ -344,15 +344,32 @@ public class VbaCostShapeTest {
     }
 
     /** Fastest of three runs: the minimum is the least noise-contaminated estimate. */
+    /**
+     * Minimum of {@value #SAMPLES} timed runs -- "how fast can this go", which is the estimator a
+     * cost-SHAPE gate wants: a genuinely super-linear path is slow in every sample, while a single
+     * full GC landing inside one sample is worth the entire growth budget on its own.
+     *
+     * <p>Five samples and a collection hint between them, not three and none, because the largest
+     * fixture here allocates ~268 MB per sample against a 256 MB cap: this gate was flipping to
+     * 9-11x purely on GC scheduling, reproducibly enough to correlate with the mere PRESENCE of an
+     * unrelated fast test elsewhere in the shared surefire JVM. Deliberately NOT a looser
+     * threshold -- 8.0 stays, because raising it is how a real quadratic hid here before. Reducing
+     * measurement noise makes the gate sharper; raising the bar makes it blinder.
+     */
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
         long best = Long.MAX_VALUE;
-        for (int rep = 0; rep < 3; rep++) {
+        for (int rep = 0; rep < SAMPLES; rep++) {
+            // A hint, not a guarantee, and that is fine: it only has to make a collection DURING
+            // the timed region less likely across five tries, not impossible in any one of them.
+            System.gc();
             long t0 = System.nanoTime();
             run.accept(input);
             best = Math.min(best, System.nanoTime() - t0);
         }
         return best;
     }
+
+    private static final int SAMPLES = 5;
     /**
      * The reserve's eviction must not rescan what it already knows.
      *
@@ -411,6 +428,43 @@ public class VbaCostShapeTest {
         try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
             long t0 = System.nanoTime();
             LenientVBAReader.readMacros(fs, new LenientVBAReader.Bounds(64 * 1024 * 1024, 60_000));
+            return System.nanoTime() - t0;
+        }
+    }
+
+    /**
+     * The inventory walk must stay linear in the module body.
+     *
+     * <p>This exact shape -- a rescan inside a per-match loop -- has now appeared THREE times in
+     * this file: severityOf over retained slices, urlSpanAt widening with no newline terminator,
+     * and a line counter restarting from offset zero. Each was quadratic, each measured 4x per
+     * doubling, and the second reached 13.4 s on a 256 KB body. This gate exists so the fourth is
+     * caught by CI rather than by a reviewer.
+     *
+     * <p>The fixture deliberately contains NO span terminators (no quotes, no spaces) so a url
+     * match has nothing to stop at -- that is what made the widening version blow up, and a
+     * fixture with quotes in it misses the defect entirely, as one of mine did.
+     */
+    @Test
+    void testInventoryWalkIsLinearInBodySize() throws Exception {
+        long small = timeInventory(64);
+        long large = timeInventory(256);
+        double ratio = (double) large / Math.max(small, 1L);
+        assertTrue(ratio < 8.0,
+                "4x the body cost " + String.format(Locale.ROOT, "%.1fx", ratio)
+                        + " -- the inventory walk is rescanning per match instead of advancing "
+                        + "(small=" + small / 1_000_000 + "ms large=" + large / 1_000_000 + "ms)");
+    }
+
+    private static long timeInventory(int kb) throws Exception {
+        StringBuilder b = new StringBuilder();
+        while (b.length() < kb * 1024) {
+            b.append("http://a\nq=1\n");
+        }
+        byte[] project = new VbaProjectBuilder().module("M", b.toString()).build();
+        try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(project))) {
+            long t0 = System.nanoTime();
+            LenientVBAReader.readMacros(fs, new LenientVBAReader.Bounds());
             return System.nanoTime() - t0;
         }
     }
