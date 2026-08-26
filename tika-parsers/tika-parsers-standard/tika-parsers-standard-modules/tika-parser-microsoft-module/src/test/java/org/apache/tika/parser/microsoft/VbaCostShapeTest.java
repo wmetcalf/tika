@@ -141,8 +141,13 @@ public class VbaCostShapeTest {
         // Copy-token chunks: ~7 input bytes yield ~4094 output bytes each, so the work per unit of
         // n is real decompression (the copy loop plus the chunkBuf -> out handoff where the
         // quadratic would live) rather than the size of the input buffer.
-        assertSubQuadratic("compressed chunks per module", 4096,
-                n -> VbaProjectBuilder.ratioBombContainer(n),
+        // 509 bytes per chunk, not 4,093: the axis under test is the NUMBER of chunk handoffs, and
+        // at the larger payload the top point was dominated by ~0.5 GB of ByteArrayOutputStream
+        // growth rather than by decompression, which read as ~10x growth on linear code. Verified
+        // still to catch the real defect at this size: the historical per-chunk toByteArray() is
+        // detected at 21.4x.
+        assertSubQuadratic("compressed chunks per module", 4096, 16_384,
+                n -> VbaProjectBuilder.ratioBombContainer(n, 509),
                 container -> {
                     try {
                         LenientVBAReader.decompress(container, 0,
@@ -305,17 +310,36 @@ public class VbaCostShapeTest {
      * cost is ~4x and a quadratic one ~16x, so 8x is a midpoint neither reaches by accident. A flaky
      * gate is worse than none: it teaches people to ignore red.
      */
-    private static <T> void assertSubQuadratic(String what, int startN,
+    /**
+     * @param maxBaseN ceiling on how far the scale loop may grow the base size.
+     *
+     * <p>The ceiling exists because an UNBOUNDED scale loop silently picks the fixture size, and
+     * therefore the cost REGIME, from whatever the machine and the JIT happen to be doing. Measured:
+     * the same code took the loop to n=16384 standalone and to n=65536 inside a warm full-suite JVM,
+     * where the top point produced a quarter-gigabyte of output. Past roughly 100 MB the timing is
+     * dominated by ByteArrayOutputStream growth and the final toByteArray copy rather than by the
+     * work under test, and a perfectly linear implementation reads as ~10x growth. Three separate
+     * "fixes" -- more samples, a GC hint, then thread CPU time -- each failed because each treated
+     * the INSTRUMENT as the problem when the fixture had drifted into a regime where a different
+     * cost dominated.
+     */
+    private static <T> void assertSubQuadratic(String what, int startN, int maxBaseN,
                                                java.util.function.IntFunction<T> prepare,
                                                java.util.function.Consumer<T> run) {
-        final long minMeasurable = 60_000_000L; // 60 ms of real work
+        // 15 ms, not 60: this reads thread CPU time, which has nanosecond resolution and none of
+        // wall clock's scheduling noise, so a smaller floor is still a real measurement -- and a
+        // smaller floor is what keeps the fixture out of the allocation-dominated regime.
+        final long minMeasurable = 15_000_000L;
         int baseN = startN;
         long baseCost = 0;
         run.accept(prepare.apply(baseN)); // warm up JIT on the real shape
         int grow = 0;
-        for (; grow < 7; grow++) {
+        for (; grow < 7 && baseN <= maxBaseN; grow++) {
             baseCost = bestOfThree(run, prepare.apply(baseN));
             if (baseCost >= minMeasurable) {
+                break;
+            }
+            if (baseN * 2 > maxBaseN) {
                 break;
             }
             baseN *= 2;
@@ -349,22 +373,28 @@ public class VbaCostShapeTest {
      * cost-SHAPE gate wants: a genuinely super-linear path is slow in every sample, while a single
      * full GC landing inside one sample is worth the entire growth budget on its own.
      *
-     * <p>Five samples and a collection hint between them, not three and none, because the largest
-     * fixture here allocates ~268 MB per sample against a 256 MB cap: this gate was flipping to
-     * 9-11x purely on GC scheduling, reproducibly enough to correlate with the mere PRESENCE of an
-     * unrelated fast test elsewhere in the shared surefire JVM. Deliberately NOT a looser
-     * threshold -- 8.0 stays, because raising it is how a real quadratic hid here before. Reducing
-     * measurement noise makes the gate sharper; raising the bar makes it blinder.
+     * <p>Measured as this THREAD's CPU time, not wall clock. The largest fixture allocates ~268 MB
+     * per sample against a 256 MB cap, so a collection lands inside a timed region routinely; wall
+     * clock bills that pause to the measurement even though the collector runs on its own threads,
+     * and the gate was flipping to 9-11x purely on GC scheduling. Minimum-of-five with a collection
+     * hint was tried first and was NOT enough on its own -- it cut the rate and left the gate still
+     * failing, which is the whole reason this reads CPU time instead.
+     *
+     * <p>Deliberately NOT a looser threshold -- 8.0 stays, because raising it is how a real
+     * quadratic hid here before. Reducing measurement noise makes the gate sharper; raising the
+     * bar makes it blinder.
      */
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
+        java.lang.management.ThreadMXBean threads =
+                java.lang.management.ManagementFactory.getThreadMXBean();
+        boolean cpuTime = threads.isCurrentThreadCpuTimeSupported();
         long best = Long.MAX_VALUE;
         for (int rep = 0; rep < SAMPLES; rep++) {
-            // A hint, not a guarantee, and that is fine: it only has to make a collection DURING
-            // the timed region less likely across five tries, not impossible in any one of them.
             System.gc();
-            long t0 = System.nanoTime();
+            long t0 = cpuTime ? threads.getCurrentThreadCpuTime() : System.nanoTime();
             run.accept(input);
-            best = Math.min(best, System.nanoTime() - t0);
+            long dt = (cpuTime ? threads.getCurrentThreadCpuTime() : System.nanoTime()) - t0;
+            best = Math.min(best, dt);
         }
         return best;
     }
