@@ -208,6 +208,70 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>report</id>
+            <!--
+              Re-bound from test to prepare-package. The parent binds the report to test, and
+              within a phase Maven runs plugins in effective-POM order, so a parent-declared
+              jacoco:report runs BEFORE a module-declared surefire execution: verified in the build
+              log, report at line 545 and the cost-shape execution at 549. The report therefore
+              omitted all 79 isolated tests. Moving it past every test execution restores them.
+
+              Note the agent itself appends: getAppend() is getOption("append", true), so the
+              forks add to target/jacoco.exec rather than replacing one another. Ordering, not
+              append, was what lost the data.
+            -->
+            <phase>prepare-package</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!--
+            Cost-SHAPE gates measure how cost GROWS with input, and that is only meaningful in a
+            JVM whose heap and JIT state were not set by a thousand unrelated tests running first.
+            Sharing one fork made them measure a different cost REGIME: the same gates pass
+            standalone and fail inside the full suite, on changes that provably cannot reach them,
+            because at large fixture sizes allocation rather than the work under test comes to
+            dominate the timing.
+
+            Two earlier attempts treated the INSTRUMENT as the problem, a better estimator
+            (minimum-of-five, thread CPU time) and a smaller fixture. Each cut the failure rate
+            without removing it, because neither addressed the shared JVM. This does.
+
+            The default run excludes the tag; the execution below runs those classes alone with a
+            fresh fork per class. Config is merged with the parent's, NOT overridden, so the
+            inherited -Xmx4g argLine still applies.
+          -->
+          <excludedGroups>cost-shape</excludedGroups>
+        </configuration>
+        <executions>
+          <execution>
+            <id>cost-shape-tests</id>
+            <phase>test</phase>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <groups>cost-shape</groups>
+              <!-- Must NAME a tag: an empty element does not clear the inherited exclusion, and
+                   groups=cost-shape with excludedGroups=cost-shape silently matched NOTHING. -->
+              <excludedGroups>not-a-real-tag</excludedGroups>
+              <reuseForks>false</reuseForks>
+              <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 

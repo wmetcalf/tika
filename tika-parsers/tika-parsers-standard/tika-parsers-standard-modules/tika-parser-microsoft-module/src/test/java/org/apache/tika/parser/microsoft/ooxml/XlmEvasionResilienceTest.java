@@ -38,6 +38,7 @@ import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.xssf.usermodel.XSSFRelation;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import org.apache.tika.metadata.Metadata;
@@ -57,6 +58,10 @@ import org.apache.tika.sax.XHTMLContentHandler;
  * specific broken output is gone; asserting only the former is how three earlier fixes in
  * this area shipped half-done.
  */
+
+// Run in its OWN JVM: see the surefire cost-shape execution in this module's pom. These gates
+// measure how cost GROWS, which a fork warmed by a thousand other tests silently distorts.
+@Tag("cost-shape")
 class XlmEvasionResilienceTest {
 
     private static final String PAYLOAD = "powershell -enc AAAA";
