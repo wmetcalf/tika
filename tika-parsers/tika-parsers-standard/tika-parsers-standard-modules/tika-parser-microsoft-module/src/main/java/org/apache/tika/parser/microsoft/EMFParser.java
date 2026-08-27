@@ -117,6 +117,9 @@ public class EMFParser implements Parser {
         if (budget == null) {
             budget = new MetafileRenderBudget();
             context.set(MetafileRenderBudget.class, budget);
+            // Claim immediately, so a budget created by the first metafile of a document is owned
+            // by that document rather than by whatever parse happens to call beginDocument next.
+            MetafileRenderBudget.beginDocument(context);
         }
         return budget;
     }
@@ -149,7 +152,7 @@ public class EMFParser implements Parser {
         // A ParseContext is routinely reused across INDEPENDENT documents (TikaCLI passes one to
         // every file on the command line), which would make the budget cumulative and silently
         // blind every later document. No-op when this parse is embedded.
-        MetafileRenderBudget.beginTopLevelDocument(context);
+        MetafileRenderBudget.beginDocument(context);
 
         EmbeddedDocumentExtractor embeddedDocumentExtractor = null;
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);

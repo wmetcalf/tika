@@ -129,7 +129,7 @@ public class OOXMLParser extends AbstractOfficeParser {
                       ParseContext context) throws IOException, SAXException, TikaException {
         // Container entry point: mark the document boundary so a reused ParseContext cannot make
         // the metafile budget cumulative across independent documents.
-        org.apache.tika.parser.microsoft.MetafileRenderBudget.beginTopLevelDocument(context);
+        org.apache.tika.parser.microsoft.MetafileRenderBudget.beginDocument(context);
         //set OfficeParserConfig if the user hasn't specified one
         configure(context);
         // Have the OOXML file processed

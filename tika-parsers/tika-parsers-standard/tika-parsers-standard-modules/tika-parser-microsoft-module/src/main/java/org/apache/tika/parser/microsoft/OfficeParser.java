@@ -495,7 +495,7 @@ public class OfficeParser extends AbstractOfficeParser {
                       ParseContext context) throws IOException, SAXException, TikaException {
         // Container entry point: mark the document boundary so a reused ParseContext cannot make
         // the metafile budget cumulative across independent documents.
-        MetafileRenderBudget.beginTopLevelDocument(context);
+        MetafileRenderBudget.beginDocument(context);
 
         configure(context);
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);

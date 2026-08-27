@@ -74,7 +74,7 @@ public class WMFParser implements Parser {
         // A ParseContext is routinely reused across INDEPENDENT documents (TikaCLI passes one to
         // every file on the command line), which would make the budget cumulative and silently
         // blind every later document. No-op when this parse is embedded.
-        MetafileRenderBudget.beginTopLevelDocument(context);
+        MetafileRenderBudget.beginDocument(context);
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         tis.setCloseShield();

@@ -177,26 +177,24 @@ public class MetafileRenderBudgetTest {
 
 
     @Test
-    @DisplayName("the budget does NOT leak across independent top-level documents")
-    void testBudgetResetsPerTopLevelDocument() {
-        // A ParseContext is routinely reused across independent documents: TikaCLI builds one and
-        // passes it to every file on the command line, and the GUI keeps one across opens. Without
-        // a document boundary the budget is cumulative -- measured before the fix, two independent
-        // parses through one context came back used=1 then used=2 -- so after enough files every
-        // later document silently loses rasterization, OCR and image hashing while being marked
-        // exhausted. A limit that leaks across documents turns a bound into a progressive blinding.
+    @DisplayName("the budget does NOT leak across independent documents")
+    void testBudgetResetsPerDocument() {
+        // TikaCLI builds one ParseContext and passes it to every file on the command line; the GUI
+        // keeps one across opens. Measured without a boundary: two independent parses came back
+        // used=1 then used=2, so after enough files every later document silently lost
+        // rasterization, OCR and hashing while being marked exhausted.
         ParseContext context = new ParseContext();
         MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
         context.set(MetafileRenderBudget.class, budget);
 
-        MetafileRenderBudget.beginTopLevelDocument(context);
+        MetafileRenderBudget.beginDocument(context);       // file 1
         assertTrue(budget.tryConsume());
         assertTrue(budget.tryConsume());
         assertFalse(budget.tryConsume(), "document 1 spends its whole budget");
         budget.chargeOcr(5000);
         assertFalse(budget.tryOcr(), "and its whole OCR allowance");
 
-        MetafileRenderBudget.beginTopLevelDocument(context);   // next file on the command line
+        MetafileRenderBudget.beginDocument(context);       // file 2, same context
 
         assertTrue(budget.tryConsume(), "document 2 must get its OWN render budget");
         assertTrue(budget.tryOcr(), "document 2 must get its OWN OCR budget");
@@ -204,27 +202,49 @@ public class MetafileRenderBudgetTest {
     }
 
     @Test
-    @DisplayName("an EMBEDDED parse is not mistaken for a document boundary")
-    void testEmbeddedParseDoesNotResetTheBudget() {
-        // The negative control, and the one that decides whether the fix is worth anything: if an
-        // embedded parse counted as a boundary, every metafile inside a container would get a
-        // fresh 64 and the cap would bound nothing -- the very defect #23 exists to fix.
-        //
-        // Depths are measured, not assumed: AutoDetectParser and CompositeParser each increment
-        // before the real parser runs, so a top-level document's own parser sees depth 2, a
-        // standalone metafile sees depth 2, and metafiles inside a top-level container see depth 4.
-        assertTrue(MetafileRenderBudget.isTopLevel(0), "no ParseRecord yet is top level");
-        assertTrue(MetafileRenderBudget.isTopLevel(2), "a top-level document's own parser");
-        assertFalse(MetafileRenderBudget.isTopLevel(3), "anything deeper is embedded");
-        assertFalse(MetafileRenderBudget.isTopLevel(4), "metafiles inside a container");
-
-        // And the whole point: a budget already spent inside a container stays spent.
-        ParseContext context = new ParseContext();
+    @DisplayName("a nested parse must NOT hand itself a fresh budget")
+    void testNestedParseDoesNotResetTheBudget() {
+        // The permissive direction is the dangerous one, and it is invisible from outside until a
+        // document has already bypassed the cap: if each embedded metafile counted as a new
+        // document it would get a fresh 64 and the cap would bound nothing at all.
         MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
-        context.set(MetafileRenderBudget.class, budget);
+        budget.claim(1);                 // the container owns the budget at depth 1
         budget.tryConsume();
         budget.tryConsume();
         assertFalse(budget.tryConsume(), "precondition: the container has spent its budget");
+
+        budget.claim(2);                 // an embedded metafile, one level deeper
+        assertFalse(budget.tryConsume(), "a nested parse must keep spending the owner's budget");
+        budget.claim(7);                 // and deeper still
+        assertFalse(budget.tryConsume(), "depth alone must not buy a fresh allowance");
+    }
+
+    @Test
+    @DisplayName("the rule is RELATIVE, so it survives a different parser chain")
+    void testRuleDoesNotDependOnAnAbsoluteDepth() {
+        // An earlier version asked whether depth <= 2, which held only for the default
+        // AutoDetectParser nesting. Constructed as AutoDetectParser(Parser...) the chain is one
+        // shorter -- measured: a standalone metafile moves from depth 2 to depth 1 -- so a
+        // container runs at 1 and its metafiles at 2. Under the absolute rule every one of those
+        // metafiles looked top level and reset the budget, bounding nothing.
+        MetafileRenderBudget shortChain = new MetafileRenderBudget(2, 1000L);
+        shortChain.claim(1);             // container, short chain
+        shortChain.tryConsume();
+        shortChain.tryConsume();
+        shortChain.claim(2);             // its metafiles -- depth 2, which the old rule allowed
+        assertFalse(shortChain.tryConsume(),
+                "depth 2 is EMBEDDED here, and must not reset the budget");
+
+        MetafileRenderBudget longChain = new MetafileRenderBudget(2, 1000L);
+        longChain.claim(2);              // container, default chain
+        longChain.tryConsume();
+        longChain.tryConsume();
+        longChain.claim(4);              // its metafiles
+        assertFalse(longChain.tryConsume(), "same rule, deeper chain, same answer");
+
+        // ...and a sibling document at the owner's own depth still gets its own budget.
+        longChain.claim(2);
+        assertTrue(longChain.tryConsume(), "a new document at the owner's depth resets");
     }
 
 }

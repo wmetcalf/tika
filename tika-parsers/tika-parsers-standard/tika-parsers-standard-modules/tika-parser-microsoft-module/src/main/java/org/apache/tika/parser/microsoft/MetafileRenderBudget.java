@@ -118,46 +118,54 @@ public class MetafileRenderBudget implements Serializable {
         return ocrBudgetMillis;
     }
 
-    /**
-     * ParseRecord depth at or below which a parse is the TOP-LEVEL document rather than something
-     * embedded. Measured, not assumed: AutoDetectParser and CompositeParser each increment before
-     * the real parser runs, so a top-level document's own parser sees depth 2, while metafiles
-     * inside a top-level container are at depth 4.
-     */
-    private static final int TOP_LEVEL_DEPTH = 2;
+    /** Nesting depth of the parse that currently owns this budget; -1 until one claims it. */
+    private int ownerDepth = -1;
 
     /**
-     * Start a new top-level document, resetting the budget if one is already installed.
+     * Begin a document, resetting the budget when this parse is a new one rather than something
+     * nested inside the parse that already owns it.
      *
      * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT documents
-     * -- TikaCLI builds one context and passes it to every file on the command line, and the GUI
-     * keeps one across successive opens. Without this the budget is cumulative rather than
-     * per-document: measured, two independent parses through one context came back used=1 then
-     * used=2, so after enough files every later document would silently lose rasterization, OCR and
-     * image hashing while being marked exhausted. A limit that leaks across documents is worse than
-     * no limit, because it turns a bound into a progressive blinding.
+     * -- TikaCLI builds one and passes it to every file on the command line, and the GUI keeps one
+     * across successive opens. Measured without this: two independent parses through one context
+     * came back used=1 then used=2, so after enough files every later document silently lost
+     * rasterization, OCR and image hashing while being marked exhausted. A limit that leaks across
+     * documents is worse than no limit, because it turns a bound into a progressive blinding.
      *
-     * <p>A no-op when called from an embedded parse, so a container's own metafiles keep sharing
-     * one budget.
+     * <p>The rule is RELATIVE, not an absolute depth. An earlier version asked whether the depth
+     * was at most 2, which held only for the default {@code AutoDetectParser} nesting: constructed
+     * as {@code AutoDetectParser(Parser...)} the chain is one shorter, a container runs at depth 1
+     * and its embedded metafiles at depth 2 -- so every metafile would have looked top-level and
+     * been handed a fresh budget, and the render and OCR caps would have bounded nothing at all.
+     * Comparing against the OWNER's depth needs no such assumption: whatever the chain, an
+     * embedded parse is strictly deeper than the parse that contains it.
      */
-    public static void beginTopLevelDocument(ParseContext context) {
-        ParseRecord record = context.get(ParseRecord.class);
-        if (!isTopLevel(record == null ? 0 : record.getDepth())) {
-            return;
-        }
+    public static void beginDocument(ParseContext context) {
         MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
-        if (budget != null) {
-            budget.reset();
+        if (budget == null) {
+            return;   // nothing installed yet: the first render will create it
         }
+        budget.claim(currentDepth(context));
+    }
+
+    private static int currentDepth(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        return record == null ? 0 : record.getDepth();
     }
 
     /**
-     * Whether a parse at this depth is the top-level document rather than something embedded.
-     * Split out so the boundary rule can be tested directly: getting it wrong in the permissive
-     * direction would hand every metafile inside a container a fresh budget, which bounds nothing.
+     * Take ownership if this parse is not nested inside the current owner.
+     *
+     * <p>Package-private rather than private so the rule can be tested without standing up a whole
+     * parser chain -- the failure that matters is the permissive one, and it is invisible from the
+     * outside until a document has already bypassed the cap.
      */
-    static boolean isTopLevel(int depth) {
-        return depth <= TOP_LEVEL_DEPTH;
+    void claim(int depth) {
+        if (ownerDepth >= 0 && depth > ownerDepth) {
+            return;   // nested inside the owning document: keep spending its budget
+        }
+        ownerDepth = depth;
+        reset();
     }
 
     /** Clears everything this document spent, keeping the configured limits. */
