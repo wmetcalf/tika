@@ -1,9 +1,9 @@
 {
-  "scanned_at": "2026-08-27T00:05:06.455428+00:00",
+  "scanned_at": "2026-08-27T00:22:24.116751+00:00",
   "tika_root": "/tmp/shape",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 736,
+    "property_declarations": 737,
     "parsers_emitting_fields": 165,
     "undeclared_string_fields": 277,
     "templated_patterns": 115
@@ -2562,6 +2562,15 @@
       "javadoc": null,
       "emitted_by": [
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil"
+      ]
+    },
+    "msoffice:metafile-render-budget-exhausted": {
+      "type": "externalBoolean",
+      "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
+      "constant_name": "RENDER_BUDGET_EXHAUSTED",
+      "javadoc": "Metadata key: this metafile was NOT rasterized/OCRed because the document spent its budget. */",
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.WMFParser"
       ]
     },
     "msoffice:metafile-render-simplified": {
@@ -10982,6 +10991,7 @@
     },
     "org.apache.tika.parser.microsoft.WMFParser": {
       "emits": [
+        "msoffice:metafile-render-budget-exhausted",
         "msoffice:metafile-render-simplified"
       ]
     },
