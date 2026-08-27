@@ -1,0 +1,91 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.tika.parser.microsoft;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import org.apache.tika.parser.ParseContext;
+
+/**
+ * The per-document cap on how many metafiles may be rasterized and OCRed. Per-metafile cost is
+ * bounded by {@link BoundedRenderGraphics2D}; this bounds the COUNT, which the document chooses --
+ * the worst corpus document carries 623 metafiles in 1.7 MB, each handed to a Tesseract process
+ * with a 120-second timeout of its own.
+ */
+public class MetafileRenderBudgetTest {
+
+    @Test
+    @DisplayName("the budget stops exactly at its limit and counts what it refused")
+    void testBudgetStopsAtTheLimit() {
+        MetafileRenderBudget budget = new MetafileRenderBudget(3);
+        assertTrue(budget.tryConsume());
+        assertTrue(budget.tryConsume());
+        assertTrue(budget.tryConsume());
+        assertFalse(budget.tryConsume(), "the 4th render must be refused at a limit of 3");
+        assertFalse(budget.tryConsume());
+        assertEquals(3, budget.used());
+        assertEquals(2, budget.refused(),
+                "refusals are counted, so an under-examined document can say so");
+    }
+
+    @Test
+    @DisplayName("an ordinary document is never touched by the budget")
+    void testOrdinaryDocumentIsUnaffected() {
+        // The negative control. Across 453 corpus documents carrying metafiles the median is 1 and
+        // p95 is 20, so the default must be nowhere near an ordinary document -- a cap that bites
+        // normal input would silently stop OCRing legitimate diagrams.
+        MetafileRenderBudget budget = new MetafileRenderBudget();
+        for (int i = 0; i < 20; i++) {
+            assertTrue(budget.tryConsume(), "p95 of the corpus must fit inside the default budget");
+        }
+        assertEquals(0, budget.refused(), "nothing refused for a p95 document");
+        assertTrue(MetafileRenderBudget.DEFAULT_MAX_RENDERS >= 3 * 20,
+                "the default should sit well above p95 (20), not on top of it");
+    }
+
+    @Test
+    @DisplayName("one budget is shared by every metafile in a document")
+    void testBudgetIsSharedThroughTheParseContext() {
+        // A per-metafile budget would bound nothing: 623 metafiles would each get a fresh 64.
+        // One ParseContext does reach every embedded parse (measured: 233 metafiles, one context).
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget first = EMFParser.renderBudget(context);
+        MetafileRenderBudget second = EMFParser.renderBudget(context);
+        assertSame(first, second, "the second metafile must find the FIRST metafile's budget");
+        first.tryConsume();
+        assertEquals(1, second.used(), "spending through one reference must be visible to the other");
+    }
+
+    @Test
+    @DisplayName("EMF and WMF draw on the SAME document budget")
+    void testEmfAndWmfShareOneBudget() {
+        // They are separate parsers over the same container. Two independent budgets would let a
+        // document carrying both formats spend twice.
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(1);
+        context.set(MetafileRenderBudget.class, budget);
+        assertTrue(EMFParser.renderBudget(context).tryConsume());
+        assertFalse(EMFParser.renderBudget(context).tryConsume(),
+                "a WMF must not get its own allowance after an EMF spent the budget");
+    }
+}

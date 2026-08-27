@@ -91,6 +91,24 @@ public class EMFParser implements Parser {
     static final Property RENDER_SIMPLIFIED =
             Property.externalInteger("msoffice:metafile-render-simplified");
 
+    /** Metadata key: this metafile was NOT rasterized/OCRed because the document spent its budget. */
+    static final Property RENDER_BUDGET_EXHAUSTED =
+            Property.externalBoolean("msoffice:metafile-render-budget-exhausted");
+
+    /**
+     * The document-wide render budget, created on first use and shared through the ParseContext --
+     * verified shared: one context reaches every embedded parse (measured at 233 metafiles in a
+     * single container).
+     */
+    static MetafileRenderBudget renderBudget(ParseContext context) {
+        MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
+        if (budget == null) {
+            budget = new MetafileRenderBudget();
+            context.set(MetafileRenderBudget.class, budget);
+        }
+        return budget;
+    }
+
 
     private boolean imageHashingEnabled = false;
 
@@ -161,6 +179,14 @@ public class EMFParser implements Parser {
 
             boolean hashEnabled = isImageHashingEnabled(context);
             if (hashEnabled || hasMetafileOcr(context)) {
+                // The per-metafile render is bounded; the NUMBER of metafiles is chosen by the
+                // document. Vector text extraction above has already run and is untouched by this
+                // -- only the expensive rasterize-and-OCR half is capped.
+                if (!renderBudget(context).tryConsume()) {
+                    metadata.set(RENDER_BUDGET_EXHAUSTED, true);
+                    xhtml.endDocument();
+                    return;
+                }
                 int[] simplified = new int[1];
                 BufferedImage raster = rasterizeEmf(ex, simplified);
                 if (simplified[0] > 0) {

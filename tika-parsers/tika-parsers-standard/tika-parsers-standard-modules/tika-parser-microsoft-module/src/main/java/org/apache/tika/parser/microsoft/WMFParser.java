@@ -110,6 +110,11 @@ public class WMFParser implements Parser {
 
             boolean hashEnabled = isImageHashingEnabled(context);
             if (hashEnabled || EMFParser.hasMetafileOcr(context)) {
+                if (!EMFParser.renderBudget(context).tryConsume()) {
+                    metadata.set(EMFParser.RENDER_BUDGET_EXHAUSTED, true);
+                    xhtml.endDocument();
+                    return;
+                }
                 int[] simplified = new int[1];
                 BufferedImage raster = rasterizeWmf(picture, simplified);
                 if (simplified[0] > 0) {
