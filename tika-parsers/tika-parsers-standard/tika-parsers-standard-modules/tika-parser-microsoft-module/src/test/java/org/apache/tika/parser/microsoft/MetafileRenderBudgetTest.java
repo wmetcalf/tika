@@ -21,10 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.image.BufferedImage;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
  * The per-document cap on how many metafiles may be rasterized and OCRed. Per-metafile cost is
@@ -88,4 +93,86 @@ public class MetafileRenderBudgetTest {
         assertFalse(EMFParser.renderBudget(context).tryConsume(),
                 "a WMF must not get its own allowance after an EMF spent the budget");
     }
+
+    @Test
+    @DisplayName("a document stops OCRing once it has spent its total time budget")
+    void testOcrTimeBudgetStops() {
+        // The render cap alone does not bound OCR: Tesseract's timeout is PER IMAGE and defaults
+        // to 120 s, so 64 renders is 2.1 hours. Bounding the TOTAL makes the worst case
+        // independent of that per-image timeout.
+        MetafileRenderBudget budget = new MetafileRenderBudget(64, 1000L);
+        assertTrue(budget.tryOcr());
+        budget.chargeOcr(400);
+        assertTrue(budget.tryOcr(), "400ms of a 1000ms budget must not exhaust it");
+        budget.chargeOcr(700);
+        assertFalse(budget.tryOcr(), "1100ms spent against a 1000ms budget must refuse");
+        assertEquals(1100, budget.ocrSpentMillis());
+        assertEquals(1, budget.ocrRefused(), "refusals are counted, so the document can say so");
+    }
+
+    @Test
+    @DisplayName("a TIMED OUT OCR is charged, not forgiven")
+    void testTimedOutOcrIsCharged() {
+        // The expensive case IS the timeout. Charging only successful calls would let a document
+        // spend unbounded time on failures -- the exact shape this budget exists to stop.
+        MetafileRenderBudget budget = new MetafileRenderBudget(64, 5000L);
+        budget.chargeOcr(120_000);   // one image that ran to Tesseract's default timeout
+        assertFalse(budget.tryOcr(), "a single timed-out image must exhaust a 5s budget");
+    }
+
+    @Test
+    @DisplayName("the worst case is the budget plus ONE in-flight image, not 64 of them")
+    void testWorstCaseIsBounded() {
+        // 64 renders x 120s per-image timeout = 2.1 hours before this change. The budget is
+        // checked BEFORE each call, so the overshoot is at most one image's timeout.
+        MetafileRenderBudget budget = new MetafileRenderBudget(64, 120_000L);
+        long spent = 0;
+        int started = 0;
+        while (budget.tryOcr()) {
+            budget.chargeOcr(120_000);   // every image hits the per-image timeout
+            spent += 120_000;
+            started++;
+            assertTrue(started <= 2, "at most one image may start beyond an exhausted budget");
+        }
+        assertTrue(spent <= 240_000,
+                "worst case must be the budget plus one in-flight image; got " + spent + " ms");
+    }
+
+    @Test
+    @DisplayName("an ordinary document never approaches the OCR budget")
+    void testOrdinaryDocumentNeverHitsTheOcrBudget() {
+        // Negative control. Corpus median is 1 metafile, p95 is 20, and an ordinary metafile OCRs
+        // in about a second -- so the default must be a ceiling on pathology, not an allowance
+        // that ordinary documents bump into.
+        MetafileRenderBudget budget = new MetafileRenderBudget();
+        for (int i = 0; i < 20; i++) {
+            assertTrue(budget.tryOcr(), "a p95 document must never be denied OCR");
+            budget.chargeOcr(1000);
+        }
+        assertEquals(0, budget.ocrRefused());
+        assertTrue(MetafileRenderBudget.DEFAULT_OCR_BUDGET_MILLIS >= 4 * 20 * 1000L,
+                "the default should sit well clear of a p95 document's real OCR time");
+    }
+
+
+    @Test
+    @DisplayName("tryMetafileOcr actually consults the budget before spending time")
+    void testOcrPathConsultsTheBudget() throws Exception {
+        // The tests above exercise the budget OBJECT. Without this one, deleting the check from
+        // tryMetafileOcr would leave every one of them green while the defect was fully restored.
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(64, 1000L);
+        budget.chargeOcr(120_000);          // one timed-out image has already blown the budget
+        context.set(MetafileRenderBudget.class, budget);
+
+        Metadata metadata = new Metadata();
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(new BodyContentHandler(-1), metadata);
+        EMFParser.tryMetafileOcr(new BufferedImage(8, 8, BufferedImage.TYPE_INT_ARGB),
+                xhtml, metadata, context);
+
+        assertEquals("true", metadata.get("msoffice:metafile-ocr-budget-exhausted"),
+                "an exhausted document must report that OCR was skipped, not skip it silently");
+        assertEquals(1, budget.ocrRefused());
+    }
+
 }

@@ -99,6 +99,10 @@ public class EMFParser implements Parser {
     static final Property RENDER_UNUSABLE =
             Property.externalBoolean("msoffice:metafile-render-unusable");
 
+    /** Metadata key: OCR was skipped because the document spent its total OCR time budget. */
+    static final Property OCR_BUDGET_EXHAUSTED =
+            Property.externalBoolean("msoffice:metafile-ocr-budget-exhausted");
+
     /** Metadata key: this metafile was NOT rasterized/OCRed because the document spent its budget. */
     static final Property RENDER_BUDGET_EXHAUSTED =
             Property.externalBoolean("msoffice:metafile-render-budget-exhausted");
@@ -308,6 +312,14 @@ public class EMFParser implements Parser {
     static void tryMetafileOcr(BufferedImage raster, XHTMLContentHandler xhtml,
                                 Metadata metadata, ParseContext context) {
         if (raster == null) return;
+        MetafileRenderBudget budget = renderBudget(context);
+        if (!budget.tryOcr()) {
+            // Checked BEFORE the call, not after: an exhausted document must not start one more
+            // 120-second Tesseract wait it has no budget for.
+            metadata.set(OCR_BUDGET_EXHAUSTED, true);
+            return;
+        }
+        long ocrStart = System.nanoTime();
         try {
             Parser ocrParser = EmbeddedDocumentUtil.getStatelessParser(context);
             if (ocrParser == null) return;
@@ -327,6 +339,10 @@ public class EMFParser implements Parser {
             }
         } catch (Exception e) {
             // non-fatal: OCR is best-effort
+        } finally {
+            // Charged in a finally: a call that TIMED OUT is exactly the expensive case, and
+            // charging only successes would let a document spend forever on failures.
+            budget.chargeOcr((System.nanoTime() - ocrStart) / 1_000_000L);
         }
     }
 
