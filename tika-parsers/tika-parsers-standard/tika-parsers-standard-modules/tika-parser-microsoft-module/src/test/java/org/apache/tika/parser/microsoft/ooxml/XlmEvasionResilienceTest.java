@@ -1213,7 +1213,13 @@ class XlmEvasionResilienceTest {
         // The base auto-scales until it is big enough to mean something: a hand-tuned size is
         // machine-dependent and produced a flake at 10, 5, 38 ms, where the 2n run came in FASTER
         // than n. Growth is capped so a genuinely quadratic implementation cannot spin here.
-        final long minMeasurable = 60_000_000L; // 60 ms of real parse work
+        // 15 ms, not 60, and measured as thread CPU time below. The floor decides how far the
+        // scale loop climbs, and climbing changes the COST REGIME rather than just the sample size:
+        // the sibling of this helper failed ~30% of full-suite runs because its top point grew
+        // large enough that allocation, not the work under test, dominated the timing. A lower
+        // floor keeps every gate nearer the size its startN was chosen for. It is honest at 15 ms
+        // because CPU time has nanosecond resolution and none of wall clock's scheduling noise.
+        final long minMeasurable = 15_000_000L;
         int baseN = startN;
         long baseCost = 0;
         run.accept(prepare.apply(baseN));         // warm up JIT on the real shape
@@ -1247,13 +1253,23 @@ class XlmEvasionResilienceTest {
                         + " (linear ~4x, quadratic ~16x)");
     }
 
-    /** Fastest of three runs: the minimum is the least noise-contaminated estimate. */
+    /**
+     * Fastest of five runs, measured as this THREAD's CPU time: the minimum is the least
+     * noise-contaminated estimate, and CPU time does not bill this thread for a collection that
+     * ran on the collector's threads. Wall clock does, and these fixtures allocate heavily enough
+     * that a pause routinely landed inside a timed region.
+     */
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
+        java.lang.management.ThreadMXBean threads =
+                java.lang.management.ManagementFactory.getThreadMXBean();
+        boolean cpuTime = threads.isCurrentThreadCpuTimeSupported();
         long best = Long.MAX_VALUE;
-        for (int rep = 0; rep < 3; rep++) {
-            long t0 = System.nanoTime();
+        for (int rep = 0; rep < 5; rep++) {
+            System.gc();
+            long t0 = cpuTime ? threads.getCurrentThreadCpuTime() : System.nanoTime();
             run.accept(input);
-            best = Math.min(best, System.nanoTime() - t0);
+            long dt = (cpuTime ? threads.getCurrentThreadCpuTime() : System.nanoTime()) - t0;
+            best = Math.min(best, dt);
         }
         return best;
     }
