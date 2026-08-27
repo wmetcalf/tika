@@ -22,6 +22,7 @@ import java.io.ByteArrayInputStream;
 import java.util.Locale;
 
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -45,6 +46,10 @@ import org.junit.jupiter.api.Test;
  * stream, and the duplicate-name bookkeeping. Gating stream count as if it were ours would have
  * produced a permanently red test that says nothing about our code.
  */
+
+// Run in its OWN JVM: see the surefire cost-shape execution in this module's pom. These gates
+// measure how cost GROWS, which a fork warmed by a thousand other tests silently distorts.
+@Tag("cost-shape")
 public class VbaCostShapeTest {
 
     // ── the dimensions ──────────────────────────────────────────────────────
