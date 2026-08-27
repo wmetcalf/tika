@@ -362,6 +362,21 @@ final class VbaProjectBuilder {
      * the shape a decompression bomb takes.
      */
     static byte[] ratioBombContainer(int chunks) {
+        return ratioBombContainer(chunks, 4093);
+    }
+
+    /**
+     * As above, but with the output-per-chunk chosen by the caller.
+     *
+     * <p>A cost gate over chunk COUNT needs the count to be the only thing that grows. At 4,093
+     * bytes per chunk the largest point produced ~256 MB, where the measurement stops being about
+     * decompression at all: a ByteArrayOutputStream reaching that size doubles through 128 MB and
+     * copies once more on toByteArray, so roughly half a gigabyte of allocation dominates the
+     * timing and dragged the ratio to ~10x on a perfectly linear implementation. A smaller payload
+     * keeps every chunk handoff -- the axis the quadratic lived on -- while keeping total output
+     * well away from that regime.
+     */
+    static byte[] ratioBombContainer(int chunks, int lengthPerChunk) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(0x01);
         for (int c = 0; c < chunks; c++) {
@@ -369,7 +384,7 @@ final class VbaProjectBuilder {
             data.write(0x02);                 // token 0 = literal, token 1 = copy token
             data.write('X');
             // At one byte of output the copy token is 4 offset bits + 12 length bits.
-            int length = 4093;
+            int length = lengthPerChunk;
             int token = ((1 - 1) << 12) | ((length - 3) & 0x0FFF);
             data.write(token & 0xFF);
             data.write((token >> 8) & 0xFF);

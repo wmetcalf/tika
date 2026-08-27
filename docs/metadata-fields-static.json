@@ -1,10 +1,10 @@
 {
-  "scanned_at": "2026-08-25T15:28:14.144536+00:00",
-  "tika_root": "/home/coz/tika-mantis-fix-recovery/tika-fork-recovered",
+  "scanned_at": "2026-08-27T00:05:06.455428+00:00",
+  "tika_root": "/tmp/shape",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 735,
-    "parsers_emitting_fields": 164,
+    "property_declarations": 736,
+    "parsers_emitting_fields": 165,
     "undeclared_string_fields": 277,
     "templated_patterns": 115
   },
@@ -2562,6 +2562,15 @@
       "javadoc": null,
       "emitted_by": [
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil"
+      ]
+    },
+    "msoffice:metafile-render-simplified": {
+      "type": "externalInteger",
+      "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
+      "constant_name": "RENDER_SIMPLIFIED",
+      "javadoc": "Metadata key: how many dashed strokes the render bound had to simplify. */",
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.WMFParser"
       ]
     },
     "msoffice:ocx-name": {
@@ -10969,6 +10978,11 @@
         "url:url_wide_raw",
         "url:warning",
         "url:working_directory"
+      ]
+    },
+    "org.apache.tika.parser.microsoft.WMFParser": {
+      "emits": [
+        "msoffice:metafile-render-simplified"
       ]
     },
     "org.apache.tika.parser.microsoft.WinShortcutParser": {
