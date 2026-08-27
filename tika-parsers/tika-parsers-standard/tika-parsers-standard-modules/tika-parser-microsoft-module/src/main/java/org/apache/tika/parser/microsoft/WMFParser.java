@@ -71,6 +71,10 @@ public class WMFParser implements Parser {
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
+        // A ParseContext is routinely reused across INDEPENDENT documents (TikaCLI passes one to
+        // every file on the command line), which would make the budget cumulative and silently
+        // blind every later document. No-op when this parse is embedded.
+        MetafileRenderBudget.beginDocument(context);
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
         xhtml.startDocument();
         tis.setCloseShield();

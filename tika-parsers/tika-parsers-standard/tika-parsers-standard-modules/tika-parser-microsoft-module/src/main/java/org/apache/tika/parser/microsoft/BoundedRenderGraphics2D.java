@@ -88,43 +88,26 @@ final class BoundedRenderGraphics2D extends Graphics2D {
 
     @Override
     public void setStroke(Stroke s) {
-        d.setStroke(bound(s));
+        // Deliberately NOT decided here. A metafile may select a dashed pen and then change the
+        // world transform WITHOUT re-selecting it, so a decision made at setStroke is made against
+        // a transform that no longer applies by the time anything is drawn -- a pattern judged
+        // sub-pixel under an early small scale would stay solid after a later transform made its
+        // dashes plainly visible, corrupting the raster that OCR and image hashing then read.
+        d.setStroke(s);
     }
 
     /**
-     * Rule 1. Applied at setStroke so the path is never dashed in the first place, rather than
-     * after Java2D has already begun subdividing it.
+     * Both rules, applied per draw against the transform actually in force.
+     *
+     * <p>The caller's stroke is restored afterwards, so a substitution affects only the shape that
+     * needed it rather than everything drawn after it.
      */
-    private Stroke bound(Stroke s) {
-        if (!(s instanceof BasicStroke)) {
-            return s;
-        }
-        BasicStroke bs = (BasicStroke) s;
-        float[] dash = bs.getDashArray();
-        if (dash == null) {
-            return s;
-        }
-        double period = 0;
-        for (float f : dash) {
-            period += f;
-        }
-        if (period <= 0) {
-            return solid(bs);   // a zero period would divide the path infinitely
-        }
-        if (period * deviceScale() >= MIN_DEVICE_DASH_PERIOD) {
-            return s;           // visibly dashed: leave a legitimate document alone
-        }
-        substitutions[0]++;
-        return solid(bs);
-    }
-
-    /** Rule 2: a visible period over a long enough path is still unbounded. */
     @Override
     public void draw(Shape s) {
         Stroke current = d.getStroke();
         if (s != null && current instanceof BasicStroke
                 && ((BasicStroke) current).getDashArray() != null
-                && dashSegmentsExceedBudget(s, (BasicStroke) current)) {
+                && shouldSolidify((BasicStroke) current, s)) {
             substitutions[0]++;
             d.setStroke(solid((BasicStroke) current));
             try {
@@ -137,15 +120,34 @@ final class BoundedRenderGraphics2D extends Graphics2D {
         d.draw(s);
     }
 
-    private boolean dashSegmentsExceedBudget(Shape s, BasicStroke bs) {
+    private boolean shouldSolidify(BasicStroke bs, Shape s) {
+        float[] dash = bs.getDashArray();
         double period = 0;
-        for (float f : bs.getDashArray()) {
+        for (float f : dash) {
             period += f;
         }
         if (period <= 0) {
-            return true;
+            return true;   // a zero period would divide the path infinitely
         }
-        double budgetLength = period * MAX_DASH_SEGMENTS;
+        if (period * deviceScale() < MIN_DEVICE_DASH_PERIOD) {
+            return true;   // rule 1: unrenderable, so solid is the same image
+        }
+        return dashSegmentsExceedBudget(s, dash, period);
+    }
+
+    /**
+     * Rule 2: a visible period over a long enough path is still unbounded.
+     *
+     * <p>Counted in DASH SEGMENTS, not pattern periods. A BasicStroke cycles through every element
+     * of the dash array, so one period of a k-element pattern emits k subdivisions -- budgeting by
+     * period let an attacker keep the total period comfortably above a device pixel and multiply
+     * the real work by the entry count instead. Measured on the previous version: holding the
+     * period at 10 px and the path at 10,000 periods (inside the ceiling), raising the array from
+     * 2 to 5,000 entries took real segments from 20,000 to 50,000,000 with the bound never firing.
+     */
+    private boolean dashSegmentsExceedBudget(Shape s, float[] dash, double period) {
+        int entries = Math.max(1, dash.length);
+        double budgetLength = period * ((double) MAX_DASH_SEGMENTS / entries);
         double length = 0;
         double[] c = new double[6];
         double px = 0, py = 0, sx = 0, sy = 0;

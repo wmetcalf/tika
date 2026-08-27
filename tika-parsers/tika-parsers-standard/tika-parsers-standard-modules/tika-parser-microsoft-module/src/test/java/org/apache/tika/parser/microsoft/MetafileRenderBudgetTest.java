@@ -175,4 +175,76 @@ public class MetafileRenderBudgetTest {
         assertEquals(1, budget.ocrRefused());
     }
 
+
+    @Test
+    @DisplayName("the budget does NOT leak across independent documents")
+    void testBudgetResetsPerDocument() {
+        // TikaCLI builds one ParseContext and passes it to every file on the command line; the GUI
+        // keeps one across opens. Measured without a boundary: two independent parses came back
+        // used=1 then used=2, so after enough files every later document silently lost
+        // rasterization, OCR and hashing while being marked exhausted.
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
+        context.set(MetafileRenderBudget.class, budget);
+
+        MetafileRenderBudget.beginDocument(context);       // file 1
+        assertTrue(budget.tryConsume());
+        assertTrue(budget.tryConsume());
+        assertFalse(budget.tryConsume(), "document 1 spends its whole budget");
+        budget.chargeOcr(5000);
+        assertFalse(budget.tryOcr(), "and its whole OCR allowance");
+
+        MetafileRenderBudget.beginDocument(context);       // file 2, same context
+
+        assertTrue(budget.tryConsume(), "document 2 must get its OWN render budget");
+        assertTrue(budget.tryOcr(), "document 2 must get its OWN OCR budget");
+        assertEquals(0, budget.ocrSpentMillis(), "spend from document 1 must not follow it");
+    }
+
+    @Test
+    @DisplayName("a nested parse must NOT hand itself a fresh budget")
+    void testNestedParseDoesNotResetTheBudget() {
+        // The permissive direction is the dangerous one, and it is invisible from outside until a
+        // document has already bypassed the cap: if each embedded metafile counted as a new
+        // document it would get a fresh 64 and the cap would bound nothing at all.
+        MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
+        budget.claim(1);                 // the container owns the budget at depth 1
+        budget.tryConsume();
+        budget.tryConsume();
+        assertFalse(budget.tryConsume(), "precondition: the container has spent its budget");
+
+        budget.claim(2);                 // an embedded metafile, one level deeper
+        assertFalse(budget.tryConsume(), "a nested parse must keep spending the owner's budget");
+        budget.claim(7);                 // and deeper still
+        assertFalse(budget.tryConsume(), "depth alone must not buy a fresh allowance");
+    }
+
+    @Test
+    @DisplayName("the rule is RELATIVE, so it survives a different parser chain")
+    void testRuleDoesNotDependOnAnAbsoluteDepth() {
+        // An earlier version asked whether depth <= 2, which held only for the default
+        // AutoDetectParser nesting. Constructed as AutoDetectParser(Parser...) the chain is one
+        // shorter -- measured: a standalone metafile moves from depth 2 to depth 1 -- so a
+        // container runs at 1 and its metafiles at 2. Under the absolute rule every one of those
+        // metafiles looked top level and reset the budget, bounding nothing.
+        MetafileRenderBudget shortChain = new MetafileRenderBudget(2, 1000L);
+        shortChain.claim(1);             // container, short chain
+        shortChain.tryConsume();
+        shortChain.tryConsume();
+        shortChain.claim(2);             // its metafiles -- depth 2, which the old rule allowed
+        assertFalse(shortChain.tryConsume(),
+                "depth 2 is EMBEDDED here, and must not reset the budget");
+
+        MetafileRenderBudget longChain = new MetafileRenderBudget(2, 1000L);
+        longChain.claim(2);              // container, default chain
+        longChain.tryConsume();
+        longChain.tryConsume();
+        longChain.claim(4);              // its metafiles
+        assertFalse(longChain.tryConsume(), "same rule, deeper chain, same answer");
+
+        // ...and a sibling document at the owner's own depth still gets its own budget.
+        longChain.claim(2);
+        assertTrue(longChain.tryConsume(), "a new document at the owner's depth resets");
+    }
+
 }
