@@ -288,8 +288,11 @@ final class BoundedRenderGraphics2D extends Graphics2D {
         return d.drawImage(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     }
     @Override public void dispose() { d.dispose(); }
-    @Override public void finalize() { d.finalize(); }
-    @Override public java.awt.Rectangle getClipRect() { return d.getClipRect(); }
+    // finalize() and getClipRect() are deliberately NOT delegated. Both are deprecated in Java 17
+    // and rejected by forbiddenapis, which binds at INSTALL and so never ran under the mvn test
+    // loops this class was developed against. Neither is needed: overriding finalize() on a
+    // wrapper is wrong regardless, and getClipRect() is a deprecated alias for getClipBounds(),
+    // which IS delegated -- so callers of either still reach the delegate.
     @Override public boolean hitClip(int a0, int a1, int a2, int a3) { return d.hitClip(a0, a1, a2, a3); }
     @Override public java.awt.Rectangle getClipBounds(java.awt.Rectangle a0) { return d.getClipBounds(a0); }
 }

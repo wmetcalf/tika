@@ -26,3 +26,6 @@ tools/__pycache__/
 # Python bytecode (e.g. from .skills scripts)
 __pycache__/
 *.pyc
+
+# marla-singer writes this on every run; it is a review-tool artifact, never source.
+.marla-mechanical.json
