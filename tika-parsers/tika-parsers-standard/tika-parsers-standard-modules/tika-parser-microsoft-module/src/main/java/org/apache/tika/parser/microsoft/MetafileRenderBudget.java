@@ -46,16 +46,73 @@ public class MetafileRenderBudget implements Serializable {
     /** Renders allowed per document before the budget refuses. */
     public static final int DEFAULT_MAX_RENDERS = 64;
 
+    /**
+     * Total wall-clock milliseconds one document may spend OCRing its metafiles.
+     *
+     * <p>The render cap alone does not bound OCR, because Tesseract's timeout is <b>per image</b>
+     * and defaults to 120 seconds: 64 renders x 120 s is 2.1 hours for a single document, which is
+     * not a usable answer for batch triage no matter how the count is capped. Bounding the TOTAL
+     * makes the worst case independent of that per-image timeout -- the document spends at most
+     * this budget, plus however long the one in-flight image takes to hit its own timeout.
+     *
+     * <p>Two minutes is far beyond any legitimate document: the corpus median is one metafile, p95
+     * is twenty, and an ordinary metafile OCRs in about a second. It is a ceiling on pathological
+     * input, not a working allowance.
+     */
+    public static final long DEFAULT_OCR_BUDGET_MILLIS = 120_000L;
+
     private final int maxRenders;
+    private final long ocrBudgetMillis;
     private int used;
     private int refused;
+    private long ocrSpentMillis;
+    private int ocrRefused;
 
     public MetafileRenderBudget() {
-        this(DEFAULT_MAX_RENDERS);
+        this(DEFAULT_MAX_RENDERS, DEFAULT_OCR_BUDGET_MILLIS);
     }
 
     public MetafileRenderBudget(int maxRenders) {
+        this(maxRenders, DEFAULT_OCR_BUDGET_MILLIS);
+    }
+
+    public MetafileRenderBudget(int maxRenders, long ocrBudgetMillis) {
         this.maxRenders = maxRenders;
+        this.ocrBudgetMillis = ocrBudgetMillis;
+    }
+
+    /**
+     * Whether this document may still spend time on OCR. Checked BEFORE handing an image to
+     * Tesseract, so an exhausted document stops paying rather than starting one more 120-second
+     * wait it has no budget for.
+     */
+    public boolean tryOcr() {
+        if (ocrSpentMillis >= ocrBudgetMillis) {
+            ocrRefused++;
+            return false;
+        }
+        return true;
+    }
+
+    /** Charge the time an OCR attempt actually took, whether it succeeded, failed or timed out. */
+    public void chargeOcr(long millis) {
+        if (millis > 0) {
+            ocrSpentMillis += millis;
+        }
+    }
+
+    /** Milliseconds of OCR this document has spent. */
+    public long ocrSpentMillis() {
+        return ocrSpentMillis;
+    }
+
+    /** How many metafiles were denied OCR. Non-zero means the document is under-examined. */
+    public int ocrRefused() {
+        return ocrRefused;
+    }
+
+    public long ocrBudgetMillis() {
+        return ocrBudgetMillis;
     }
 
     /**
