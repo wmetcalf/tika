@@ -116,7 +116,15 @@ public class WMFParser implements Parser {
                     return;
                 }
                 int[] simplified = new int[1];
-                BufferedImage raster = rasterizeWmf(picture, simplified);
+                boolean[] unusable = new boolean[1];
+                double[] rejectedAspect = new double[1];
+                BufferedImage raster = rasterizeWmf(picture, simplified, unusable, rejectedAspect);
+                if (unusable[0]) {
+                    metadata.set(EMFParser.RENDER_UNUSABLE, true);
+                }
+                if (rejectedAspect[0] > 0) {
+                    metadata.set(EMFParser.RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
+                }
                 if (simplified[0] > 0) {
                     metadata.set(EMFParser.RENDER_SIMPLIFIED, simplified[0]);
                 }
@@ -156,13 +164,34 @@ public class WMFParser implements Parser {
      * Rasterize a WMF to a BufferedImage at up to OCR_RASTER_MAX_PX on the longest side.
      * Returns null if the size is invalid or rendering fails.
      */
-    private static BufferedImage rasterizeWmf(HwmfPicture wmf, int[] simplified) {
+    /** Bounds, or null when POI cannot supply them -- the fallback must not itself throw. */
+    private static java.awt.geom.Rectangle2D boundsOrNull(HwmfPicture wmf) {
+        try {
+            return wmf.getBounds();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static BufferedImage rasterizeWmf(HwmfPicture wmf, int[] simplified,
+                                              boolean[] unusable, double[] rejectedAspect) {
         try {
             Dimension2D size = wmf.getSize();
-            double pw = size.getWidth(), ph = size.getHeight();
-            if (pw <= 0 || ph <= 0) return null;
-            double scale = Math.min((double) OCR_RASTER_MAX_PX / pw, (double) OCR_RASTER_MAX_PX / ph);
-            int w = Math.max(1, (int) (pw * scale)), h = Math.max(1, (int) (ph * scale));
+            // Same rule as the EMF path, in the same helper: a declared aspect ratio is chosen by
+            // the document and nothing verifies it.
+            MetafileCanvas.Canvas canvas = MetafileCanvas.choose(size.getWidth(), size.getHeight(),
+                    boundsOrNull(wmf));
+            if (canvas == null) {
+                return null;
+            }
+            if (canvas.source == MetafileCanvas.Source.UNUSABLE) {
+                unusable[0] = true;
+                return null;
+            }
+            if (canvas.source == MetafileCanvas.Source.BOUNDS_FALLBACK) {
+                rejectedAspect[0] = canvas.declaredAspect;
+            }
+            int w = canvas.width, h = canvas.height;
             BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = img.createGraphics();
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
