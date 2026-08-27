@@ -91,6 +91,14 @@ public class EMFParser implements Parser {
     static final Property RENDER_SIMPLIFIED =
             Property.externalInteger("msoffice:metafile-render-simplified");
 
+    /** Metadata key: the declared frame was degenerate; the drawing's own bounds were used. */
+    static final Property RENDER_ASPECT_RECOVERED =
+            Property.externalReal("msoffice:metafile-declared-aspect-rejected");
+
+    /** Metadata key: nothing could be rendered -- declared frame AND bounds were both degenerate. */
+    static final Property RENDER_UNUSABLE =
+            Property.externalBoolean("msoffice:metafile-render-unusable");
+
     /** Metadata key: this metafile was NOT rasterized/OCRed because the document spent its budget. */
     static final Property RENDER_BUDGET_EXHAUSTED =
             Property.externalBoolean("msoffice:metafile-render-budget-exhausted");
@@ -188,7 +196,15 @@ public class EMFParser implements Parser {
                     return;
                 }
                 int[] simplified = new int[1];
-                BufferedImage raster = rasterizeEmf(ex, simplified);
+                boolean[] unusable = new boolean[1];
+                double[] rejectedAspect = new double[1];
+                BufferedImage raster = rasterizeEmf(ex, simplified, unusable, rejectedAspect);
+                if (unusable[0]) {
+                    metadata.set(RENDER_UNUSABLE, true);
+                }
+                if (rejectedAspect[0] > 0) {
+                    metadata.set(RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
+                }
                 if (simplified[0] > 0) {
                     // Never silent: a simplified render is reported, so a consumer can tell it
                     // from a faithful one rather than trusting OCR output from a bounded draw.
@@ -235,13 +251,36 @@ public class EMFParser implements Parser {
      * @param simplified single-element out-param receiving the number of dashed strokes the
      *                   render bound had to simplify; 0 means the render was faithful
      */
-    private static BufferedImage rasterizeEmf(HemfPicture emf, int[] simplified) {
+    /** Bounds, or null when POI cannot supply them -- the fallback must not itself throw. */
+    private static Rectangle2D boundsOrNull(HemfPicture emf) {
+        try {
+            return emf.getBounds();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static BufferedImage rasterizeEmf(HemfPicture emf, int[] simplified,
+                                             boolean[] unusable, double[] rejectedAspect) {
         try {
             Dimension2D size = emf.getSize();
-            double pw = size.getWidth(), ph = size.getHeight();
-            if (pw <= 0 || ph <= 0) return null;
-            double scale = Math.min((double) OCR_RASTER_MAX_PX / pw, (double) OCR_RASTER_MAX_PX / ph);
-            int w = Math.max(1, (int) (pw * scale)), h = Math.max(1, (int) (ph * scale));
+            // Do NOT trust the declared frame's aspect ratio: it is chosen by the document and
+            // nothing verifies it. A declared 1362 x 529110 scales to a 3-pixel-wide canvas whose
+            // content is squeezed out of existence, and OCR then reads a blank sliver without
+            // anything reporting that the metafile went unexamined.
+            MetafileCanvas.Canvas canvas =
+                    MetafileCanvas.choose(size.getWidth(), size.getHeight(), boundsOrNull(emf));
+            if (canvas == null) {
+                return null;
+            }
+            if (canvas.source == MetafileCanvas.Source.UNUSABLE) {
+                unusable[0] = true;
+                return null;
+            }
+            if (canvas.source == MetafileCanvas.Source.BOUNDS_FALLBACK) {
+                rejectedAspect[0] = canvas.declaredAspect;
+            }
+            int w = canvas.width, h = canvas.height;
             BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = img.createGraphics();
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);

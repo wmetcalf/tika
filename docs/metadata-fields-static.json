@@ -1,9 +1,9 @@
 {
-  "scanned_at": "2026-08-27T00:22:24.116751+00:00",
+  "scanned_at": "2026-08-27T02:56:47.611171+00:00",
   "tika_root": "/tmp/shape",
   "extra_roots": [],
   "summary": {
-    "property_declarations": 737,
+    "property_declarations": 739,
     "parsers_emitting_fields": 165,
     "undeclared_string_fields": 277,
     "templated_patterns": 115
@@ -2564,6 +2564,15 @@
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil"
       ]
     },
+    "msoffice:metafile-declared-aspect-rejected": {
+      "type": "externalReal",
+      "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
+      "constant_name": "RENDER_ASPECT_RECOVERED",
+      "javadoc": "Metadata key: the declared frame was degenerate; the drawing's own bounds were used. */",
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.WMFParser"
+      ]
+    },
     "msoffice:metafile-render-budget-exhausted": {
       "type": "externalBoolean",
       "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
@@ -2578,6 +2587,15 @@
       "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
       "constant_name": "RENDER_SIMPLIFIED",
       "javadoc": "Metadata key: how many dashed strokes the render bound had to simplify. */",
+      "emitted_by": [
+        "org.apache.tika.parser.microsoft.WMFParser"
+      ]
+    },
+    "msoffice:metafile-render-unusable": {
+      "type": "externalBoolean",
+      "declared_in": "org.apache.tika.parser.microsoft.EMFParser",
+      "constant_name": "RENDER_UNUSABLE",
+      "javadoc": "Metadata key: nothing could be rendered -- declared frame AND bounds were both degenerate. */",
       "emitted_by": [
         "org.apache.tika.parser.microsoft.WMFParser"
       ]
@@ -10991,8 +11009,10 @@
     },
     "org.apache.tika.parser.microsoft.WMFParser": {
       "emits": [
+        "msoffice:metafile-declared-aspect-rejected",
         "msoffice:metafile-render-budget-exhausted",
-        "msoffice:metafile-render-simplified"
+        "msoffice:metafile-render-simplified",
+        "msoffice:metafile-render-unusable"
       ]
     },
     "org.apache.tika.parser.microsoft.WinShortcutParser": {
