@@ -18,7 +18,6 @@ package org.apache.tika.parser.microsoft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.BasicStroke;
@@ -67,10 +66,11 @@ public class BoundedRenderGraphics2DTest {
         // approximation of one.
         g.setStroke(new BasicStroke(6350f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f,
                 new float[] {3f, 4f}, 0f));
+        g.draw(longPath(4, 1000d));
 
-        assertNull(((BasicStroke) delegate.getStroke()).getDashArray(),
-                "an unrenderable dash pattern must reach the delegate as a solid stroke");
         assertEquals(1, g.substitutionCount(), "the substitution must be counted, not silent");
+        assertNotNull(((BasicStroke) delegate.getStroke()).getDashArray(),
+                "the substitution is per-shape: the caller's stroke must be restored afterwards");
     }
 
     @Test
@@ -167,7 +167,52 @@ public class BoundedRenderGraphics2DTest {
         child.scale(0.00037d, 0.00037d);
         child.setStroke(new BasicStroke(6350f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f,
                 new float[] {3f, 4f}, 0f));
+        child.draw(longPath(4, 1000d));
         assertEquals(1, g.substitutionCount(),
                 "a substitution made by a child must be visible to the parent's count");
     }
+
+    @Test
+    @DisplayName("dash ENTRIES are budgeted, not just pattern periods")
+    void testManyDashEntriesCannotBypassTheCeiling() {
+        // A BasicStroke cycles through every element of the dash array, so one period of a
+        // k-element pattern emits k subdivisions. Budgeting by period let an attacker hold the
+        // total period comfortably above a device pixel -- so rule 1 stays silent -- and multiply
+        // the real work by the entry count instead. Measured before this fix: period 10 px, path
+        // 10,000 periods (inside the ceiling), 2 entries -> 5,000 entries took real segments from
+        // 20,000 to 50,000,000 with the bound never firing.
+        BufferedImage img = new BufferedImage(1200, 720, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D delegate = canvas(img);
+        BoundedRenderGraphics2D g = new BoundedRenderGraphics2D(delegate);
+
+        float[] dash = new float[5000];
+        java.util.Arrays.fill(dash, 0.002f);   // total period 10 px: plainly visible, rule 1 silent
+        g.setStroke(new BasicStroke(1f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, dash, 0f));
+        g.draw(longPath(4, 25_000d));          // 100,000 long: 10,000 periods, under the ceiling
+
+        assertTrue(g.substitutionCount() >= 1,
+                "50 million dash segments must be refused even though the PERIOD count is legal");
+    }
+
+    @Test
+    @DisplayName("the decision follows the transform in force at DRAW time")
+    void testTransformChangeAfterSetStrokeIsHonoured() {
+        // A metafile may select a dashed pen and then change the world transform without
+        // re-selecting it. Deciding at setStroke would judge the pattern against a transform that
+        // no longer applies -- here a period that is sub-pixel when the pen is selected becomes
+        // plainly visible before anything is drawn, and must be rendered as the dashes it is.
+        BufferedImage img = new BufferedImage(400, 400, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D delegate = canvas(img);
+        delegate.scale(0.001d, 0.001d);
+        BoundedRenderGraphics2D g = new BoundedRenderGraphics2D(delegate);
+
+        g.setStroke(new BasicStroke(10f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f,
+                new float[] {5f, 5f}, 0f));    // 0.01 device px at selection time: sub-pixel
+        g.scale(1000d, 1000d);                 // now 10 device px: plainly visible
+        g.draw(longPath(4, 100d));
+
+        assertEquals(0, g.substitutionCount(),
+                "a pattern visible under the CURRENT transform must keep its dashes");
+    }
+
 }

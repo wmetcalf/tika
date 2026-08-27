@@ -175,4 +175,56 @@ public class MetafileRenderBudgetTest {
         assertEquals(1, budget.ocrRefused());
     }
 
+
+    @Test
+    @DisplayName("the budget does NOT leak across independent top-level documents")
+    void testBudgetResetsPerTopLevelDocument() {
+        // A ParseContext is routinely reused across independent documents: TikaCLI builds one and
+        // passes it to every file on the command line, and the GUI keeps one across opens. Without
+        // a document boundary the budget is cumulative -- measured before the fix, two independent
+        // parses through one context came back used=1 then used=2 -- so after enough files every
+        // later document silently loses rasterization, OCR and image hashing while being marked
+        // exhausted. A limit that leaks across documents turns a bound into a progressive blinding.
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
+        context.set(MetafileRenderBudget.class, budget);
+
+        MetafileRenderBudget.beginTopLevelDocument(context);
+        assertTrue(budget.tryConsume());
+        assertTrue(budget.tryConsume());
+        assertFalse(budget.tryConsume(), "document 1 spends its whole budget");
+        budget.chargeOcr(5000);
+        assertFalse(budget.tryOcr(), "and its whole OCR allowance");
+
+        MetafileRenderBudget.beginTopLevelDocument(context);   // next file on the command line
+
+        assertTrue(budget.tryConsume(), "document 2 must get its OWN render budget");
+        assertTrue(budget.tryOcr(), "document 2 must get its OWN OCR budget");
+        assertEquals(0, budget.ocrSpentMillis(), "spend from document 1 must not follow it");
+    }
+
+    @Test
+    @DisplayName("an EMBEDDED parse is not mistaken for a document boundary")
+    void testEmbeddedParseDoesNotResetTheBudget() {
+        // The negative control, and the one that decides whether the fix is worth anything: if an
+        // embedded parse counted as a boundary, every metafile inside a container would get a
+        // fresh 64 and the cap would bound nothing -- the very defect #23 exists to fix.
+        //
+        // Depths are measured, not assumed: AutoDetectParser and CompositeParser each increment
+        // before the real parser runs, so a top-level document's own parser sees depth 2, a
+        // standalone metafile sees depth 2, and metafiles inside a top-level container see depth 4.
+        assertTrue(MetafileRenderBudget.isTopLevel(0), "no ParseRecord yet is top level");
+        assertTrue(MetafileRenderBudget.isTopLevel(2), "a top-level document's own parser");
+        assertFalse(MetafileRenderBudget.isTopLevel(3), "anything deeper is embedded");
+        assertFalse(MetafileRenderBudget.isTopLevel(4), "metafiles inside a container");
+
+        // And the whole point: a budget already spent inside a container stays spent.
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
+        context.set(MetafileRenderBudget.class, budget);
+        budget.tryConsume();
+        budget.tryConsume();
+        assertFalse(budget.tryConsume(), "precondition: the container has spent its budget");
+    }
+
 }

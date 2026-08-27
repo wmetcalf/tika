@@ -1262,7 +1262,12 @@ class XlmEvasionResilienceTest {
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
         java.lang.management.ThreadMXBean threads =
                 java.lang.management.ManagementFactory.getThreadMXBean();
-        boolean cpuTime = threads.isCurrentThreadCpuTimeSupported();
+        // SUPPORTED and ENABLED are separate states. On a JVM where thread CPU timing is supported
+        // but switched off, getCurrentThreadCpuTime() returns -1: both timestamps become -1, every
+        // measured duration becomes zero, and the "could not reach a measurable base cost" gate
+        // then fails every test using this helper. Fall back to wall clock unless it is actually on.
+        boolean cpuTime = threads.isCurrentThreadCpuTimeSupported()
+                && threads.isThreadCpuTimeEnabled();
         long best = Long.MAX_VALUE;
         for (int rep = 0; rep < 5; rep++) {
             System.gc();

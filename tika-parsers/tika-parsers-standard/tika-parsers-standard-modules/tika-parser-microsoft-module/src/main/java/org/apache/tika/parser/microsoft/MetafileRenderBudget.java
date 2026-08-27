@@ -18,6 +18,9 @@ package org.apache.tika.parser.microsoft;
 
 import java.io.Serializable;
 
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.ParseRecord;
+
 /**
  * How many embedded metafiles ONE document may rasterize and OCR.
  *
@@ -113,6 +116,56 @@ public class MetafileRenderBudget implements Serializable {
 
     public long ocrBudgetMillis() {
         return ocrBudgetMillis;
+    }
+
+    /**
+     * ParseRecord depth at or below which a parse is the TOP-LEVEL document rather than something
+     * embedded. Measured, not assumed: AutoDetectParser and CompositeParser each increment before
+     * the real parser runs, so a top-level document's own parser sees depth 2, while metafiles
+     * inside a top-level container are at depth 4.
+     */
+    private static final int TOP_LEVEL_DEPTH = 2;
+
+    /**
+     * Start a new top-level document, resetting the budget if one is already installed.
+     *
+     * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT documents
+     * -- TikaCLI builds one context and passes it to every file on the command line, and the GUI
+     * keeps one across successive opens. Without this the budget is cumulative rather than
+     * per-document: measured, two independent parses through one context came back used=1 then
+     * used=2, so after enough files every later document would silently lose rasterization, OCR and
+     * image hashing while being marked exhausted. A limit that leaks across documents is worse than
+     * no limit, because it turns a bound into a progressive blinding.
+     *
+     * <p>A no-op when called from an embedded parse, so a container's own metafiles keep sharing
+     * one budget.
+     */
+    public static void beginTopLevelDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (!isTopLevel(record == null ? 0 : record.getDepth())) {
+            return;
+        }
+        MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
+        if (budget != null) {
+            budget.reset();
+        }
+    }
+
+    /**
+     * Whether a parse at this depth is the top-level document rather than something embedded.
+     * Split out so the boundary rule can be tested directly: getting it wrong in the permissive
+     * direction would hand every metafile inside a container a fresh budget, which bounds nothing.
+     */
+    static boolean isTopLevel(int depth) {
+        return depth <= TOP_LEVEL_DEPTH;
+    }
+
+    /** Clears everything this document spent, keeping the configured limits. */
+    private void reset() {
+        used = 0;
+        refused = 0;
+        ocrSpentMillis = 0;
+        ocrRefused = 0;
     }
 
     /**
