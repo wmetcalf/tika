@@ -18,6 +18,10 @@
 name: main jdk25 build
 
 on:
+  pull_request:
+    branches: [ main, 4.0-upstream-office-links ]
+    paths-ignore:
+      - 'docs/**'
   push:
     branches: [ main ]
     paths-ignore:
