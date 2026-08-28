@@ -19,9 +19,9 @@ name: no split packages
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, 4.0-upstream-office-links ]
   push:
-    branches: [ main ]
+    branches: [ main, 4.0-upstream-office-links ]
 
 jobs:
   check-split-packages:

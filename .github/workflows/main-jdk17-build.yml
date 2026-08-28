@@ -19,11 +19,11 @@ name: main jdk17 build
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, 4.0-upstream-office-links ]
     paths-ignore:
       - 'docs/**'
   push:
-    branches: [ main ]
+    branches: [ main, 4.0-upstream-office-links ]
     paths-ignore:
       - 'docs/**'
 
