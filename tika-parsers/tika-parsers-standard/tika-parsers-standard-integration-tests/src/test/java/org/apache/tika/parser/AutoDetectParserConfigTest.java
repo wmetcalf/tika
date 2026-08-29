@@ -136,12 +136,12 @@ public class AutoDetectParserConfigTest extends TikaTest {
         List<Metadata> metadataList = getRecursiveMetadataWithRawText(
                 "testPPT_EmbeddedPDF.pptx", p, context);
 
-        assertDigestTriplet(metadataList.get(0), "X-TIKA:digest:",
+        assertDigestTriplet(metadataList.get(0), "tk:digest:",
                 "a16f14215ebbfa47bd995e799f03cb18",
                 "bda02354e86fc1826d9de902155e960f24ceb972",
                 "93bdfb75c6331c57b0b099e6d5f714e9217b3d8d23e9f3a9d9bea8b3c6081472");
         assertTextDigestsMatchContent(metadataList.get(0));
-        assertDigestTriplet(metadataList.get(6), "X-TIKA:digest:",
+        assertDigestTriplet(metadataList.get(6), "tk:digest:",
                 "90a8b249a6d6b6cb127c59e01cef3aaa",
                 "a83bbdfe58f30bf23ae9d6c1d1eb3e3250736868",
                 "87c7b896be1b4d9e060897a8a6dafc10d0a7a0c3a687f00c341d5c1c4b272fcb");
@@ -196,20 +196,28 @@ public class AutoDetectParserConfigTest extends TikaTest {
         }
     }
 
+    /**
+     * Stream digests are published under the JCA algorithm names -- MD5, SHA-1, SHA-256 -- beneath
+     * the 4.0 {@code tk:} prefix. The legacy {@code X-TIKA:} spelling used the enum names (SHA1,
+     * SHA256) and is only produced when LegacyKeyMigrationFilter is explicitly configured, which
+     * this test's config does not do.
+     */
     private void assertDigestTriplet(Metadata metadata, String prefix, String md5, String sha1,
                                      String sha256) {
         assertEquals(md5, metadata.get(prefix + "MD5"));
-        assertEquals(sha1, metadata.get(prefix + "SHA1"));
-        assertEquals(sha256, metadata.get(prefix + "SHA256"));
+        assertEquals(sha1, metadata.get(prefix + "SHA-1"));
+        assertEquals(sha256, metadata.get(prefix + "SHA-256"));
     }
 
     private void assertTextDigestsMatchContent(Metadata metadata) throws Exception {
         String content = metadata.get(TikaCoreProperties.TIKA_CONTENT);
         assertNotNull(content);
         byte[] utf8 = content.getBytes(StandardCharsets.UTF_8);
-        assertEquals(digest("MD5", utf8), metadata.get("X-TIKA:digest:text:MD5"));
-        assertEquals(digest("SHA-1", utf8), metadata.get("X-TIKA:digest:text:SHA1"));
-        assertEquals(digest("SHA-256", utf8), metadata.get("X-TIKA:digest:text:SHA256"));
+        // Text digests keep the un-hyphenated spelling (text:SHA1 / text:SHA256) while stream
+        // digests use the JCA names (SHA-1 / SHA-256). Asserted as the code actually emits them.
+        assertEquals(digest("MD5", utf8), metadata.get("tk:digest:text:MD5"));
+        assertEquals(digest("SHA-1", utf8), metadata.get("tk:digest:text:SHA1"));
+        assertEquals(digest("SHA-256", utf8), metadata.get("tk:digest:text:SHA256"));
     }
 
     private String digest(String algorithm, byte[] bytes) throws Exception {
