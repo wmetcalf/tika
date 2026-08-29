@@ -30,8 +30,10 @@
         <exclude>**/opennlp/en-*.bin</exclude>
         <exclude>**/*.releaseBackup</exclude>
         <!-- Fork-local planning/design notes: not part of the distribution, and excluded from
-             the RAT audit in pom.xml on that basis. Both excludes must stay in step; dropping
-             this one would ship headerless files in the source archive while RAT stayed quiet. -->
+             the RAT audit in pom.xml and docs/pom.xml on that basis. Dropping THIS one would
+             ship headerless files in the source archive while RAT stayed quiet, since RAT
+             audits the source tree and never reads this descriptor. That is asserted by
+             .github/workflows/release-archive-audit.yml, which inspects the built archive. -->
         <exclude>docs/superpowers/**</exclude>
       </excludes>
     </fileSet>

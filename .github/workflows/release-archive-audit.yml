@@ -1,0 +1,71 @@
+# Guards the fork-local doc exclusions that live in THREE independently maintained
+# places: the RAT config in pom.xml, the archive config in assembly.xml, and the
+# docs-module RAT config in docs/pom.xml (rooted at docs/, so its pattern differs).
+#
+# Comments alone could not keep those in step. The default-profile `apache-rat:check`
+# that the normal build runs does not exercise any of this: RAT audits the source tree,
+# not the archive, so deleting the assembly.xml exclude leaves RAT green while the
+# release archive ships headerless files. This job asserts the property that actually
+# matters -- what ends up INSIDE the source-release archive -- which catches removal,
+# renaming and drift in any of the three at once.
+name: release archive audit
+
+on:
+  pull_request:
+  push:
+    branches: [ 4.0-upstream-office-links, master ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  archive-contents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # -N: the source-release assembly is bound to the root project only, so this
+      # does not need the 120+ module reactor.
+      - name: Build the source-release archive
+        run: ./mvnw -B -ntp -Papache-release -DskipTests -N package
+
+      - name: Assert the archive excludes fork-local planning docs
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(ls target/tika-*-src.zip)
+          echo "auditing $ARCHIVE"
+
+          # 1. the fork-local notes must NOT be shipped
+          LEAKED=$(unzip -l "$ARCHIVE" | grep -c "docs/superpowers" || true)
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "::error::$LEAKED docs/superpowers entries leaked into $ARCHIVE."
+            echo "The exclude in assembly.xml is missing or no longer matches."
+            unzip -l "$ARCHIVE" | grep "docs/superpowers" | head -20
+            exit 1
+          fi
+          echo "OK: 0 docs/superpowers entries"
+
+          # 2. ...but docs/ itself MUST still ship. Without this, a wildcard that
+          #    swallowed the whole docs tree would satisfy check 1 and look clean.
+          DOCS=$(unzip -l "$ARCHIVE" | grep -c "docs/" || true)
+          if [ "$DOCS" -lt 50 ]; then
+            echo "::error::only $DOCS docs/ entries in $ARCHIVE -- the exclusion is too broad."
+            exit 1
+          fi
+          echo "OK: $DOCS docs/ entries still present"
+
+      # RAT under the release profile, which pulls in the docs module that the
+      # default reactor leaves out -- so docs/pom.xml's exclude is exercised too.
+      - name: RAT under the release profile
+        run: ./mvnw -B -ntp -Papache-release -DskipTests apache-rat:check

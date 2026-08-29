@@ -314,10 +314,14 @@ least three +1 Tika PMC votes are cast.
             <!-- Antora UI supplemental files -->
             <inputExclude>docs/supplemental-ui/**</inputExclude>
 
-            <!-- Fork-local planning and design notes. Excluded from the source assembly too
-                 (assembly.xml), so they are genuinely not distributed and carry no ASF header.
-                 The two excludes must stay in step: excluding from RAT alone would ship
-                 headerless files in the -Papache-release archive with the audit silent. -->
+            <!-- Fork-local planning and design notes. Genuinely not distributed, so they
+                 carry no ASF header. The exclusion is spelled THREE times: here, in
+                 assembly.xml (the archive), and in docs/pom.xml (rooted at docs/, so its
+                 pattern differs). Excluding from RAT alone would ship headerless files in
+                 the -Papache-release archive with the audit silent, because RAT audits the
+                 source tree and not the archive. Rather than rely on these comments staying
+                 in step, .github/workflows/release-archive-audit.yml asserts what is
+                 actually inside the built archive. -->
             <inputExclude>docs/superpowers/**</inputExclude>
 
             <!-- UAT test fixtures (binary/markup test documents carry no license header) -->
