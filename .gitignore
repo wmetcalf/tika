@@ -29,3 +29,9 @@ __pycache__/
 
 # marla-singer writes this on every run; it is a review-tool artifact, never source.
 .marla-mechanical.json
+
+# tika-metadata-schema/regen.sh points Maven at $REPO_ROOT/.local_m2_repo
+# (-Dmaven.repo.local) and never cleans it up, so a few hundred MB of Maven
+# repo is left sitting at the repo root. Without this, a `git add -A` after a
+# regen run commits an entire Maven repository into the fork.
+.local_m2_repo/
