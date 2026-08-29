@@ -116,7 +116,7 @@ public class ColorGridQRDecoderMetadataTest {
 
         ColorGridQRDecoder.decode(
                 List.of(grid), scanner, config, new ParseContext(),
-                new ZXingCPPScanner.ScanBudget(1, 1_000));
+                new ZXingCPPScanner.ScanBudget(1, 1_000, () -> 0L));
 
         assertEquals(1, scanner.executions);
     }
