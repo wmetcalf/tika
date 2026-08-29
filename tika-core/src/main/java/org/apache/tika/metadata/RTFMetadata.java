@@ -61,10 +61,10 @@ public interface RTFMetadata {
      * case-sensitive: {@code OLE2Link}, {@code OLE10Native}, {@code Equation.3}, {@code Package}.
      * Attackers write e.g. {@code OLE2LInk} or {@code EQUATION.3} to confuse strict parsers
      * while MS Word's OLE subsystem still dispatches by CLSID.  When the CLSID is also present
-     * ({@code rtf_meta:emb_clsid}), the canonical identity can be confirmed independently.
+     * ({@code rtf:emb-clsid}), the canonical identity can be confirmed independently.
      */
     Property EMB_CLASS_OBFUSCATED = Property.internalBoolean(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_class_obfuscated");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-class-obfuscated");
 
     /**
      * Set to {@code true} when the RTF version header is non-standard (i.e. not {@code \rtf1}).
@@ -73,25 +73,25 @@ public interface RTFMetadata {
      * MS Word.
      */
     Property MALFORMED_RTF_HEADER = Property.internalBoolean(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "malformed_rtf_header");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "malformed-rtf-header");
 
     /** CLSID (binary GUID) of the OLE2 embedded object root storage, formatted as {xxxxxxxx-...}. */
     Property EMB_CLSID = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_clsid");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-clsid");
 
     /**
      * Original source path of an OLE Package object (the path on the system that created it).
      * For Package embeds this is typically a full absolute path like C:\path\to\file.exe.
      */
     Property EMB_SOURCE_PATH = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_source_path");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-source-path");
 
     /**
      * Execution command stored in an OLE Package object. This may differ from the original
      * source path when the embedded payload is renamed or launched through another path.
      */
     Property EMB_COMMAND = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_command");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-command");
 
     /**
      * NetworkName from an OLE1 linked object. This commonly contains the
@@ -99,7 +99,7 @@ public interface RTFMetadata {
      */
     Property EMB_NETWORK_NAME = Property.internalText(
             PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER
-                    + "emb_network_name");
+                    + "emb-network-name");
 
     /**
      * Number of decoy {@code \objdata} blocks that were discarded before the surviving
@@ -108,7 +108,7 @@ public interface RTFMetadata {
      * that extract only the first occurrence.
      */
     Property EMB_OBJDATA_DECOY_COUNT = Property.internalInteger(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "objdata_decoy_count");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "objdata-decoy-count");
 
     /**
      * Set to {@code true} when the {@code \objdata} hex stream for this embedded object
@@ -117,7 +117,7 @@ public interface RTFMetadata {
      * single-pass decoders and hide the real payload.
      */
     Property EMB_HEX_ESCAPE_IN_OBJDATA = Property.internalBoolean(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "hex_escape_in_objdata");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "hex-escape-in-objdata");
 
     /**
      * Set to {@code true} when the {@code \objdata} hex stream for this embedded object
@@ -126,7 +126,7 @@ public interface RTFMetadata {
      * corrupt or hide data.
      */
     Property EMB_UNICODE_IN_OBJDATA = Property.internalBoolean(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "unicode_in_objdata");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "unicode-in-objdata");
 
     /**
      * URL extracted from an OLE2Link/StdOleLink moniker embedded in an RTF object.
@@ -135,7 +135,7 @@ public interface RTFMetadata {
      * for template-injection and WSDL-download attacks (CVE-2017-8759, CVE-2017-0199).
      */
     Property EMB_OLE2LINK_URL = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_ole2link_url");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-ole2link-url");
 
     /**
      * Label field from an OLE10Native embedded object (the display name shown to the user,
@@ -143,7 +143,7 @@ public interface RTFMetadata {
      * embedded POIFS compound document contains an {@code \x01Ole10Native} stream.
      */
     Property EMB_LABEL = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_label");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-label");
 
     /**
      * Human-readable name resolved from {@link #EMB_CLSID} via the known CLSID→name table.
@@ -151,6 +151,6 @@ public interface RTFMetadata {
      * (e.g. "Microsoft Equation Editor 3.0 (CVE-2017-11882/CVE-2018-0802)").
      */
     Property EMB_CLSID_NAME = Property.internalText(
-            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb_clsid_name");
+            PREFIX_RTF_META + TikaCoreProperties.NAMESPACE_PREFIX_DELIMITER + "emb-clsid-name");
 
 }

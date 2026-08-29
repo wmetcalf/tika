@@ -1,5 +1,5 @@
 {
-  "scanned_at": "2026-08-27T04:07:33.470389+00:00",
+  "scanned_at": "2026-08-29T19:42:48.516795+00:00",
   "tika_root": "/tmp/shape",
   "extra_roots": [],
   "summary": {
@@ -3615,16 +3615,16 @@
         "org.apache.tika.parser.microsoft.rtf.TextExtractor"
       ]
     },
-    "rtf:emb_class_obfuscated": {
+    "rtf:emb-class-obfuscated": {
       "type": "internalBoolean",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_CLASS_OBFUSCATED",
-      "javadoc": "Set to {@code true} when the embedded OLE object's class name (from the RTF Object Data header) has non-canonical casing for a known class name.  The canonical forms are case-sensitive: {@code OLE2Link}, {@code OLE10Native}, {@code Equation.3}, {@code Package}. Attackers write e.g. {@code OLE2LInk} or {@code EQUATION.3} to confuse strict parsers while MS Word's OLE subsystem still dispatches by CLSID.  When the CLSID is also present ({@code rtf_meta:emb_clsid}), the canonical identity can be confirmed independently.",
+      "javadoc": "Set to {@code true} when the embedded OLE object's class name (from the RTF Object Data header) has non-canonical casing for a known class name.  The canonical forms are case-sensitive: {@code OLE2Link}, {@code OLE10Native}, {@code Equation.3}, {@code Package}. Attackers write e.g. {@code OLE2LInk} or {@code EQUATION.3} to confuse strict parsers while MS Word's OLE subsystem still dispatches by CLSID.  When the CLSID is also present ({@code rtf:emb-clsid}), the canonical identity can be confirmed independently.",
       "emitted_by": [
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_clsid": {
+    "rtf:emb-clsid": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_CLSID",
@@ -3633,7 +3633,7 @@
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_clsid_name": {
+    "rtf:emb-clsid-name": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_CLSID_NAME",
@@ -3642,7 +3642,7 @@
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_command": {
+    "rtf:emb-command": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_COMMAND",
@@ -3651,7 +3651,7 @@
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_label": {
+    "rtf:emb-label": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_LABEL",
@@ -3660,7 +3660,7 @@
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_network_name": {
+    "rtf:emb-network-name": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_NETWORK_NAME",
@@ -3670,7 +3670,7 @@
         "org.apache.tika.parser.microsoft.rtf.jflex.RTFObjDataStreamParser"
       ]
     },
-    "rtf:emb_ole2link_url": {
+    "rtf:emb-ole2link-url": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_OLE2LINK_URL",
@@ -3679,7 +3679,7 @@
         "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser"
       ]
     },
-    "rtf:emb_source_path": {
+    "rtf:emb-source-path": {
       "type": "internalText",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_SOURCE_PATH",
@@ -3728,7 +3728,7 @@
         "org.apache.tika.parser.microsoft.rtf.jflex.RTFObjDataStreamParser"
       ]
     },
-    "rtf:hex_escape_in_objdata": {
+    "rtf:hex-escape-in-objdata": {
       "type": "internalBoolean",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_HEX_ESCAPE_IN_OBJDATA",
@@ -3738,7 +3738,7 @@
         "org.apache.tika.parser.microsoft.rtf.jflex.RTFEmbeddedHandler"
       ]
     },
-    "rtf:malformed_rtf_header": {
+    "rtf:malformed-rtf-header": {
       "type": "internalBoolean",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "MALFORMED_RTF_HEADER",
@@ -3747,7 +3747,7 @@
         "org.apache.tika.parser.microsoft.rtf.TextExtractor"
       ]
     },
-    "rtf:objdata_decoy_count": {
+    "rtf:objdata-decoy-count": {
       "type": "internalInteger",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_OBJDATA_DECOY_COUNT",
@@ -3766,7 +3766,7 @@
         "org.apache.tika.parser.microsoft.rtf.jflex.RTFEmbeddedHandler"
       ]
     },
-    "rtf:unicode_in_objdata": {
+    "rtf:unicode-in-objdata": {
       "type": "internalBoolean",
       "declared_in": "org.apache.tika.metadata.RTFMetadata",
       "constant_name": "EMB_UNICODE_IN_OBJDATA",
@@ -11243,10 +11243,10 @@
       "emits": [
         "ExploitClass",
         "msoffice:has-linked-ole-objects",
-        "rtf:hex_escape_in_objdata",
-        "rtf:objdata_decoy_count",
+        "rtf:hex-escape-in-objdata",
+        "rtf:objdata-decoy-count",
         "rtf:thumbnail",
-        "rtf:unicode_in_objdata",
+        "rtf:unicode-in-objdata",
         "tk:content-type-parser-override",
         "tk:embedded-relationship-id",
         "tk:exception:warn",
@@ -11257,14 +11257,14 @@
     },
     "org.apache.tika.parser.microsoft.rtf.RTFObjDataParser": {
       "emits": [
-        "rtf:emb_class_obfuscated",
-        "rtf:emb_clsid",
-        "rtf:emb_clsid_name",
-        "rtf:emb_command",
-        "rtf:emb_label",
-        "rtf:emb_network_name",
-        "rtf:emb_ole2link_url",
-        "rtf:emb_source_path",
+        "rtf:emb-class-obfuscated",
+        "rtf:emb-clsid",
+        "rtf:emb-clsid-name",
+        "rtf:emb-command",
+        "rtf:emb-label",
+        "rtf:emb-network-name",
+        "rtf:emb-ole2link-url",
+        "rtf:emb-source-path",
         "rtf:embedded-app-version",
         "rtf:embedded-class",
         "rtf:embedded-item",
@@ -11281,7 +11281,7 @@
         "meta:page-count",
         "meta:word-count",
         "rtf:contains-encapsulated-html",
-        "rtf:malformed_rtf_header",
+        "rtf:malformed-rtf-header",
         "rtf_color_qr:colortbl_size",
         "rtf_color_qr:enabled",
         "rtf_color_qr:error",
@@ -11293,7 +11293,7 @@
       "emits": [
         "ExploitClass",
         "msoffice:has-linked-ole-objects",
-        "rtf:hex_escape_in_objdata",
+        "rtf:hex-escape-in-objdata",
         "rtf:thumbnail",
         "tk:content-type-parser-override",
         "tk:embedded-relationship-id",
@@ -11305,7 +11305,7 @@
     },
     "org.apache.tika.parser.microsoft.rtf.jflex.RTFObjDataStreamParser": {
       "emits": [
-        "rtf:emb_network_name",
+        "rtf:emb-network-name",
         "rtf:embedded-app-version",
         "rtf:embedded-class",
         "rtf:embedded-item",
