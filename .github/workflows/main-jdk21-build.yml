@@ -19,9 +19,17 @@ name: main jdk21 build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ 4.0-upstream-office-links, master ]
     paths-ignore:
       - 'docs/**'
+
+# Superseded PR runs are dead work: cancel them. Never cancel a post-merge build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build:

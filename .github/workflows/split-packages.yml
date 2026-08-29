@@ -18,10 +18,23 @@
 name: no split packages
 
 on:
+  # NO `branches:` filter, deliberately. The previous form hardcoded `branches: [ main ]` --
+  # inherited from upstream, where main IS the working branch. This fork has no `main` branch at
+  # all (default is `master`, work happens on 4.0-upstream-office-links), so every one of those
+  # filters matched nothing and these workflows had never run on a pull request in this repo.
+  # Filtering by base branch re-arms that trap on the next rename; metadata-inventory.yml already
+  # omits the filter and is the only workflow that has ever fired here.
   pull_request:
-    branches: [ main ]
   push:
-    branches: [ main ]
+    branches: [ 4.0-upstream-office-links, master ]
+
+# Superseded PR runs are dead work: cancel them. Never cancel a post-merge build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   check-split-packages:
