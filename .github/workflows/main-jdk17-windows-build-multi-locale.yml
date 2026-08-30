@@ -36,7 +36,18 @@ jobs:
     strategy:
       matrix:
         java: [ '17' ]
-        locale: [ 'tr_TR.UTF-8', 'de_DE.UTF-8' ]
+        # LANG/LC_ALL are POSIX conventions that the JVM does not honour on Windows, so
+        # setting them alone left BOTH matrix entries running under the runner's default
+        # locale -- this job was testing one locale twice and reporting green. The JVM
+        # properties below are what actually select the locale; LANG/LC_ALL are kept so the
+        # job stays correct if it is ever moved to a POSIX runner.
+        include:
+          - locale: 'tr_TR.UTF-8'
+            language: 'tr'
+            country: 'TR'
+          - locale: 'de_DE.UTF-8'
+            language: 'de'
+            country: 'DE'
     env:
       LANG: ${{ matrix.locale }}
       LC_ALL: ${{ matrix.locale }}
@@ -49,5 +60,28 @@ jobs:
           distribution: 'temurin'
           java-version: ${{ matrix.java }}
           cache: 'maven'
+      # Guard the guard. This job reported green while testing one locale twice for as
+      # long as it existed, because nothing ever checked that the JVM adopted the locale.
+      # Assert it before spending an hour of runner time on the tests.
+      - name: Verify the JVM honours the matrix locale
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Locale_check.java <<'EOF'
+          public class Locale_check {
+              public static void main(String[] args) {
+                  System.out.println(java.util.Locale.getDefault().toLanguageTag());
+              }
+          }
+          EOF
+          ACTUAL=$(java "-Duser.language=${{ matrix.language }}" "-Duser.country=${{ matrix.country }}" Locale_check.java)
+          EXPECTED="${{ matrix.language }}-${{ matrix.country }}"
+          rm -f Locale_check.java
+          echo "effective JVM locale: $ACTUAL (expected $EXPECTED)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::JVM default locale is $ACTUAL, expected $EXPECTED -- this job is not testing the locale it claims to."
+            exit 1
+          fi
+
       - name: Build with Maven
-        run: mvn clean test install javadoc:aggregate -Pci -Pe2e -B "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
+        run: mvn clean test install javadoc:aggregate -Pci -Pe2e -B "-Duser.language=${{ matrix.language }}" "-Duser.country=${{ matrix.country }}" "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
