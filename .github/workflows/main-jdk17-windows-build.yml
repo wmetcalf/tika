@@ -18,12 +18,14 @@
 name: main jdk17 windows build
 
 on:
+  # NO `branches:` filter, deliberately -- see main-jdk17-build.yml. `main` does not
+  # exist in this fork, so this filter matched nothing and this workflow had never run
+  # on a pull request here.
   pull_request:
-    branches: [ main ]
     paths-ignore:
       - 'docs/**'
   push:
-    branches: [ main ]
+    branches: [ 4.0-upstream-office-links, master ]
     paths-ignore:
       - 'docs/**'
 
