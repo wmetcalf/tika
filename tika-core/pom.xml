@@ -68,7 +68,14 @@
     <dependency>
       <groupId>io.github.wmetcalf</groupId>
       <artifactId>rosetta-squint-hash</artifactId>
-      <version>1.0.0</version>
+      <!--
+        1.0.1 is the first release built with maven.compiler.release=17. The 1.0.0 jar published to
+        Maven Central is Java 21 bytecode (class major 65), which javac rejects under this project's
+        release=17: "class file has wrong version 65.0, should be 61.0". It went unnoticed because a
+        locally mvn-installed 17-targeted jar sat in ~/.m2 under the same coordinates, so this
+        machine built fine while every clean checkout could not compile tika-core at all.
+      -->
+      <version>1.0.1</version>
     </dependency>
 
     <!-- Optional OSGi dependencies, used only when running within OSGi -->
