@@ -41,6 +41,10 @@ jobs:
         # locale -- this job was testing one locale twice and reporting green. The JVM
         # properties below are what actually select the locale; LANG/LC_ALL are kept so the
         # job stays correct if it is ever moved to a POSIX runner.
+        locale: [ 'tr_TR.UTF-8', 'de_DE.UTF-8' ]
+        # `include` entries MATCH on the locale key above and extend those combinations.
+        # Without `locale` in the base matrix the two includes collapse into a single job
+        # and one of the locales silently stops being tested at all.
         include:
           - locale: 'tr_TR.UTF-8'
             language: 'tr'
