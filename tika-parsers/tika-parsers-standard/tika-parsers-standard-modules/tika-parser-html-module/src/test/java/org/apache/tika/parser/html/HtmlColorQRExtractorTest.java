@@ -42,6 +42,7 @@ import java.util.Map;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -1278,6 +1279,14 @@ public class HtmlColorQRExtractorTest {
     }
 
     private Path createFakeScanner() throws IOException {
+        // These doubles are POSIX shell scripts made executable via chmod. Windows can
+        // neither set POSIX permissions nor execute the script, so the tests that rely on
+        // them are skipped there with a stated reason rather than failing obscurely on
+        // UnsupportedOperationException from Files.setPosixFilePermissions.
+        Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews()
+                        .contains("posix"),
+                "scanner test doubles are POSIX shell scripts; not runnable on this filesystem");
         Path script = temporaryDirectory.resolve("fake-zxing-reader");
         Files.writeString(script, """
                 #!/bin/sh
@@ -1297,6 +1306,14 @@ public class HtmlColorQRExtractorTest {
     }
 
     private Path createFailingScanner() throws IOException {
+        // These doubles are POSIX shell scripts made executable via chmod. Windows can
+        // neither set POSIX permissions nor execute the script, so the tests that rely on
+        // them are skipped there with a stated reason rather than failing obscurely on
+        // UnsupportedOperationException from Files.setPosixFilePermissions.
+        Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews()
+                        .contains("posix"),
+                "scanner test doubles are POSIX shell scripts; not runnable on this filesystem");
         Path script = temporaryDirectory.resolve("failing-zxing-reader");
         Files.writeString(script, """
                 #!/bin/sh
@@ -1311,6 +1328,14 @@ public class HtmlColorQRExtractorTest {
     }
 
     private Path createCountingEmptyScanner(Path invocationLog) throws IOException {
+        // These doubles are POSIX shell scripts made executable via chmod. Windows can
+        // neither set POSIX permissions nor execute the script, so the tests that rely on
+        // them are skipped there with a stated reason rather than failing obscurely on
+        // UnsupportedOperationException from Files.setPosixFilePermissions.
+        Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews()
+                        .contains("posix"),
+                "scanner test doubles are POSIX shell scripts; not runnable on this filesystem");
         Path script = temporaryDirectory.resolve("counting-zxing-reader");
         Files.writeString(script, String.format(Locale.ROOT, """
                 #!/bin/sh
