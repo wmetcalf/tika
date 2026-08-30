@@ -69,6 +69,13 @@ public class OOXMLColorQRScanHelperTest {
     @Test
     public void shortRowsFromOtherDocumentPartsDoNotSuppressGrid()
             throws Exception {
+        // The scanner test double is a POSIX shell script. Windows can neither mark it
+        // executable in the POSIX sense nor run it, so the scan silently yields nothing
+        // and the assertion fails on a confusing null. Skip with a stated reason instead.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews()
+                        .contains("posix"),
+                "scanner test double is a POSIX shell script; not runnable on this filesystem");
         Path scanner = tempDir.resolve("ZXingReader");
         Files.writeString(scanner, """
                 #!/bin/sh

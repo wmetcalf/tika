@@ -133,6 +133,13 @@ public class PDF2XHTMLColorAwareBudgetTest {
     public void pagesShareOneColorQrProcessBudgetWithoutVersionProbes()
             throws Exception {
         Path invocationLog = temporaryDirectory.resolve("pdf-zxing-invocations.log");
+        // The scanner test double is a POSIX shell script. Windows can neither mark it
+        // executable in the POSIX sense nor run it, so the scan silently yields nothing
+        // and the assertion fails on a confusing null. Skip with a stated reason instead.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews()
+                        .contains("posix"),
+                "scanner test double is a POSIX shell script; not runnable on this filesystem");
         Path fakeScanner = temporaryDirectory.resolve("fake-zxing-reader");
         Files.writeString(fakeScanner, String.format(Locale.ROOT, """
                 #!/bin/sh
