@@ -45,6 +45,24 @@ jobs:
         # `include` entries MATCH on the locale key above and extend those combinations.
         # Without `locale` in the base matrix the two includes collapse into a single job
         # and one of the locales silently stops being tested at all.
+        #
+        # KNOWN GAP, measured not assumed: neither `LANG`/`LC_ALL` (POSIX-only, ignored by
+        # the JVM on Windows) NOR `-Duser.language` on the Maven command actually reaches
+        # the surefire-FORKED test JVM. A probe test asserting
+        # Locale.getDefault().getLanguage() inside surefire reports `en` in both cases:
+        #
+        #   mvn -Duser.language=tr ...                        -> expected <tr> but was <en>
+        #   mvn -DsurefireArgLine="-Duser.language=tr" ...    -> expected <tr> but was <en>
+        #
+        # The second fails because jacoco's prepare-agent overwrites the late-bound
+        # @{surefireArgLine} that tika-parent's <argLine> interpolates. So this job builds
+        # Windows twice under the runner default locale; it does NOT currently exercise
+        # Turkish or German. Upstream Apache Tika's copy has the same defect.
+        #
+        # Deliberately NOT papering over this with an assertion that launches its own JVM:
+        # that passes while the tests still run in `en`, which is worse than no check.
+        # Wiring it properly means getting the properties onto the forked JVM's command
+        # line without clobbering jacoco -- tracked separately.
         include:
           - locale: 'tr_TR.UTF-8'
             language: 'tr'
@@ -64,28 +82,5 @@ jobs:
           distribution: 'temurin'
           java-version: ${{ matrix.java }}
           cache: 'maven'
-      # Guard the guard. This job reported green while testing one locale twice for as
-      # long as it existed, because nothing ever checked that the JVM adopted the locale.
-      # Assert it before spending an hour of runner time on the tests.
-      - name: Verify the JVM honours the matrix locale
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > Locale_check.java <<'EOF'
-          public class Locale_check {
-              public static void main(String[] args) {
-                  System.out.println(java.util.Locale.getDefault().toLanguageTag());
-              }
-          }
-          EOF
-          ACTUAL=$(java "-Duser.language=${{ matrix.language }}" "-Duser.country=${{ matrix.country }}" Locale_check.java)
-          EXPECTED="${{ matrix.language }}-${{ matrix.country }}"
-          rm -f Locale_check.java
-          echo "effective JVM locale: $ACTUAL (expected $EXPECTED)"
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::JVM default locale is $ACTUAL, expected $EXPECTED -- this job is not testing the locale it claims to."
-            exit 1
-          fi
-
       - name: Build with Maven
         run: mvn clean test install javadoc:aggregate -Pci -Pe2e -B "-Duser.language=${{ matrix.language }}" "-Duser.country=${{ matrix.country }}" "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
