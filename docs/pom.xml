@@ -50,6 +50,11 @@ under the License.
                         <inputExclude>modules/**/*.yml</inputExclude>
                         <!-- UI assets: CSS, SVG, and Handlebars templates -->
                         <inputExclude>supplemental-ui/**</inputExclude>
+                        <!-- Module-relative: under -Papache-release the docs module joins the
+                             reactor and sees these as superpowers/**, not docs/superpowers/**.
+                             This list REPLACES the root pom's rather than extending it, so the
+                             root exclude does not reach here and both entries are required. -->
+                        <inputExclude>superpowers/**</inputExclude>
                     </inputExcludes>
                 </configuration>
             </plugin>
