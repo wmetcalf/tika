@@ -15,7 +15,7 @@ on:
       - 'docs/metadata-fields-static.json'
       - '.github/workflows/metadata-inventory.yml'
   push:
-    branches: [4.0-upstream-office-links, main]
+    branches: [4.0-upstream-office-links]
     paths:
       - 'tika-core/src/main/java/org/apache/tika/metadata/**'
       - 'tika-parsers/**/*.java'

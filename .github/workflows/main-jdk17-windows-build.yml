@@ -25,7 +25,7 @@ on:
     paths-ignore:
       - 'docs/**'
   push:
-    branches: [ 4.0-upstream-office-links, master ]
+    branches: [ 4.0-upstream-office-links ]
     paths-ignore:
       - 'docs/**'
 
