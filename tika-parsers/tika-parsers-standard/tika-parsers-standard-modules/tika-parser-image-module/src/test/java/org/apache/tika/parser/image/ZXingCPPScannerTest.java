@@ -78,7 +78,10 @@ public class ZXingCPPScannerTest {
         List<ZXingCPPScanner.Result> results = scanner.scan(imagePath, config, new ParseContext());
 
         assertEquals(1, results.size());
-        assertEquals("/opt/zxing/ZXingReader", scanner.lastCommand.get(0));
+        // ZXingCPPConfig.setZxingPath runs FilenameUtils.normalize, which is OS-dependent
+        // ('/' becomes '\\' on Windows). Assert against what the config actually resolved to
+        // rather than a POSIX literal, or this passes only on POSIX runners.
+        assertEquals(config.getZxingPath(), scanner.lastCommand.get(0));
         assertEquals("-json", scanner.lastCommand.get(1));
         assertEquals("-formats", scanner.lastCommand.get(2));
         assertEquals("QRCode", scanner.lastCommand.get(3));
