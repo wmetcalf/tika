@@ -19,6 +19,21 @@
 
 This guide covers the process for releasing the main Apache Tika project.
 
+[IMPORTANT]
+====
+*Every Docker step in this guide is upstream-only and does nothing in this fork.*
+
+`.github/workflows/docker-release.yml` and `docker-snapshot.yml` have been removed here, so
+the automatic publishing this guide describes -- on a GA tag push, and via `workflow_dispatch`
+-- will not run, and no images reach Docker Hub. A maintainer following this runbook for a GA
+release would otherwise watch the Actions tab for a workflow that never starts and conclude the
+images shipped.
+
+Docker publishing happens upstream at https://github.com/apache/tika[apache/tika]. See
+xref:maintainers/release-guides/docker.adoc[Releasing Tika Docker Images], which carries the
+same caveat.
+====
+
 == Prerequisites
 
 Before starting the release process, ensure you have:
@@ -129,6 +144,10 @@ Pushing a tag of the form `X.Y.Z` (digit.digit.digit, no hyphen) immediately
 auto-triggers the Docker release workflow, which publishes images to Docker
 Hub and moves `apache/tika:latest`. If you enter bare `X.Y.Z` here, those
 images go live *before the vote has even started.*
+
+NOTE: Upstream only. This fork has no Docker workflows, so a bare tag publishes
+nothing here. Keep using `X.Y.Z-rcN` anyway -- the tag scheme matters to the rest
+of the release, and this guide should stay usable upstream.
 
 For the first vote: enter `X.Y.Z-rc1`. For a second RC: `X.Y.Z-rc2`. Etc. The
 bare `X.Y.Z` tag is created later in Step 12 after the vote passes, and
@@ -278,9 +297,10 @@ svn mv https://dist.apache.org/repos/dist/dev/tika/X.Y.Z \
        https://dist.apache.org/repos/dist/release/tika/X.Y.Z \
        -m "Release Apache Tika X.Y.Z"
 ----
-. Create the GA git tag from the winning RC and push it. *This auto-triggers
-  the Docker release workflow* (see xref:maintainers/release-guides/docker.adoc[Releasing
-  Tika Docker Images]):
+. Create the GA git tag from the winning RC and push it. *Upstream, this
+  auto-triggers the Docker release workflow* (see
+  xref:maintainers/release-guides/docker.adoc[Releasing Tika Docker Images]).
+  *In this fork it triggers nothing* -- the workflow has been removed:
 +
 [source,bash]
 ----
@@ -306,7 +326,7 @@ propagate — `workflow_dispatch` skips the auto-wait that the tag-push path has
 +
 [source,bash]
 ----
-gh workflow run docker-release.yml -f tag=X.Y.Z-beta-N -f build_number=1
+gh workflow run docker-release.yml -f tag=X.Y.Z-beta-N -f build_number=1   # upstream only: this workflow is removed from this fork
 ----
 +
 This publishes `apache/tika:X.Y.Z-beta-N` (+ the immutable `…-1` build pin and
@@ -425,13 +445,18 @@ Refresh the website documentation to reflect the new release:
 For a GA release, the Docker images publish automatically when the
 `X.Y.Z` tag is pushed in Step 12 above — no manual step needed. Watch the
 "Docker release - tika-server and tika-grpc" workflow run in the Actions
-tab to confirm. See xref:maintainers/release-guides/docker.adoc[Releasing
+tab to confirm.
+
+WARNING: Upstream only. In this fork that workflow does not exist, so nothing
+appears in the Actions tab and no images are published. Do not read its absence
+as a build still pending. See xref:maintainers/release-guides/docker.adoc[Releasing
 Tika Docker Images] for the tag scheme, verification steps, and how to
 publish a manual rebuild (CVE in base image, etc.).
 
 For a prerelease (`X.Y.Z-alpha-N`, `X.Y.Z-beta-N`, RC variants), the Docker
 workflow does *not* auto-fire — trigger it manually via `workflow_dispatch`
-per the Docker guide.
+per the Docker guide. Upstream only: there is no such workflow to dispatch in
+this fork.
 
 Helm charts are released separately via xref:maintainers/release-guides/helm.adoc[Releasing
 Tika Helm Charts].

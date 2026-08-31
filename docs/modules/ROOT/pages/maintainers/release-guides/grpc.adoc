@@ -32,7 +32,8 @@ and is too large to publish as a mirror artifact).
   javadoc, and `.asc` signatures), for embedding the gRPC server in a
   Maven/Gradle build. Deployed with the rest of Tika via `release:perform`.
 * *Docker Hub* — `apache/tika-grpc`, the ready-to-run server image, built from a
-  `-Pdocker` Maven layout and published by `.github/workflows/docker-release.yml`.
+  `-Pdocker` Maven layout and published by `.github/workflows/docker-release.yml`
+  upstream. That workflow is removed from this fork, which publishes no images.
 * *Apache dist* — nothing. There is no `tika-grpc` archive on dist.
 
 == Release steps

@@ -20,6 +20,24 @@
 This guide covers releasing the official Apache Tika Docker images
 (`apache/tika` and `apache/tika-grpc` on Docker Hub).
 
+[IMPORTANT]
+====
+*This fork does not publish Docker images, and the workflows described below have
+been removed from it.*
+
+`.github/workflows/docker-release.yml` and `docker-snapshot.yml` were deleted because they
+could not run here: they filtered on a `main` branch this fork does not have, were never
+registered with Actions, and the repository has no `DOCKERHUB_USER` / `DOCKERHUB_TOKEN`
+secrets, so the login step would fail regardless.
+
+Docker publishing for Apache Tika happens *upstream*, at
+https://github.com/apache/tika[apache/tika]. Follow this guide there, not here. Any
+`gh workflow run docker-release.yml` command below will fail in this fork.
+
+The Dockerfiles under `tika-server/docker-build/` and `tika-grpc/docker-build/` are still
+present and are usable for building images locally.
+====
+
 == Where the Dockerfiles live
 
 Starting with 4.0.0-alpha-1, the Dockerfiles and the GitHub Actions workflow
@@ -28,8 +46,8 @@ that publishes them live in this repository:
 * `tika-server/docker-build/{minimal,full}/Dockerfile` — `apache/tika` (server) release builds
 * `tika-server/docker-build/{minimal,full}/Dockerfile.snapshot` — nightly snapshot builds
 * `tika-grpc/docker-build/Dockerfile` — `apache/tika-grpc` release builds
-* `.github/workflows/docker-release.yml` — the release publishing workflow
-* `.github/workflows/docker-snapshot.yml` — the snapshot publishing workflow (auto on push to `main`)
+* `.github/workflows/docker-release.yml` — the release publishing workflow (upstream only; removed from this fork)
+* `.github/workflows/docker-snapshot.yml` — the snapshot publishing workflow (upstream only; removed from this fork)
 
 NOTE: The legacy https://github.com/apache/tika-docker[apache/tika-docker]
 repository is still used for 3.x patch releases — see <<3x-patches>> below. New

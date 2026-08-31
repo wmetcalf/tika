@@ -220,7 +220,7 @@ keep the fat distribution shapes off Central without disrupting the
 build process.
 
 *Docker image contents:* `.github/workflows/docker-release.yml` (the
-release publish workflow). The `release-tika-grpc` job currently
+release publish workflow, upstream only -- removed from this fork). The `release-tika-grpc` job currently
 assembles a custom build context from per-module outputs (
 `dependency:copy-dependencies`, per-plugin `cp`, parser-package `cp`).
 The `release-tika-server` job builds from `tika-server-standard-<v>.zip`
