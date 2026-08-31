@@ -148,6 +148,11 @@ public class AutoDetectParser extends CompositeParser {
                       ParseContext context) throws IOException, SAXException, TikaException {
         // Compute digests before type detection if configured
         // DigesterFactory is retrieved from ParseContext (configured via parse-context)
+        // Before digesting/detecting, and before the MetadataOnlyParse and zero-byte early
+        // exits below: those return or throw without reaching CompositeParser, so a reset placed
+        // only there would leave a reused context exposing the PREVIOUS document's record.
+        ParseRecord.beginDocument(context);
+
         DigestHelper.maybeDigest(tis, metadata, context);
 
         // Signal to detectors that parsing will follow - allows them to prepare

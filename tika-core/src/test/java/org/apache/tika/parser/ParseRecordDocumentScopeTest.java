@@ -157,4 +157,38 @@ public class ParseRecordDocumentScopeTest {
             }
         }
     }
+
+    /**
+     * The early-exit path. AutoDetectParser returns for MetadataOnlyParse BEFORE delegating to
+     * CompositeParser, so a reset placed only in CompositeParser never runs and the previous
+     * document's record stays visible to anyone inspecting it afterwards.
+     */
+    @Test
+    public void metadataOnlySecondDocumentStillGetsAFreshRecord() throws Exception {
+        AutoDetectParser auto = new AutoDetectParser();
+        ParseContext shared = new ParseContext();
+
+        // document 1: a normal parse that leaves state behind
+        Metadata m1 = new Metadata();
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            auto.parse(tis, new org.xml.sax.helpers.DefaultHandler(), m1, shared);
+        }
+        ParseRecord afterFirst = shared.get(ParseRecord.class);
+        afterFirst.addWarning("warning from document one");
+        afterFirst.setEmbeddedCountLimitReached(true);
+
+        // document 2: metadata-only, which returns before CompositeParser is ever reached
+        shared.set(MetadataOnlyParse.class, MetadataOnlyParse.INSTANCE);
+        Metadata m2 = new Metadata();
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            auto.parse(tis, new org.xml.sax.helpers.DefaultHandler(), m2, shared);
+        }
+
+        ParseRecord afterSecond = shared.get(ParseRecord.class);
+        assertEquals(0, afterSecond.getWarnings().size(),
+                "a metadata-only second document still exposes the FIRST document's warnings; "
+                        + "AutoDetectParser returned before CompositeParser could reset");
+        assertFalse(afterSecond.isEmbeddedCountLimitReached(),
+                "sticky limit survived into a metadata-only document");
+    }
 }

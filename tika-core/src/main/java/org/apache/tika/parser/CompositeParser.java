@@ -282,16 +282,7 @@ public class CompositeParser implements Parser {
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         Parser parser = getParser(metadata, context);
-        ParseRecord parserRecord = context.get(ParseRecord.class);
-        if (parserRecord == null) {
-            parserRecord = ParseRecord.newInstance(context);
-            context.set(ParseRecord.class, parserRecord);
-        } else if (parserRecord.getDepth() == 0) {
-            // A record already in the context at depth 0 belongs to a PREVIOUS document: this
-            // context is being reused. Nested parses arrive at depth > 0 and must keep spending
-            // the current document's record, so the depth check is what separates the two.
-            parserRecord.resetForNewDocument();
-        }
+        ParseRecord parserRecord = ParseRecord.beginDocument(context);
         try {
             TaggedContentHandler taggedHandler =
                     handler != null ? new TaggedContentHandler(handler) : null;

@@ -105,6 +105,30 @@ public class ParseRecord {
      * that read the record after parsing (exceptions, warnings, the metadata list) still see the
      * document they just parsed.
      */
+    /**
+     * Installs a record for a new document, or resets the one already there.
+     *
+     * <p>Called from BOTH AutoDetectParser and CompositeParser. AutoDetectParser digests,
+     * detects, and can exit early -- the MetadataOnlyParse return and the zero-byte
+     * ZeroByteFileException both happen BEFORE it delegates to CompositeParser -- so a reset
+     * placed only in CompositeParser leaves the previous document's warnings, exceptions, counts
+     * and sticky flags visible to anyone inspecting the record after such an attempt.
+     *
+     * <p>Calling it twice for one document is harmless: nothing writes to the record between
+     * AutoDetectParser's entry and CompositeParser's, so the second call resets an already-clean
+     * record. Only depth 0 resets; nested parses arrive deeper and keep the current document's.
+     */
+    static ParseRecord beginDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (record == null) {
+            record = newInstance(context);
+            context.set(ParseRecord.class, record);
+        } else if (record.getDepth() == 0) {
+            record.resetForNewDocument();
+        }
+        return record;
+    }
+
     void resetForNewDocument() {
         parsers.clear();
         exceptions.clear();
