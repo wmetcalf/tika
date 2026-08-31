@@ -64,6 +64,16 @@ public class ParseRecord {
     private boolean throwOnMaxCount = false;
     private boolean embeddedDepthLimitReached = false;
     private boolean embeddedCountLimitReached = false;
+    /**
+     * True from the moment a top-level parse claims this record until that parse unwinds.
+     *
+     * <p>AutoDetectParser and CompositeParser both call {@link #beginDocument} for the SAME
+     * document -- AutoDetectParser first, then again when it delegates -- and both see depth 0.
+     * Without this marker the second call reads as a new document and wipes anything the
+     * detector, the digester or an overridden getParser() recorded in between, so those
+     * diagnostics never reach the document's metadata.
+     */
+    private boolean documentBegun = false;
 
     /**
      * Creates a new ParseRecord configured from EmbeddedLimits in the ParseContext.
@@ -123,10 +133,25 @@ public class ParseRecord {
         if (record == null) {
             record = newInstance(context);
             context.set(ParseRecord.class, record);
-        } else if (record.getDepth() == 0) {
+        } else if (record.getDepth() == 0 && !record.documentBegun) {
             record.resetForNewDocument();
         }
+        record.documentBegun = true;
         return record;
+    }
+
+    /**
+     * Releases the claim {@link #beginDocument} took, so the NEXT top-level parse resets.
+     *
+     * <p>Called from a finally in AutoDetectParser because its MetadataOnlyParse return and
+     * ZeroByteFileException exit without ever reaching beforeParse/afterParse; without this the
+     * claim would outlive the document and the next one would inherit its record.
+     */
+    static void endDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (record != null && record.getDepth() == 0) {
+            record.documentBegun = false;
+        }
     }
 
     void resetForNewDocument() {
@@ -146,6 +171,9 @@ public class ParseRecord {
 
     void afterParse() {
         depth--;
+        if (depth == 0) {
+            documentBegun = false;
+        }
     }
 
     public int getDepth() {

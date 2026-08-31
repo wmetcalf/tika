@@ -18,6 +18,7 @@ package org.apache.tika.parser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -190,5 +192,36 @@ public class ParseRecordDocumentScopeTest {
                         + "AutoDetectParser returned before CompositeParser could reset");
         assertFalse(afterSecond.isEmbeddedCountLimitReached(),
                 "sticky limit survived into a metadata-only document");
+    }
+
+    /**
+     * The AutoDetect -> Composite handoff is ONE document. A detector (or an overridden
+     * getParser) that records a diagnostic runs between the two beginDocument calls, and the
+     * second call must not read as a new document and wipe it.
+     */
+    @Test
+    public void diagnosticsRecordedDuringDetectionSurviveTheHandoff() throws Exception {
+        ParseContext shared = new ParseContext();
+        Detector recordingDetector = (stream, metadata, context) -> {
+            ParseRecord r = context.get(ParseRecord.class);
+            if (r != null) {
+                r.addWarning("recorded during detection");
+            }
+            return MediaType.OCTET_STREAM;
+        };
+        AutoDetectParser auto = new AutoDetectParser(recordingDetector, new CountingParser());
+
+        Metadata metadata = new Metadata();
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            auto.parse(tis, new org.xml.sax.helpers.DefaultHandler(), metadata, shared);
+        }
+
+        // Assert the DETECTOR's warning specifically, not a total: CountingParser adds its own
+        // on its first parse, so a count assertion measures the fixture rather than the property.
+        boolean survived = shared.get(ParseRecord.class).getWarnings().stream()
+                .anyMatch(w -> w.startsWith("recorded during detection"));
+        assertTrue(survived,
+                "a warning recorded by the detector was wiped by CompositeParser's reset; the "
+                        + "AutoDetect-to-Composite handoff is being treated as two documents");
     }
 }

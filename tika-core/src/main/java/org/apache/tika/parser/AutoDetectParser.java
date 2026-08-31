@@ -152,7 +152,18 @@ public class AutoDetectParser extends CompositeParser {
         // exits below: those return or throw without reaching CompositeParser, so a reset placed
         // only there would leave a reused context exposing the PREVIOUS document's record.
         ParseRecord.beginDocument(context);
+        try {
+            parseAfterBeginDocument(tis, handler, metadata, context);
+        } finally {
+            // The early exits below leave without unwinding beforeParse/afterParse, so release
+            // the claim here or the next document inherits this one's record.
+            ParseRecord.endDocument(context);
+        }
+    }
 
+    private void parseAfterBeginDocument(TikaInputStream tis, ContentHandler handler,
+                                         Metadata metadata, ParseContext context)
+            throws IOException, SAXException, TikaException {
         DigestHelper.maybeDigest(tis, metadata, context);
 
         // Signal to detectors that parsing will follow - allows them to prepare
