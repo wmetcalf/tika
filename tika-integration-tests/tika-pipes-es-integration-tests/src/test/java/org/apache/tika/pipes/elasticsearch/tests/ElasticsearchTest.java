@@ -171,15 +171,25 @@ public class ElasticsearchTest {
             Integer cnt = statusCounts.get(status);
             statusCounts.put(status, cnt == null ? 1 : cnt + 1);
         }
-        assertEquals(numHtmlDocs, (int) statusCounts.get("PARSE_SUCCESS"),
+        // Read through a null-safe helper rather than unboxing Map.get directly. An absent key
+        // threw NullPointerException at the cast, BEFORE the message naming the actual
+        // distribution was built -- so a status that simply did not occur reported as an NPE
+        // with no indication of what DID occur, which is unactionable in CI.
+        assertEquals(numHtmlDocs, count(statusCounts, "PARSE_SUCCESS"),
                 "should have had " + numHtmlDocs + " parse successes: " + statusCounts);
-        assertEquals(1, (int) statusCounts.get("PARSE_SUCCESS_WITH_EXCEPTION"),
+        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION"),
                 "should have had 1 parse exception: " + statusCounts);
-        assertEquals(1, (int) statusCounts.get("EMIT_SUCCESS"),
+        assertEquals(1, count(statusCounts, "EMIT_SUCCESS"),
                 "should have had 1 emit success: " + statusCounts);
         assertEquals(2, numberOfCrashes(statusCounts),
                 "should have had 2 forked-process crashes (OOM/TIMEOUT/UNSPECIFIED_CRASH): " +
                         statusCounts);
+    }
+
+    /** 0 for an absent status, so a missing key fails with the distribution rather than an NPE. */
+    private static int count(Map<String, Integer> statusCounts, String status) {
+        Integer n = statusCounts.get(status);
+        return n == null ? 0 : n;
     }
 
     private int numberOfCrashes(Map<String, Integer> statusCounts) {
