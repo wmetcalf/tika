@@ -224,4 +224,37 @@ public class ParseRecordDocumentScopeTest {
                 "a warning recorded by the detector was wiped by CompositeParser's reset; the "
                         + "AutoDetect-to-Composite handoff is being treated as two documents");
     }
+
+    /**
+     * Direct CompositeParser use has no earlier claim from AutoDetectParser, so the reset must
+     * happen before the overridable getParser hook rather than after it.
+     */
+    @Test
+    public void diagnosticsFromParserSelectionSurvive() throws Exception {
+        ParseContext shared = new ParseContext();
+        CountingParser counting = new CountingParser();
+        CompositeParser composite = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), counting) {
+            @Override
+            protected Parser getParser(Metadata metadata, ParseContext context) {
+                ParseRecord r = context.get(ParseRecord.class);
+                if (r != null) {
+                    r.addWarning("recorded during parser selection");
+                }
+                return super.getParser(metadata, context);
+            }
+        };
+
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            composite.parse(tis, new org.xml.sax.helpers.DefaultHandler(), metadata, shared);
+        }
+
+        boolean survived = shared.get(ParseRecord.class).getWarnings().stream()
+                .anyMatch(w -> w.startsWith("recorded during parser selection"));
+        assertTrue(survived,
+                "a warning recorded by an overridden getParser was discarded by beginDocument; "
+                        + "the document must be claimed before parser selection");
+    }
 }

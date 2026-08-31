@@ -281,8 +281,14 @@ public class CompositeParser implements Parser {
      */
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        Parser parser = getParser(metadata, context);
+        // Claim the document BEFORE selecting a parser. getParser is an overridable hook, and a
+        // subclass that records a warning or exception there would otherwise write into the
+        // PREVIOUS document's record and have it discarded by the reset a line later -- and if
+        // selection throws, the previous document's state would never be reset at all. Only
+        // AutoDetectParser claims earlier than this; direct CompositeParser and DefaultParser use
+        // has no earlier claim, so this line is the first one for that path.
         ParseRecord parserRecord = ParseRecord.beginDocument(context);
+        Parser parser = getParser(metadata, context);
         try {
             TaggedContentHandler taggedHandler =
                     handler != null ? new TaggedContentHandler(handler) : null;
