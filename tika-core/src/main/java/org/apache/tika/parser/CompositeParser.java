@@ -286,6 +286,11 @@ public class CompositeParser implements Parser {
         if (parserRecord == null) {
             parserRecord = ParseRecord.newInstance(context);
             context.set(ParseRecord.class, parserRecord);
+        } else if (parserRecord.getDepth() == 0) {
+            // A record already in the context at depth 0 belongs to a PREVIOUS document: this
+            // context is being reused. Nested parses arrive at depth > 0 and must keep spending
+            // the current document's record, so the depth check is what separates the two.
+            parserRecord.resetForNewDocument();
         }
         try {
             TaggedContentHandler taggedHandler =

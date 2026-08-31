@@ -84,6 +84,37 @@ public class ParseRecord {
         return record;
     }
 
+    /**
+     * Clears everything this record accumulated for ONE document, keeping the configured limits.
+     *
+     * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT
+     * documents -- TikaCLI passes one context to every file on the command line, and
+     * MultiThreadedTikaTest shares one across an entire corpus. CompositeParser installs a
+     * ParseRecord only when absent and never removes it, so without this the record is
+     * per-CONTEXT rather than per-DOCUMENT.
+     *
+     * <p>Measured before this existed: six parses of one file through a single context reported
+     * embeddedCount 24, 48, 72, 96, 120, 144. Unbounded growth is the mild symptom. The sharp one
+     * is {@code embeddedCountLimitReached}, which is sticky and is checked by
+     * ParsingEmbeddedDocumentExtractor and CompositeParser: once ANY document trips maxCount,
+     * every later document through that context silently yields no embedded documents at all.
+     * The capped lists behave the same way -- after 100 accumulated entries, later documents stop
+     * recording metadata, warnings and exceptions.
+     *
+     * <p>Called at the start of a new TOP-LEVEL parse rather than at the end of one, so callers
+     * that read the record after parsing (exceptions, warnings, the metadata list) still see the
+     * document they just parsed.
+     */
+    void resetForNewDocument() {
+        parsers.clear();
+        exceptions.clear();
+        warnings.clear();
+        metadataList.clear();
+        embeddedCount = 0;
+        writeLimitReached = false;
+        embeddedCountLimitReached = false;
+    }
+
     void beforeParse() {
         depth++;
     }
