@@ -18,10 +18,24 @@
 name: main jdk21 build
 
 on:
-  push:
-    branches: [ main ]
+  # This had no `pull_request:` trigger at all, so JDK 21 never ran on a pull request
+  # even though its own `concurrency` block below keys on `event_name == 'pull_request'`.
+  # No `branches:` filter, for the same reason as the other builds.
+  pull_request:
     paths-ignore:
       - 'docs/**'
+  push:
+    branches: [ 4.0-upstream-office-links ]
+    paths-ignore:
+      - 'docs/**'
+
+# Superseded PR runs are dead work: cancel them. Never cancel a post-merge build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build:

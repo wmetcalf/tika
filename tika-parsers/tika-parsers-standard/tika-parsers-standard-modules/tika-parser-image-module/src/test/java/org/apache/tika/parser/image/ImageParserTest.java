@@ -375,9 +375,10 @@ public class ImageParserTest extends TikaTest {
         config.setZxingPath("/opt/zxing/ZXingReader");
         context.set(ZXingCPPConfig.class, config);
         Parser parser = new ScannerBackedBarcodeParser(
-                new ConfigAwareAvailabilityScanner(Collections.singletonList(
-                        new ZXingCPPScanner.Result("/tmp/code.png", "hello-qr", "QR Code",
-                                null, null, null, false))));
+                new ConfigAwareAvailabilityScanner(config.getZxingPath(),
+                        Collections.singletonList(
+                                new ZXingCPPScanner.Result("/tmp/code.png", "hello-qr", "QR Code",
+                                        null, null, null, false))));
 
         try (TikaInputStream tis = getResourceAsStream("/test-documents/testPNG.png")) {
             parser.parse(tis, new DefaultHandler(), metadata, context);
@@ -678,16 +679,23 @@ public class ImageParserTest extends TikaTest {
 
     private static class ConfigAwareAvailabilityScanner extends ZXingCPPScanner {
 
+        private final String expectedExecutable;
         private final List<ZXingCPPScanner.Result> results;
 
-        private ConfigAwareAvailabilityScanner(List<ZXingCPPScanner.Result> results) {
+        private ConfigAwareAvailabilityScanner(String expectedExecutable,
+                                               List<ZXingCPPScanner.Result> results) {
+            this.expectedExecutable = expectedExecutable;
             this.results = results;
         }
 
         @Override
         boolean checkCommand(String[] command) {
+            // The expected path comes from the config, which normalizes per-OS, rather than
+            // from a POSIX literal -- otherwise this probe reports "unavailable" on Windows,
+            // no barcode metadata is emitted, and the caller fails with an obscure
+            // ArrayIndexOutOfBoundsException instead of a clear assertion.
             return command != null && command.length > 0 &&
-                    "/opt/zxing/ZXingReader".equals(command[0]);
+                    expectedExecutable.equals(command[0]);
         }
 
         @Override

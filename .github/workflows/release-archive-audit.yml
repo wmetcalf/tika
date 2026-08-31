@@ -13,7 +13,7 @@ name: release archive audit
 on:
   pull_request:
   push:
-    branches: [ 4.0-upstream-office-links, master ]
+    branches: [ 4.0-upstream-office-links ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

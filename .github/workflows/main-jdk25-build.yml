@@ -18,10 +18,27 @@
 name: main jdk25 build
 
 on:
-  push:
-    branches: [ main ]
+  # NO `branches:` filter, deliberately. The previous form hardcoded `branches: [ main ]` --
+  # inherited from upstream, where main IS the working branch. This fork has no `main` branch at
+  # all -- work happens on 4.0-upstream-office-links -- so every one of those
+  # filters matched nothing and these workflows had never run on a pull request in this repo.
+  # Filtering by base branch re-arms that trap on the next rename; metadata-inventory.yml already
+  # omits the filter and is the only workflow that has ever fired here.
+  pull_request:
     paths-ignore:
       - 'docs/**'
+  push:
+    branches: [ 4.0-upstream-office-links ]
+    paths-ignore:
+      - 'docs/**'
+
+# Superseded PR runs are dead work: cancel them. Never cancel a post-merge build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build:

@@ -18,12 +18,14 @@
 name: main jdk17 windows build (multi-locale)
 
 on:
+  # NO `branches:` filter, deliberately -- see main-jdk17-build.yml. `main` does not
+  # exist in this fork, so this filter matched nothing and this workflow had never run
+  # on a pull request here.
   pull_request:
-    branches: [ main ]
     paths-ignore:
       - 'docs/**'
   push:
-    branches: [ main ]
+    branches: [ 4.0-upstream-office-links ]
     paths-ignore:
       - 'docs/**'
 
@@ -34,7 +36,40 @@ jobs:
     strategy:
       matrix:
         java: [ '17' ]
+        # LANG/LC_ALL are POSIX conventions that the JVM does not honour on Windows, so
+        # setting them alone left BOTH matrix entries running under the runner's default
+        # locale -- this job was testing one locale twice and reporting green. The JVM
+        # properties below are what actually select the locale; LANG/LC_ALL are kept so the
+        # job stays correct if it is ever moved to a POSIX runner.
         locale: [ 'tr_TR.UTF-8', 'de_DE.UTF-8' ]
+        # `include` entries MATCH on the locale key above and extend those combinations.
+        # Without `locale` in the base matrix the two includes collapse into a single job
+        # and one of the locales silently stops being tested at all.
+        #
+        # KNOWN GAP, measured not assumed: neither `LANG`/`LC_ALL` (POSIX-only, ignored by
+        # the JVM on Windows) NOR `-Duser.language` on the Maven command actually reaches
+        # the surefire-FORKED test JVM. A probe test asserting
+        # Locale.getDefault().getLanguage() inside surefire reports `en` in both cases:
+        #
+        #   mvn -Duser.language=tr ...                        -> expected <tr> but was <en>
+        #   mvn -DsurefireArgLine="-Duser.language=tr" ...    -> expected <tr> but was <en>
+        #
+        # The second fails because jacoco's prepare-agent overwrites the late-bound
+        # @{surefireArgLine} that tika-parent's <argLine> interpolates. So this job builds
+        # Windows twice under the runner default locale; it does NOT currently exercise
+        # Turkish or German. Upstream Apache Tika's copy has the same defect.
+        #
+        # Deliberately NOT papering over this with an assertion that launches its own JVM:
+        # that passes while the tests still run in `en`, which is worse than no check.
+        # Wiring it properly means getting the properties onto the forked JVM's command
+        # line without clobbering jacoco -- tracked separately.
+        include:
+          - locale: 'tr_TR.UTF-8'
+            language: 'tr'
+            country: 'TR'
+          - locale: 'de_DE.UTF-8'
+            language: 'de'
+            country: 'DE'
     env:
       LANG: ${{ matrix.locale }}
       LC_ALL: ${{ matrix.locale }}
@@ -48,4 +83,4 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: 'maven'
       - name: Build with Maven
-        run: mvn clean test install javadoc:aggregate -Pci -Pe2e -B "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
+        run: mvn clean test install javadoc:aggregate -Pci -Pe2e -B "-Duser.language=${{ matrix.language }}" "-Duser.country=${{ matrix.country }}" "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
