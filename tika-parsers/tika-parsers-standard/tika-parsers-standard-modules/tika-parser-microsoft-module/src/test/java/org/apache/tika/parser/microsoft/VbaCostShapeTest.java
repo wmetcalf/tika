@@ -151,14 +151,21 @@ public class VbaCostShapeTest {
         // growth rather than by decompression, which read as ~10x growth on linear code. Verified
         // still to catch the real defect at this size: the historical per-chunk toByteArray() is
         // detected at 21.4x.
-        // maxBaseN 65_536, not 16_384: on a fast Windows runner the base cost at 16_384 came in
-        // at 8 ms, under the 15 ms floor, and the gate correctly reported a fixture too small to
-        // measure. The growth loop exits as soon as the floor is reached, so on hosts that
-        // already reach it below 16_384 -- Linux does -- this changes nothing; it only lets a
-        // faster host keep doubling. The top point stays well clear of the allocation-dominated
-        // regime the note above warns about: 4 x 65_536 chunks x 509 bytes is ~133 MB, not ~0.5 GB.
+        // On a fast Windows runner the base cost at 16_384 came in at 8 ms, under the 15 ms
+        // floor, so the growth loop needs to reach further. Buying that with a higher ceiling
+        // ALONE would re-enter the regime this fixture has fallen into before: at maxBaseN
+        // 65_536 the harness measures 4 x 65_536 = 262_144 chunks, ~127 MiB of output plus
+        // another ~128 MiB when ByteArrayOutputStream.toByteArray() copies it -- ~255 MiB
+        // against the ~100 MB boundary named below, where allocation dominates and linear code
+        // reads as ~10x growth. That trades a false "fixture too small" for a false failure.
+        //
+        // So buy the cost in HANDOFFS rather than in bytes: 127 bytes per chunk instead of 509.
+        // The axis under test is the NUMBER of chunk handoffs, so a quarter of the payload per
+        // chunk is a quarter of the memory for the same number of handoffs, and reaches the
+        // floor sooner per byte allocated. The new top point is 4 x 65_536 x 127 ~= 33 MB of
+        // output plus ~33 MB for the copy, ~66 MB -- back under the boundary.
         assertSubQuadratic("compressed chunks per module", 4096, 65_536,
-                n -> VbaProjectBuilder.ratioBombContainer(n, 509),
+                n -> VbaProjectBuilder.ratioBombContainer(n, 127),
                 container -> {
                     try {
                         LenientVBAReader.decompress(container, 0,
