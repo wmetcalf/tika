@@ -115,7 +115,7 @@ public class AbstractOOXMLExternalRefPartScanBoundTest {
         OPCPackage pkg = OPCPackage.create(bos);
         for (int i = 0; i < partCount; i++) {
             PackagePartName name = PackagingURIHelper.createPartName(
-                    String.format("/customXml/item%06d.xml", i));
+                    String.format(Locale.ROOT, "/customXml/item%06d.xml", i));
             PackagePart part = pkg.createPart(name, "application/xml");
             try (OutputStream os = part.getOutputStream()) {
                 os.write("<x/>".getBytes(StandardCharsets.UTF_8));
