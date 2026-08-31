@@ -126,19 +126,29 @@ public class MultiThreadedTikaTest extends TikaTest {
     }
 
     private static void assertExtractEquals(Extract extractA, Extract extractB) {
+        assertExtractEquals(extractA, extractB, "<unknown file>");
+    }
+
+    /**
+     * The file name matters when this fails. These comparisons run concurrently over a pool of
+     * documents chosen at random, so a mismatch reported without the source file is close to
+     * unactionable: you know one attachment went missing, but not from which document, and the
+     * failure is intermittent enough that re-running usually just hides it again.
+     */
+    private static void assertExtractEquals(Extract extractA, Extract extractB, String testFile) {
         //this currently only checks the basics
         //might want to add more checks
 
         assertEquals(extractA.metadataList.size(), extractB.metadataList.size(),
-                "number of embedded files");
+                "number of embedded files in " + testFile);
 
         for (int i = 0; i < extractA.metadataList.size(); i++) {
             assertEquals(extractA.metadataList.get(i).size(), extractB.metadataList.get(i).size(),
-                    "number of metadata elements in attachment: " + i);
+                    "number of metadata elements in attachment " + i + " of " + testFile);
 
             assertEquals(extractA.metadataList.get(i).get(TikaCoreProperties.TIKA_CONTENT),
                     extractB.metadataList.get(i).get(TikaCoreProperties.TIKA_CONTENT),
-                    "content in attachment: " + i);
+                    "content in attachment " + i + " of " + testFile);
         }
     }
 
@@ -358,7 +368,8 @@ public class MultiThreadedTikaTest extends TikaTest {
                     //throw new RuntimeException(testFile + " triggered this exception", e);
                 }
                 if (success) {
-                    assertExtractEquals(truth.get(testFile), new Extract(metadataList));
+                    assertExtractEquals(truth.get(testFile), new Extract(metadataList),
+                            testFile.getFileName().toString());
                 }
             }
             return 1;
