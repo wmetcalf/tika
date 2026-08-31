@@ -389,6 +389,51 @@ public class VbaCostShapeTest {
      * quadratic hid here before. Reducing measurement noise makes the gate sharper; raising the
      * bar makes it blinder.
      */
+    /**
+     * Whether thread CPU time can actually resolve the durations this harness measures.
+     *
+     * <p>SUPPORTED and ENABLED are not enough. On Windows {@code getCurrentThreadCpuTime()} is
+     * both supported and enabled, and still advances in ~15.6 ms ticks, so work below one tick
+     * measures as exactly 0 no matter how many times it is repeated. The nanosecond RETURN UNIT
+     * says nothing about the underlying granularity. Observed on a windows-latest runner: the
+     * compressed-chunks fixture reached the 15 ms floor on Linux but reported "0 ms" at n=16384
+     * on Windows, failing the gate for a reason that had nothing to do with the code under test.
+     *
+     * <p>So probe the granularity instead of trusting the flags: busy-loop until the clock moves,
+     * and require the observed step to be small relative to {@code minMeasurable}. If it is not,
+     * fall back to wall clock, which is high resolution on every platform this runs on.
+     */
+    private static boolean probeCpuTimeResolution() {
+        java.lang.management.ThreadMXBean threads =
+                java.lang.management.ManagementFactory.getThreadMXBean();
+        if (!threads.isCurrentThreadCpuTimeSupported() || !threads.isThreadCpuTimeEnabled()) {
+            return false;
+        }
+        long start = threads.getCurrentThreadCpuTime();
+        if (start < 0) {
+            return false;
+        }
+        long step = 0;
+        long deadline = System.nanoTime() + 200_000_000L;   // bounded: 200 ms of probing at most
+        long spin = 0;
+        while (System.nanoTime() < deadline) {
+            spin++;
+            long now = threads.getCurrentThreadCpuTime();
+            if (now > start) {
+                step = now - start;
+                break;
+            }
+        }
+        if (spin == 0 || step <= 0) {
+            return false;
+        }
+        // One tick must be a small fraction of the floor, or a measurement at the floor is mostly
+        // quantisation error. 15 ms floor against a 15.6 ms tick is unusable; a ~1 ms tick is fine.
+        return step * 4 <= 15_000_000L;
+    }
+
+    private static final boolean CPU_TIME_RESOLUTION_IS_USABLE = probeCpuTimeResolution();
+
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
         java.lang.management.ThreadMXBean threads =
                 java.lang.management.ManagementFactory.getThreadMXBean();
@@ -397,7 +442,8 @@ public class VbaCostShapeTest {
         // measured duration becomes zero, and the "could not reach a measurable base cost" gate
         // then fails every test using this helper. Fall back to wall clock unless it is actually on.
         boolean cpuTime = threads.isCurrentThreadCpuTimeSupported()
-                && threads.isThreadCpuTimeEnabled();
+                && threads.isThreadCpuTimeEnabled()
+                && CPU_TIME_RESOLUTION_IS_USABLE;
         long best = Long.MAX_VALUE;
         for (int rep = 0; rep < SAMPLES; rep++) {
             System.gc();
