@@ -113,6 +113,7 @@ public class ParseRecord {
         embeddedCount = 0;
         writeLimitReached = false;
         embeddedCountLimitReached = false;
+        embeddedDepthLimitReached = false;
     }
 
     void beforeParse() {

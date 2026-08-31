@@ -47,6 +47,7 @@ public class ParseRecordDocumentScopeTest {
         record.incrementEmbeddedCount();
         record.incrementEmbeddedCount();
         record.setEmbeddedCountLimitReached(true);
+        record.setEmbeddedDepthLimitReached(true);
         record.setWriteLimitReached(true);
         record.afterParse();
 
@@ -62,6 +63,9 @@ public class ParseRecordDocumentScopeTest {
                         + "yield no embedded documents at all");
         assertFalse(record.isWriteLimitReached(),
                 "sticky write limit carried over from the previous document");
+        assertFalse(record.isEmbeddedDepthLimitReached(),
+                "sticky embedded-DEPTH limit carried over: CompositeParser would stamp "
+                        + "EMBEDDED_DEPTH_LIMIT_REACHED on every later document");
     }
 
     /**
