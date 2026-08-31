@@ -306,7 +306,7 @@ propagate — `workflow_dispatch` skips the auto-wait that the tag-push path has
 +
 [source,bash]
 ----
-gh workflow run docker-release.yml -f tag=X.Y.Z-beta-N -f build_number=1
+gh workflow run docker-release.yml -f tag=X.Y.Z-beta-N -f build_number=1   # upstream only: this workflow is removed from this fork
 ----
 +
 This publishes `apache/tika:X.Y.Z-beta-N` (+ the immutable `…-1` build pin and
