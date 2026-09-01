@@ -16,7 +16,6 @@
  */
 package org.apache.tika.parser.envi;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -129,7 +128,7 @@ public class EnviHeaderParserSharedStateTest {
             }
         } finally {
             ex.shutdownNow();
-            assertEquals(true, ex.awaitTermination(30, TimeUnit.SECONDS),
+            assertTrue(ex.awaitTermination(30, TimeUnit.SECONDS),
                     "executor did not terminate");
         }
     }

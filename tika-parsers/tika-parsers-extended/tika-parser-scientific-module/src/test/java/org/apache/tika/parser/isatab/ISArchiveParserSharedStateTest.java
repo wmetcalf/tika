@@ -17,8 +17,13 @@
 package org.apache.tika.parser.isatab;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -105,5 +110,56 @@ public class ISArchiveParserSharedStateTest extends TikaTest {
 
         assertEquals("ARCHIVE-CONFIGURED", parse(parser, other).get("Investigation Identifier"),
                 "the configured directory must override the input's own directory");
+    }
+
+    private static byte[] serialize(ISArchiveParser parser) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
+            oos.writeObject(parser);
+        }
+        return bos.toByteArray();
+    }
+
+    /**
+     * The configured directory must survive a serialization round trip.
+     *
+     * <p>{@code Parser} is serializable and this class keeps its {@code serialVersionUID}, so a
+     * parser serialized by an older build still deserializes here.
+     */
+    @Test
+    public void aConfiguredDirectorySurvivesSerialization(@TempDir Path tmp) throws Exception {
+        Path configured = archive(tmp, "configured", "ARCHIVE-ROUNDTRIP");
+        Path other = archive(tmp, "other", "ARCHIVE-OTHER");
+
+        byte[] bytes = serialize(new ISArchiveParser(configured.toString()));
+        ISArchiveParser revived;
+        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(bytes))) {
+            revived = (ISArchiveParser) ois.readObject();
+        }
+
+        assertEquals("ARCHIVE-ROUNDTRIP", parse(revived, other).get("Investigation Identifier"),
+                "the deserialized parser lost its configured directory and fell back to deriving "
+                        + "it from the input");
+    }
+
+    /**
+     * The serialized FIELD NAME is part of this class's wire format.
+     *
+     * <p>Renaming the field while keeping the {@code serialVersionUID} does not break
+     * deserialization -- it silently succeeds and leaves the renamed field null, so a parser
+     * configured with an explicit archive comes back deriving the directory from each input
+     * instead. That is the very bug this test class exists to prevent, reintroduced for exactly
+     * the callers who configured their way around it. Change the UID deliberately, or add custom
+     * serialization, rather than letting a rename slip through.
+     */
+    @Test
+    public void theSerializedFieldNameIsPartOfTheWireFormat() throws Exception {
+        String stream = new String(serialize(new ISArchiveParser("/some/archive/")),
+                java.nio.charset.StandardCharsets.ISO_8859_1);
+
+        assertTrue(stream.contains("location"),
+                "the configured directory is no longer serialized under the field name "
+                        + "'location', so a parser written by an older build will deserialize "
+                        + "here with no configured directory at all");
     }
 }

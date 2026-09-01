@@ -161,7 +161,7 @@ public class IDMLParser implements Parser {
             entry = entries.nextElement();
             if (!META_NAME.equals(entry.getName())) {
                 handleZipEntry(entry, zipFile.getInputStream(entry), metadata, context, handler,
-                    counts);
+                        counts);
             }
         }
     }
