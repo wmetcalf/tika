@@ -1264,15 +1264,65 @@ class XlmEvasionResilienceTest {
      * ran on the collector's threads. Wall clock does, and these fixtures allocate heavily enough
      * that a pause routinely landed inside a timed region.
      */
+    /**
+     * Whether thread CPU time can actually RESOLVE the durations this harness measures.
+     *
+     * <p>SUPPORTED and ENABLED are not enough, and this gate learned that the expensive way. On
+     * Windows {@code getCurrentThreadCpuTime()} is both supported and enabled and still advances
+     * one scheduler tick at a time -- 15.625 ms -- however many nanoseconds its return type
+     * implies. The windows-latest runner failed
+     * {@code testDuplicateFormulaElementCostIsSubQuadratic} with
+     * {@code n=64000,128000,256000 -> 15,46,125 ms}, which is exactly 1, 3 and 8 ticks of
+     * 15.625 ms. The base was ONE tick, so the true base lay anywhere in [15.625, 31.25) ms and
+     * the true growth over 4x input anywhere in (4.0, 8.0] -- the measurement could not tell
+     * linear from quadratic, and it reported quadratic.
+     *
+     * <p>So probe the granularity rather than trusting the flags, and fall back to wall clock,
+     * which is high resolution on every platform this runs on. {@link VbaCostShapeTest} already
+     * carries this probe; the copy here did not, which is the whole defect.
+     */
+    private static boolean probeCpuTimeResolution() {
+        java.lang.management.ThreadMXBean threads =
+                java.lang.management.ManagementFactory.getThreadMXBean();
+        if (!threads.isCurrentThreadCpuTimeSupported() || !threads.isThreadCpuTimeEnabled()) {
+            return false;
+        }
+        long start = threads.getCurrentThreadCpuTime();
+        if (start < 0) {
+            return false;
+        }
+        long step = 0;
+        long deadline = System.nanoTime() + 200_000_000L;   // bounded: 200 ms of probing at most
+        long spin = 0;
+        while (System.nanoTime() < deadline) {
+            spin++;
+            long now = threads.getCurrentThreadCpuTime();
+            if (now > start) {
+                step = now - start;
+                break;
+            }
+        }
+        if (spin == 0 || step <= 0) {
+            return false;
+        }
+        // One tick must be a small fraction of the floor, or a measurement at the floor is mostly
+        // quantisation error. 15 ms floor against a 15.6 ms tick is unusable; a ~1 ms tick is fine.
+        return step * 4 <= 15_000_000L;
+    }
+
+    private static final boolean CPU_TIME_RESOLUTION_IS_USABLE = probeCpuTimeResolution();
+
     private static <T> long bestOfThree(java.util.function.Consumer<T> run, T input) {
         java.lang.management.ThreadMXBean threads =
                 java.lang.management.ManagementFactory.getThreadMXBean();
-        // SUPPORTED and ENABLED are separate states. On a JVM where thread CPU timing is supported
-        // but switched off, getCurrentThreadCpuTime() returns -1: both timestamps become -1, every
-        // measured duration becomes zero, and the "could not reach a measurable base cost" gate
-        // then fails every test using this helper. Fall back to wall clock unless it is actually on.
-        boolean cpuTime = threads.isCurrentThreadCpuTimeSupported()
-                && threads.isThreadCpuTimeEnabled();
+        // SUPPORTED and ENABLED are separate states, and neither implies RESOLUTION. On a JVM
+        // where thread CPU timing is supported but switched off, getCurrentThreadCpuTime()
+        // returns -1: both timestamps become -1, every measured duration becomes zero, and the
+        // "could not reach a measurable base cost" gate then fails every test using this helper.
+        // Where it is on but quantised to scheduler ticks, the durations are real but rounded to
+        // a handful of ticks and every ratio built from them is noise. Fall back to wall clock
+        // unless CPU time is on AND fine-grained.
+        boolean cpuTime = CPU_TIME_RESOLUTION_IS_USABLE;
         long best = Long.MAX_VALUE;
         for (int rep = 0; rep < 5; rep++) {
             System.gc();
