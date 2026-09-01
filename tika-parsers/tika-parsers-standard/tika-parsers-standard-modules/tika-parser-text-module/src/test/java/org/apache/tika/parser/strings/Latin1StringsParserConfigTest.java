@@ -17,6 +17,7 @@
 package org.apache.tika.parser.strings;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -75,5 +76,51 @@ public class Latin1StringsParserConfigTest {
                         + "at the default floor of 4: " + out);
         assertFalse(out.contains("IJKLMNOP"),
                 "setMinSize(64) was discarded for the second run too: " + out);
+    }
+
+    /** More than one 64 KB buffer of contiguous printable bytes. */
+    private static byte[] longRun(int len) {
+        byte[] b = new byte[len];
+        java.util.Arrays.fill(b, (byte) 'A');
+        return b;
+    }
+
+    /**
+     * A floor at or above the decode buffer cannot make progress, and must be refused where the
+     * caller can see it.
+     *
+     * <p>Honouring setMinSize() made this configuration reachable for the first time. At
+     * minSize == BUF_SIZE the flush frees nothing -- outPos stays 0, tmpPos stays at BUF_SIZE --
+     * and the next printable byte runs output[tmpPos++] off the end:
+     * {@code ArrayIndexOutOfBoundsException: Index 65536 out of bounds for length 65536},
+     * observed on 200 KB of contiguous printable bytes.
+     */
+    @Test
+    public void aMinSizeThatCannotMakeProgressIsRefusedAtConfigurationTime() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> new Latin1StringsParser().setMinSize(65536));
+        assertTrue(e.getMessage().contains("32768"),
+                "the message should name the largest usable floor: " + e.getMessage());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new Latin1StringsParser().setMinSize(0),
+                "a floor below 1 is meaningless");
+    }
+
+    /**
+     * The largest ACCEPTED floor must survive input several buffers long. This is the case that
+     * would crash if the bound were set at BUF_SIZE - 1 instead of BUF_SIZE / 2.
+     */
+    @Test
+    public void theLargestAllowedMinSizeParsesInputSeveralBuffersLong() throws Exception {
+        Latin1StringsParser parser = new Latin1StringsParser();
+        parser.setMinSize(32768);
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        try (TikaInputStream tis = TikaInputStream.get(longRun(400_000))) {
+            parser.parse(tis, handler, new Metadata(), new ParseContext());
+        }
+        assertTrue(handler.toString().length() > 100_000,
+                "a 400 KB run of printable bytes should come back largely intact, got "
+                        + handler.toString().length() + " chars");
     }
 }

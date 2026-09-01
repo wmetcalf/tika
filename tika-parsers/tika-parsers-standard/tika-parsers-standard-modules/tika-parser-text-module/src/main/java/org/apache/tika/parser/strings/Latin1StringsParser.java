@@ -162,6 +162,34 @@ public class Latin1StringsParser implements Parser {
      * @param minSize the minimum size of a character sequence
      */
     public void setMinSize(int minSize) {
+        // Validate, because this value is now actually USED. It previously reached nothing: parse()
+        // built its delegate with a bare constructor and the default of 4, so every out-of-range
+        // value was silently discarded. Honouring the setting makes the range real.
+        //
+        // flushBuffer() runs when tmpPos hits BUF_SIZE. It emits (BUF_SIZE - minSize) bytes and
+        // retains minSize as the possible prefix of a longer run, so each flush consumes
+        // (BUF_SIZE - minSize) new bytes at a cost of minSize copied. Work per byte consumed is
+        // therefore minSize / (BUF_SIZE - minSize):
+        //
+        //   minSize = BUF_SIZE / 2  ->  1          linear
+        //   minSize = BUF_SIZE - 1  ->  BUF_SIZE   quadratic: a document-controlled CPU blowup
+        //   minSize >= BUF_SIZE     ->  outPos stays 0, so the flush frees nothing, tmpPos stays
+        //                               at BUF_SIZE, and the next printable byte runs
+        //                               output[tmpPos++] off the end of the array
+        //
+        // Half the buffer is the largest floor that still guarantees a full half-buffer of
+        // forward progress per flush. Reject the rest at configuration time: an exception the
+        // caller can read beats an ArrayIndexOutOfBoundsException from inside a parse, and beats
+        // the silent discard that hid this until now.
+        if (minSize < 1) {
+            throw new IllegalArgumentException("minSize must be at least 1, got " + minSize);
+        }
+        if (minSize > BUF_SIZE / 2) {
+            throw new IllegalArgumentException(
+                    "minSize must be at most " + (BUF_SIZE / 2) + " (half the " + BUF_SIZE
+                            + "-byte decode buffer), got " + minSize + ". A larger floor cannot "
+                            + "make forward progress: the buffer would retain more than it emits.");
+        }
         this.minSize = minSize;
     }
 
