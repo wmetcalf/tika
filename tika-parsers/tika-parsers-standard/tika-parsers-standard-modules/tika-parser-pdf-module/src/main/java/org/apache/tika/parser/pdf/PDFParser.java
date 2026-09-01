@@ -830,15 +830,6 @@ public class PDFParser implements Parser, RenderingParser {
      * renderer so the caller can hold it in a local for the duration of its parse instead of
      * re-reading a field another thread may have replaced.
      */
-    /**
-     * Package-private hook for PDFParserRendererRaceTest: exercises exactly the resolution the
-     * parse path performs, without standing up a full parse per iteration. Kept package-private
-     * rather than public so it is not part of the parser's API.
-     */
-    Renderer resolveRendererForTest() {
-        return initRenderer(getDefaultConfig(), new ParseContext());
-    }
-
     private synchronized Renderer initRenderer(PDFParserConfig config, ParseContext context) {
         if (this.renderer != null &&
                 this.renderer.getSupportedTypes(context).contains(MEDIA_TYPE)) {
@@ -851,6 +842,15 @@ public class PDFParser implements Parser, RenderingParser {
         pdfBoxRenderer.setImageFormatName(config.getOcr().getImageFormat().getFormatName());
         this.renderer = pdfBoxRenderer;
         return pdfBoxRenderer;
+    }
+
+    /**
+     * Package-private hook for PDFParserRendererRaceTest: exercises exactly the resolution the
+     * parse path performs, without standing up a full parse per iteration. Kept package-private
+     * rather than public so it is not part of the parser's API.
+     */
+    Renderer resolveRendererForTest() {
+        return initRenderer(getDefaultConfig(), new ParseContext());
     }
 
     @Override

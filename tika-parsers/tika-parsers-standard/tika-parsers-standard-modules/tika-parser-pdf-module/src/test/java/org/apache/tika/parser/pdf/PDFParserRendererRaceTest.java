@@ -70,7 +70,10 @@ public class PDFParserRendererRaceTest {
                 f.get(2, TimeUnit.MINUTES);
             }
         } finally {
+            // Await termination as well as requesting shutdown: without it a mid-run failure
+            // leaks non-daemon pool threads into the rest of the suite.
             ex.shutdownNow();
+            ex.awaitTermination(30, TimeUnit.SECONDS);
         }
         assertEquals(1, observed.size(),
                 "concurrent parses resolved " + observed.size() + " different Renderer instances "
