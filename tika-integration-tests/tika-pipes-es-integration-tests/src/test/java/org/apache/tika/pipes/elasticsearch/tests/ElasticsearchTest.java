@@ -177,8 +177,23 @@ public class ElasticsearchTest {
         // with no indication of what DID occur, which is unactionable in CI.
         assertEquals(numHtmlDocs, count(statusCounts, "PARSE_SUCCESS"),
                 "should have had " + numHtmlDocs + " parse successes: " + statusCounts);
-        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION"),
-                "should have had 1 parse exception: " + statusCounts);
+        // Count BOTH parse-exception outcomes. Whether a document that parsed with an exception
+        // is passed back (PARSE_SUCCESS_WITH_EXCEPTION) or emitted (EMIT_SUCCESS_PARSE_EXCEPTION)
+        // is decided by EmitStrategy.DYNAMIC comparing EmitDataImpl.estimateSizeInBytes -- the
+        // summed length of the metadata and the container stack trace -- against a byte
+        // threshold. This document sits near that boundary, so it routes either way depending on
+        // how much content the run happens to produce, in a test that also expects two
+        // nondeterministic forked-process crashes.
+        //
+        // Both statuses carry the stack and are CATEGORY.SUCCESS; the invariant this assertion
+        // exists for is that exactly ONE document parsed with an exception, not which side of a
+        // size threshold it landed on. Pinning the routing made this fail as
+        //   {EMIT_SUCCESS_PARSE_EXCEPTION=1, EMIT_SUCCESS=1, PARSE_SUCCESS=42, TIMEOUT=1, OOM=1}
+        // with nothing actually lost.
+        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION")
+                        + count(statusCounts, "EMIT_SUCCESS_PARSE_EXCEPTION"),
+                "should have had exactly 1 document that parsed with an exception, whether "
+                        + "passed back or emitted: " + statusCounts);
         assertEquals(1, count(statusCounts, "EMIT_SUCCESS"),
                 "should have had 1 emit success: " + statusCounts);
         assertEquals(2, numberOfCrashes(statusCounts),
