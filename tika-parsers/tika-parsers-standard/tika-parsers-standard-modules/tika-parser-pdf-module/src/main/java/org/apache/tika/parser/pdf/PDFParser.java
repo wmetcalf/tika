@@ -133,7 +133,14 @@ public class PDFParser implements Parser, RenderingParser {
 
     private static COSName ENCRYPTED_PAYLOAD = COSName.getPDFName("EncryptedPayload");
     private PDFParserConfig defaultConfig = new PDFParserConfig();
-    private Renderer renderer;
+    /**
+     * Volatile because a single PDFParser instance is shared across threads -- AutoDetectParser
+     * builds one and every concurrent parse goes through it -- and {@link #initRenderer} both
+     * reads and WRITES this during a parse. Without it there is no happens-before between the
+     * writing thread's construction and another thread's read, so a reader can see a non-null
+     * renderer whose DPI/image-type/format were not yet visible.
+     */
+    private volatile Renderer renderer;
 
     public PDFParser() {
     }
@@ -170,7 +177,8 @@ public class PDFParser implements Parser, RenderingParser {
         }
         IncrementalUpdateRecord incomingIncrementalUpdateRecord = context.get(IncrementalUpdateRecord.class);
         context.set(IncrementalUpdateRecord.class, null);
-        initRenderer(localConfig, context);
+        //hold it in a local: another thread may replace the field mid-parse
+        Renderer localRenderer = initRenderer(localConfig, context);
         PDDocument pdfDocument = null;
         int originalPageCount = -1;
 
@@ -232,15 +240,15 @@ public class PDFParser implements Parser, RenderingParser {
                 } else if (localConfig.getOcr().getStrategy()
                         .equals(OcrConfig.Strategy.OCR_ONLY)) {
                     OCR2XHTML.process(pdfDocument, outputHandler, context, metadata,
-                            localConfig, renderer);
+                            localConfig, localRenderer);
                 } else if (hasMarkedContent && localConfig.isExtractMarkedContent()
                         && !PDF2XHTML.usesColorAwareAnalysis(context, localConfig)) {
                     PDFMarkedContent2XHTML
                             .process(pdfDocument, outputHandler, context, metadata,
-                                    localConfig, renderer);
+                                    localConfig, localRenderer);
                 } else {
                     PDF2XHTML.process(pdfDocument, outputHandler, context, metadata,
-                            localConfig, renderer);
+                            localConfig, localRenderer);
                 }
             }
         } catch (InvalidPasswordException e) {
@@ -803,10 +811,33 @@ public class PDFParser implements Parser, RenderingParser {
     public PDFParserConfig getDefaultConfig() {
         return defaultConfig;
     }
-    private void initRenderer(PDFParserConfig config, ParseContext context) {
+    /**
+     * Resolves the renderer for one parse, returning it rather than leaving callers to re-read
+     * the field.
+     *
+     * <p>This is a check-then-act on shared mutable state that runs DURING a parse, on a parser
+     * instance shared by every thread. Two concurrent parses could both see a null or unsuitable
+     * renderer, both construct one, and interleave the assignment with the reads at the call
+     * site -- so a parse could render with a renderer configured for someone else's config, or
+     * observe one mid-publication.
+     *
+     * <p>Synchronised so the check and the assignment are atomic, and returns the resolved
+     * renderer so the caller can hold it in a local for the duration of its parse instead of
+     * re-reading a field another thread may have replaced.
+     */
+    /**
+     * Package-private hook for PDFParserRendererRaceTest: exercises exactly the resolution the
+     * parse path performs, without standing up a full parse per iteration. Kept package-private
+     * rather than public so it is not part of the parser's API.
+     */
+    Renderer resolveRendererForTest() {
+        return initRenderer(getDefaultConfig(), new ParseContext());
+    }
+
+    private synchronized Renderer initRenderer(PDFParserConfig config, ParseContext context) {
         if (this.renderer != null &&
                 this.renderer.getSupportedTypes(context).contains(MEDIA_TYPE)) {
-            return;
+            return this.renderer;
         }
         //set a default renderer if nothing was defined
         PDFBoxRenderer pdfBoxRenderer = new PDFBoxRenderer();
@@ -814,6 +845,7 @@ public class PDFParser implements Parser, RenderingParser {
         pdfBoxRenderer.setImageType(config.getOcr().getImageType().getPdfBoxImageType());
         pdfBoxRenderer.setImageFormatName(config.getOcr().getImageFormat().getFormatName());
         this.renderer = pdfBoxRenderer;
+        return pdfBoxRenderer;
     }
 
     @Override
