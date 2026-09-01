@@ -233,7 +233,8 @@ public class PDFParser implements Parser, RenderingParser {
             checkIllustrator(pdfDocument, metadata);
             checkAccessPermissions(localConfig.getAccessCheckMode(), metadata);
             renderPagesBeforeParse(
-                    tis, outputHandler, metadata, context, localConfig, originalPageCount);
+                    tis, outputHandler, metadata, context, localConfig, localRenderer,
+                    originalPageCount);
             if (outputHandler != null) {
                 if (shouldHandleXFAOnly(hasXFA, localConfig)) {
                     handleXFAOnly(pdfDocument, outputHandler, metadata, context);
@@ -473,6 +474,7 @@ public class PDFParser implements Parser, RenderingParser {
                                         ContentHandler xhtml, Metadata parentMetadata,
                                         ParseContext context,
                                         PDFParserConfig config,
+                                        Renderer localRenderer,
                                         int originalPageCount) throws SAXException {
         if (config.getImageStrategy() != PDFParserConfig.IMAGE_STRATEGY.RENDER_PAGES_BEFORE_PARSE) {
             return;
@@ -480,7 +482,7 @@ public class PDFParser implements Parser, RenderingParser {
         RenderResults renderResults = null;
         try {
             renderResults = renderPDF(
-                    tstream, context, config, originalPageCount);
+                    tstream, context, config, localRenderer, originalPageCount);
         } catch (SecurityException e) {
             throw e;
         } catch (Exception e) {
@@ -538,6 +540,7 @@ public class PDFParser implements Parser, RenderingParser {
 
     private RenderResults renderPDF(TikaInputStream tstream,
                                     ParseContext parseContext, PDFParserConfig localConfig,
+                                    Renderer localRenderer,
                                     int originalPageCount)
             throws IOException, TikaException {
         Metadata metadata = Metadata.newInstance(parseContext);
@@ -546,7 +549,9 @@ public class PDFParser implements Parser, RenderingParser {
                 ? new PageRangeRequest(
                         1, Math.min(localConfig.getMaxPages(), originalPageCount))
                 : PageRangeRequest.RENDER_ALL;
-        return renderer.render(
+        // The renderer resolved for THIS parse, not a re-read of the shared field: another
+        // thread may have replaced it since. volatile fixes visibility, not identity.
+        return localRenderer.render(
                 tstream, metadata, parseContext, pageRange);
     }
 
