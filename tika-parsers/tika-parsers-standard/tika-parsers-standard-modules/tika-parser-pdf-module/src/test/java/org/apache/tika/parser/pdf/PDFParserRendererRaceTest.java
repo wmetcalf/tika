@@ -17,7 +17,7 @@
 package org.apache.tika.parser.pdf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -46,39 +46,52 @@ import org.apache.tika.renderer.Renderer;
  */
 public class PDFParserRendererRaceTest {
 
+    /**
+     * ROUNDS matters more than threads-per-round. The field goes non-null exactly once per
+     * parser, so a single PDFParser offers ONE race window no matter how many iterations run
+     * against it -- every later call takes the early-return branch. Measured against the
+     * unfixed parser, one window is caught only 63 times in 200 (31.5%), so a handful of
+     * iterations inside one round is not a regression test, it is a coin flip. A FRESH parser
+     * per round re-arms the window; 40 rounds at that per-round rate miss only ~(0.685^40),
+     * about 3 in 100 million.
+     */
+    private static final int ROUNDS = 40;
+    private static final int THREADS = 16;
+
     @Test
-    public void concurrentParsesResolveOneStableRenderer() throws Exception {
-        PDFParser parser = new PDFParser();
-        int threads = 16;
-        ExecutorService ex = Executors.newFixedThreadPool(threads);
-        Set<Renderer> observed = Collections.newSetFromMap(new ConcurrentHashMap<>());
-        CountDownLatch go = new CountDownLatch(1);
-        List<Future<?>> futures = new ArrayList<>();
+    public void concurrentResolutionYieldsOneRendererPerParser() throws Exception {
+        ExecutorService ex = Executors.newFixedThreadPool(THREADS);
         try {
-            for (int i = 0; i < threads; i++) {
-                futures.add(ex.submit(() -> {
-                    go.await();
-                    for (int n = 0; n < 200; n++) {
-                        // the same resolution the parse path performs, hammered concurrently
-                        observed.add(parser.resolveRendererForTest());
-                    }
-                    return null;
-                }));
-            }
-            go.countDown();
-            for (Future<?> f : futures) {
-                f.get(2, TimeUnit.MINUTES);
+            for (int round = 1; round <= ROUNDS; round++) {
+                PDFParser parser = new PDFParser();     // re-arm: field starts null again
+                Set<Renderer> observed = Collections.newSetFromMap(new ConcurrentHashMap<>());
+                CountDownLatch go = new CountDownLatch(1);
+                List<Future<?>> futures = new ArrayList<>();
+                for (int i = 0; i < THREADS; i++) {
+                    futures.add(ex.submit(() -> {
+                        go.await();
+                        Renderer r = parser.resolveRendererForTest();
+                        // assertNotNull here, not on the set: the set is backed by a
+                        // ConcurrentHashMap, so adding null would throw inside the worker and
+                        // surface as an opaque ExecutionException instead of this message.
+                        assertNotNull(r, "initRenderer returned null");
+                        observed.add(r);
+                        return null;
+                    }));
+                }
+                go.countDown();
+                for (Future<?> f : futures) {
+                    f.get(2, TimeUnit.MINUTES);
+                }
+                assertEquals(1, observed.size(),
+                        "round " + round + " of " + ROUNDS + ": " + THREADS + " threads resolved "
+                                + observed.size() + " different Renderer instances through one "
+                                + "shared PDFParser. Each surplus instance is a parse that "
+                                + "rendered with a renderer another thread was still building.");
             }
         } finally {
-            // Await termination as well as requesting shutdown: without it a mid-run failure
-            // leaks non-daemon pool threads into the rest of the suite.
             ex.shutdownNow();
             ex.awaitTermination(30, TimeUnit.SECONDS);
         }
-        assertEquals(1, observed.size(),
-                "concurrent parses resolved " + observed.size() + " different Renderer instances "
-                        + "through one shared PDFParser; each surplus instance is a parse that "
-                        + "rendered with a renderer another thread was still constructing");
-        assertTrue(observed.iterator().next() != null, "resolved renderer must not be null");
     }
 }
