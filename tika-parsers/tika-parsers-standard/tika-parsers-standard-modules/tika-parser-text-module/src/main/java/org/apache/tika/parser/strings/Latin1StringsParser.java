@@ -199,9 +199,19 @@ public class Latin1StringsParser implements Parser {
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException {
         /*
-         * Creates a new instance because the object is not immutable.
+         * Creates a new instance because the object is not immutable: doParse writes its decode
+         * buffers, positions and content handler into instance fields, and a parser instance is
+         * shared -- DefaultParser holds one and every thread parses through it. Cloning per parse
+         * is what keeps that safe, so keep doing it.
+         *
+         * Carry the configuration across, though. Without this line the fresh instance always ran
+         * with the DEFAULT minSize of 4, so setMinSize() was silently discarded: callers got
+         * every 4-character run back however high they had set the floor, and nothing failed to
+         * tell them.
          */
-        new Latin1StringsParser().doParse(tis, handler, metadata, context);
+        Latin1StringsParser perDocument = new Latin1StringsParser();
+        perDocument.setMinSize(getMinSize());
+        perDocument.doParse(tis, handler, metadata, context);
     }
 
     /**
