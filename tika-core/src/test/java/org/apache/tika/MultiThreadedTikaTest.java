@@ -149,10 +149,33 @@ public class MultiThreadedTikaTest extends TikaTest {
             if (!extra.isEmpty()) {
                 sb.append("; unexpected in the concurrent run: ").append(extra);
             }
+            // The parser that drops an attachment usually RECORDS why and carries on --
+            // HSLFExtractor, for one, calls recordEmbeddedStreamException and continues -- so the
+            // reason is already sitting in the metadata and simply never printed. Surface it: it
+            // is the difference between "an attachment vanished" and the stack that dropped it.
+            List<String> reasons = new ArrayList<>();
+            for (Metadata m : observed.metadataList) {
+                for (String v : m.getValues(TikaCoreProperties.EMBEDDED_EXCEPTION)) {
+                    reasons.add(firstLine(v));
+                }
+            }
+            if (!reasons.isEmpty()) {
+                sb.append("; embedded exceptions recorded during the concurrent run: ")
+                        .append(reasons);
+            }
             return sb.toString();
         } catch (Exception e) {
             return "; (could not diff attachments: " + e + ")";
         }
+    }
+
+    /** First line only: a full stack trace per attachment would bury the comparison. */
+    private static String firstLine(String stack) {
+        if (stack == null) {
+            return "null";
+        }
+        int nl = stack.indexOf('\n');
+        return nl < 0 ? stack : stack.substring(0, nl);
     }
 
     private static List<String> resourceNames(Extract extract) {
