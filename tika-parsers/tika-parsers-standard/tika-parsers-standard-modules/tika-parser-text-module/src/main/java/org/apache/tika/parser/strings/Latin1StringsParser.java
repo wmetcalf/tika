@@ -70,6 +70,14 @@ public class Latin1StringsParser implements Parser {
     private static int BUF_SIZE = 64 * 1024;
 
     /**
+     * Largest accepted {@code minSize}. The decode buffers are sized at twice the floor, so this
+     * is the point past which a configured value stops being a decoding preference and becomes an
+     * allocation request. 16 MB is orders of magnitude above any meaningful minimum string length
+     * and keeps 2 * minSize clear of integer overflow.
+     */
+    private static final int MAX_MIN_SIZE = 16 * 1024 * 1024;
+
+    /**
      * The minimum size of a character sequence to be extracted.
      */
     private int minSize = 4;
@@ -77,6 +85,16 @@ public class Latin1StringsParser implements Parser {
     /**
      * The output buffer.
      */
+    /**
+     * Size of {@link #input} and {@link #output}, at least {@link #BUF_SIZE}.
+     *
+     * <p>Grown by {@link #setMinSize} so that the buffer can always hold the retained floor plus
+     * as much again. {@code flushBuffer()} emits {@code bufSize - minSize} bytes and retains
+     * {@code minSize}, so keeping {@code bufSize >= 2 * minSize} keeps the copied-to-emitted
+     * ratio at or below 1 -- linear in the input -- for ANY configured floor.
+     */
+    private int bufSize = BUF_SIZE;
+
     private byte[] output = new byte[BUF_SIZE];
 
     /**
@@ -162,35 +180,40 @@ public class Latin1StringsParser implements Parser {
      * @param minSize the minimum size of a character sequence
      */
     public void setMinSize(int minSize) {
-        // Validate, because this value is now actually USED. It previously reached nothing: parse()
-        // built its delegate with a bare constructor and the default of 4, so every out-of-range
-        // value was silently discarded. Honouring the setting makes the range real.
+        // Validate, because this value is now actually USED. It previously reached nothing:
+        // parse() built its delegate with a bare constructor and the default of 4, so every value
+        // -- in range or not -- was silently discarded.
         //
-        // flushBuffer() runs when tmpPos hits BUF_SIZE. It emits (BUF_SIZE - minSize) bytes and
+        // flushBuffer() runs when tmpPos hits bufSize. It emits (bufSize - minSize) bytes and
         // retains minSize as the possible prefix of a longer run, so each flush consumes
-        // (BUF_SIZE - minSize) new bytes at a cost of minSize copied. Work per byte consumed is
-        // therefore minSize / (BUF_SIZE - minSize):
+        // (bufSize - minSize) new bytes at a cost of minSize copied. Work per byte consumed is
+        // minSize / (bufSize - minSize), which at a FIXED 64 KB buffer degrades without bound as
+        // the floor approaches it: 1 at 32 KB, ~65535 at 65535 (quadratic on
+        // document-controlled input), and at 65536 the flush frees nothing at all -- outPos stays
+        // 0, tmpPos stays at the buffer length, and the next printable byte runs
+        // output[tmpPos++] off the end.
         //
-        //   minSize = BUF_SIZE / 2  ->  1          linear
-        //   minSize = BUF_SIZE - 1  ->  BUF_SIZE   quadratic: a document-controlled CPU blowup
-        //   minSize >= BUF_SIZE     ->  outPos stays 0, so the flush frees nothing, tmpPos stays
-        //                               at BUF_SIZE, and the next printable byte runs
-        //                               output[tmpPos++] off the end of the array
-        //
-        // Half the buffer is the largest floor that still guarantees a full half-buffer of
-        // forward progress per flush. Reject the rest at configuration time: an exception the
-        // caller can read beats an ArrayIndexOutOfBoundsException from inside a parse, and beats
-        // the silent discard that hid this until now.
+        // Rejecting large floors would be the wrong fix twice over: 40000 decodes perfectly well
+        // (it still emits 25536 bytes per flush), and a config that a deployment previously
+        // started with -- ignored, but started -- would begin throwing at construction. So size
+        // the buffer to the floor instead. bufSize >= 2 * minSize holds the ratio at or below 1
+        // for every accepted value, which is the property that actually matters.
         if (minSize < 1) {
             throw new IllegalArgumentException("minSize must be at least 1, got " + minSize);
         }
-        if (minSize > BUF_SIZE / 2) {
+        if (minSize > MAX_MIN_SIZE) {
             throw new IllegalArgumentException(
-                    "minSize must be at most " + (BUF_SIZE / 2) + " (half the " + BUF_SIZE
-                            + "-byte decode buffer), got " + minSize + ". A larger floor cannot "
-                            + "make forward progress: the buffer would retain more than it emits.");
+                    "minSize must be at most " + MAX_MIN_SIZE + ", got " + minSize
+                            + ". The decode buffers are sized at twice the floor, so a larger "
+                            + "value asks for an unbounded allocation per parse.");
         }
         this.minSize = minSize;
+        int needed = Math.max(BUF_SIZE, 2 * minSize);
+        if (needed != bufSize) {
+            bufSize = needed;
+            input = new byte[needed];
+            output = new byte[needed];
+        }
     }
 
     /**
@@ -270,7 +293,7 @@ public class Latin1StringsParser implements Parser {
         int i = 0;
         do {
             inSize = 0;
-            while ((i = tis.read(input, inSize, BUF_SIZE - inSize)) > 0) {
+            while ((i = tis.read(input, inSize, bufSize - inSize)) > 0) {
                 inSize += i;
             }
             inPos = 0;
@@ -292,7 +315,7 @@ public class Latin1StringsParser implements Parser {
                         output[tmpPos++] = c;
                         c = c_;
                     }
-                    if (tmpPos == BUF_SIZE) {
+                    if (tmpPos == bufSize) {
                         flushBuffer();
                     }
 
@@ -311,7 +334,7 @@ public class Latin1StringsParser implements Parser {
                         output[tmpPos++] = c;
                         c = c_;
                     }
-                    if (tmpPos == BUF_SIZE) {
+                    if (tmpPos == bufSize) {
                         flushBuffer();
                     }
                 }
@@ -321,7 +344,7 @@ public class Latin1StringsParser implements Parser {
                      */ {
                     if (isChar(c)) {
                         output[tmpPos++] = c;
-                        if (tmpPos == BUF_SIZE) {
+                        if (tmpPos == bufSize) {
                             flushBuffer();
                         }
                     } else {
@@ -338,7 +361,7 @@ public class Latin1StringsParser implements Parser {
                                 output[tmpPos++] = 0x0A;
                                 outPos = tmpPos;
 
-                                if (tmpPos == BUF_SIZE) {
+                                if (tmpPos == bufSize) {
                                     flushBuffer();
                                 }
                             } else {

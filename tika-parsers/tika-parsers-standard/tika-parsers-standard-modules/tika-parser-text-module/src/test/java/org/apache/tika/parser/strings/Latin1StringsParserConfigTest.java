@@ -86,25 +86,47 @@ public class Latin1StringsParserConfigTest {
     }
 
     /**
-     * A floor at or above the decode buffer cannot make progress, and must be refused where the
-     * caller can see it.
+     * Floors at or above the fixed 64 KB buffer must decode, not crash.
      *
-     * <p>Honouring setMinSize() made this configuration reachable for the first time. At
-     * minSize == BUF_SIZE the flush frees nothing -- outPos stays 0, tmpPos stays at BUF_SIZE --
-     * and the next printable byte runs output[tmpPos++] off the end:
-     * {@code ArrayIndexOutOfBoundsException: Index 65536 out of bounds for length 65536},
-     * observed on 200 KB of contiguous printable bytes.
+     * <p>Honouring setMinSize() made these reachable for the first time. Against a fixed buffer,
+     * minSize == 65536 left the flush freeing nothing -- outPos stayed 0, tmpPos stayed at the
+     * buffer length -- and the next printable byte ran output[tmpPos++] off the end:
+     * {@code ArrayIndexOutOfBoundsException: Index 65536 out of bounds for length 65536}.
+     * The buffer is now sized from the floor, so these simply work.
      */
     @Test
-    public void aMinSizeThatCannotMakeProgressIsRefusedAtConfigurationTime() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> new Latin1StringsParser().setMinSize(65536));
-        assertTrue(e.getMessage().contains("32768"),
-                "the message should name the largest usable floor: " + e.getMessage());
+    public void floorsAtAndAboveTheDefaultBufferDecodeCleanly() throws Exception {
+        for (int minSize : new int[] {40_000, 65_535, 65_536, 200_000}) {
+            Latin1StringsParser parser = new Latin1StringsParser();
+            parser.setMinSize(minSize);
+            BodyContentHandler handler = new BodyContentHandler(-1);
+            try (TikaInputStream tis = TikaInputStream.get(longRun(minSize * 3))) {
+                parser.parse(tis, handler, new Metadata(), new ParseContext());
+            }
+            assertTrue(handler.toString().length() > minSize,
+                    "minSize=" + minSize + ": a run three times the floor should come back, got "
+                            + handler.toString().length() + " chars");
+        }
+    }
 
+    /** Only values that are meaningless or unbounded allocations are refused. */
+    @Test
+    public void onlyGenuinelyUnusableFloorsAreRefused() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Latin1StringsParser().setMinSize(0),
                 "a floor below 1 is meaningless");
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> new Latin1StringsParser().setMinSize(64 * 1024 * 1024));
+        assertTrue(e.getMessage().contains("allocation"),
+                "the message should explain that the buffers scale with the floor: "
+                        + e.getMessage());
+
+        // 40000 decodes perfectly well against a resized buffer and must NOT be refused: a
+        // deployment whose XML config carried it previously started fine (the value was ignored),
+        // and turning that into a construction-time throw would be a worse regression than the
+        // silent discard it replaced.
+        new Latin1StringsParser().setMinSize(40_000);
     }
 
     /**
