@@ -150,15 +150,32 @@ public class OpenSearchTest {
             statusCounts.put(status, cnt);
         }
 
-        assertEquals(numHtmlDocs, (int) statusCounts.get("PARSE_SUCCESS"), "should have had " + numHtmlDocs + " parse successes: " + statusCounts);
-        //the npe is caught and counted as a "parse success with exception"
-        assertEquals(1, (int) statusCounts.get("PARSE_SUCCESS_WITH_EXCEPTION"), "should have had 1 parse exception: " + statusCounts);
+        // Read through a null-safe helper: unboxing Map.get directly threw NullPointerException
+        // at the cast, BEFORE the message naming the actual distribution was built, so a status
+        // that simply did not occur reported as an NPE with no indication of what DID occur.
+        assertEquals(numHtmlDocs, count(statusCounts, "PARSE_SUCCESS"), "should have had " + numHtmlDocs + " parse successes: " + statusCounts);
+        // Count BOTH parse-exception outcomes. Whether a document that parsed with an exception is
+        // passed back (PARSE_SUCCESS_WITH_EXCEPTION) or emitted (EMIT_SUCCESS_PARSE_EXCEPTION) is
+        // decided by EmitStrategy.DYNAMIC comparing EmitDataImpl.estimateSizeInBytes -- the summed
+        // length of the metadata and container stack trace -- against a byte threshold. Both carry
+        // the stack and are CATEGORY.SUCCESS; the invariant here is that exactly ONE document
+        // parsed with an exception, not which side of a size threshold it landed on.
+        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION")
+                        + count(statusCounts, "EMIT_SUCCESS_PARSE_EXCEPTION"),
+                "should have had exactly 1 document that parsed with an exception, whether passed "
+                        + "back or emitted: " + statusCounts);
         //the embedded docx is emitted directly
-        assertEquals(1, (int) statusCounts.get("EMIT_SUCCESS"), "should have had 1 emit success: " + statusCounts);
+        assertEquals(1, count(statusCounts, "EMIT_SUCCESS"), "should have had 1 emit success: " + statusCounts);
         assertEquals(2, numberOfCrashes(statusCounts),
                 "should have had 2 forked-process crashes (OOM/TIMEOUT/UNSPECIFIED_CRASH): " +
                         statusCounts);
 
+    }
+
+    /** 0 for an absent status, so a missing key fails with the distribution rather than an NPE. */
+    private static int count(Map<String, Integer> statusCounts, String status) {
+        Integer n = statusCounts.get(status);
+        return n == null ? 0 : n;
     }
 
     private int numberOfCrashes(Map<String, Integer> statusCounts) {
