@@ -93,14 +93,14 @@ public class Latin1StringsParser implements Parser {
      * {@code minSize}, so keeping {@code bufSize >= 2 * minSize} keeps the copied-to-emitted
      * ratio at or below 1 -- linear in the input -- for ANY configured floor.
      */
-    private int bufSize = BUF_SIZE;
+    private transient int bufSize;
 
-    private byte[] output = new byte[BUF_SIZE];
+    private transient byte[] output;
 
     /**
      * The input buffer.
      */
-    private byte[] input = new byte[BUF_SIZE];
+    private transient byte[] input;
 
     /**
      * The temporary position into the output buffer.
@@ -198,6 +198,13 @@ public class Latin1StringsParser implements Parser {
         // started with -- ignored, but started -- would begin throwing at construction. So size
         // the buffer to the floor instead. bufSize >= 2 * minSize holds the ratio at or below 1
         // for every accepted value, which is the property that actually matters.
+        //
+        // The buffers are allocated in doParse(), NOT here. This setter runs on the long-lived
+        // CONFIGURED parser -- DefaultParser holds one for the life of the JVM -- which never
+        // decodes anything: parse() hands the work to a fresh delegate that allocates its own.
+        // Allocating here would retain 2 * minSize twice over on an instance that never reads a
+        // byte of it, on top of the same allocation in every concurrent parse, and the arrays
+        // would ride along in the serialized form of a configured Parser.
         if (minSize < 1) {
             throw new IllegalArgumentException("minSize must be at least 1, got " + minSize);
         }
@@ -208,12 +215,6 @@ public class Latin1StringsParser implements Parser {
                             + "value asks for an unbounded allocation per parse.");
         }
         this.minSize = minSize;
-        int needed = Math.max(BUF_SIZE, 2 * minSize);
-        if (needed != bufSize) {
-            bufSize = needed;
-            input = new byte[needed];
-            output = new byte[needed];
-        }
     }
 
     /**
@@ -284,6 +285,12 @@ public class Latin1StringsParser implements Parser {
     private void doParse(InputStream tis, ContentHandler handler, Metadata metadata,
                          ParseContext context) throws IOException, SAXException {
 
+        // Per-document buffers, sized from the floor so that flushBuffer() always emits at
+        // least as much as it retains. Allocated here rather than in setMinSize because THIS is
+        // the instance that decodes: parse() delegates to a fresh one per document.
+        bufSize = Math.max(BUF_SIZE, 2 * minSize);
+        input = new byte[bufSize];
+        output = new byte[bufSize];
         tmpPos = 0;
         outPos = 0;
 

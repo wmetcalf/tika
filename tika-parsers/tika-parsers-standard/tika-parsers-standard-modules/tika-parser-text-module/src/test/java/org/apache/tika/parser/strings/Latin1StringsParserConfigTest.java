@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.ObjectOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
@@ -143,6 +144,46 @@ public class Latin1StringsParserConfigTest {
         }
         assertTrue(handler.toString().length() > 100_000,
                 "a 400 KB run of printable bytes should come back largely intact, got "
+                        + handler.toString().length() + " chars");
+    }
+
+    /**
+     * The configured parser must not carry decode buffers.
+     *
+     * <p>{@code setMinSize} runs on the long-lived CONFIGURED parser -- DefaultParser holds one
+     * for the life of the JVM -- which never decodes anything: parse() hands the work to a fresh
+     * delegate that allocates its own. Sizing the buffers in the setter retained 2 * minSize
+     * twice over on an instance that never reads a byte of them, allocated the same again in
+     * every concurrent parse, and, because the arrays are instance fields, wrote them into the
+     * serialized form of a configured Parser. At the accepted 16 MB floor that is 64 MB of
+     * payload for nothing.
+     */
+    @Test
+    public void aConfiguredParserCarriesNoDecodeBuffers() throws Exception {
+        Latin1StringsParser parser = new Latin1StringsParser();
+        parser.setMinSize(1_000_000);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
+            oos.writeObject(parser);
+        }
+
+        assertTrue(bos.size() < 4096,
+                "a configured parser serialized to " + bos.size() + " bytes; the decode buffers "
+                        + "are riding along in the wire format and scaling with minSize");
+    }
+
+    /** Configuring a large floor must still decode correctly once a parse actually runs. */
+    @Test
+    public void aLargeFloorStillDecodesAfterTheAllocationMoved() throws Exception {
+        Latin1StringsParser parser = new Latin1StringsParser();
+        parser.setMinSize(100_000);
+        BodyContentHandler handler = new BodyContentHandler(-1);
+        try (TikaInputStream tis = TikaInputStream.get(longRun(300_000))) {
+            parser.parse(tis, handler, new Metadata(), new ParseContext());
+        }
+        assertTrue(handler.toString().length() > 100_000,
+                "a 300 KB run should survive a 100 KB floor, got "
                         + handler.toString().length() + " chars");
     }
 }
