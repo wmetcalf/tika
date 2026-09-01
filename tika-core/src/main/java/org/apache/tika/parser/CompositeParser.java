@@ -288,7 +288,20 @@ public class CompositeParser implements Parser {
         // AutoDetectParser claims earlier than this; direct CompositeParser and DefaultParser use
         // has no earlier claim, so this line is the first one for that path.
         ParseRecord parserRecord = ParseRecord.beginDocument(context);
-        Parser parser = getParser(metadata, context);
+        Parser parser;
+        try {
+            parser = getParser(metadata, context);
+        } catch (Throwable t) {
+            // Selection failed, so beforeParse() never ran and the finally's afterParse() -- the
+            // only thing that clears the claim on the normal path -- never will either. Without
+            // this release the claim outlives the failed parse, and the next top-level parse on
+            // this context skips its reset and inherits the failed selection's warnings and
+            // exceptions, which recordEmbeddedMetadata then copies into the NEXT document's
+            // metadata. endDocument is a no-op above depth 0, so a nested throw still unwinds
+            // through the outer parse's afterParse as before.
+            ParseRecord.endDocument(context);
+            throw t;
+        }
         try {
             TaggedContentHandler taggedHandler =
                     handler != null ? new TaggedContentHandler(handler) : null;

@@ -18,9 +18,11 @@ package org.apache.tika.parser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -256,5 +258,56 @@ public class ParseRecordDocumentScopeTest {
         assertTrue(survived,
                 "a warning recorded by an overridden getParser was discarded by beginDocument; "
                         + "the document must be claimed before parser selection");
+    }
+
+    /**
+     * A failed parser selection must not hold the document claim.
+     *
+     * <p>{@code getParser} runs after {@code beginDocument} claimed the document but before
+     * {@code beforeParse} incremented the depth, so if it throws, the {@code afterParse} in the
+     * finally -- the only thing that clears the claim on the normal path -- never runs. The claim
+     * then outlives the failed parse and the NEXT top-level parse on the same context skips its
+     * reset, inheriting the failed selection's warnings straight into its own metadata.
+     */
+    @Test
+    public void aFailedParserSelectionDoesNotLeakIntoTheNextDocument() throws Exception {
+        ParseContext shared = new ParseContext();
+        CountingParser counting = new CountingParser();
+        AtomicInteger selections = new AtomicInteger();
+        CompositeParser composite = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), counting) {
+            @Override
+            protected Parser getParser(Metadata metadata, ParseContext context) {
+                if (selections.getAndIncrement() == 0) {
+                    ParseRecord r = context.get(ParseRecord.class);
+                    if (r != null) {
+                        r.addWarning("raised by the FAILED selection of document one");
+                    }
+                    throw new IllegalStateException("parser selection blew up");
+                }
+                return super.getParser(metadata, context);
+            }
+        };
+
+        Metadata first = new Metadata();
+        first.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            assertThrows(IllegalStateException.class,
+                    () -> composite.parse(tis, new org.xml.sax.helpers.DefaultHandler(), first,
+                            shared));
+        }
+
+        Metadata second = parseOnce(composite, shared);
+
+        for (String w : second.getValues(
+                org.apache.tika.metadata.TikaCoreProperties.EMBEDDED_WARNING)) {
+            assertFalse(w.contains("FAILED selection of document one"),
+                    "the second document's metadata carries a warning from the FIRST document's "
+                            + "failed parser selection; the claim was never released: " + w);
+        }
+        assertTrue(shared.get(ParseRecord.class).getWarnings().stream()
+                        .noneMatch(w -> w.contains("FAILED selection of document one")),
+                "the record still holds the failed selection's warning, so beginDocument skipped "
+                        + "its reset -- a throwing getParser must release the document claim");
     }
 }

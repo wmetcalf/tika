@@ -154,16 +154,17 @@ public class OpenSearchTest {
         // at the cast, BEFORE the message naming the actual distribution was built, so a status
         // that simply did not occur reported as an NPE with no indication of what DID occur.
         assertEquals(numHtmlDocs, count(statusCounts, "PARSE_SUCCESS"), "should have had " + numHtmlDocs + " parse successes: " + statusCounts);
-        // Count BOTH parse-exception outcomes. Whether a document that parsed with an exception is
-        // passed back (PARSE_SUCCESS_WITH_EXCEPTION) or emitted (EMIT_SUCCESS_PARSE_EXCEPTION) is
-        // decided by EmitStrategy.DYNAMIC comparing EmitDataImpl.estimateSizeInBytes -- the summed
-        // length of the metadata and container stack trace -- against a byte threshold. Both carry
-        // the stack and are CATEGORY.SUCCESS; the invariant here is that exactly ONE document
-        // parsed with an exception, not which side of a size threshold it landed on.
-        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION")
-                        + count(statusCounts, "EMIT_SUCCESS_PARSE_EXCEPTION"),
-                "should have had exactly 1 document that parsed with an exception, whether passed "
-                        + "back or emitted: " + statusCounts);
+        // Pinned deliberately. Whether a document that parsed with an exception is passed back
+        // (PARSE_SUCCESS_WITH_EXCEPTION) or emitted in the fork (EMIT_SUCCESS_PARSE_EXCEPTION) is
+        // decided by EmitStrategy.DYNAMIC comparing EmitDataImpl.estimateSizeInBytes -- metadata
+        // plus the serialized container stack trace -- against a byte threshold. This document
+        // sits near that boundary, so the route is a sensitive detector of anything that changes
+        // stack depth or metadata size. Do NOT relax this to accept either status: an earlier
+        // revision of this branch flipped it to EMIT_SUCCESS_PARSE_EXCEPTION purely because a
+        // refactor in AutoDetectParser added one stack frame, and accepting both would have let
+        // that through silently.
+        assertEquals(1, count(statusCounts, "PARSE_SUCCESS_WITH_EXCEPTION"),
+                "should have had 1 parse exception: " + statusCounts);
         //the embedded docx is emitted directly
         assertEquals(1, count(statusCounts, "EMIT_SUCCESS"), "should have had 1 emit success: " + statusCounts);
         assertEquals(2, numberOfCrashes(statusCounts),
