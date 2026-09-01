@@ -823,8 +823,17 @@ public class PDFParser implements Parser, RenderingParser {
      * <p>This is a check-then-act on shared mutable state that runs DURING a parse, on a parser
      * instance shared by every thread. Two concurrent parses could both see a null or unsuitable
      * renderer, both construct one, and interleave the assignment with the reads at the call
-     * site -- so a parse could render with a renderer configured for someone else's config, or
-     * observe one mid-publication.
+     * site -- so a parse could observe a renderer another thread was still constructing.
+     *
+     * <p>What this does NOT fix, stated plainly so the next reader does not assume otherwise:
+     * the cache is keyed on SUITABILITY ({@code getSupportedTypes(context).contains(MEDIA_TYPE)}),
+     * never on {@code config}. Whichever parse arrives first bakes its dpi/imageType/imageFormat
+     * into the PDFBoxRenderer below, and every later parse gets that same instance. PDFBoxRenderer
+     * only overrides those from a PDFParserConfig found in the ParseContext, and PDFParser never
+     * puts one there -- so a parse running on the default config silently inherits the first
+     * parse's rendering settings. Synchronisation makes that outcome deterministic instead of
+     * racy; it does not make it correct. Fixing it means keying or scoping the renderer by
+     * config, which is a behavioural change beyond this one.
      *
      * <p>Synchronised so the check and the assignment are atomic, and returns the resolved
      * renderer so the caller can hold it in a local for the duration of its parse instead of
