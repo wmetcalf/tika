@@ -757,4 +757,77 @@ public class ParseRecordDocumentScopeTest {
                 "a document-wide maximum embedded count of 3 was applied PER PASS: each child "
                         + "reset the record and got a fresh budget");
     }
+
+    /**
+     * FallbackParser's passes are ALTERNATIVES, so they must not share one embedded budget.
+     *
+     * <p>SupplementingParser's passes all contribute to one output, so sharing a budget is right.
+     * FallbackParser is the opposite contract: {@code parserCompleted} returns
+     * {@code exception != null}, i.e. the next parser runs ONLY because the previous one FAILED,
+     * and the failed pass's output is thrown away. Charging the discarded pass's embedded count
+     * against the pass that actually produces the output means the failed primary can exhaust the
+     * budget -- and its sticky {@code embeddedCountLimitReached} then hard-stops the fallback
+     * before the count is even consulted, so the returned document has ZERO attachments and no
+     * limit-reached flag to explain why.
+     */
+    @Test
+    public void fallbackPassesDoNotInheritAFailedPassesExhaustedBudget() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(3);
+        context.set(EmbeddedLimits.class, limits);
+        AtomicInteger embedded = new AtomicInteger();
+        context.set(Parser.class, new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) {
+                embedded.incrementAndGet();
+            }
+        });
+
+        AtomicInteger passes = new AtomicInteger();
+        // Primary: burns the whole budget, then fails -- so its output is discarded.
+        Parser primary = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                new AbstractParser() {
+                    @Override
+                    public Set<MediaType> getSupportedTypes(ParseContext c) {
+                        return Collections.singleton(MediaType.OCTET_STREAM);
+                    }
+
+                    @Override
+                    public void parse(TikaInputStream tis, ContentHandler handler,
+                                      Metadata metadata, ParseContext c)
+                            throws IOException, SAXException, TikaException {
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                        embeddingChild(5, passes).parse(tis, handler, metadata, c);
+                        throw new TikaException("primary failed after burning the budget");
+                    }
+                });
+        Parser fallback = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                embeddingChild(5, passes));
+
+        int burnedByPrimary;
+        Parser multiple = new org.apache.tika.parser.multiple.FallbackParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                AbstractMultipleParser.MetadataPolicy.FIRST_WINS, primary, fallback);
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            multiple.parse(tis, new org.xml.sax.helpers.DefaultHandler(), metadata, context);
+        }
+        burnedByPrimary = 3;
+
+        assertEquals(burnedByPrimary * 2, embedded.get(),
+                "the fallback pass inherited the FAILED primary's exhausted budget and extracted "
+                        + "nothing; its passes are alternatives, not contributions, so each gets "
+                        + "its own budget");
+    }
 }

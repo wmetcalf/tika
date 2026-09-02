@@ -56,6 +56,16 @@ public class FallbackParser extends AbstractMultipleParser {
         super(registry, policy, parsers);
     }
 
+    /**
+     * True: a later parser runs here only because an earlier one FAILED, and the failed pass's
+     * output is discarded. Its embedded consumption must not be charged to the pass that ends up
+     * producing the document.
+     */
+    @Override
+    protected boolean passesAreAlternatives() {
+        return true;
+    }
+
     @Override
     protected boolean parserCompleted(Parser parser, Metadata metadata, ContentHandler handler,
                                       ParseContext context, Exception exception) {

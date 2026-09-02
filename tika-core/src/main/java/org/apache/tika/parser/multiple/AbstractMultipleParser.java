@@ -207,6 +207,21 @@ public abstract class AbstractMultipleParser implements Parser {
      * or Failed, and to allow them to decide to continue or
      * abort further parsing
      */
+    /**
+     * Are the passes ALTERNATIVES (only one of them ends up producing the output), rather than
+     * CONTRIBUTIONS to a single combined output?
+     *
+     * <p>Governs whether every pass shares one per-document budget -- the embedded count and its
+     * sticky limit flag. Contributions share, because they are jointly one document's work.
+     * Alternatives must not: a discarded pass's consumption would otherwise be charged to the
+     * pass that actually produces the output.
+     *
+     * @return false by default; {@link FallbackParser} overrides this
+     */
+    protected boolean passesAreAlternatives() {
+        return false;
+    }
+
     protected abstract boolean parserCompleted(Parser parser, Metadata metadata,
                                                ContentHandler handler, ParseContext context,
                                                Exception exception);
@@ -252,13 +267,23 @@ public abstract class AbstractMultipleParser implements Parser {
         Metadata lastMetadata = cloneMetadata(originalMetadata);
         Metadata metadata = lastMetadata;
 
-        // Hold ONE document claim across every pass. Each child is typically a CompositeParser
-        // or AutoDetectParser, which claims and releases a document of its own -- so without an
-        // outer claim, the second and later passes each arrived at an idle, depth-zero record,
-        // were read as a NEW document, and reset it. That handed every pass a fresh embedded
-        // budget: with N children a document-wide maximum embedded count of M admitted up to
-        // N*M. These passes are all the SAME document, so the scope belongs out here.
-        ParseRecord.beginDocument(context);
+        // Hold ONE document claim across passes that CONTRIBUTE to a single output. Each child is
+        // typically a CompositeParser or AutoDetectParser, which claims and releases a document
+        // of its own -- so without an outer claim, the second and later passes each arrived at an
+        // idle, depth-zero record, were read as a NEW document, and reset it. That handed every
+        // pass a fresh embedded budget: with N children a document-wide maximum embedded count of
+        // M admitted up to N*M.
+        //
+        // NOT for passes that are ALTERNATIVES. FallbackParser only runs a later parser because
+        // an earlier one FAILED, and discards the failed pass's output; charging its embedded
+        // count against the pass that actually produces the output lets a failed primary exhaust
+        // the budget, and its sticky embeddedCountLimitReached then hard-stops the fallback
+        // before the count is consulted -- returning a document with zero attachments and no
+        // limit-reached flag to explain it.
+        boolean passesShareOneBudget = !passesAreAlternatives();
+        if (passesShareOneBudget) {
+            ParseRecord.beginDocument(context);
+        }
 
         // Start tracking resources, so we can clean up when done
         TemporaryResources tmp = new TemporaryResources();
@@ -321,7 +346,9 @@ public abstract class AbstractMultipleParser implements Parser {
             }
         } finally {
             tmp.dispose();
-            ParseRecord.endDocument(context);
+            if (passesShareOneBudget) {
+                ParseRecord.endDocument(context);
+            }
         }
 
         // Finally, copy the latest metadata back onto their supplied object
