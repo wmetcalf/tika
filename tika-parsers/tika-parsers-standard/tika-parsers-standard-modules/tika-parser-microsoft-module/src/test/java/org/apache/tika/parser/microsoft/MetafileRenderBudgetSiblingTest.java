@@ -50,7 +50,7 @@ public class MetafileRenderBudgetSiblingTest {
         int rendered = 0;
         for (int sibling = 0; sibling < 10; sibling++) {
             // Each sibling metafile parse claims at ITS depth -- one deeper than the container.
-            budget.claim(1);
+            budget.claim();
             if (budget.tryConsume()) {
                 rendered++;
             }
@@ -70,7 +70,7 @@ public class MetafileRenderBudgetSiblingTest {
 
         int rendered = 0;
         for (int sibling = 0; sibling < 10; sibling++) {
-            budget.claim(1);
+            budget.claim();
             if (budget.tryConsume()) {
                 rendered++;
             }
@@ -92,11 +92,41 @@ public class MetafileRenderBudgetSiblingTest {
 
         int rendered = 0;
         for (int depth = 1; depth <= 10; depth++) {
-            budget.claim(depth);
+            budget.claim();
             if (budget.tryConsume()) {
                 rendered++;
             }
         }
         assertEquals(2, rendered, "a deeper metafile reset the owning document's budget");
+    }
+
+    /**
+     * The parsers must RELEASE the scope they open, on every path including failure.
+     *
+     * <p>The boundary is a counted scope now, not a depth comparison, so the per-document reset
+     * happens when the last scope closes. That makes the pairing load-bearing: a parser that
+     * opens a scope and never closes it keeps the count above zero forever, and no later document
+     * on that context ever gets a fresh budget -- the exact leak
+     * {@code testBudgetResetsPerDocument} exists to prevent, reintroduced silently.
+     */
+    @Test
+    public void parsersReleaseTheirScope() throws Exception {
+        ParseContext context = new ParseContext();
+        MetafileRenderBudget budget = new MetafileRenderBudget(2);
+        context.set(MetafileRenderBudget.class, budget);
+
+        // Junk input: the parse fails, which is precisely the path a missing finally would leak.
+        for (int document = 0; document < 3; document++) {
+            try (org.apache.tika.io.TikaInputStream tis =
+                         org.apache.tika.io.TikaInputStream.get(new byte[] {1, 2, 3})) {
+                new EMFParser().parse(tis, new org.xml.sax.helpers.DefaultHandler(),
+                        new org.apache.tika.metadata.Metadata(), context);
+            } catch (Exception expected) {
+                // the parse is expected to fail on junk; the scope must still be released
+            }
+            assertEquals(0, budget.scopes(),
+                    "EMFParser.parse left a scope open after document " + document
+                            + "; the count never returns to zero, so no later document resets");
+        }
     }
 }

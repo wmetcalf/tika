@@ -183,6 +183,11 @@ public class MetafileRenderBudgetTest {
         // keeps one across opens. Measured without a boundary: two independent parses came back
         // used=1 then used=2, so after enough files every later document silently lost
         // rasterization, OCR and hashing while being marked exhausted.
+        //
+        // The boundary is now a counted scope rather than a depth comparison, so the reset
+        // happens when the LAST scope closes: each document's parser opens one and releases it in
+        // a finally. That pairing is asserted directly by
+        // MetafileRenderBudgetSiblingTest.parsersReleaseTheirScope.
         ParseContext context = new ParseContext();
         MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
         context.set(MetafileRenderBudget.class, budget);
@@ -194,6 +199,7 @@ public class MetafileRenderBudgetTest {
         budget.chargeOcr(5000);
         assertFalse(budget.tryOcr(), "and its whole OCR allowance");
 
+        MetafileRenderBudget.endDocument(context);         // file 1 finishes
         MetafileRenderBudget.beginDocument(context);       // file 2, same context
 
         assertTrue(budget.tryConsume(), "document 2 must get its OWN render budget");
@@ -208,43 +214,43 @@ public class MetafileRenderBudgetTest {
         // document has already bypassed the cap: if each embedded metafile counted as a new
         // document it would get a fresh 64 and the cap would bound nothing at all.
         MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
-        budget.claim(1);                 // the container owns the budget at depth 1
+        budget.claim();                  // the container opens the document
         budget.tryConsume();
         budget.tryConsume();
         assertFalse(budget.tryConsume(), "precondition: the container has spent its budget");
 
-        budget.claim(2);                 // an embedded metafile, one level deeper
+        budget.claim();                  // an embedded metafile
         assertFalse(budget.tryConsume(), "a nested parse must keep spending the owner's budget");
-        budget.claim(7);                 // and deeper still
-        assertFalse(budget.tryConsume(), "depth alone must not buy a fresh allowance");
+        budget.claim();                  // and one nested inside that
+        assertFalse(budget.tryConsume(), "nesting must not buy a fresh allowance");
     }
 
     @Test
-    @DisplayName("the rule is RELATIVE, so it survives a different parser chain")
+    @DisplayName("the rule does not depend on the parser chain's depth at all")
     void testRuleDoesNotDependOnAnAbsoluteDepth() {
-        // An earlier version asked whether depth <= 2, which held only for the default
-        // AutoDetectParser nesting. Constructed as AutoDetectParser(Parser...) the chain is one
-        // shorter -- measured: a standalone metafile moves from depth 2 to depth 1 -- so a
-        // container runs at 1 and its metafiles at 2. Under the absolute rule every one of those
-        // metafiles looked top level and reset the budget, bounding nothing.
-        MetafileRenderBudget shortChain = new MetafileRenderBudget(2, 1000L);
-        shortChain.claim(1);             // container, short chain
-        shortChain.tryConsume();
-        shortChain.tryConsume();
-        shortChain.claim(2);             // its metafiles -- depth 2, which the old rule allowed
-        assertFalse(shortChain.tryConsume(),
-                "depth 2 is EMBEDDED here, and must not reset the budget");
+        // This used to compare the current ParseRecord depth against the owner's. Depth was the
+        // wrong oracle twice over: an early version asked whether depth <= 2, which held only for
+        // the default AutoDetectParser nesting; the relative version then failed on the SXWPF
+        // path, where SXWPFWordExtractorDecorator.resolveEmfNames calls EMFParser.parse DIRECTLY,
+        // so every sibling EMF ran at the owner's OWN depth, failed the "strictly deeper" test
+        // and reset the counters. Scopes are counted now, so no depth appears here at all -- and
+        // sibling metafiles, whatever chain reached them, share one document's budget.
+        MetafileRenderBudget budget = new MetafileRenderBudget(2, 1000L);
+        budget.claim();                  // the container opens the document
+        budget.tryConsume();
+        budget.tryConsume();
 
-        MetafileRenderBudget longChain = new MetafileRenderBudget(2, 1000L);
-        longChain.claim(2);              // container, default chain
-        longChain.tryConsume();
-        longChain.tryConsume();
-        longChain.claim(4);              // its metafiles
-        assertFalse(longChain.tryConsume(), "same rule, deeper chain, same answer");
+        for (int sibling = 0; sibling < 5; sibling++) {
+            budget.claim();              // each sibling metafile, at whatever depth
+            assertFalse(budget.tryConsume(),
+                    "sibling metafiles must share the document's budget");
+            budget.release();
+        }
 
-        // ...and a sibling document at the owner's own depth still gets its own budget.
-        longChain.claim(2);
-        assertTrue(longChain.tryConsume(), "a new document at the owner's depth resets");
+        // A genuinely NEW document -- every scope closed -- does get its own budget.
+        budget.release();
+        budget.claim();
+        assertTrue(budget.tryConsume(), "a new document must get its own budget");
     }
 
 }
