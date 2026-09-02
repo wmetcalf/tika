@@ -167,6 +167,18 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
                 outputHtml ? new XHTMLBalancingHandler(taggedOutput) : null;
         ContentHandler delegateHandler = outputHtml ? balancer : taggedOutput;
 
+        // Tell the record we are INSIDE an embedded parse. beginDocument decides "is this a new
+        // top-level document?" from the depth, which only CompositeParser maintains -- so a
+        // container parser invoked directly, handing entries to an AutoDetectParser in the
+        // context, delivered every entry at depth 0. Each sibling then reset the record and
+        // discarded the embedded count accumulated so far, letting a configured maximum embedded
+        // count be bypassed across siblings. This path exists only to parse an embedded document,
+        // so the claim is unambiguous here, and it deliberately does not touch depth -- that is
+        // what the embedded-DEPTH limit is measured against.
+        if (parseRecord != null) {
+            parseRecord.enterEmbedded();
+        }
+
         // Use the delegate parser to parse this entry
         boolean parsedCleanly = false;
         Throwable primaryFailure = null;
@@ -290,6 +302,13 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             downstreamOutputFailure = true;
             throw e;
         } finally {
+            // Release the embedded bracket first: everything below is output cleanup, and a
+            // throw from it must not leave the record permanently looking like it is inside an
+            // embedded parse -- that would suppress the reset for every later document on this
+            // context, which is the bug this whole change exists to fix, inverted.
+            if (parseRecord != null) {
+                parseRecord.exitEmbedded();
+            }
             tis.removeCloseShield();
             if (outputHtml && packageEntryStarted && !downstreamOutputFailure) {
                 // Only an aborted parse can leave elements open; on a clean parse

@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,7 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.ParsingEmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
@@ -309,5 +312,64 @@ public class ParseRecordDocumentScopeTest {
                         .noneMatch(w -> w.contains("FAILED selection of document one")),
                 "the record still holds the failed selection's warning, so beginDocument skipped "
                         + "its reset -- a throwing getParser must release the document claim");
+    }
+
+    /**
+     * A container parser invoked DIRECTLY must not have its embedded count reset per entry.
+     *
+     * <p>beginDocument decides "is this a new top-level document?" from the depth, and only
+     * CompositeParser maintains that. A container parser called directly -- not through
+     * CompositeParser or AutoDetectParser -- never increments it, so every entry it hands to the
+     * embedded extractor arrived at depth 0 and looked like a fresh document. Each sibling then
+     * reset the record and discarded the embedded count accumulated so far, so a configured
+     * maximum embedded count could be bypassed across siblings: the count went back to zero on
+     * every entry and the limit was never reached.
+     */
+    @Test
+    public void aDirectContainerParserCannotResetTheEmbeddedCountPerEntry() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        record.setMaxEmbeddedCount(3);
+        context.set(ParseRecord.class, record);
+
+        // The delegate every embedded entry is handed to -- an AutoDetectParser-shaped caller
+        // that claims the document, exactly as the real one does.
+        AtomicInteger parsedEntries = new AtomicInteger();
+        context.set(Parser.class, new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) {
+                ParseRecord.beginDocument(c);
+                try {
+                    parsedEntries.incrementAndGet();
+                } finally {
+                    ParseRecord.endDocument(c);
+                }
+            }
+        });
+
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        // A direct container parser: it never claims a document of its own, it just hands over
+        // ten entries the way MboxParser hands over messages.
+        for (int i = 0; i < 10; i++) {
+            Metadata entry = new Metadata();
+            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
+                        context, false);
+            }
+        }
+
+        assertEquals(3, parsedEntries.get(),
+                "the configured maximum embedded count was bypassed: the record was reset on "
+                        + "every sibling entry, so the count never reached the limit");
+        assertTrue(record.isEmbeddedCountLimitReached(),
+                "the embedded count limit should have been recorded as reached");
     }
 }

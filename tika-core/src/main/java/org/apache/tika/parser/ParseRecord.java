@@ -76,6 +76,24 @@ public class ParseRecord {
     private boolean documentBegun = false;
 
     /**
+     * How many embedded parses are currently in flight on this record.
+     *
+     * <p>{@link #beginDocument} decides whether a parse is a NEW top-level document by looking at
+     * the depth, which only {@link CompositeParser} maintains. A container parser invoked
+     * DIRECTLY -- not through CompositeParser or AutoDetectParser -- never increments it, so every
+     * entry it hands to an AutoDetectParser in the context arrives at depth 0 and looked like a
+     * fresh document. Each sibling entry then reset the record, discarding the embedded count
+     * accumulated so far: a configured maximum embedded count could be bypassed across siblings
+     * because the count went back to zero on every entry.
+     *
+     * <p>{@link ParsingEmbeddedDocumentExtractor} brackets its delegation with
+     * {@link #enterEmbedded()}/{@link #exitEmbedded()}, which is unambiguous -- that code path exists
+     * only to parse an embedded document -- and does not touch the depth the embedded-DEPTH limit
+     * is measured against.
+     */
+    private int embeddedNesting = 0;
+
+    /**
      * Creates a new ParseRecord configured from EmbeddedLimits in the ParseContext.
      * <p>
      * If EmbeddedLimits is present in the context, the ParseRecord will be configured
@@ -133,7 +151,7 @@ public class ParseRecord {
         if (record == null) {
             record = newInstance(context);
             context.set(ParseRecord.class, record);
-        } else if (record.getDepth() == 0 && !record.documentBegun) {
+        } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && !record.documentBegun) {
             record.resetForNewDocument();
         }
         record.documentBegun = true;
@@ -151,6 +169,18 @@ public class ParseRecord {
         ParseRecord record = context.get(ParseRecord.class);
         if (record != null && record.getDepth() == 0) {
             record.documentBegun = false;
+        }
+    }
+
+    /** Marks the start of an embedded parse, so a nested parser is not read as a new document. */
+    public void enterEmbedded() {
+        embeddedNesting++;
+    }
+
+    /** Ends the bracket opened by {@link #enterEmbedded}. Must run in a finally. */
+    public void exitEmbedded() {
+        if (embeddedNesting > 0) {
+            embeddedNesting--;
         }
     }
 
