@@ -117,9 +117,9 @@ public class EMFParser implements Parser {
         if (budget == null) {
             budget = new MetafileRenderBudget();
             context.set(MetafileRenderBudget.class, budget);
-            // Claim immediately, so a budget created by the first metafile of a document is owned
-            // by that document rather than by whatever parse happens to call beginDocument next.
-            MetafileRenderBudget.beginDocument(context);
+            // Deliberately does NOT open a scope. parse() already opened one for this document;
+            // a second, unreleased scope here would keep the count above zero forever, so no
+            // later document would ever reset.
         }
         return budget;
     }
@@ -153,87 +153,91 @@ public class EMFParser implements Parser {
         // every file on the command line), which would make the budget cumulative and silently
         // blind every later document. No-op when this parse is embedded.
         MetafileRenderBudget.beginDocument(context);
-
-        EmbeddedDocumentExtractor embeddedDocumentExtractor = null;
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
         try {
-            HemfPicture ex = new HemfPicture(tis);
-            ParseState parseState = new ParseState();
-            long fudgeFactorX = 10;//derive this from the font or frame/bounds information
-            StringBuilder buffer = new StringBuilder();
-            //iterate through the records.  if you hit IconOnly in a comment
-            //and it is the first IconOnly, grab the string in the next comment record
-            //and that'll be the full name of the file.
 
-            //NOTE that we're just scraping the text out in storage order. The proper way to do this
-            //is to sort the text records by x,y like we do for PDFs and xps
-            for (HemfRecord record : ex) {
-                parseState.isIconOnly = false;
-                if (record.getEmfRecordType() == HemfRecordType.comment) {
-                    handleCommentData(
-                            ((HemfComment.EmfComment) record).getCommentData(), parseState, xhtml, context);
-                } else if (record.getEmfRecordType().equals(HemfRecordType.extTextOutW)) {
-                    handleExtTextOut((HemfText.EmfExtTextOutW) record, parseState, buffer, xhtml, fudgeFactorX, StandardCharsets.UTF_16LE);
-                } else if (record.getEmfRecordType().equals(HemfRecordType.extTextOutA)) {
-                    //do something better than assigning utf8.
-                    handleExtTextOut((HemfText.EmfExtTextOutA) record, parseState, buffer, xhtml, fudgeFactorX, StandardCharsets.UTF_8);
+            EmbeddedDocumentExtractor embeddedDocumentExtractor = null;
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            try {
+                HemfPicture ex = new HemfPicture(tis);
+                ParseState parseState = new ParseState();
+                long fudgeFactorX = 10;//derive this from the font or frame/bounds information
+                StringBuilder buffer = new StringBuilder();
+                //iterate through the records.  if you hit IconOnly in a comment
+                //and it is the first IconOnly, grab the string in the next comment record
+                //and that'll be the full name of the file.
+
+                //NOTE that we're just scraping the text out in storage order. The proper way to do this
+                //is to sort the text records by x,y like we do for PDFs and xps
+                for (HemfRecord record : ex) {
+                    parseState.isIconOnly = false;
+                    if (record.getEmfRecordType() == HemfRecordType.comment) {
+                        handleCommentData(
+                                ((HemfComment.EmfComment) record).getCommentData(), parseState, xhtml, context);
+                    } else if (record.getEmfRecordType().equals(HemfRecordType.extTextOutW)) {
+                        handleExtTextOut((HemfText.EmfExtTextOutW) record, parseState, buffer, xhtml, fudgeFactorX, StandardCharsets.UTF_16LE);
+                    } else if (record.getEmfRecordType().equals(HemfRecordType.extTextOutA)) {
+                        //do something better than assigning utf8.
+                        handleExtTextOut((HemfText.EmfExtTextOutA) record, parseState, buffer, xhtml, fudgeFactorX, StandardCharsets.UTF_8);
+                    }
+
+                    if (parseState.isIconOnly) {
+                        parseState.lastWasIconOnly = true;
+                    } else {
+                        parseState.lastWasIconOnly = false;
+                    }
+                }
+                if (parseState.iconOnlyString != null) {
+                    metadata.set(EMF_ICON_ONLY, true);
+                    metadata.set(EMF_ICON_STRING, parseState.iconOnlyString);
+                }
+                if (! buffer.isEmpty()) {
+                    xhtml.startElement("p");
+                    xhtml.characters(buffer.toString());
+                    xhtml.endElement("p");
                 }
 
-                if (parseState.isIconOnly) {
-                    parseState.lastWasIconOnly = true;
-                } else {
-                    parseState.lastWasIconOnly = false;
+                boolean hashEnabled = isImageHashingEnabled(context);
+                if (hashEnabled || hasMetafileOcr(context)) {
+                    // The per-metafile render is bounded; the NUMBER of metafiles is chosen by the
+                    // document. Vector text extraction above has already run and is untouched by this
+                    // -- only the expensive rasterize-and-OCR half is capped.
+                    if (!renderBudget(context).tryConsume()) {
+                        metadata.set(RENDER_BUDGET_EXHAUSTED, true);
+                        xhtml.endDocument();
+                        return;
+                    }
+                    int[] simplified = new int[1];
+                    boolean[] unusable = new boolean[1];
+                    double[] rejectedAspect = new double[1];
+                    BufferedImage raster = rasterizeEmf(ex, simplified, unusable, rejectedAspect);
+                    if (unusable[0]) {
+                        metadata.set(RENDER_UNUSABLE, true);
+                    }
+                    if (rejectedAspect[0] > 0) {
+                        metadata.set(RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
+                    }
+                    if (simplified[0] > 0) {
+                        // Never silent: a simplified render is reported, so a consumer can tell it
+                        // from a faithful one rather than trusting OCR output from a bounded draw.
+                        metadata.set(RENDER_SIMPLIFIED, simplified[0]);
+                    }
+                    tryMetafileOcr(raster, xhtml, metadata, context);
+                    if (hashEnabled) {
+                        ImageHashUtils.setHashes(raster, metadata);
+                    }
                 }
-            }
-            if (parseState.iconOnlyString != null) {
-                metadata.set(EMF_ICON_ONLY, true);
-                metadata.set(EMF_ICON_STRING, parseState.iconOnlyString);
-            }
-            if (! buffer.isEmpty()) {
-                xhtml.startElement("p");
-                xhtml.characters(buffer.toString());
-                xhtml.endElement("p");
-            }
 
-            boolean hashEnabled = isImageHashingEnabled(context);
-            if (hashEnabled || hasMetafileOcr(context)) {
-                // The per-metafile render is bounded; the NUMBER of metafiles is chosen by the
-                // document. Vector text extraction above has already run and is untouched by this
-                // -- only the expensive rasterize-and-OCR half is capped.
-                if (!renderBudget(context).tryConsume()) {
-                    metadata.set(RENDER_BUDGET_EXHAUSTED, true);
-                    xhtml.endDocument();
-                    return;
-                }
-                int[] simplified = new int[1];
-                boolean[] unusable = new boolean[1];
-                double[] rejectedAspect = new double[1];
-                BufferedImage raster = rasterizeEmf(ex, simplified, unusable, rejectedAspect);
-                if (unusable[0]) {
-                    metadata.set(RENDER_UNUSABLE, true);
-                }
-                if (rejectedAspect[0] > 0) {
-                    metadata.set(RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
-                }
-                if (simplified[0] > 0) {
-                    // Never silent: a simplified render is reported, so a consumer can tell it
-                    // from a faithful one rather than trusting OCR output from a bounded draw.
-                    metadata.set(RENDER_SIMPLIFIED, simplified[0]);
-                }
-                tryMetafileOcr(raster, xhtml, metadata, context);
-                if (hashEnabled) {
-                    ImageHashUtils.setHashes(raster, metadata);
-                }
+            } catch (RecordFormatException e) { //POI's hemfparser can throw these for "parse
+                // exceptions"
+                throw new TikaException(e.getMessage(), e);
+            } catch (RuntimeException e) { //convert Runtime to RecordFormatExceptions
+                throw new TikaException(e.getMessage(), e);
             }
-
-        } catch (RecordFormatException e) { //POI's hemfparser can throw these for "parse
-            // exceptions"
-            throw new TikaException(e.getMessage(), e);
-        } catch (RuntimeException e) { //convert Runtime to RecordFormatExceptions
-            throw new TikaException(e.getMessage(), e);
+            xhtml.endDocument();
+        } finally {
+            org.apache.tika.parser.microsoft.MetafileRenderBudget.endDocument(context);
         }
-        xhtml.endDocument();
     }
 
     public boolean isImageHashingEnabled() {

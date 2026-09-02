@@ -19,7 +19,6 @@ package org.apache.tika.parser.microsoft;
 import java.io.Serializable;
 
 import org.apache.tika.parser.ParseContext;
-import org.apache.tika.parser.ParseRecord;
 
 /**
  * How many embedded metafiles ONE document may rasterize and OCR.
@@ -119,7 +118,19 @@ public class MetafileRenderBudget implements Serializable {
     }
 
     /** Nesting depth of the parse that currently owns this budget; -1 until one claims it. */
-    private int ownerDepth = -1;
+    /**
+     * How many document scopes are currently open on this budget.
+     *
+     * <p>Replaces an owner-DEPTH comparison. Depth was the wrong oracle, for the same reason it
+     * was the wrong oracle in {@code ParseRecord}: it only distinguishes a container from its
+     * metafiles when something actually increments it. It does not on the SXWPF path --
+     * {@code SXWPFWordExtractorDecorator.resolveEmfNames} calls {@code EMFParser.parse} directly,
+     * not through CompositeParser -- so every EMF ran at the owner's own depth, failed the
+     * "strictly deeper" test, and reset the counters for each sibling. Counting instead: the
+     * outermost scope resets, inner ones just spend, and no one has to guess from a number that
+     * something else is responsible for maintaining.
+     */
+    private int scopes = 0;
 
     /**
      * Begin a document, resetting the budget when this parse is a new one rather than something
@@ -143,29 +154,58 @@ public class MetafileRenderBudget implements Serializable {
     public static void beginDocument(ParseContext context) {
         MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
         if (budget == null) {
-            return;   // nothing installed yet: the first render will create it
+            // INSTALL it, do not return. Returning here is what broke the cap: the container
+            // (OfficeParser, OOXMLParser) calls this first, found nothing to claim, and left
+            // ownership unset -- so the FIRST metafile created the budget and claimed it at its
+            // OWN depth. Every sibling metafile then claimed at that same depth, and claim()
+            // keeps the owner's budget only when the depth is strictly GREATER, so each sibling
+            // reset used/refused/ocrSpentMillis/ocrRefused before spending. The 64-render and
+            // 120s OCR caps therefore bounded nothing across a document's siblings -- only
+            // across its nested metafiles, which is not the shape these limits exist for
+            // (measured: 623 sibling metafiles in 1.7 MB).
+            //
+            // Installing here makes the CONTAINER the owner, one level shallower than its
+            // metafiles, which is exactly the relationship claim() was written for.
+            budget = new MetafileRenderBudget();
+            context.set(MetafileRenderBudget.class, budget);
         }
-        budget.claim(currentDepth(context));
-    }
-
-    private static int currentDepth(ParseContext context) {
-        ParseRecord record = context.get(ParseRecord.class);
-        return record == null ? 0 : record.getDepth();
+        budget.claim();
     }
 
     /**
-     * Take ownership if this parse is not nested inside the current owner.
-     *
-     * <p>Package-private rather than private so the rule can be tested without standing up a whole
-     * parser chain -- the failure that matters is the permissive one, and it is invisible from the
-     * outside until a document has already bypassed the cap.
+     * Close the scope opened by {@link #beginDocument}. Must run in a finally, one for one.
      */
-    void claim(int depth) {
-        if (ownerDepth >= 0 && depth > ownerDepth) {
-            return;   // nested inside the owning document: keep spending its budget
+    public static void endDocument(ParseContext context) {
+        MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
+        if (budget != null) {
+            budget.release();
         }
-        ownerDepth = depth;
-        reset();
+    }
+
+    /**
+     * Open a document scope. The OUTERMOST scope resets; inner ones just spend its budget.
+     *
+     * <p>Package-private rather than private so the rule can be tested without standing up a
+     * whole parser chain -- the failure that matters is the permissive one, and it is invisible
+     * from the outside until a document has already bypassed the cap.
+     */
+    void claim() {
+        if (scopes == 0) {
+            reset();
+        }
+        scopes++;
+    }
+
+    /** Open scopes. Package-private so the pairing invariant is assertable at all. */
+    int scopes() {
+        return scopes;
+    }
+
+    /** Close a document scope opened by {@link #claim()}. Must run in a finally. */
+    void release() {
+        if (scopes > 0) {
+            scopes--;
+        }
     }
 
     /** Clears everything this document spent, keeping the configured limits. */

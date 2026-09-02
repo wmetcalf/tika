@@ -75,80 +75,84 @@ public class WMFParser implements Parser {
         // every file on the command line), which would make the budget cumulative and silently
         // blind every later document. No-op when this parse is embedded.
         MetafileRenderBudget.beginDocument(context);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-        tis.setCloseShield();
         try {
-            HwmfPicture picture = null;
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            tis.setCloseShield();
             try {
-                picture = new HwmfPicture(tis);
-            } catch (ArrayIndexOutOfBoundsException e) {
-                //POI can throw this on corrupt files
-                throw new TikaException(e.getClass().getSimpleName() + ": " + e.getMessage(), e);
-            }
-            Charset charset = LocaleUtil.CHARSET_1252;
-            //TODO: make x/y info public in POI so that we can use it here
-            //to determine when to keep two text parts on the same line
-            for (HwmfRecord record : picture.getRecords()) {
-                //this is pure hackery for specifying the font
-                //TODO: do what Graphics does by maintaining the stack, etc.!
-                //This fix should be done within POI
-                if (record.getWmfRecordType().equals(HwmfRecordType.createFontIndirect)) {
-                    HwmfFont font = ((HwmfText.WmfCreateFontIndirect) record).getFont();
-                    charset =
-                            (font.getCharset() == null || font.getCharset().getCharset() == null) ?
-                                    LocaleUtil.CHARSET_1252 : font.getCharset().getCharset();
+                HwmfPicture picture = null;
+                try {
+                    picture = new HwmfPicture(tis);
+                } catch (ArrayIndexOutOfBoundsException e) {
+                    //POI can throw this on corrupt files
+                    throw new TikaException(e.getClass().getSimpleName() + ": " + e.getMessage(), e);
                 }
-                if (record.getWmfRecordType().equals(HwmfRecordType.extTextOut)) {
-                    HwmfText.WmfExtTextOut textOut = (HwmfText.WmfExtTextOut) record;
-                    xhtml.startElement("p");
-                    xhtml.characters(textOut.getText(charset));
-                    xhtml.endElement("p");
-                } else if (record.getWmfRecordType().equals(HwmfRecordType.textOut)) {
-                    HwmfText.WmfTextOut textOut = (HwmfText.WmfTextOut) record;
-                    xhtml.startElement("p");
-                    xhtml.characters(textOut.getText(charset));
-                    xhtml.endElement("p");
+                Charset charset = LocaleUtil.CHARSET_1252;
+                //TODO: make x/y info public in POI so that we can use it here
+                //to determine when to keep two text parts on the same line
+                for (HwmfRecord record : picture.getRecords()) {
+                    //this is pure hackery for specifying the font
+                    //TODO: do what Graphics does by maintaining the stack, etc.!
+                    //This fix should be done within POI
+                    if (record.getWmfRecordType().equals(HwmfRecordType.createFontIndirect)) {
+                        HwmfFont font = ((HwmfText.WmfCreateFontIndirect) record).getFont();
+                        charset =
+                                (font.getCharset() == null || font.getCharset().getCharset() == null) ?
+                                        LocaleUtil.CHARSET_1252 : font.getCharset().getCharset();
+                    }
+                    if (record.getWmfRecordType().equals(HwmfRecordType.extTextOut)) {
+                        HwmfText.WmfExtTextOut textOut = (HwmfText.WmfExtTextOut) record;
+                        xhtml.startElement("p");
+                        xhtml.characters(textOut.getText(charset));
+                        xhtml.endElement("p");
+                    } else if (record.getWmfRecordType().equals(HwmfRecordType.textOut)) {
+                        HwmfText.WmfTextOut textOut = (HwmfText.WmfTextOut) record;
+                        xhtml.startElement("p");
+                        xhtml.characters(textOut.getText(charset));
+                        xhtml.endElement("p");
+                    }
                 }
-            }
 
-            boolean hashEnabled = isImageHashingEnabled(context);
-            if (hashEnabled || EMFParser.hasMetafileOcr(context)) {
-                if (!EMFParser.renderBudget(context).tryConsume()) {
-                    metadata.set(EMFParser.RENDER_BUDGET_EXHAUSTED, true);
-                    xhtml.endDocument();
-                    return;
+                boolean hashEnabled = isImageHashingEnabled(context);
+                if (hashEnabled || EMFParser.hasMetafileOcr(context)) {
+                    if (!EMFParser.renderBudget(context).tryConsume()) {
+                        metadata.set(EMFParser.RENDER_BUDGET_EXHAUSTED, true);
+                        xhtml.endDocument();
+                        return;
+                    }
+                    int[] simplified = new int[1];
+                    boolean[] unusable = new boolean[1];
+                    double[] rejectedAspect = new double[1];
+                    BufferedImage raster = rasterizeWmf(picture, simplified, unusable, rejectedAspect);
+                    if (unusable[0]) {
+                        metadata.set(EMFParser.RENDER_UNUSABLE, true);
+                    }
+                    if (rejectedAspect[0] > 0) {
+                        metadata.set(EMFParser.RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
+                    }
+                    if (simplified[0] > 0) {
+                        metadata.set(EMFParser.RENDER_SIMPLIFIED, simplified[0]);
+                    }
+                    EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
+                    if (hashEnabled) {
+                        ImageHashUtils.setHashes(raster, metadata);
+                    }
                 }
-                int[] simplified = new int[1];
-                boolean[] unusable = new boolean[1];
-                double[] rejectedAspect = new double[1];
-                BufferedImage raster = rasterizeWmf(picture, simplified, unusable, rejectedAspect);
-                if (unusable[0]) {
-                    metadata.set(EMFParser.RENDER_UNUSABLE, true);
-                }
-                if (rejectedAspect[0] > 0) {
-                    metadata.set(EMFParser.RENDER_ASPECT_RECOVERED, rejectedAspect[0]);
-                }
-                if (simplified[0] > 0) {
-                    metadata.set(EMFParser.RENDER_SIMPLIFIED, simplified[0]);
-                }
-                EMFParser.tryMetafileOcr(raster, xhtml, metadata, context);
-                if (hashEnabled) {
-                    ImageHashUtils.setHashes(raster, metadata);
-                }
-            }
 
-        } catch (RecordFormatException e) { //POI's hwmfparser can \ throw these for "parse
-            // exceptions"
-            throw new TikaException(e.getMessage(), e);
-        } catch (RuntimeException e) { //convert Runtime to RecordFormatExceptions
-            throw new TikaException(e.getMessage(), e);
-        } catch (AssertionError e) { //POI's hwmfparser can throw these for parse exceptions
-            throw new TikaException(e.getMessage(), e);
+            } catch (RecordFormatException e) { //POI's hwmfparser can \ throw these for "parse
+                // exceptions"
+                throw new TikaException(e.getMessage(), e);
+            } catch (RuntimeException e) { //convert Runtime to RecordFormatExceptions
+                throw new TikaException(e.getMessage(), e);
+            } catch (AssertionError e) { //POI's hwmfparser can throw these for parse exceptions
+                throw new TikaException(e.getMessage(), e);
+            } finally {
+                tis.removeCloseShield();
+            }
+            xhtml.endDocument();
         } finally {
-            tis.removeCloseShield();
+            org.apache.tika.parser.microsoft.MetafileRenderBudget.endDocument(context);
         }
-        xhtml.endDocument();
     }
 
     public boolean isImageHashingEnabled() {

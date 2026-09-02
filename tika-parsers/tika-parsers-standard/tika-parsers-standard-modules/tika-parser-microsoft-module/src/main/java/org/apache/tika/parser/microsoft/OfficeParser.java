@@ -496,57 +496,61 @@ public class OfficeParser extends AbstractOfficeParser {
         // Container entry point: mark the document boundary so a reused ParseContext cannot make
         // the metafile budget cumulative across independent documents.
         MetafileRenderBudget.beginDocument(context);
-
-        configure(context);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-
-        final DirectoryNode root;
-        boolean isDirectoryNode = false;
-        tis.setCloseShield();
         try {
-            final Object container = tis.getOpenContainer();
-            if (container instanceof POIFSFileSystem) {
-                root = ((POIFSFileSystem) container).getRoot();
-            } else if (container instanceof DirectoryNode) {
-                root = (DirectoryNode) container;
-                isDirectoryNode = true;
-            } else {
-                POIFSFileSystem fs = null;
-                if (tis.hasFile()) {
-                    fs = new POIFSFileSystem(tis.getFile(), true);
+
+            configure(context);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+
+            final DirectoryNode root;
+            boolean isDirectoryNode = false;
+            tis.setCloseShield();
+            try {
+                final Object container = tis.getOpenContainer();
+                if (container instanceof POIFSFileSystem) {
+                    root = ((POIFSFileSystem) container).getRoot();
+                } else if (container instanceof DirectoryNode) {
+                    root = (DirectoryNode) container;
+                    isDirectoryNode = true;
                 } else {
-                    fs = new POIFSFileSystem(tis);
+                    POIFSFileSystem fs = null;
+                    if (tis.hasFile()) {
+                        fs = new POIFSFileSystem(tis.getFile(), true);
+                    } else {
+                        fs = new POIFSFileSystem(tis);
+                    }
+                    //stream will close the fs, no need to close this below
+                    tis.setOpenContainer(fs);
+                    root = fs.getRoot();
                 }
-                //stream will close the fs, no need to close this below
-                tis.setOpenContainer(fs);
-                root = fs.getRoot();
-            }
-            OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
+                OfficeParserConfig officeParserConfig = context.get(OfficeParserConfig.class);
 
-            // Extract macros BEFORE body content. The recursive write-limit (the worker's
-            // BasicContentHandlerFactory char cap) is enforced as a CUMULATIVE total across the
-            // whole parse, not per-entry (see RecursiveParserWrapper.SecureHandlerCounter). A
-            // document padded with megabytes of junk body text -- a known malspam evasion --
-            // therefore exhausts the budget before the macro stream is reached, and the small
-            // but forensically-critical VBA source is silently dropped (or the parse aborts
-            // pre-macro when throwOnWriteLimitReached). Emitting macros first guarantees they are
-            // captured even when the body later busts the limit; the early-stop on huge bodies
-            // is preserved (it now just stops AFTER the macros are already out).
-            //Note that macros are handled separately for ppt in HSLFExtractor.
-            if (officeParserConfig.isExtractMacros() && !isDirectoryNode) {
-                // if the "root" is a directory node, we assume that the macros have already
-                // been extracted from the parent's fileSystem -- TIKA-4116
-                extractMacros(root.getFileSystem(), xhtml,
-                        EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context,
-                        metadata);
-            }
+                // Extract macros BEFORE body content. The recursive write-limit (the worker's
+                // BasicContentHandlerFactory char cap) is enforced as a CUMULATIVE total across the
+                // whole parse, not per-entry (see RecursiveParserWrapper.SecureHandlerCounter). A
+                // document padded with megabytes of junk body text -- a known malspam evasion --
+                // therefore exhausts the budget before the macro stream is reached, and the small
+                // but forensically-critical VBA source is silently dropped (or the parse aborts
+                // pre-macro when throwOnWriteLimitReached). Emitting macros first guarantees they are
+                // captured even when the body later busts the limit; the early-stop on huge bodies
+                // is preserved (it now just stops AFTER the macros are already out).
+                //Note that macros are handled separately for ppt in HSLFExtractor.
+                if (officeParserConfig.isExtractMacros() && !isDirectoryNode) {
+                    // if the "root" is a directory node, we assume that the macros have already
+                    // been extracted from the parent's fileSystem -- TIKA-4116
+                    extractMacros(root.getFileSystem(), xhtml,
+                            EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context), context,
+                            metadata);
+                }
 
-            parse(root, context, metadata, xhtml, tis);
+                parse(root, context, metadata, xhtml, tis);
+            } finally {
+                tis.removeCloseShield();
+            }
+            xhtml.endDocument();
         } finally {
-            tis.removeCloseShield();
+            org.apache.tika.parser.microsoft.MetafileRenderBudget.endDocument(context);
         }
-        xhtml.endDocument();
     }
 
     protected void parse(DirectoryNode root, ParseContext context, Metadata metadata,
