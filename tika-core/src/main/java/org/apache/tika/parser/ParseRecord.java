@@ -29,7 +29,14 @@ import org.apache.tika.metadata.Metadata;
  * during the parse.  This information is added to the parent's metadata
  * after the parse by the {@link CompositeParser}.
  * <p>
- * This class also tracks embedded document processing limits (depth and count)
+ * <p><strong>Not thread-safe.</strong> {@code claims}, {@code embeddedNesting} and
+ * {@code depth} are plain ints updated with read-modify-write, and {@link #resetForNewDocument}
+ * clears collections that {@code CompositeParser} iterates. A {@link ParseContext} -- and so the
+ * record inside it -- must not be shared across threads parsing concurrently. That was already
+ * true of ParseContext generally; it matters more here because a single lost update to those
+ * counters latches the record into per-context behaviour for good, and no code path repairs it.
+ *
+ * <p>This class also tracks embedded document processing limits (depth and count)
  * which can be configured via {@link #setMaxEmbeddedDepth(int)} and
  * {@link #setMaxEmbeddedCount(int)}.
  */
@@ -64,6 +71,42 @@ public class ParseRecord {
     private boolean throwOnMaxCount = false;
     private boolean embeddedDepthLimitReached = false;
     private boolean embeddedCountLimitReached = false;
+    /**
+     * How many parses currently hold a claim on this record.
+     *
+     * <p>AutoDetectParser and CompositeParser both call {@link #beginDocument} for the SAME
+     * document -- AutoDetectParser first, then again when it delegates -- and both see depth 0.
+     * Without a claim the second call reads as a new document and wipes anything the detector,
+     * the digester or an overridden getParser() recorded in between, so those diagnostics never
+     * reach the document's metadata.
+     *
+     * <p>A COUNT, not a boolean, because a boolean has no owner. If a detector runs a nested
+     * CompositeParser on the same context to inspect an auxiliary stream, that inner parse
+     * begins and ends while the outer AutoDetect parse is still at depth zero -- and clearing a
+     * shared flag when any parse returns to depth zero handed the outer parse's claim away. The
+     * outer super.parse() then read as a new document and reset the diagnostics collected during
+     * detection. Counting means only as many releases as claims can end the document, so an
+     * inner parse releases its own claim and no one else's.
+     */
+    private int claims = 0;
+
+    /**
+     * How many embedded parses are currently in flight on this record.
+     *
+     * <p>{@link #beginDocument} decides whether a parse is a NEW top-level document by looking at
+     * the depth, which only {@link CompositeParser} maintains. A container parser invoked
+     * DIRECTLY -- not through CompositeParser or AutoDetectParser -- never increments it, so every
+     * entry it hands to an AutoDetectParser in the context arrives at depth 0 and looked like a
+     * fresh document. Each sibling entry then reset the record, discarding the embedded count
+     * accumulated so far: a configured maximum embedded count could be bypassed across siblings
+     * because the count went back to zero on every entry.
+     *
+     * <p>{@link ParsingEmbeddedDocumentExtractor} brackets its delegation with
+     * {@link #enterEmbedded()}/{@link #exitEmbedded()}, which is unambiguous -- that code path exists
+     * only to parse an embedded document -- and does not touch the depth the embedded-DEPTH limit
+     * is measured against.
+     */
+    private int embeddedNesting = 0;
 
     /**
      * Creates a new ParseRecord configured from EmbeddedLimits in the ParseContext.
@@ -84,12 +127,148 @@ public class ParseRecord {
         return record;
     }
 
+    /**
+     * Installs a record for a new document, or resets the one already there.
+     *
+     * <p>Called from BOTH AutoDetectParser and CompositeParser. AutoDetectParser digests,
+     * detects, and can exit early -- the MetadataOnlyParse return and the zero-byte
+     * ZeroByteFileException both happen BEFORE it delegates to CompositeParser -- so a reset
+     * placed only in CompositeParser leaves the previous document's warnings, exceptions, counts
+     * and sticky flags visible to anyone inspecting the record after such an attempt.
+     *
+     * <p>Calling it twice for one document is harmless: nothing writes to the record between
+     * AutoDetectParser's entry and CompositeParser's, so the second call resets an already-clean
+     * record. Only depth 0 resets; nested parses arrive deeper and keep the current document's.
+     */
+    /**
+     * Opens a document scope. Public because some callers must claim the document BEFORE any
+     * parser does.
+     *
+     * <p>Two such callers exist, and both were silently losing diagnostics:
+     *
+     * <ul>
+     *   <li>tika-pipes' {@code ParseHandler} runs a configured {@code Digester} in its
+     *       preprocessing step, which can record a warning or exception, and then sets
+     *       {@code SkipContainerDocumentDigest} so the digest is not repeated. The parser's own
+     *       claim came afterwards, saw an unclaimed depth-zero record, and reset it -- discarding
+     *       exactly the diagnostic the preprocessing had just produced.
+     *   <li>A CONTAINER parser invoked directly, not through {@link AutoDetectParser} or
+     *       {@link CompositeParser}, and reusing one context for the next document. It must hold
+     *       a claim for the span of its own parse: that keeps the embedded count enforceable
+     *       across its sibling entries, and lets the NEXT open reset cleanly.
+     * </ul>
+     *
+     * <p>Pair it with {@link #endDocument} in a finally. Nesting is counted, so an inner claim
+     * never ends the outer document.
+     */
+    public static ParseRecord beginDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (record == null) {
+            record = newInstance(context);
+            context.set(ParseRecord.class, record);
+        } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && record.claims == 0) {
+            record.resetForNewDocument();
+        }
+        record.claims++;
+        return record;
+    }
+
+    /**
+     * Releases ONE claim taken by {@link #beginDocument}. The document ends when the last one
+     * goes, so the next top-level parse resets.
+     *
+     * <p>Every {@code beginDocument} must be paired with exactly one of these, in a finally:
+     * AutoDetectParser's MetadataOnlyParse return and ZeroByteFileException exit leave without
+     * ever reaching beforeParse/afterParse, and CompositeParser can throw out of parser
+     * selection before beforeParse runs. An unreleased claim outlives its document and the next
+     * one inherits its record; a release without a claim ends the document early.
+     *
+     * <p>Deliberately NOT conditioned on depth. An embedded parse claims and releases at depth
+     * greater than zero, and skipping the release there would leak a claim upward that nothing
+     * ever balances.
+     */
+    public static void endDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (record != null && record.claims > 0) {
+            record.claims--;
+        }
+    }
+
+    /** Marks the start of an embedded parse, so a nested parser is not read as a new document. */
+    public void enterEmbedded() {
+        embeddedNesting++;
+    }
+
+    /** Ends the bracket opened by {@link #enterEmbedded}. Must run in a finally. */
+    public void exitEmbedded() {
+        if (embeddedNesting > 0) {
+            embeddedNesting--;
+        }
+    }
+
+    /**
+     * Clears everything this record accumulated for ONE document, keeping the configured limits.
+     *
+     * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT
+     * documents -- TikaCLI creates one ParseContext at startup and passes it to every file on the
+     * command line, and the same reuse is available to any embedder. (An earlier version of this
+     * note also cited MultiThreadedTikaTest; that was wrong -- its runner passes a fresh
+     * ParseContext per iteration and getRecursiveMetadata overwrites even that one, so no test in
+     * this repo parses two documents through a shared context.) CompositeParser installs a
+     * ParseRecord only when absent and never removes it, so without this the record is
+     * per-CONTEXT rather than per-DOCUMENT.
+     *
+     * <p>Measured before this existed: six parses of one file through a single context reported
+     * embeddedCount 24, 48, 72, 96, 120, 144. Unbounded growth is the mild symptom. The sharp one
+     * is {@code embeddedCountLimitReached}, which is sticky and is checked by
+     * ParsingEmbeddedDocumentExtractor and CompositeParser: once ANY document trips maxCount,
+     * every later document through that context silently yields no embedded documents at all.
+     * The capped lists behave the same way -- after 100 accumulated entries, later documents stop
+     * recording metadata, warnings and exceptions.
+     *
+     * <p>Called at the start of a new TOP-LEVEL parse rather than at the end of one, so callers
+     * that read the record after parsing (exceptions, warnings, the metadata list) still see the
+     * document they just parsed.
+     */
+    void resetForNewDocument() {
+        parsers.clear();
+        exceptions.clear();
+        warnings.clear();
+        metadataList.clear();
+        embeddedCount = 0;
+        writeLimitReached = false;
+        embeddedCountLimitReached = false;
+        embeddedDepthLimitReached = false;
+    }
+
     void beforeParse() {
         depth++;
     }
 
     void afterParse() {
         depth--;
+        // The claim is NOT released here. Returning to depth zero says this parse finished, not
+        // that the document did -- a detector's nested parse unwinds to depth zero while the
+        // outer document is still being parsed. Release is CompositeParser's finally, paired
+        // one-for-one with the beginDocument that took the claim.
+    }
+
+    /**
+     * Open document scopes. Package-private: this exists so the boundary invariant is testable.
+     *
+     * <p>{@link #endDocument} clamps at zero and {@link #exitEmbedded} likewise, so an orphan or
+     * doubled release is silently absorbed -- which makes an imbalance invisible without this.
+     * An imbalance is not cosmetic: the reset is gated on these counters returning to zero, so a
+     * leaked claim latches the record into per-CONTEXT behaviour permanently, and an over-release
+     * lets the next nested claim reset mid-document.
+     */
+    int getClaims() {
+        return claims;
+    }
+
+    /** In-flight embedded parses. Package-private for the same reason as {@link #getClaims()}. */
+    int getEmbeddedNesting() {
+        return embeddedNesting;
     }
 
     public int getDepth() {

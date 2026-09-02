@@ -125,6 +125,74 @@ public class MultiThreadedTikaTest extends TikaTest {
         return handler.getMetadataList();
     }
 
+    /**
+     * Names what the concurrent run lost, not just how many.
+     *
+     * <p>A count mismatch on its own has proved unactionable: it says an attachment vanished but
+     * not which one, and the failure is rare enough in CI and unreproducible enough locally that
+     * the next occurrence is the only chance to learn anything. Listing the embedded resource
+     * paths present in the single-threaded baseline but absent concurrently turns "19 instead of
+     * 20" into a named object whose parser can be inspected directly.
+     */
+    private static String describeMissing(Extract truth, Extract observed) {
+        try {
+            List<String> a = resourceNames(truth);
+            List<String> b = resourceNames(observed);
+            List<String> missing = new ArrayList<>(a);
+            b.forEach(missing::remove);
+            List<String> extra = new ArrayList<>(b);
+            a.forEach(extra::remove);
+            StringBuilder sb = new StringBuilder();
+            if (!missing.isEmpty()) {
+                sb.append("; missing from the concurrent run: ").append(missing);
+            }
+            if (!extra.isEmpty()) {
+                sb.append("; unexpected in the concurrent run: ").append(extra);
+            }
+            // The parser that drops an attachment usually RECORDS why and carries on --
+            // HSLFExtractor, for one, calls recordEmbeddedStreamException and continues -- so the
+            // reason is already sitting in the metadata and simply never printed. Surface it: it
+            // is the difference between "an attachment vanished" and the stack that dropped it.
+            List<String> reasons = new ArrayList<>();
+            for (Metadata m : observed.metadataList) {
+                for (String v : m.getValues(TikaCoreProperties.EMBEDDED_EXCEPTION)) {
+                    reasons.add(firstLine(v));
+                }
+            }
+            if (!reasons.isEmpty()) {
+                sb.append("; embedded exceptions recorded during the concurrent run: ")
+                        .append(reasons);
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "; (could not diff attachments: " + e + ")";
+        }
+    }
+
+    /** First line only: a full stack trace per attachment would bury the comparison. */
+    private static String firstLine(String stack) {
+        if (stack == null) {
+            return "null";
+        }
+        int nl = stack.indexOf('\n');
+        return nl < 0 ? stack : stack.substring(0, nl);
+    }
+
+    private static List<String> resourceNames(Extract extract) {
+        List<String> names = new ArrayList<>();
+        for (Metadata m : extract.metadataList) {
+            String n = m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            if (n == null) {
+                n = m.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            }
+            if (n == null) {
+                n = m.get(Metadata.CONTENT_TYPE);
+            }
+            names.add(String.valueOf(n));
+        }
+        return names;
+    }
+
     private static void assertExtractEquals(Extract extractA, Extract extractB) {
         assertExtractEquals(extractA, extractB, "<unknown file>");
     }
@@ -140,7 +208,7 @@ public class MultiThreadedTikaTest extends TikaTest {
         //might want to add more checks
 
         assertEquals(extractA.metadataList.size(), extractB.metadataList.size(),
-                "number of embedded files in " + testFile);
+                "number of embedded files in " + testFile + describeMissing(extractA, extractB));
 
         for (int i = 0; i < extractA.metadataList.size(); i++) {
             assertEquals(extractA.metadataList.get(i).size(), extractB.metadataList.get(i).size(),

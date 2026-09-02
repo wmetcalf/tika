@@ -281,12 +281,39 @@ public class CompositeParser implements Parser {
      */
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        Parser parser = getParser(metadata, context);
-        ParseRecord parserRecord = context.get(ParseRecord.class);
-        if (parserRecord == null) {
-            parserRecord = ParseRecord.newInstance(context);
-            context.set(ParseRecord.class, parserRecord);
+        // Claim the document BEFORE selecting a parser. getParser is an overridable hook, and a
+        // subclass that records a warning or exception there would otherwise write into the
+        // PREVIOUS document's record and have it discarded by the reset a line later -- and if
+        // selection throws, the previous document's state would never be reset at all. Only
+        // AutoDetectParser claims earlier than this; direct CompositeParser and DefaultParser use
+        // has no earlier claim, so this line is the first one for that path.
+        ParseRecord parserRecord = ParseRecord.beginDocument(context);
+        Parser parser;
+        try {
+            parser = getParser(metadata, context);
+        } catch (Throwable t) {
+            // Selection failed, so beforeParse() never ran and the finally's afterParse() -- the
+            // only thing that clears the claim on the normal path -- never will either. Without
+            // this release the claim outlives the failed parse, and the next top-level parse on
+            // this context skips its reset and inherits the failed selection's warnings and
+            // exceptions, which recordEmbeddedMetadata then copies into the NEXT document's
+            // metadata. This release balances THIS frame's own beginDocument, at any depth --
+            // endDocument is deliberately not conditioned on depth, because an embedded parse
+            // claims and releases above depth 0 and skipping the release there would leak a
+            // claim upward that nothing balances.
+            ParseRecord.endDocument(context);
+            throw t;
         }
+        // Tracks whether beforeParse() actually ran. The four statements below it can throw --
+        // building the tagged handler, resolving the parser class name, recording it on the
+        // record and through the pluggable metadata write limiter -- and the finally calls
+        // afterParse() unconditionally. A throw in that window used to decrement depth with no
+        // matching increment. That was a transient one-parse glitch before this change; now the
+        // per-document reset is gated on depth == 0, so a single skew LATCHES: the record never
+        // resets again, every later document on the context inherits its counts and sticky limit
+        // flags, and the depth-gated block below stops stamping embedded exceptions and limit
+        // hits onto anything at all.
+        boolean depthTaken = false;
         try {
             TaggedContentHandler taggedHandler =
                     handler != null ? new TaggedContentHandler(handler) : null;
@@ -294,6 +321,7 @@ public class CompositeParser implements Parser {
             parserRecord.addParserClass(parserClassname);
             ParserUtils.recordParserDetails(parserClassname, metadata);
             parserRecord.beforeParse();
+            depthTaken = true;
             try {
                 parser.parse(tis, taggedHandler, metadata, context);
             } catch (SecurityException e) {
@@ -312,7 +340,19 @@ public class CompositeParser implements Parser {
                 throw new TikaException("Unexpected RuntimeException from " + parser, e);
             }
         } finally {
-            parserRecord.afterParse();
+            if (depthTaken) {
+                parserRecord.afterParse();
+            }
+            // Release the claim taken above, one-for-one, BEFORE the metadata work below.
+            // afterParse no longer releases: returning to depth zero means THIS parse finished,
+            // not that the document did, and a shared flag cleared on any such return handed away
+            // a claim the caller still held. Release first because a throw out of the metadata
+            // block would otherwise leak the claim permanently, and a record that never returns
+            // to zero claims never resets again -- every later document on this context would
+            // inherit this one's counts and sticky limit flags. Releasing does not clear
+            // anything; the reset happens on the next beginDocument, after this block has read
+            // what it needs.
+            ParseRecord.endDocument(context);
             if (parserRecord.getDepth() == 0) {
                 metadata.set(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET, parserRecord.getParsers());
                 recordEmbeddedMetadata(metadata, context);
