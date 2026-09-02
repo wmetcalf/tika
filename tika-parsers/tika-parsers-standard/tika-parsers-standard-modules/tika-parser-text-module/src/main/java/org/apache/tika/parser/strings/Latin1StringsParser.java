@@ -70,6 +70,14 @@ public class Latin1StringsParser implements Parser {
     private static int BUF_SIZE = 64 * 1024;
 
     /**
+     * Largest accepted {@code minSize}. The decode buffers are sized at twice the floor, so this
+     * is the point past which a configured value stops being a decoding preference and becomes an
+     * allocation request. 16 MB is orders of magnitude above any meaningful minimum string length
+     * and keeps 2 * minSize clear of integer overflow.
+     */
+    private static final int MAX_MIN_SIZE = 16 * 1024 * 1024;
+
+    /**
      * The minimum size of a character sequence to be extracted.
      */
     private int minSize = 4;
@@ -77,12 +85,22 @@ public class Latin1StringsParser implements Parser {
     /**
      * The output buffer.
      */
-    private byte[] output = new byte[BUF_SIZE];
+    /**
+     * Size of {@link #input} and {@link #output}, at least {@link #BUF_SIZE}.
+     *
+     * <p>Grown by {@link #setMinSize} so that the buffer can always hold the retained floor plus
+     * as much again. {@code flushBuffer()} emits {@code bufSize - minSize} bytes and retains
+     * {@code minSize}, so keeping {@code bufSize >= 2 * minSize} keeps the copied-to-emitted
+     * ratio at or below 1 -- linear in the input -- for ANY configured floor.
+     */
+    private transient int bufSize;
+
+    private transient byte[] output;
 
     /**
      * The input buffer.
      */
-    private byte[] input = new byte[BUF_SIZE];
+    private transient byte[] input;
 
     /**
      * The temporary position into the output buffer.
@@ -162,6 +180,40 @@ public class Latin1StringsParser implements Parser {
      * @param minSize the minimum size of a character sequence
      */
     public void setMinSize(int minSize) {
+        // Validate, because this value is now actually USED. It previously reached nothing:
+        // parse() built its delegate with a bare constructor and the default of 4, so every value
+        // -- in range or not -- was silently discarded.
+        //
+        // flushBuffer() runs when tmpPos hits bufSize. It emits (bufSize - minSize) bytes and
+        // retains minSize as the possible prefix of a longer run, so each flush consumes
+        // (bufSize - minSize) new bytes at a cost of minSize copied. Work per byte consumed is
+        // minSize / (bufSize - minSize), which at a FIXED 64 KB buffer degrades without bound as
+        // the floor approaches it: 1 at 32 KB, ~65535 at 65535 (quadratic on
+        // document-controlled input), and at 65536 the flush frees nothing at all -- outPos stays
+        // 0, tmpPos stays at the buffer length, and the next printable byte runs
+        // output[tmpPos++] off the end.
+        //
+        // Rejecting large floors would be the wrong fix twice over: 40000 decodes perfectly well
+        // (it still emits 25536 bytes per flush), and a config that a deployment previously
+        // started with -- ignored, but started -- would begin throwing at construction. So size
+        // the buffer to the floor instead. bufSize >= 2 * minSize holds the ratio at or below 1
+        // for every accepted value, which is the property that actually matters.
+        //
+        // The buffers are allocated in doParse(), NOT here. This setter runs on the long-lived
+        // CONFIGURED parser -- DefaultParser holds one for the life of the JVM -- which never
+        // decodes anything: parse() hands the work to a fresh delegate that allocates its own.
+        // Allocating here would retain 2 * minSize twice over on an instance that never reads a
+        // byte of it, on top of the same allocation in every concurrent parse, and the arrays
+        // would ride along in the serialized form of a configured Parser.
+        if (minSize < 1) {
+            throw new IllegalArgumentException("minSize must be at least 1, got " + minSize);
+        }
+        if (minSize > MAX_MIN_SIZE) {
+            throw new IllegalArgumentException(
+                    "minSize must be at most " + MAX_MIN_SIZE + ", got " + minSize
+                            + ". The decode buffers are sized at twice the floor, so a larger "
+                            + "value asks for an unbounded allocation per parse.");
+        }
         this.minSize = minSize;
     }
 
@@ -199,9 +251,19 @@ public class Latin1StringsParser implements Parser {
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException {
         /*
-         * Creates a new instance because the object is not immutable.
+         * Creates a new instance because the object is not immutable: doParse writes its decode
+         * buffers, positions and content handler into instance fields, and a parser instance is
+         * shared -- DefaultParser holds one and every thread parses through it. Cloning per parse
+         * is what keeps that safe, so keep doing it.
+         *
+         * Carry the configuration across, though. Without this line the fresh instance always ran
+         * with the DEFAULT minSize of 4, so setMinSize() was silently discarded: callers got
+         * every 4-character run back however high they had set the floor, and nothing failed to
+         * tell them.
          */
-        new Latin1StringsParser().doParse(tis, handler, metadata, context);
+        Latin1StringsParser perDocument = new Latin1StringsParser();
+        perDocument.setMinSize(getMinSize());
+        perDocument.doParse(tis, handler, metadata, context);
     }
 
     /**
@@ -223,6 +285,12 @@ public class Latin1StringsParser implements Parser {
     private void doParse(InputStream tis, ContentHandler handler, Metadata metadata,
                          ParseContext context) throws IOException, SAXException {
 
+        // Per-document buffers, sized from the floor so that flushBuffer() always emits at
+        // least as much as it retains. Allocated here rather than in setMinSize because THIS is
+        // the instance that decodes: parse() delegates to a fresh one per document.
+        bufSize = Math.max(BUF_SIZE, 2 * minSize);
+        input = new byte[bufSize];
+        output = new byte[bufSize];
         tmpPos = 0;
         outPos = 0;
 
@@ -232,7 +300,7 @@ public class Latin1StringsParser implements Parser {
         int i = 0;
         do {
             inSize = 0;
-            while ((i = tis.read(input, inSize, BUF_SIZE - inSize)) > 0) {
+            while ((i = tis.read(input, inSize, bufSize - inSize)) > 0) {
                 inSize += i;
             }
             inPos = 0;
@@ -254,7 +322,7 @@ public class Latin1StringsParser implements Parser {
                         output[tmpPos++] = c;
                         c = c_;
                     }
-                    if (tmpPos == BUF_SIZE) {
+                    if (tmpPos == bufSize) {
                         flushBuffer();
                     }
 
@@ -273,7 +341,7 @@ public class Latin1StringsParser implements Parser {
                         output[tmpPos++] = c;
                         c = c_;
                     }
-                    if (tmpPos == BUF_SIZE) {
+                    if (tmpPos == bufSize) {
                         flushBuffer();
                     }
                 }
@@ -283,7 +351,7 @@ public class Latin1StringsParser implements Parser {
                      */ {
                     if (isChar(c)) {
                         output[tmpPos++] = c;
-                        if (tmpPos == BUF_SIZE) {
+                        if (tmpPos == bufSize) {
                             flushBuffer();
                         }
                     } else {
@@ -300,7 +368,7 @@ public class Latin1StringsParser implements Parser {
                                 output[tmpPos++] = 0x0A;
                                 outPos = tmpPos;
 
-                                if (tmpPos == BUF_SIZE) {
+                                if (tmpPos == bufSize) {
                                     flushBuffer();
                                 }
                             } else {

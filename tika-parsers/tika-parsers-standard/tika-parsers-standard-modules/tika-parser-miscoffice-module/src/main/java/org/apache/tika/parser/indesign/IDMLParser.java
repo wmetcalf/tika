@@ -68,14 +68,19 @@ public class IDMLParser implements Parser {
     private static final String META_NAME = "META-INF/metadata.xml";
 
     /**
-     * Internal page count.
+     * Per-document spread counts.
+     *
+     * <p>These were instance fields incremented with {@code +=} and never reset. A parser
+     * instance is shared -- DefaultParser holds one and every thread parses through it -- so the
+     * counters were a running total over every IDML the JVM had ever parsed: the second document
+     * reported its own pages PLUS the first document's, and so on, with no exception to signal
+     * it. Concurrently, {@code +=} on a shared int is a non-atomic read-modify-write, so counts
+     * were also simply lost. Per-parse state belongs in a local, not on the parser.
      */
-    private int pageCount = 0;
-
-    /**
-     * Internal master spread count.
-     */
-    private int masterSpreadCount = 0;
+    private static final class SpreadCounts {
+        private int pageCount;
+        private int masterSpreadCount;
+    }
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
@@ -97,27 +102,29 @@ public class IDMLParser implements Parser {
             zipStream = new ZipInputStream(tis);
         }
 
+        SpreadCounts counts = new SpreadCounts();
         XHTMLContentHandler xhtml = new XHTMLContentHandler(baseHandler, metadata, context);
         xhtml.startDocument();
         EndDocumentShieldingContentHandler handler = new EndDocumentShieldingContentHandler(xhtml);
 
         if (zipFile != null) {
             try {
-                handleZipFile(zipFile, metadata, context, handler);
+                handleZipFile(zipFile, metadata, context, handler, counts);
             } finally {
                 zipFile.close();
             }
         } else {
             try {
-                handleZipStream(zipStream, metadata, context, handler);
+                handleZipStream(zipStream, metadata, context, handler, counts);
             } finally {
                 zipStream.close();
             }
         }
 
-        metadata.set("SpreadPageCount", Integer.toString(pageCount));
-        metadata.set("MasterSpreadPageCount", Integer.toString(masterSpreadCount));
-        metadata.set(Office.PAGE_COUNT, Integer.toString(pageCount + masterSpreadCount));
+        metadata.set("SpreadPageCount", Integer.toString(counts.pageCount));
+        metadata.set("MasterSpreadPageCount", Integer.toString(counts.masterSpreadCount));
+        metadata.set(Office.PAGE_COUNT,
+                Integer.toString(counts.pageCount + counts.masterSpreadCount));
 
         xhtml.endDocument();
 
@@ -127,36 +134,40 @@ public class IDMLParser implements Parser {
     }
 
     private void handleZipStream(ZipInputStream zipStream, Metadata metadata, ParseContext context,
-                                 ContentHandler handler) throws IOException, TikaException, SAXException {
+                                 ContentHandler handler, SpreadCounts counts)
+            throws IOException, TikaException, SAXException {
         ZipEntry entry = zipStream.getNextEntry();
         if (entry == null) {
             throw new IOException("No entries found in ZipInputStream");
         }
         do {
-            handleZipEntry(entry, zipStream, metadata, context, handler);
+            handleZipEntry(entry, zipStream, metadata, context, handler, counts);
             entry = zipStream.getNextEntry();
         } while (entry != null);
     }
 
-    private void handleZipFile(ZipFile zipFile, Metadata metadata, ParseContext context, ContentHandler handler)
+    private void handleZipFile(ZipFile zipFile, Metadata metadata, ParseContext context,
+                               ContentHandler handler, SpreadCounts counts)
             throws IOException, TikaException, SAXException {
 
         ZipEntry entry = zipFile.getEntry(META_NAME);
         if (entry != null) {
-            handleZipEntry(entry, zipFile.getInputStream(entry), metadata, context, handler);
+            handleZipEntry(entry, zipFile.getInputStream(entry), metadata, context, handler,
+                    counts);
         }
 
         Enumeration<? extends ZipEntry> entries = zipFile.entries();
         while (entries.hasMoreElements()) {
             entry = entries.nextElement();
             if (!META_NAME.equals(entry.getName())) {
-                handleZipEntry(entry, zipFile.getInputStream(entry), metadata, context, handler);
+                handleZipEntry(entry, zipFile.getInputStream(entry), metadata, context, handler,
+                        counts);
             }
         }
     }
 
     private void handleZipEntry(ZipEntry entry, InputStream zip, Metadata metadata,
-                                ParseContext context, ContentHandler handler)
+                                ParseContext context, ContentHandler handler, SpreadCounts counts)
             throws IOException, SAXException, TikaException {
 
         if (entry == null) {
@@ -178,12 +189,12 @@ public class IDMLParser implements Parser {
             Metadata embeddedMeta = Metadata.newInstance(context);
             ContentAndMetadataExtractor.extract(zip, handler, embeddedMeta, context);
             int spreadCount = Integer.parseInt(embeddedMeta.get("PageCount"));
-            masterSpreadCount += spreadCount;
+            counts.masterSpreadCount += spreadCount;
         } else if (entry.getName().contains("Spreads/Spread")) {
             Metadata embeddedMeta = Metadata.newInstance(context);
             ContentAndMetadataExtractor.extract(zip, handler, embeddedMeta, context);
             int spreadCount = Integer.parseInt(embeddedMeta.get("PageCount"));
-            pageCount += spreadCount;
+            counts.pageCount += spreadCount;
         }  else if (entry.getName().contains("Stories")) {
             ContentAndMetadataExtractor.extract(zip, handler, Metadata.newInstance(context), context);
         }
