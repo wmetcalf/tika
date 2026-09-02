@@ -121,27 +121,6 @@ public class ParseRecord {
     }
 
     /**
-     * Clears everything this record accumulated for ONE document, keeping the configured limits.
-     *
-     * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT
-     * documents -- TikaCLI passes one context to every file on the command line, and
-     * MultiThreadedTikaTest shares one across an entire corpus. CompositeParser installs a
-     * ParseRecord only when absent and never removes it, so without this the record is
-     * per-CONTEXT rather than per-DOCUMENT.
-     *
-     * <p>Measured before this existed: six parses of one file through a single context reported
-     * embeddedCount 24, 48, 72, 96, 120, 144. Unbounded growth is the mild symptom. The sharp one
-     * is {@code embeddedCountLimitReached}, which is sticky and is checked by
-     * ParsingEmbeddedDocumentExtractor and CompositeParser: once ANY document trips maxCount,
-     * every later document through that context silently yields no embedded documents at all.
-     * The capped lists behave the same way -- after 100 accumulated entries, later documents stop
-     * recording metadata, warnings and exceptions.
-     *
-     * <p>Called at the start of a new TOP-LEVEL parse rather than at the end of one, so callers
-     * that read the record after parsing (exceptions, warnings, the metadata list) still see the
-     * document they just parsed.
-     */
-    /**
      * Installs a record for a new document, or resets the one already there.
      *
      * <p>Called from BOTH AutoDetectParser and CompositeParser. AutoDetectParser digests,
@@ -154,7 +133,28 @@ public class ParseRecord {
      * AutoDetectParser's entry and CompositeParser's, so the second call resets an already-clean
      * record. Only depth 0 resets; nested parses arrive deeper and keep the current document's.
      */
-    static ParseRecord beginDocument(ParseContext context) {
+    /**
+     * Opens a document scope. Public because some callers must claim the document BEFORE any
+     * parser does.
+     *
+     * <p>Two such callers exist, and both were silently losing diagnostics:
+     *
+     * <ul>
+     *   <li>tika-pipes' {@code ParseHandler} runs a configured {@code Digester} in its
+     *       preprocessing step, which can record a warning or exception, and then sets
+     *       {@code SkipContainerDocumentDigest} so the digest is not repeated. The parser's own
+     *       claim came afterwards, saw an unclaimed depth-zero record, and reset it -- discarding
+     *       exactly the diagnostic the preprocessing had just produced.
+     *   <li>A CONTAINER parser invoked directly, not through {@link AutoDetectParser} or
+     *       {@link CompositeParser}, and reusing one context for the next document. It must hold
+     *       a claim for the span of its own parse: that keeps the embedded count enforceable
+     *       across its sibling entries, and lets the NEXT open reset cleanly.
+     * </ul>
+     *
+     * <p>Pair it with {@link #endDocument} in a finally. Nesting is counted, so an inner claim
+     * never ends the outer document.
+     */
+    public static ParseRecord beginDocument(ParseContext context) {
         ParseRecord record = context.get(ParseRecord.class);
         if (record == null) {
             record = newInstance(context);
@@ -180,49 +180,11 @@ public class ParseRecord {
      * greater than zero, and skipping the release there would leak a claim upward that nothing
      * ever balances.
      */
-    static void endDocument(ParseContext context) {
+    public static void endDocument(ParseContext context) {
         ParseRecord record = context.get(ParseRecord.class);
         if (record != null && record.claims > 0) {
             record.claims--;
         }
-    }
-
-    /**
-     * Declares the start of a new top-level document on a REUSED {@link ParseContext}.
-     *
-     * <p>Only needed by callers that invoke a CONTAINER parser DIRECTLY -- not through
-     * {@link AutoDetectParser} or {@link CompositeParser} -- and then reuse the same context for
-     * the next document. Those two claim the document themselves, so anything going through them
-     * (the Tika facade, tika-server, tika-pipes, RecursiveParserWrapper) needs nothing here.
-     *
-     * <p>It has to be declared because it cannot be inferred. During a directly-invoked container
-     * parse the record looks like this:
-     *
-     * <pre>
-     *   container.parse()          claims=0  nesting=0   &lt;- never claims
-     *     entry 1: enterEmbedded   claims=0  nesting=1
-     *              delegate begin  claims=1  nesting=1
-     *              delegate end    claims=0  nesting=1
-     *              exitEmbedded    claims=0  nesting=0
-     *     entry 2: identical
-     *   NEXT container.parse()     claims=0  nesting=0   &lt;- IDENTICAL
-     * </pre>
-     *
-     * The gap between two sibling entries and the gap between two containers are the same state,
-     * so no rule inside the embedded path can separate them. Resetting on that state would let a
-     * configured maximum embedded count be bypassed between siblings; not resetting leaks counts,
-     * warnings and sticky limit flags into the next container. The caller is the only party that
-     * knows which gap it is standing in.
-     *
-     * <p>A no-op while a parse is in flight: resetting mid-document would discard the record of
-     * the document currently being parsed.
-     */
-    public static void startNewDocument(ParseContext context) {
-        ParseRecord record = context.get(ParseRecord.class);
-        if (record == null || record.claims > 0 || record.embeddedNesting > 0) {
-            return;
-        }
-        record.resetForNewDocument();
     }
 
     /** Marks the start of an embedded parse, so a nested parser is not read as a new document. */
@@ -237,6 +199,27 @@ public class ParseRecord {
         }
     }
 
+    /**
+     * Clears everything this record accumulated for ONE document, keeping the configured limits.
+     *
+     * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT
+     * documents -- TikaCLI passes one context to every file on the command line, and
+     * MultiThreadedTikaTest shares one across an entire corpus. CompositeParser installs a
+     * ParseRecord only when absent and never removes it, so without this the record is
+     * per-CONTEXT rather than per-DOCUMENT.
+     *
+     * <p>Measured before this existed: six parses of one file through a single context reported
+     * embeddedCount 24, 48, 72, 96, 120, 144. Unbounded growth is the mild symptom. The sharp one
+     * is {@code embeddedCountLimitReached}, which is sticky and is checked by
+     * ParsingEmbeddedDocumentExtractor and CompositeParser: once ANY document trips maxCount,
+     * every later document through that context silently yields no embedded documents at all.
+     * The capped lists behave the same way -- after 100 accumulated entries, later documents stop
+     * recording metadata, warnings and exceptions.
+     *
+     * <p>Called at the start of a new TOP-LEVEL parse rather than at the end of one, so callers
+     * that read the record after parsing (exceptions, warnings, the metadata list) still see the
+     * document they just parsed.
+     */
     void resetForNewDocument() {
         parsers.clear();
         exceptions.clear();

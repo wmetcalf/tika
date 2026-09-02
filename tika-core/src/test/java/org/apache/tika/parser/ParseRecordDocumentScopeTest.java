@@ -468,35 +468,69 @@ public class ParseRecordDocumentScopeTest {
         record.setMaxEmbeddedCount(3);
         context.set(ParseRecord.class, record);
 
-        assertEquals(3, runDirectContainer(context, 10),
-                "the limit should hold across sibling entries of ONE container");
+        // Each container declares its own scope. Holding the claim for the span of its parse is
+        // what keeps the limit enforceable across its sibling entries; opening the NEXT scope on
+        // an idle record is what gives the next container a fresh budget.
+        ParseRecord.beginDocument(context);
+        try {
+            assertEquals(3, runDirectContainer(context, 10),
+                    "the limit should hold across sibling entries of ONE container");
+        } finally {
+            ParseRecord.endDocument(context);
+        }
         assertTrue(record.isEmbeddedCountLimitReached(), "limit should be recorded as reached");
 
-        // Without the declaration the next container inherits the exhausted count and extracts
-        // nothing at all -- the leak codex reported.
-        ParseRecord.startNewDocument(context);
-
-        assertEquals(3, runDirectContainer(context, 10),
-                "after declaring a new document the next container gets its own budget; without "
-                        + "the declaration it inherits the previous container's exhausted count "
-                        + "and extracts nothing");
+        ParseRecord.beginDocument(context);
+        try {
+            assertEquals(3, runDirectContainer(context, 10),
+                    "the second container should get its own budget; without a declared scope it "
+                            + "inherits the previous container's exhausted count and extracts "
+                            + "nothing at all");
+        } finally {
+            ParseRecord.endDocument(context);
+        }
         assertTrue(record.isEmbeddedCountLimitReached());
     }
 
-    /** Declaring a boundary mid-parse must not discard the document being parsed. */
+    /**
+     * A caller that records diagnostics BEFORE the parser runs must claim the document first.
+     *
+     * <p>This is the tika-pipes {@code ParseHandler} shape: it runs a configured {@code Digester}
+     * in preprocessing, which can record a warning, and then sets
+     * {@code SkipContainerDocumentDigest} so the container digest is not recomputed. If the
+     * parser's own claim is the FIRST one, it sees an unclaimed depth-zero record, reads it as a
+     * new document and resets -- discarding the diagnostic, unrecoverably, because the digest
+     * does not run again.
+     */
     @Test
-    public void declaringANewDocumentIsANoOpWhileAParseIsInFlight() {
-        ParseContext context = new ParseContext();
-        ParseRecord record = ParseRecord.newInstance(context);
-        context.set(ParseRecord.class, record);
+    public void diagnosticsFromPreprocessingSurviveOnlyIfTheCallerClaimsFirst() {
+        // Without a caller claim: the parser's claim resets and the diagnostic is lost.
+        ParseContext unclaimed = new ParseContext();
+        ParseRecord lost = ParseRecord.newInstance(unclaimed);
+        unclaimed.set(ParseRecord.class, lost);
+        lost.addWarning("recorded during preprocessing");
+        ParseRecord.beginDocument(unclaimed);          // the parser, claiming first
+        ParseRecord.endDocument(unclaimed);
+        assertTrue(lost.getWarnings().stream()
+                        .noneMatch(w -> w.startsWith("recorded during preprocessing")),
+                "sanity: with no caller claim the parser's own claim is expected to reset the "
+                        + "record -- if this no longer holds, the hazard below is stale");
 
-        ParseRecord.beginDocument(context);
-        record.addWarning("recorded during the in-flight parse");
-        ParseRecord.startNewDocument(context);
-
-        assertTrue(record.getWarnings().stream()
-                        .anyMatch(w -> w.startsWith("recorded during the in-flight parse")),
-                "startNewDocument discarded the record of a parse that was still running");
-        ParseRecord.endDocument(context);
+        // With a caller claim: preprocessing is inside the document, so it survives.
+        ParseContext claimed = new ParseContext();
+        ParseRecord kept = ParseRecord.newInstance(claimed);
+        claimed.set(ParseRecord.class, kept);
+        ParseRecord.beginDocument(claimed);            // the caller, before preprocessing
+        try {
+            kept.addWarning("recorded during preprocessing");
+            ParseRecord.beginDocument(claimed);        // the parser, joining
+            ParseRecord.endDocument(claimed);
+        } finally {
+            ParseRecord.endDocument(claimed);
+        }
+        assertTrue(kept.getWarnings().stream()
+                        .anyMatch(w -> w.startsWith("recorded during preprocessing")),
+                "a diagnostic recorded before the parser ran was discarded even though the "
+                        + "caller claimed the document first");
     }
 }

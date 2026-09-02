@@ -189,104 +189,126 @@ class ParseHandler {
     public List<Metadata> parseRecursive(FetchEmitTuple fetchEmitTuple,
                                               ContentHandlerFactory contentHandlerFactory, TikaInputStream stream,
                                               Metadata metadata, ParseContext parseContext) throws InterruptedException {
-        //Intentionally do not add the metadata filter here!
-        //We need to let stacktraces percolate
-        // Embedded limits are now configured via EmbeddedLimits in ParseContext
-        RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(
-                contentHandlerFactory);
-
-        long start = System.currentTimeMillis();
-
-        preParse(fetchEmitTuple, stream, metadata, parseContext);
-        //queue better be empty. we deserve an exception if not
-        intermediateResult.add(metadata);
-        countDownLatch.await();
+        // Claim the document BEFORE preprocessing. preParse runs a configured Digester that can
+        // record a warning or exception in the record, and then sets SkipContainerDocumentDigest
+        // so the container digest is not recomputed inside the parse. Without a claim here the
+        // parser's own beginDocument saw an unclaimed depth-zero record, treated it as a new
+        // document and reset it -- discarding the diagnostic preprocessing had just produced,
+        // with no way to recover it, since the digest does not run again.
+        ParseRecord.beginDocument(parseContext);
         try {
-            recursiveParserWrapper.parse(stream, handler, metadata, parseContext);
-        } catch (SAXException e) {
-            LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
-        } catch (EncryptedDocumentException e) {
-            LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
-        } catch (SecurityException e) {
-            LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
-            throw e;
-        } catch (Exception e) {
-            LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
-        } finally {
-            if (LOG.isTraceEnabled()) {
-                LOG.trace("timer -- parse only time: {} ms", System.currentTimeMillis() - start);
+            //Intentionally do not add the metadata filter here!
+            //We need to let stacktraces percolate
+            // Embedded limits are now configured via EmbeddedLimits in ParseContext
+            RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(
+                    contentHandlerFactory);
+
+            long start = System.currentTimeMillis();
+
+            preParse(fetchEmitTuple, stream, metadata, parseContext);
+            //queue better be empty. we deserve an exception if not
+            intermediateResult.add(metadata);
+            countDownLatch.await();
+            try {
+                recursiveParserWrapper.parse(stream, handler, metadata, parseContext);
+            } catch (SAXException e) {
+                LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
+            } catch (EncryptedDocumentException e) {
+                LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
+            } catch (SecurityException e) {
+                LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
+                throw e;
+            } catch (Exception e) {
+                LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
+            } finally {
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("timer -- parse only time: {} ms", System.currentTimeMillis() - start);
+                }
             }
+            return handler.getMetadataList();
+        } finally {
+            ParseRecord.endDocument(parseContext);
         }
-        return handler.getMetadataList();
     }
 
     public List<Metadata> parseConcatenated(FetchEmitTuple fetchEmitTuple,
                                              ContentHandlerFactory contentHandlerFactory, TikaInputStream stream,
                                              Metadata metadata, ParseContext parseContext) throws InterruptedException {
-
-        ContentHandler handler = contentHandlerFactory.createHandler();
-
-        // Configure ParseRecord for embedded document limits
-        // ParseRecord.newInstance reads from EmbeddedLimits in ParseContext
-        ParseRecord parseRecord = parseContext.get(ParseRecord.class);
-        if (parseRecord == null) {
-            parseRecord = ParseRecord.newInstance(parseContext);
-            parseContext.set(ParseRecord.class, parseRecord);
-        }
-
-        String containerException = null;
-        long start = System.currentTimeMillis();
-        preParse(fetchEmitTuple, stream, metadata, parseContext);
-        //queue better be empty. we deserve an exception if not
-        intermediateResult.add(metadata);
-        countDownLatch.await();
-        boolean writeLimitReached = false;
+        // Claim the document BEFORE preprocessing. preParse runs a configured Digester that can
+        // record a warning or exception in the record, and then sets SkipContainerDocumentDigest
+        // so the container digest is not recomputed inside the parse. Without a claim here the
+        // parser's own beginDocument saw an unclaimed depth-zero record, treated it as a new
+        // document and reset it -- discarding the diagnostic preprocessing had just produced,
+        // with no way to recover it, since the digest does not run again.
+        ParseRecord.beginDocument(parseContext);
         try {
-            autoDetectParser.parse(stream, handler, metadata, parseContext);
-        } catch (SAXException e) {
-            containerException = ExceptionUtils.getStackTrace(e);
-            LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
-            if (WriteLimitReachedException.isWriteLimitReached(e)) {
-                writeLimitReached = true;
+
+            ContentHandler handler = contentHandlerFactory.createHandler();
+
+            // Configure ParseRecord for embedded document limits
+            // ParseRecord.newInstance reads from EmbeddedLimits in ParseContext
+            ParseRecord parseRecord = parseContext.get(ParseRecord.class);
+            if (parseRecord == null) {
+                parseRecord = ParseRecord.newInstance(parseContext);
+                parseContext.set(ParseRecord.class, parseRecord);
             }
-        } catch (EncryptedDocumentException e) {
-            containerException = ExceptionUtils.getStackTrace(e);
-            LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
-        } catch (SecurityException e) {
-            LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
-            throw e;
-        } catch (Exception e) {
-            containerException = ExceptionUtils.getStackTrace(e);
-            LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
+
+            String containerException = null;
+            long start = System.currentTimeMillis();
+            preParse(fetchEmitTuple, stream, metadata, parseContext);
+            //queue better be empty. we deserve an exception if not
+            intermediateResult.add(metadata);
+            countDownLatch.await();
+            boolean writeLimitReached = false;
+            try {
+                autoDetectParser.parse(stream, handler, metadata, parseContext);
+            } catch (SAXException e) {
+                containerException = ExceptionUtils.getStackTrace(e);
+                LOG.warn("sax problem:" + fetchEmitTuple.getId(), e);
+                if (WriteLimitReachedException.isWriteLimitReached(e)) {
+                    writeLimitReached = true;
+                }
+            } catch (EncryptedDocumentException e) {
+                containerException = ExceptionUtils.getStackTrace(e);
+                LOG.warn("encrypted document:" + fetchEmitTuple.getId(), e);
+            } catch (SecurityException e) {
+                LOG.warn("security exception:" + fetchEmitTuple.getId(), e);
+                throw e;
+            } catch (Exception e) {
+                containerException = ExceptionUtils.getStackTrace(e);
+                LOG.warn("parse exception: " + fetchEmitTuple.getId(), e);
+            } finally {
+                // BasicContentHandlerFactory's "ignore" handler's toString() returns "" (not
+                // Object's default identity string), so a plain blank check is enough here --
+                // no need to special-case its class, which would break under decoration (e.g.
+                // StrictXHTMLValidator when validateXHTML is set).
+                String content = handler.toString();
+                if (content != null && !content.isBlank()) {
+                    metadata.add(TikaCoreProperties.TIKA_CONTENT, content);
+                }
+                metadata.set(TikaCoreProperties.TIKA_CONTENT_HANDLER_TYPE,
+                        contentHandlerFactory.handlerTypeName());
+                if (containerException != null) {
+                    metadata.add(TikaCoreProperties.CONTAINER_EXCEPTION, containerException);
+                }
+                if (writeLimitReached) {
+                    metadata.set(TikaCoreProperties.WRITE_LIMIT_REACHED, true);
+                }
+                // Set limit reached flags from ParseRecord
+                if (parseRecord.isEmbeddedCountLimitReached()) {
+                    metadata.set(AbstractRecursiveParserWrapperHandler.EMBEDDED_RESOURCE_LIMIT_REACHED, true);
+                }
+                if (parseRecord.isEmbeddedDepthLimitReached()) {
+                    metadata.set(AbstractRecursiveParserWrapperHandler.EMBEDDED_DEPTH_LIMIT_REACHED, true);
+                }
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("timer -- parse only time: {} ms", System.currentTimeMillis() - start);
+                }
+            }
+            return Collections.singletonList(metadata);
         } finally {
-            // BasicContentHandlerFactory's "ignore" handler's toString() returns "" (not
-            // Object's default identity string), so a plain blank check is enough here --
-            // no need to special-case its class, which would break under decoration (e.g.
-            // StrictXHTMLValidator when validateXHTML is set).
-            String content = handler.toString();
-            if (content != null && !content.isBlank()) {
-                metadata.add(TikaCoreProperties.TIKA_CONTENT, content);
-            }
-            metadata.set(TikaCoreProperties.TIKA_CONTENT_HANDLER_TYPE,
-                    contentHandlerFactory.handlerTypeName());
-            if (containerException != null) {
-                metadata.add(TikaCoreProperties.CONTAINER_EXCEPTION, containerException);
-            }
-            if (writeLimitReached) {
-                metadata.set(TikaCoreProperties.WRITE_LIMIT_REACHED, true);
-            }
-            // Set limit reached flags from ParseRecord
-            if (parseRecord.isEmbeddedCountLimitReached()) {
-                metadata.set(AbstractRecursiveParserWrapperHandler.EMBEDDED_RESOURCE_LIMIT_REACHED, true);
-            }
-            if (parseRecord.isEmbeddedDepthLimitReached()) {
-                metadata.set(AbstractRecursiveParserWrapperHandler.EMBEDDED_DEPTH_LIMIT_REACHED, true);
-            }
-            if (LOG.isTraceEnabled()) {
-                LOG.trace("timer -- parse only time: {} ms", System.currentTimeMillis() - start);
-            }
+            ParseRecord.endDocument(parseContext);
         }
-        return Collections.singletonList(metadata);
     }
 
 }
