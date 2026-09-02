@@ -31,6 +31,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
+import org.apache.tika.config.EmbeddedLimits;
 import org.apache.tika.exception.CorruptedFileException;
 import org.apache.tika.exception.EmbeddedLimitReachedException;
 import org.apache.tika.exception.EncryptedDocumentException;
@@ -66,11 +67,35 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         this.context = context;
     }
 
+    /**
+     * The record for this parse, created if no one has installed one yet.
+     *
+     * <p>Never returns null, and that is the point. Both limit gates used to read the record with
+     * a plain {@code context.get} and no-op when it was absent -- but in the flow this class is
+     * most exposed on, a CONTAINER parser invoked directly, it IS absent: the container never
+     * claims a document, no CompositeParser has run, and the record is created by the delegate's
+     * own beginDocument, i.e. DURING the first entry. So the first entry was neither
+     * limit-checked nor counted, and a configured maximum embedded count of N admitted N+1 --
+     * an off-by-one relaxation of a DoS bound, in a hardening fork.
+     *
+     * <p>{@code newInstance} reads the configured {@link EmbeddedLimits} out of the context, so
+     * creating the record here applies the caller's limits from entry one rather than from
+     * entry two.
+     */
+    private ParseRecord parseRecord() {
+        ParseRecord parseRecord = context.get(ParseRecord.class);
+        if (parseRecord == null) {
+            parseRecord = ParseRecord.newInstance(context);
+            context.set(ParseRecord.class, parseRecord);
+        }
+        return parseRecord;
+    }
+
     @Override
     public boolean shouldParseEmbedded(Metadata metadata) {
         // Check ParseRecord for depth/count limits first
-        ParseRecord parseRecord = context.get(ParseRecord.class);
-        if (parseRecord != null && !checkEmbeddedLimits(parseRecord)) {
+        ParseRecord parseRecord = parseRecord();
+        if (!checkEmbeddedLimits(parseRecord)) {
             return false;
         }
 
@@ -146,15 +171,13 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             throws SAXException, IOException {
         // Check and enforce embedded limits even if caller didn't call shouldParseEmbedded()
         // This guarantees limits are enforced for all callers
-        ParseRecord parseRecord = context.get(ParseRecord.class);
-        if (parseRecord != null && !checkEmbeddedLimits(parseRecord)) {
+        ParseRecord parseRecord = parseRecord();
+        if (!checkEmbeddedLimits(parseRecord)) {
             return;
         }
 
         // Increment embedded count for tracking
-        if (parseRecord != null) {
-            parseRecord.incrementEmbeddedCount();
-        }
+        parseRecord.incrementEmbeddedCount();
 
         TaggedContentHandler taggedOutput =
                 new TaggedContentHandler(handler);
@@ -175,9 +198,7 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         // count be bypassed across siblings. This path exists only to parse an embedded document,
         // so the claim is unambiguous here, and it deliberately does not touch depth -- that is
         // what the embedded-DEPTH limit is measured against.
-        if (parseRecord != null) {
-            parseRecord.enterEmbedded();
-        }
+        parseRecord.enterEmbedded();
 
         // Use the delegate parser to parse this entry
         boolean parsedCleanly = false;
@@ -306,9 +327,7 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
             // throw from it must not leave the record permanently looking like it is inside an
             // embedded parse -- that would suppress the reset for every later document on this
             // context, which is the bug this whole change exists to fix, inverted.
-            if (parseRecord != null) {
-                parseRecord.exitEmbedded();
-            }
+            parseRecord.exitEmbedded();
             tis.removeCloseShield();
             if (outputHtml && packageEntryStarted && !downstreamOutputFailure) {
                 // Only an aborted parse can leave elements open; on a clean parse

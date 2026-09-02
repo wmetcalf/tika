@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.config.EmbeddedLimits;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.ParsingEmbeddedDocumentExtractor;
@@ -532,5 +533,32 @@ public class ParseRecordDocumentScopeTest {
                         .anyMatch(w -> w.startsWith("recorded during preprocessing")),
                 "a diagnostic recorded before the parser ran was discarded even though the "
                         + "caller claimed the document first");
+    }
+
+    /**
+     * The FIRST entry of a directly-invoked container must be limit-checked and counted.
+     *
+     * <p>{@code parseEmbedded} reads the record with {@code context.get(ParseRecord.class)} and
+     * no-ops when it is absent. In the direct-container flow it IS absent: the container never
+     * claims, no CompositeParser has run, and the record is created by the delegate's own
+     * beginDocument -- i.e. DURING entry one. So entry one escaped the count check, the
+     * increment, and the embedded bracket, and a configured maximum of N admitted N+1.
+     *
+     * <p>Deliberately does NOT pre-install the record. The sibling tests here do, via
+     * {@code ParseRecord.newInstance(context)}, which is exactly the state the real path does not
+     * have -- and that is why they could not see this.
+     */
+    @Test
+    public void theFirstEntryOfADirectContainerIsCountedAgainstTheLimit() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(3);
+        context.set(EmbeddedLimits.class, limits);
+        // No ParseRecord installed. That is the point.
+
+        assertEquals(3, runDirectContainer(context, 10),
+                "a configured maximum embedded count of 3 admitted more than 3: the first entry "
+                        + "arrives before any record exists, so it is neither limit-checked nor "
+                        + "counted");
     }
 }
