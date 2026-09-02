@@ -187,6 +187,44 @@ public class ParseRecord {
         }
     }
 
+    /**
+     * Declares the start of a new top-level document on a REUSED {@link ParseContext}.
+     *
+     * <p>Only needed by callers that invoke a CONTAINER parser DIRECTLY -- not through
+     * {@link AutoDetectParser} or {@link CompositeParser} -- and then reuse the same context for
+     * the next document. Those two claim the document themselves, so anything going through them
+     * (the Tika facade, tika-server, tika-pipes, RecursiveParserWrapper) needs nothing here.
+     *
+     * <p>It has to be declared because it cannot be inferred. During a directly-invoked container
+     * parse the record looks like this:
+     *
+     * <pre>
+     *   container.parse()          claims=0  nesting=0   &lt;- never claims
+     *     entry 1: enterEmbedded   claims=0  nesting=1
+     *              delegate begin  claims=1  nesting=1
+     *              delegate end    claims=0  nesting=1
+     *              exitEmbedded    claims=0  nesting=0
+     *     entry 2: identical
+     *   NEXT container.parse()     claims=0  nesting=0   &lt;- IDENTICAL
+     * </pre>
+     *
+     * The gap between two sibling entries and the gap between two containers are the same state,
+     * so no rule inside the embedded path can separate them. Resetting on that state would let a
+     * configured maximum embedded count be bypassed between siblings; not resetting leaks counts,
+     * warnings and sticky limit flags into the next container. The caller is the only party that
+     * knows which gap it is standing in.
+     *
+     * <p>A no-op while a parse is in flight: resetting mid-document would discard the record of
+     * the document currently being parsed.
+     */
+    public static void startNewDocument(ParseContext context) {
+        ParseRecord record = context.get(ParseRecord.class);
+        if (record == null || record.claims > 0 || record.embeddedNesting > 0) {
+            return;
+        }
+        record.resetForNewDocument();
+    }
+
     /** Marks the start of an embedded parse, so a nested parser is not read as a new document. */
     public void enterEmbedded() {
         embeddedNesting++;

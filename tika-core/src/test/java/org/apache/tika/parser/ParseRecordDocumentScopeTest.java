@@ -418,4 +418,85 @@ public class ParseRecordDocumentScopeTest {
                 "the detector's warning was wiped: its own nested parse released the OUTER "
                         + "parse's document claim, so the handoff read as a new document");
     }
+
+    /** Drives N entries through the embedded extractor the way a direct container parser does. */
+    private static int runDirectContainer(ParseContext context, int entries) throws Exception {
+        AtomicInteger parsed = new AtomicInteger();
+        context.set(Parser.class, new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) {
+                ParseRecord.beginDocument(c);
+                try {
+                    parsed.incrementAndGet();
+                } finally {
+                    ParseRecord.endDocument(c);
+                }
+            }
+        });
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        for (int i = 0; i < entries; i++) {
+            Metadata entry = new Metadata();
+            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
+                        context, false);
+            }
+        }
+        return parsed.get();
+    }
+
+    /**
+     * A directly-invoked container parser reusing one context gets isolation by DECLARING it.
+     *
+     * <p>The boundary cannot be inferred: between two sibling entries and between two containers
+     * the record is in the same state (claims 0, nesting 0). Resetting on that state would let a
+     * configured maximum embedded count be bypassed between siblings, which is the defect
+     * {@link #aDirectContainerParserCannotResetTheEmbeddedCountPerEntry} pins. So the caller
+     * declares the boundary, and only the caller can.
+     */
+    @Test
+    public void aDirectContainerCanDeclareItsOwnDocumentBoundary() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        record.setMaxEmbeddedCount(3);
+        context.set(ParseRecord.class, record);
+
+        assertEquals(3, runDirectContainer(context, 10),
+                "the limit should hold across sibling entries of ONE container");
+        assertTrue(record.isEmbeddedCountLimitReached(), "limit should be recorded as reached");
+
+        // Without the declaration the next container inherits the exhausted count and extracts
+        // nothing at all -- the leak codex reported.
+        ParseRecord.startNewDocument(context);
+
+        assertEquals(3, runDirectContainer(context, 10),
+                "after declaring a new document the next container gets its own budget; without "
+                        + "the declaration it inherits the previous container's exhausted count "
+                        + "and extracts nothing");
+        assertTrue(record.isEmbeddedCountLimitReached());
+    }
+
+    /** Declaring a boundary mid-parse must not discard the document being parsed. */
+    @Test
+    public void declaringANewDocumentIsANoOpWhileAParseIsInFlight() {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        context.set(ParseRecord.class, record);
+
+        ParseRecord.beginDocument(context);
+        record.addWarning("recorded during the in-flight parse");
+        ParseRecord.startNewDocument(context);
+
+        assertTrue(record.getWarnings().stream()
+                        .anyMatch(w -> w.startsWith("recorded during the in-flight parse")),
+                "startNewDocument discarded the record of a parse that was still running");
+        ParseRecord.endDocument(context);
+    }
 }
