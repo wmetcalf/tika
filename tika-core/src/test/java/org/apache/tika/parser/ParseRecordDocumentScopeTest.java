@@ -37,6 +37,7 @@ import org.apache.tika.extractor.ParsingEmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.parser.multiple.AbstractMultipleParser;
 
 /**
  * A ParseRecord is per-DOCUMENT, not per-ParseContext. CompositeParser installs one only when
@@ -674,5 +675,86 @@ public class ParseRecordDocumentScopeTest {
                 "a throw between the claim and beforeParse() leaked a claim");
         assertEquals(0, record.getDepth(),
                 "a throw between the claim and beforeParse() skewed the depth");
+    }
+
+    /** A child parser that drives {@code n} embedded entries through the extractor. */
+    private static Parser embeddingChild(int n, AtomicInteger parsed) {
+        return new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) throws IOException, SAXException {
+                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                for (int i = 0; i < n; i++) {
+                    Metadata entry = new Metadata();
+                    entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+                    try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                        ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
+                                false);
+                    }
+                }
+                parsed.incrementAndGet();
+            }
+        };
+    }
+
+    /**
+     * Several parser passes over ONE document share one embedded budget.
+     *
+     * <p>{@link org.apache.tika.parser.multiple.AbstractMultipleParser} runs each of its children
+     * over the SAME document, and holds no claim of its own. Each child's own beginDocument
+     * therefore arrived idle at depth zero, read as a new document, and RESET the record --
+     * handing every pass a fresh embedded budget. With N children a document-wide maximum of M
+     * admitted up to N*M.
+     */
+    @Test
+    public void multipleParserPassesShareOneEmbeddedBudget() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(3);
+        context.set(EmbeddedLimits.class, limits);
+        AtomicInteger embedded = new AtomicInteger();
+        context.set(Parser.class, new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) {
+                embedded.incrementAndGet();
+            }
+        });
+
+        AtomicInteger passes = new AtomicInteger();
+        // Each child is a CompositeParser, so each takes and releases its OWN document claim --
+        // which is what makes the second pass see an idle record and reset it.
+        Parser childOne = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                embeddingChild(5, passes));
+        Parser childTwo = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                embeddingChild(5, passes));
+        Parser multiple = new org.apache.tika.parser.multiple.SupplementingParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                AbstractMultipleParser.MetadataPolicy.FIRST_WINS, childOne, childTwo);
+
+        Metadata metadata = new Metadata();
+        metadata.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            multiple.parse(tis, new org.xml.sax.helpers.DefaultHandler(), metadata, context);
+        }
+
+        assertEquals(2, passes.get(), "both children should have run");
+        assertEquals(3, embedded.get(),
+                "a document-wide maximum embedded count of 3 was applied PER PASS: each child "
+                        + "reset the record and got a fresh budget");
     }
 }

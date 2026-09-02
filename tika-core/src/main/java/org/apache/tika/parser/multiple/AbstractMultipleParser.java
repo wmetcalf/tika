@@ -40,6 +40,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.mime.MediaTypeRegistry;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.ParseRecord;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.ParserDecorator;
 import org.apache.tika.sax.ContentHandlerFactory;
@@ -251,6 +252,14 @@ public abstract class AbstractMultipleParser implements Parser {
         Metadata lastMetadata = cloneMetadata(originalMetadata);
         Metadata metadata = lastMetadata;
 
+        // Hold ONE document claim across every pass. Each child is typically a CompositeParser
+        // or AutoDetectParser, which claims and releases a document of its own -- so without an
+        // outer claim, the second and later passes each arrived at an idle, depth-zero record,
+        // were read as a NEW document, and reset it. That handed every pass a fresh embedded
+        // budget: with N children a document-wide maximum embedded count of M admitted up to
+        // N*M. These passes are all the SAME document, so the scope belongs out here.
+        ParseRecord.beginDocument(context);
+
         // Start tracking resources, so we can clean up when done
         TemporaryResources tmp = new TemporaryResources();
         try {
@@ -312,6 +321,7 @@ public abstract class AbstractMultipleParser implements Parser {
             }
         } finally {
             tmp.dispose();
+            ParseRecord.endDocument(context);
         }
 
         // Finally, copy the latest metadata back onto their supplied object
