@@ -328,14 +328,20 @@ public class CompositeParser implements Parser {
             }
         } finally {
             parserRecord.afterParse();
+            // Release the claim taken above, one-for-one, BEFORE the metadata work below.
+            // afterParse no longer releases: returning to depth zero means THIS parse finished,
+            // not that the document did, and a shared flag cleared on any such return handed away
+            // a claim the caller still held. Release first because a throw out of the metadata
+            // block would otherwise leak the claim permanently, and a record that never returns
+            // to zero claims never resets again -- every later document on this context would
+            // inherit this one's counts and sticky limit flags. Releasing does not clear
+            // anything; the reset happens on the next beginDocument, after this block has read
+            // what it needs.
+            ParseRecord.endDocument(context);
             if (parserRecord.getDepth() == 0) {
                 metadata.set(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET, parserRecord.getParsers());
                 recordEmbeddedMetadata(metadata, context);
             }
-            // Release the claim taken above, one-for-one. afterParse no longer does it: returning
-            // to depth zero means THIS parse finished, not that the document did, and a shared
-            // flag cleared on any such return handed away a claim the caller still held.
-            ParseRecord.endDocument(context);
         }
     }
 
