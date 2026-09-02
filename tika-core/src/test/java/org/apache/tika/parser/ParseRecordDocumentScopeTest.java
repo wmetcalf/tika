@@ -561,4 +561,118 @@ public class ParseRecordDocumentScopeTest {
                         + "arrives before any record exists, so it is neither limit-checked nor "
                         + "counted");
     }
+
+    /**
+     * A throw between the claim and beforeParse() must not leave the depth counter skewed.
+     *
+     * <p>Four statements run inside the try before {@code beforeParse()} -- building the tagged
+     * handler, resolving the parser class name, recording it on the record and on the metadata --
+     * while the finally calls {@code afterParse()} unconditionally. A throw in that window
+     * decrements depth with no matching increment. Before this PR that was a transient one-parse
+     * glitch; now the per-document reset is gated on {@code depth == 0}, so a single skew LATCHES:
+     * the record never resets again, every later document on the context inherits its counts and
+     * sticky limit flags, and the depth-gated metadata block stops stamping embedded
+     * exceptions and limit hits onto anything, forever.
+     */
+    @Test
+    public void aThrowBeforeBeforeParseDoesNotSkewTheDepthPermanently() throws Exception {
+        ParseContext shared = new ParseContext();
+        CountingParser counting = new CountingParser();
+        AtomicInteger calls = new AtomicInteger();
+        CompositeParser composite = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), counting) {
+            @Override
+            protected Parser getParser(Metadata metadata, ParseContext context) {
+                if (calls.getAndIncrement() == 0) {
+                    ParseRecord r = context.get(ParseRecord.class);
+                    if (r != null) {
+                        r.addWarning("raised by the document that threw before beforeParse");
+                    }
+                    // Selection succeeds; the work between the claim and beforeParse() blows up.
+                    return null;
+                }
+                return super.getParser(metadata, context);
+            }
+        };
+
+        Metadata first = new Metadata();
+        first.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            assertThrows(Throwable.class,
+                    () -> composite.parse(tis, new org.xml.sax.helpers.DefaultHandler(), first,
+                            shared));
+        }
+
+        assertEquals(0, shared.get(ParseRecord.class).getDepth(),
+                "a throw between the claim and beforeParse() ran afterParse() without a matching "
+                        + "beforeParse(), so depth is skewed; the per-document reset is gated on "
+                        + "depth == 0 and can now never fire again on this context");
+
+        // And prove the consequence, not just the counter: the next document still resets.
+        // (Assert on a marker from the FAILED parse specifically -- CountingParser's own
+        // "document one" warning legitimately belongs to the next document, since the first
+        // parse threw before ever reaching it.)
+        Metadata second = parseOnce(composite, shared);
+        for (String w : second.getValues(
+                org.apache.tika.metadata.TikaCoreProperties.EMBEDDED_WARNING)) {
+            assertFalse(w.contains("threw before beforeParse"),
+                    "the next document inherited the failed document's warning, so the record "
+                            + "never reset: " + w);
+        }
+        assertTrue(shared.get(ParseRecord.class).getWarnings().stream()
+                        .noneMatch(w -> w.contains("threw before beforeParse")),
+                "the record still carries the failed document's warning");
+    }
+
+    /**
+     * The boundary invariant: after a parse returns, every counter is back to zero.
+     *
+     * <p>Untested until now, and unobservable in production -- endDocument and exitEmbedded both
+     * clamp at zero, so an orphan or doubled release is silently absorbed. The whole design rests
+     * on these returning to zero: a leaked claim latches the record into per-CONTEXT behaviour
+     * permanently, and an over-release lets the next nested claim reset mid-document.
+     */
+    @Test
+    public void everyCounterReturnsToZeroAfterAParse() throws Exception {
+        ParseContext shared = new ParseContext();
+        CompositeParser composite = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), new CountingParser());
+
+        parseOnce(composite, shared);
+        ParseRecord record = shared.get(ParseRecord.class);
+        assertEquals(0, record.getClaims(), "claims did not return to zero after a normal parse");
+        assertEquals(0, record.getEmbeddedNesting(), "embeddedNesting did not return to zero");
+        assertEquals(0, record.getDepth(), "depth did not return to zero");
+
+        // And after a parse that THREW -- the paths where a release is easiest to miss.
+        AtomicInteger calls = new AtomicInteger();
+        CompositeParser throwing = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), new CountingParser()) {
+            @Override
+            protected Parser getParser(Metadata metadata, ParseContext context) {
+                if (calls.getAndIncrement() == 0) {
+                    throw new IllegalStateException("selection blew up");
+                }
+                return calls.get() == 2 ? null : super.getParser(metadata, context);
+            }
+        };
+        Metadata m = new Metadata();
+        m.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            assertThrows(Throwable.class,
+                    () -> throwing.parse(tis, new org.xml.sax.helpers.DefaultHandler(), m, shared));
+        }
+        assertEquals(0, record.getClaims(), "a throw from parser selection leaked a claim");
+        assertEquals(0, record.getDepth(), "a throw from parser selection skewed the depth");
+
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            assertThrows(Throwable.class,
+                    () -> throwing.parse(tis, new org.xml.sax.helpers.DefaultHandler(),
+                            new Metadata(), shared));
+        }
+        assertEquals(0, record.getClaims(),
+                "a throw between the claim and beforeParse() leaked a claim");
+        assertEquals(0, record.getDepth(),
+                "a throw between the claim and beforeParse() skewed the depth");
+    }
 }

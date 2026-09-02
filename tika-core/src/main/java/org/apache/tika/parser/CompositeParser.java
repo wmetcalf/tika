@@ -297,11 +297,23 @@ public class CompositeParser implements Parser {
             // this release the claim outlives the failed parse, and the next top-level parse on
             // this context skips its reset and inherits the failed selection's warnings and
             // exceptions, which recordEmbeddedMetadata then copies into the NEXT document's
-            // metadata. endDocument is a no-op above depth 0, so a nested throw still unwinds
-            // through the outer parse's afterParse as before.
+            // metadata. This release balances THIS frame's own beginDocument, at any depth --
+            // endDocument is deliberately not conditioned on depth, because an embedded parse
+            // claims and releases above depth 0 and skipping the release there would leak a
+            // claim upward that nothing balances.
             ParseRecord.endDocument(context);
             throw t;
         }
+        // Tracks whether beforeParse() actually ran. The four statements below it can throw --
+        // building the tagged handler, resolving the parser class name, recording it on the
+        // record and through the pluggable metadata write limiter -- and the finally calls
+        // afterParse() unconditionally. A throw in that window used to decrement depth with no
+        // matching increment. That was a transient one-parse glitch before this change; now the
+        // per-document reset is gated on depth == 0, so a single skew LATCHES: the record never
+        // resets again, every later document on the context inherits its counts and sticky limit
+        // flags, and the depth-gated block below stops stamping embedded exceptions and limit
+        // hits onto anything at all.
+        boolean depthTaken = false;
         try {
             TaggedContentHandler taggedHandler =
                     handler != null ? new TaggedContentHandler(handler) : null;
@@ -309,6 +321,7 @@ public class CompositeParser implements Parser {
             parserRecord.addParserClass(parserClassname);
             ParserUtils.recordParserDetails(parserClassname, metadata);
             parserRecord.beforeParse();
+            depthTaken = true;
             try {
                 parser.parse(tis, taggedHandler, metadata, context);
             } catch (SecurityException e) {
@@ -327,7 +340,9 @@ public class CompositeParser implements Parser {
                 throw new TikaException("Unexpected RuntimeException from " + parser, e);
             }
         } finally {
-            parserRecord.afterParse();
+            if (depthTaken) {
+                parserRecord.afterParse();
+            }
             // Release the claim taken above, one-for-one, BEFORE the metadata work below.
             // afterParse no longer releases: returning to depth zero means THIS parse finished,
             // not that the document did, and a shared flag cleared on any such return handed away

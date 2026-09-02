@@ -29,7 +29,14 @@ import org.apache.tika.metadata.Metadata;
  * during the parse.  This information is added to the parent's metadata
  * after the parse by the {@link CompositeParser}.
  * <p>
- * This class also tracks embedded document processing limits (depth and count)
+ * <p><strong>Not thread-safe.</strong> {@code claims}, {@code embeddedNesting} and
+ * {@code depth} are plain ints updated with read-modify-write, and {@link #resetForNewDocument}
+ * clears collections that {@code CompositeParser} iterates. A {@link ParseContext} -- and so the
+ * record inside it -- must not be shared across threads parsing concurrently. That was already
+ * true of ParseContext generally; it matters more here because a single lost update to those
+ * counters latches the record into per-context behaviour for good, and no code path repairs it.
+ *
+ * <p>This class also tracks embedded document processing limits (depth and count)
  * which can be configured via {@link #setMaxEmbeddedDepth(int)} and
  * {@link #setMaxEmbeddedCount(int)}.
  */
@@ -203,8 +210,11 @@ public class ParseRecord {
      * Clears everything this record accumulated for ONE document, keeping the configured limits.
      *
      * <p>Necessary because a {@link ParseContext} is routinely reused across INDEPENDENT
-     * documents -- TikaCLI passes one context to every file on the command line, and
-     * MultiThreadedTikaTest shares one across an entire corpus. CompositeParser installs a
+     * documents -- TikaCLI creates one ParseContext at startup and passes it to every file on the
+     * command line, and the same reuse is available to any embedder. (An earlier version of this
+     * note also cited MultiThreadedTikaTest; that was wrong -- its runner passes a fresh
+     * ParseContext per iteration and getRecursiveMetadata overwrites even that one, so no test in
+     * this repo parses two documents through a shared context.) CompositeParser installs a
      * ParseRecord only when absent and never removes it, so without this the record is
      * per-CONTEXT rather than per-DOCUMENT.
      *
@@ -241,6 +251,24 @@ public class ParseRecord {
         // that the document did -- a detector's nested parse unwinds to depth zero while the
         // outer document is still being parsed. Release is CompositeParser's finally, paired
         // one-for-one with the beginDocument that took the claim.
+    }
+
+    /**
+     * Open document scopes. Package-private: this exists so the boundary invariant is testable.
+     *
+     * <p>{@link #endDocument} clamps at zero and {@link #exitEmbedded} likewise, so an orphan or
+     * doubled release is silently absorbed -- which makes an imbalance invisible without this.
+     * An imbalance is not cosmetic: the reset is gated on these counters returning to zero, so a
+     * leaked claim latches the record into per-CONTEXT behaviour permanently, and an over-release
+     * lets the next nested claim reset mid-document.
+     */
+    int getClaims() {
+        return claims;
+    }
+
+    /** In-flight embedded parses. Package-private for the same reason as {@link #getClaims()}. */
+    int getEmbeddedNesting() {
+        return embeddedNesting;
     }
 
     public int getDepth() {
