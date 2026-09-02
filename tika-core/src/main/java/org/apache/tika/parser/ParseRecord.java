@@ -65,15 +65,23 @@ public class ParseRecord {
     private boolean embeddedDepthLimitReached = false;
     private boolean embeddedCountLimitReached = false;
     /**
-     * True from the moment a top-level parse claims this record until that parse unwinds.
+     * How many parses currently hold a claim on this record.
      *
      * <p>AutoDetectParser and CompositeParser both call {@link #beginDocument} for the SAME
      * document -- AutoDetectParser first, then again when it delegates -- and both see depth 0.
-     * Without this marker the second call reads as a new document and wipes anything the
-     * detector, the digester or an overridden getParser() recorded in between, so those
-     * diagnostics never reach the document's metadata.
+     * Without a claim the second call reads as a new document and wipes anything the detector,
+     * the digester or an overridden getParser() recorded in between, so those diagnostics never
+     * reach the document's metadata.
+     *
+     * <p>A COUNT, not a boolean, because a boolean has no owner. If a detector runs a nested
+     * CompositeParser on the same context to inspect an auxiliary stream, that inner parse
+     * begins and ends while the outer AutoDetect parse is still at depth zero -- and clearing a
+     * shared flag when any parse returns to depth zero handed the outer parse's claim away. The
+     * outer super.parse() then read as a new document and reset the diagnostics collected during
+     * detection. Counting means only as many releases as claims can end the document, so an
+     * inner parse releases its own claim and no one else's.
      */
-    private boolean documentBegun = false;
+    private int claims = 0;
 
     /**
      * How many embedded parses are currently in flight on this record.
@@ -151,24 +159,31 @@ public class ParseRecord {
         if (record == null) {
             record = newInstance(context);
             context.set(ParseRecord.class, record);
-        } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && !record.documentBegun) {
+        } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && record.claims == 0) {
             record.resetForNewDocument();
         }
-        record.documentBegun = true;
+        record.claims++;
         return record;
     }
 
     /**
-     * Releases the claim {@link #beginDocument} took, so the NEXT top-level parse resets.
+     * Releases ONE claim taken by {@link #beginDocument}. The document ends when the last one
+     * goes, so the next top-level parse resets.
      *
-     * <p>Called from a finally in AutoDetectParser because its MetadataOnlyParse return and
-     * ZeroByteFileException exit without ever reaching beforeParse/afterParse; without this the
-     * claim would outlive the document and the next one would inherit its record.
+     * <p>Every {@code beginDocument} must be paired with exactly one of these, in a finally:
+     * AutoDetectParser's MetadataOnlyParse return and ZeroByteFileException exit leave without
+     * ever reaching beforeParse/afterParse, and CompositeParser can throw out of parser
+     * selection before beforeParse runs. An unreleased claim outlives its document and the next
+     * one inherits its record; a release without a claim ends the document early.
+     *
+     * <p>Deliberately NOT conditioned on depth. An embedded parse claims and releases at depth
+     * greater than zero, and skipping the release there would leak a claim upward that nothing
+     * ever balances.
      */
     static void endDocument(ParseContext context) {
         ParseRecord record = context.get(ParseRecord.class);
-        if (record != null && record.getDepth() == 0) {
-            record.documentBegun = false;
+        if (record != null && record.claims > 0) {
+            record.claims--;
         }
     }
 
@@ -201,9 +216,10 @@ public class ParseRecord {
 
     void afterParse() {
         depth--;
-        if (depth == 0) {
-            documentBegun = false;
-        }
+        // The claim is NOT released here. Returning to depth zero says this parse finished, not
+        // that the document did -- a detector's nested parse unwinds to depth zero while the
+        // outer document is still being parsed. Release is CompositeParser's finally, paired
+        // one-for-one with the beginDocument that took the claim.
     }
 
     public int getDepth() {

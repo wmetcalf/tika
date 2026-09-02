@@ -372,4 +372,50 @@ public class ParseRecordDocumentScopeTest {
         assertTrue(record.isEmbeddedCountLimitReached(),
                 "the embedded count limit should have been recorded as reached");
     }
+
+    /**
+     * A detector that runs its own parse on the same context must not end the outer document.
+     *
+     * <p>Some detectors inspect an auxiliary stream by invoking a parser. That inner parse begins
+     * and ends while the OUTER AutoDetect parse is still at depth zero, so releasing the claim
+     * whenever any parse returns to depth zero handed the outer parse's claim away. The outer
+     * super.parse() then read as a new document and reset everything detection had recorded --
+     * including the very diagnostics {@link #diagnosticsRecordedDuringDetectionSurviveTheHandoff}
+     * exists to protect. The claim is counted, so the inner parse releases only its own.
+     */
+    @Test
+    public void aDetectorsOwnNestedParseDoesNotEndTheOuterDocument() throws Exception {
+        ParseContext shared = new ParseContext();
+        CompositeParser auxiliary = new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(), new CountingParser());
+
+        Detector detectorThatParses = (stream, metadata, context) -> {
+            ParseRecord r = context.get(ParseRecord.class);
+            if (r != null) {
+                r.addWarning("recorded during detection");
+            }
+            // Inspect an auxiliary stream with a full parse on the SAME context. This begins and
+            // ends at depth zero, underneath the outer AutoDetect parse.
+            Metadata aux = new Metadata();
+            aux.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream auxStream = TikaInputStream.get(new byte[] {9, 9, 9})) {
+                auxiliary.parse(auxStream, new org.xml.sax.helpers.DefaultHandler(), aux, context);
+            } catch (Exception e) {
+                throw new IOException(e);
+            }
+            return MediaType.OCTET_STREAM;
+        };
+
+        AutoDetectParser auto = new AutoDetectParser(detectorThatParses, new CountingParser());
+        Metadata metadata = new Metadata();
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            auto.parse(tis, new org.xml.sax.helpers.DefaultHandler(), metadata, shared);
+        }
+
+        boolean survived = shared.get(ParseRecord.class).getWarnings().stream()
+                .anyMatch(w -> w.startsWith("recorded during detection"));
+        assertTrue(survived,
+                "the detector's warning was wiped: its own nested parse released the OUTER "
+                        + "parse's document claim, so the handoff read as a new document");
+    }
 }

@@ -332,6 +332,10 @@ public class CompositeParser implements Parser {
                 metadata.set(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET, parserRecord.getParsers());
                 recordEmbeddedMetadata(metadata, context);
             }
+            // Release the claim taken above, one-for-one. afterParse no longer does it: returning
+            // to depth zero means THIS parse finished, not that the document did, and a shared
+            // flag cleared on any such return handed away a claim the caller still held.
+            ParseRecord.endDocument(context);
         }
     }
 
