@@ -33,6 +33,7 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.ParseRecord;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.StatefulParser;
 
@@ -73,10 +74,19 @@ public class ParserContainerExtractor implements ContainerExtractor {
             EmbeddedResourceHandler handler, ParseContext parseContext)
             throws IOException, TikaException {
         parseContext.set(Parser.class, new RecursiveParser(parser, recurseExtractor, handler, parseContext));
+        // Each extract() is an independent document. Claim one, because the parser handed to this
+        // class may be a raw container parser that never claims for itself -- only the
+        // CompositeParser/AutoDetectParser paths do. Without this, two extract() calls sharing a
+        // ParseContext shared one embedded count and one set of sticky limit flags: the second
+        // document began with whatever the first left, and once the first tripped the limit the
+        // sticky flag meant every later document yielded NOTHING, silently.
+        ParseRecord.beginDocument(parseContext);
         try {
             parser.parse(stream, new DefaultHandler(), Metadata.newInstance(parseContext), parseContext);
         } catch (SAXException e) {
             throw new TikaException("Unexpected SAX exception", e);
+        } finally {
+            ParseRecord.endDocument(parseContext);
         }
     }
 

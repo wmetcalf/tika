@@ -830,4 +830,72 @@ public class ParseRecordDocumentScopeTest {
                         + "nothing; its passes are alternatives, not contributions, so each gets "
                         + "its own budget");
     }
+
+    /**
+     * Raw entry points must open a document scope, or a reused context leaks budgets between
+     * independent documents.
+     *
+     * <p>{@code ParserContainerExtractor.extract} is a document entry point and did not claim.
+     * Only the CompositeParser/AutoDetectParser paths did -- so two independent documents
+     * extracted through one context shared one embedded count and one set of sticky limit flags.
+     * Each extract() sees what the previous one left behind; once one trips the limit, the sticky
+     * flag makes every later document yield NOTHING, silently.
+     */
+    @Test
+    public void rawEntryPointsGiveEachDocumentItsOwnBudget() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(2);
+        context.set(EmbeddedLimits.class, limits);
+
+        // What each document saw on the record when its parse began.
+        java.util.List<Integer> countAtEntry = new java.util.ArrayList<>();
+        Parser probe = new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) throws IOException, SAXException {
+                ParseRecord r = c.get(ParseRecord.class);
+                countAtEntry.add(r == null ? 0 : r.getEmbeddedCount());
+                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                for (int i = 0; i < 5; i++) {
+                    Metadata entry = new Metadata();
+                    entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+                    try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                        ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
+                                false);
+                    }
+                }
+            }
+        };
+
+        org.apache.tika.extractor.ParserContainerExtractor extractor =
+                // The container parser passed DIRECTLY, as ParserContainerExtractor allows and
+                // as a caller wiring an MboxParser would do. Nothing in this chain claims a
+                // document, so nothing resets the record between extract() calls.
+                new org.apache.tika.extractor.ParserContainerExtractor(
+                        probe, new org.apache.tika.detect.DefaultDetector());
+
+        for (int document = 1; document <= 2; document++) {
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.extract(tis, extractor,
+                        (filename, mediaType, stream, ctx) -> {
+                            // no-op sink; we only care about the record's per-document scope
+                        }, context);
+            }
+        }
+
+        assertEquals(java.util.Arrays.asList(0, 0),
+                java.util.Arrays.asList(countAtEntry.get(0),
+                        countAtEntry.get(countAtEntry.size() / 2)),
+                "the second extract() began with the first document's embedded count still on "
+                        + "the record: each extract() is an independent document and must open "
+                        + "its own scope");
+    }
 }
