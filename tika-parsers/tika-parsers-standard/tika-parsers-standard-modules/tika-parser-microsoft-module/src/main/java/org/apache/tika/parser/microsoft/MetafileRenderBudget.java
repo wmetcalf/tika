@@ -143,7 +143,20 @@ public class MetafileRenderBudget implements Serializable {
     public static void beginDocument(ParseContext context) {
         MetafileRenderBudget budget = context.get(MetafileRenderBudget.class);
         if (budget == null) {
-            return;   // nothing installed yet: the first render will create it
+            // INSTALL it, do not return. Returning here is what broke the cap: the container
+            // (OfficeParser, OOXMLParser) calls this first, found nothing to claim, and left
+            // ownership unset -- so the FIRST metafile created the budget and claimed it at its
+            // OWN depth. Every sibling metafile then claimed at that same depth, and claim()
+            // keeps the owner's budget only when the depth is strictly GREATER, so each sibling
+            // reset used/refused/ocrSpentMillis/ocrRefused before spending. The 64-render and
+            // 120s OCR caps therefore bounded nothing across a document's siblings -- only
+            // across its nested metafiles, which is not the shape these limits exist for
+            // (measured: 623 sibling metafiles in 1.7 MB).
+            //
+            // Installing here makes the CONTAINER the owner, one level shallower than its
+            // metafiles, which is exactly the relationship claim() was written for.
+            budget = new MetafileRenderBudget();
+            context.set(MetafileRenderBudget.class, budget);
         }
         budget.claim(currentDepth(context));
     }
