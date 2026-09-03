@@ -1172,4 +1172,42 @@ public class ParseRecordDocumentScopeTest {
         assertEquals(2, runDirectContainerScoped(context, 10),
                 "replacing the configured limits between documents had no effect");
     }
+
+    /**
+     * Mutating the SAME EmbeddedLimits instance between documents must take effect.
+     *
+     * <p>Object identity is the wrong change signal: a caller who holds one EmbeddedLimits and
+     * retunes it in place -- the natural way to use a configuration object -- leaves identity
+     * unchanged, so the record kept the previous document's values. Identity fails the mirror
+     * case of the one it was introduced to fix.
+     */
+    @Test
+    public void mutatingTheConfiguredLimitsInPlaceTakesEffect() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(5);
+        context.set(EmbeddedLimits.class, limits);
+
+        assertEquals(5, runDirectContainerScoped(context, 10), "document one");
+
+        limits.setMaxCount(2);   // same object, retuned in place
+
+        assertEquals(2, runDirectContainerScoped(context, 10),
+                "tightening the configured limits in place had no effect: the change signal is "
+                        + "object identity, which does not move when the object is mutated");
+    }
+
+    /** Nothing changing must leave the record alone across many documents. */
+    @Test
+    public void unchangedLimitsStayStableAcrossDocuments() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(3);
+        context.set(EmbeddedLimits.class, limits);
+
+        for (int document = 1; document <= 3; document++) {
+            assertEquals(3, runDirectContainerScoped(context, 10),
+                    "document " + document + " should see the configured limit unchanged");
+        }
+    }
 }

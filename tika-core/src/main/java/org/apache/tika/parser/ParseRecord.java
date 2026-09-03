@@ -124,15 +124,28 @@ public class ParseRecord {
     }
 
     /** Applies configured limits. Shared by {@link #newInstance} and the per-document reset. */
-    /** The limits object last applied, so an unchanged one is not reapplied over an override. */
-    private transient EmbeddedLimits appliedLimits;
+    /** The limit VALUES last applied, so a caller's override can be told from a config change. */
+    private transient int appliedMaxDepth = Integer.MIN_VALUE;
+    private transient int appliedMaxCount = Integer.MIN_VALUE;
+    private transient boolean appliedThrowOnMaxDepth;
+    private transient boolean appliedThrowOnMaxCount;
+
+    /** True if the record's limits differ from what {@link #applyLimits} last wrote. */
+    private boolean wasOverriddenSinceLastApply() {
+        return maxEmbeddedDepth != appliedMaxDepth || maxEmbeddedCount != appliedMaxCount
+                || throwOnMaxDepth != appliedThrowOnMaxDepth
+                || throwOnMaxCount != appliedThrowOnMaxCount;
+    }
 
     private void applyLimits(EmbeddedLimits limits) {
-        appliedLimits = limits;
         maxEmbeddedDepth = limits.getMaxDepth();
         maxEmbeddedCount = limits.getMaxCount();
         throwOnMaxDepth = limits.isThrowOnMaxDepth();
         throwOnMaxCount = limits.isThrowOnMaxCount();
+        appliedMaxDepth = maxEmbeddedDepth;
+        appliedMaxCount = maxEmbeddedCount;
+        appliedThrowOnMaxDepth = throwOnMaxDepth;
+        appliedThrowOnMaxCount = throwOnMaxCount;
     }
 
     /**
@@ -186,16 +199,22 @@ public class ParseRecord {
             // caller had set imperatively through setMaxEmbeddedCount/setMaxEmbeddedDepth -- a
             // public API -- on every document after the first. Caught by
             // aDirectContainerCanDeclareItsOwnDocumentBoundary, which configures exactly that way.
-            // Only when the context's limits have actually CHANGED since we last applied them.
+            // Reapply only when the CONFIGURED VALUES have moved since we last applied them,
+            // and only if nobody has overridden the record in the meantime.
             //
-            // Reapplying the same object every document also overwrites anything a caller set
-            // through setMaxEmbeddedCount/setMaxEmbeddedDepth -- public API -- in between, which
-            // is a silent regression for anyone who configures once and then tunes per document.
-            // Comparing by identity separates the two intents: swapping in a new EmbeddedLimits
-            // means "use these now" and takes effect; leaving the same one in place means the
-            // record's current values, however they were set, stand.
+            // Two wrong signals were tried first, and each failed the other's case. Reapplying
+            // unconditionally overwrote values a caller had set through setMaxEmbeddedCount --
+            // public API -- between documents. Reapplying on object IDENTITY missed the mirror
+            // case: a caller who holds one EmbeddedLimits and retunes it in place, which is the
+            // natural way to use a configuration object, leaves identity unchanged.
+            //
+            // Comparing against the values last applied separates the two intents exactly. If
+            // the record still holds what we wrote, nobody overrode it, so configuration wins and
+            // any change to it -- swapped object or mutated in place -- takes effect. If the
+            // record differs from what we wrote, a caller overrode it deliberately and that
+            // stands.
             EmbeddedLimits configured = context.get(EmbeddedLimits.class);
-            if (configured != null && configured != record.appliedLimits) {
+            if (configured != null && !record.wasOverriddenSinceLastApply()) {
                 record.applyLimits(configured);
             }
         }
