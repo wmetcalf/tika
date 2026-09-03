@@ -1065,78 +1065,68 @@ public class ParseRecordDocumentScopeTest {
                         + "EmbeddedLimits.get returns defaults for a context that has none");
     }
 
-    /** Recursively embeds, reporting how many levels the limit actually allowed. */
-    private static int deepestLevelReached(ParseContext context, int attempt) throws Exception {
-        java.util.concurrent.atomic.AtomicInteger deepest =
-                new java.util.concurrent.atomic.AtomicInteger();
-        context.set(Parser.class, new CompositeParser(
-                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
-                new AbstractParser() {
-            @Override
-            public Set<MediaType> getSupportedTypes(ParseContext c) {
-                return Collections.singleton(MediaType.OCTET_STREAM);
-            }
-
-            @Override
-            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
-                              ParseContext c) throws IOException, SAXException {
-                int level = deepest.incrementAndGet();
-                if (level >= attempt) {
-                    return;
-                }
-                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
-                        org.apache.tika.extractor.EmbeddedDocumentUtil
-                                .getEmbeddedDocumentExtractor(c);
-                Metadata entry = new Metadata();
-                entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
-                try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
-                    ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
-                            false);
-                }
-            }
-        }));
-        ParsingEmbeddedDocumentExtractor extractor =
-                new ParsingEmbeddedDocumentExtractor(context);
-        Metadata entry = new Metadata();
-        entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
-        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
-            extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry, context,
-                    false);
-        }
-        return deepest.get();
-    }
-
     /**
-     * The embedded DEPTH limit must not depend on how the container was entered.
+     * The content-handler decorator must be applied once per DOCUMENT, not once per entry.
      *
-     * <p>It was measured against {@code ParseRecord.getDepth()}, which a directly-invoked
-     * container never increments -- so its whole embedded tree sat one level shallower and the
-     * configured recursion bound admitted an extra level. Measuring the extractor's own nesting
-     * instead is entry-point independent: at check time on the AutoDetect-rooted path
-     * {@code depth == embeddedNesting + 1}, so {@code depth > maxDepth + 1} and
-     * {@code embeddedNesting > maxDepth} are the same test, minus the assumption.
+     * <p>{@code AutoDetectParser.decorateHandler} used {@code depth == 0} as its "am I
+     * top-level?" test. For a directly-invoked container that never increments depth, every
+     * sibling entry looked top-level, so the configured
+     * {@code ContentHandlerDecoratorFactory} -- write limiting, XHTML validation, whatever an
+     * operator installed -- was re-applied per entry, re-issuing any per-document handler budget
+     * to each sibling.
+     *
+     * <p>Written because an audit showed reverting that gate left the whole tika-core suite
+     * green: the fix had no coverage anywhere.
      */
     @Test
-    public void theEmbeddedDepthLimitDoesNotDependOnTheEntryPoint() throws Exception {
-        ParseContext direct = new ParseContext();
-        EmbeddedLimits limits = new EmbeddedLimits();
-        limits.setMaxDepth(1);
-        direct.set(EmbeddedLimits.class, limits);
-        int viaDirectContainer = deepestLevelReached(direct, 10);
+    public void theHandlerDecoratorIsAppliedOncePerDocumentNotPerEntry() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        context.set(ParseRecord.class, record);
 
-        ParseContext rooted = new ParseContext();
-        EmbeddedLimits sameLimits = new EmbeddedLimits();
-        sameLimits.setMaxDepth(1);
-        rooted.set(EmbeddedLimits.class, sameLimits);
-        ParseRecord rootedRecord = ParseRecord.newInstance(rooted);
-        rooted.set(ParseRecord.class, rootedRecord);
-        rootedRecord.beforeParse();          // the container's own frame, as CompositeParser does
-        int viaRootedContainer = deepestLevelReached(rooted, 10);
-        rootedRecord.afterParse();
+        java.util.concurrent.atomic.AtomicInteger decorations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        // The factory is read from the parser's CONFIG, not the ParseContext. Setting it in the
+        // context does nothing -- an earlier version of this test did exactly that and was
+        // vacuous: it stayed green with the fix reverted.
+        AutoDetectParserConfig config = new AutoDetectParserConfig();
+        config.setContentHandlerDecoratorFactory((handler, metadata, ctx) -> {
+            decorations.incrementAndGet();
+            return handler;
+        });
 
-        assertEquals(viaRootedContainer, viaDirectContainer,
-                "a directly-invoked container reached a different embedded depth than an "
-                        + "AutoDetect-rooted one under the SAME configured limit: the bound is "
-                        + "measured against a depth only one of them increments");
+        // A directly-invoked container handing three entries to an AutoDetectParser.
+        AutoDetectParser embeddedParser = new AutoDetectParser(
+                (stream, metadata, ctx) -> MediaType.OCTET_STREAM,
+                new AbstractParser() {
+                    @Override
+                    public Set<MediaType> getSupportedTypes(ParseContext c) {
+                        return Collections.singleton(MediaType.OCTET_STREAM);
+                    }
+
+                    @Override
+                    public void parse(TikaInputStream tis, ContentHandler handler,
+                                      Metadata metadata, ParseContext c) {
+                        // leaf
+                    }
+                });
+        embeddedParser.setAutoDetectParserConfig(config);
+        context.set(Parser.class, embeddedParser);
+
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        for (int i = 0; i < 3; i++) {
+            Metadata entry = new Metadata();
+            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
+                        context, false);
+            }
+        }
+
+        assertEquals(0, decorations.get(),
+                "the top-level handler decorator was applied to embedded entries: each sibling "
+                        + "of a directly-invoked container looked top-level, so any per-document "
+                        + "handler budget was re-issued per entry");
     }
 }

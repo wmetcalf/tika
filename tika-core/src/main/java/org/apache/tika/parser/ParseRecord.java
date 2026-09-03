@@ -284,16 +284,8 @@ public class ParseRecord {
         return claims;
     }
 
-    /**
-     * In-flight embedded parses -- i.e. how deep inside embedded documents this parse is.
-     *
-     * <p>Public because {@code ParsingEmbeddedDocumentExtractor} measures the configured embedded
-     * DEPTH limit against it. It used to measure against {@link #getDepth()}, which only
-     * CompositeParser maintains, so a directly-invoked container's whole embedded tree sat one
-     * level shallower and the bound admitted an extra level depending on how the container was
-     * entered.
-     */
-    public int getEmbeddedNesting() {
+    /** In-flight embedded parses. Package-private for the same reason as {@link #getClaims()}. */
+    int getEmbeddedNesting() {
         return embeddedNesting;
     }
 
