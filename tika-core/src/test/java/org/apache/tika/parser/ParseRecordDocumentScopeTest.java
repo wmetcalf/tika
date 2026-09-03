@@ -1064,4 +1064,79 @@ public class ParseRecordDocumentScopeTest {
                 "the reset wiped a limit set through setMaxEmbeddedCount, which is public API; "
                         + "EmbeddedLimits.get returns defaults for a context that has none");
     }
+
+    /** Recursively embeds, reporting how many levels the limit actually allowed. */
+    private static int deepestLevelReached(ParseContext context, int attempt) throws Exception {
+        java.util.concurrent.atomic.AtomicInteger deepest =
+                new java.util.concurrent.atomic.AtomicInteger();
+        context.set(Parser.class, new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) throws IOException, SAXException {
+                int level = deepest.incrementAndGet();
+                if (level >= attempt) {
+                    return;
+                }
+                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                Metadata entry = new Metadata();
+                entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+                try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                    ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
+                            false);
+                }
+            }
+        }));
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        Metadata entry = new Metadata();
+        entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+        try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+            extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry, context,
+                    false);
+        }
+        return deepest.get();
+    }
+
+    /**
+     * The embedded DEPTH limit must not depend on how the container was entered.
+     *
+     * <p>It was measured against {@code ParseRecord.getDepth()}, which a directly-invoked
+     * container never increments -- so its whole embedded tree sat one level shallower and the
+     * configured recursion bound admitted an extra level. Measuring the extractor's own nesting
+     * instead is entry-point independent: at check time on the AutoDetect-rooted path
+     * {@code depth == embeddedNesting + 1}, so {@code depth > maxDepth + 1} and
+     * {@code embeddedNesting > maxDepth} are the same test, minus the assumption.
+     */
+    @Test
+    public void theEmbeddedDepthLimitDoesNotDependOnTheEntryPoint() throws Exception {
+        ParseContext direct = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxDepth(1);
+        direct.set(EmbeddedLimits.class, limits);
+        int viaDirectContainer = deepestLevelReached(direct, 10);
+
+        ParseContext rooted = new ParseContext();
+        EmbeddedLimits sameLimits = new EmbeddedLimits();
+        sameLimits.setMaxDepth(1);
+        rooted.set(EmbeddedLimits.class, sameLimits);
+        ParseRecord rootedRecord = ParseRecord.newInstance(rooted);
+        rooted.set(ParseRecord.class, rootedRecord);
+        rootedRecord.beforeParse();          // the container's own frame, as CompositeParser does
+        int viaRootedContainer = deepestLevelReached(rooted, 10);
+        rootedRecord.afterParse();
+
+        assertEquals(viaRootedContainer, viaDirectContainer,
+                "a directly-invoked container reached a different embedded depth than an "
+                        + "AutoDetect-rooted one under the SAME configured limit: the bound is "
+                        + "measured against a depth only one of them increments");
+    }
 }

@@ -153,8 +153,17 @@ public class ParsingEmbeddedDocumentExtractor implements EmbeddedDocumentExtract
         // can still be parsed. The flag is set for reporting purposes.
         // depth is 1-indexed (main doc is depth 1), so embedded depth limit of N
         // means we allow parsing up to depth N+1
+        // Measured against the extractor's own nesting, NOT ParseRecord.getDepth(). Depth is only
+        // maintained by CompositeParser, so a directly-invoked container never increments it and
+        // its whole embedded tree sat one level shallower -- the configured recursion bound
+        // admitted an extra level purely because of how the container was entered (measured:
+        // three levels reached where an AutoDetect-rooted parse reached two).
+        //
+        // The two are the same test on the rooted path, minus the assumption: at this point
+        // depth == embeddedNesting + 1 there, so depth > maxDepth + 1 is embeddedNesting >
+        // maxDepth. This one holds however the container was reached.
         int maxDepth = parseRecord.getMaxEmbeddedDepth();
-        if (maxDepth >= 0 && parseRecord.getDepth() > maxDepth + 1) {
+        if (maxDepth >= 0 && parseRecord.getEmbeddedNesting() > maxDepth) {
             parseRecord.setEmbeddedDepthLimitReached(true);
             if (parseRecord.isThrowOnMaxDepth()) {
                 throw new EmbeddedLimitReachedException(
