@@ -898,4 +898,170 @@ public class ParseRecordDocumentScopeTest {
                         + "the record: each extract() is an independent document and must open "
                         + "its own scope");
     }
+
+    /**
+     * {@link RecursiveParserWrapper} is a document entry point and must open a scope.
+     *
+     * <p>Its sibling {@code ParserContainerExtractor} was fixed; this one was missed. It wraps an
+     * arbitrary Parser -- its constructor takes any -- so when the wrapped parser is a raw one
+     * that never claims, nothing resets the record between independent documents on a reused
+     * context. Today's callers happen to wrap an AutoDetectParser, which claims internally, so
+     * this is correct only by accident.
+     */
+    @Test
+    public void recursiveParserWrapperGivesEachDocumentItsOwnBudget() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(2);
+        context.set(EmbeddedLimits.class, limits);
+
+        java.util.List<Integer> countAtEntry = new java.util.ArrayList<>();
+        Parser raw = new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) throws IOException, SAXException {
+                ParseRecord r = c.get(ParseRecord.class);
+                countAtEntry.add(r == null ? 0 : r.getEmbeddedCount());
+                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                for (int i = 0; i < 5; i++) {
+                    Metadata entry = new Metadata();
+                    entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+                    try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                        ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
+                                false);
+                    }
+                }
+            }
+        };
+
+        RecursiveParserWrapper wrapper = new RecursiveParserWrapper(raw);
+        for (int document = 1; document <= 2; document++) {
+            org.apache.tika.sax.RecursiveParserWrapperHandler handler =
+                    new org.apache.tika.sax.RecursiveParserWrapperHandler(
+                            new org.apache.tika.sax.BasicContentHandlerFactory(
+                                    org.apache.tika.sax.BasicContentHandlerFactory.HANDLER_TYPE.TEXT,
+                                    -1));
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                wrapper.parse(tis, handler, new Metadata(), context);
+            }
+        }
+
+        assertEquals(java.util.Arrays.asList(0, 0),
+                java.util.Arrays.asList(countAtEntry.get(0),
+                        countAtEntry.get(countAtEntry.size() / 2)),
+                "the second document began with the first's embedded count still on the record: "
+                        + "RecursiveParserWrapper.parse is a document entry point and must open "
+                        + "its own scope");
+    }
+
+    /**
+     * A sibling entry must not be stamped with the previous siblings' embedded diagnostics.
+     *
+     * <p>{@code CompositeParser}'s finally gates the metadata stamping on {@code depth == 0},
+     * the same "am I top-level?" oracle that fails for a directly-invoked container: nothing
+     * increments depth for the container's own frame, so EVERY sibling's delegate parse unwinds
+     * to depth 0 and fires {@code recordEmbeddedMetadata}. Because siblings deliberately share one
+     * record, each stamping copies every previous sibling's warnings and exceptions onto the
+     * current entry -- misattributing failures to the wrong embedded document, and growing
+     * quadratically. {@code embeddedNesting} is non-zero throughout an embedded entry and is the
+     * signal that actually distinguishes the two.
+     */
+    @Test
+    public void siblingEntriesAreNotStampedWithEachOthersDiagnostics() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        context.set(ParseRecord.class, record);
+
+        java.util.List<Metadata> entries = new java.util.ArrayList<>();
+        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+        context.set(Parser.class, new CompositeParser(
+                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
+                new AbstractParser() {
+                    @Override
+                    public Set<MediaType> getSupportedTypes(ParseContext c) {
+                        return Collections.singleton(MediaType.OCTET_STREAM);
+                    }
+
+                    @Override
+                    public void parse(TikaInputStream tis, ContentHandler handler,
+                                      Metadata metadata, ParseContext c) {
+                        ParseRecord r = c.get(ParseRecord.class);
+                        if (r != null) {
+                            r.addWarning("warning from entry " + n.incrementAndGet());
+                        }
+                    }
+                }));
+
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        for (int i = 0; i < 3; i++) {
+            Metadata entry = new Metadata();
+            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
+                        context, false);
+            }
+            entries.add(entry);
+        }
+
+        Metadata third = entries.get(2);
+        for (String w : third.getValues(
+                org.apache.tika.metadata.TikaCoreProperties.EMBEDDED_WARNING)) {
+            assertFalse(w.contains("entry 1"),
+                    "the third sibling was stamped with the FIRST sibling's warning: " + w);
+        }
+    }
+
+    /** Limits configured in the context must apply per document, not per record creation. */
+    @Test
+    public void limitsAreRereadForEachDocument() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits loose = new EmbeddedLimits();
+        loose.setMaxCount(5);
+        context.set(EmbeddedLimits.class, loose);
+
+        assertEquals(5, runDirectContainerScoped(context, 10),
+                "document one should run under the limit configured for it");
+
+        // Tighten between documents, as an operator reacting to a hostile corpus would.
+        EmbeddedLimits tight = new EmbeddedLimits();
+        tight.setMaxCount(2);
+        context.set(EmbeddedLimits.class, tight);
+
+        assertEquals(2, runDirectContainerScoped(context, 10),
+                "document two still ran under document ONE's limits: they are captured once, in "
+                        + "newInstance, which only runs when the record is absent");
+    }
+
+    /** Drives one declared document scope worth of entries. */
+    private static int runDirectContainerScoped(ParseContext context, int entries)
+            throws Exception {
+        ParseRecord.beginDocument(context);
+        try {
+            return runDirectContainer(context, entries);
+        } finally {
+            ParseRecord.endDocument(context);
+        }
+    }
+
+    /** Imperatively configured limits must survive the per-document reset. */
+    @Test
+    public void imperativelyConfiguredLimitsSurviveTheReset() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        record.setMaxEmbeddedCount(3);
+        context.set(ParseRecord.class, record);
+
+        assertEquals(3, runDirectContainerScoped(context, 10), "document one");
+        assertEquals(3, runDirectContainerScoped(context, 10),
+                "the reset wiped a limit set through setMaxEmbeddedCount, which is public API; "
+                        + "EmbeddedLimits.get returns defaults for a context that has none");
+    }
 }

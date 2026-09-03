@@ -353,7 +353,15 @@ public class CompositeParser implements Parser {
             // anything; the reset happens on the next beginDocument, after this block has read
             // what it needs.
             ParseRecord.endDocument(context);
-            if (parserRecord.getDepth() == 0) {
+            // depth == 0 alone is the same "am I top-level?" oracle that fails for a
+            // directly-invoked container: nothing increments depth for the container's own
+            // frame, so EVERY sibling entry's delegate parse unwinds to zero and stamps. Because
+            // siblings deliberately share one record, each stamping copied every previous
+            // sibling's warnings and exceptions onto the current entry -- misattributing failures
+            // to the wrong embedded document, and growing quadratically in the number of
+            // siblings. embeddedNesting is non-zero throughout an embedded entry, and is the
+            // signal that actually separates the two cases.
+            if (parserRecord.getDepth() == 0 && parserRecord.getEmbeddedNesting() == 0) {
                 metadata.set(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET, parserRecord.getParsers());
                 recordEmbeddedMetadata(metadata, context);
             }

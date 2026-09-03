@@ -215,7 +215,13 @@ public class AutoDetectParser extends CompositeParser {
                     .decorate(handler, metadata, context);
         }
         ParseRecord parseRecord = context.get(ParseRecord.class);
-        if (parseRecord == null || parseRecord.getDepth() == 0) {
+        // Same correction as CompositeParser's stamping gate: depth alone reads every sibling
+        // entry of a directly-invoked container as top-level, so the configured
+        // ContentHandlerDecoratorFactory -- write limiting, XHTML validation, whatever an
+        // operator installed -- was re-applied once PER ENTRY instead of once for the container,
+        // re-issuing any per-document handler budget to each sibling.
+        if (parseRecord == null
+                || (parseRecord.getDepth() == 0 && parseRecord.getEmbeddedNesting() == 0)) {
             return autoDetectParserConfig.getContentHandlerDecoratorFactory()
                     .decorate(handler, metadata, context);
         }

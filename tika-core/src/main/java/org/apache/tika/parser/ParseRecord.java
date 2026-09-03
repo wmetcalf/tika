@@ -119,12 +119,16 @@ public class ParseRecord {
      */
     public static ParseRecord newInstance(ParseContext context) {
         ParseRecord record = new ParseRecord();
-        EmbeddedLimits limits = EmbeddedLimits.get(context);
-        record.maxEmbeddedDepth = limits.getMaxDepth();
-        record.maxEmbeddedCount = limits.getMaxCount();
-        record.throwOnMaxDepth = limits.isThrowOnMaxDepth();
-        record.throwOnMaxCount = limits.isThrowOnMaxCount();
+        record.applyLimits(EmbeddedLimits.get(context));
         return record;
+    }
+
+    /** Applies configured limits. Shared by {@link #newInstance} and the per-document reset. */
+    private void applyLimits(EmbeddedLimits limits) {
+        maxEmbeddedDepth = limits.getMaxDepth();
+        maxEmbeddedCount = limits.getMaxCount();
+        throwOnMaxDepth = limits.isThrowOnMaxDepth();
+        throwOnMaxCount = limits.isThrowOnMaxCount();
     }
 
     /**
@@ -168,6 +172,20 @@ public class ParseRecord {
             context.set(ParseRecord.class, record);
         } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && record.claims == 0) {
             record.resetForNewDocument();
+            // Re-read the configured limits too. They were captured once, in newInstance, which
+            // only runs when the record is ABSENT -- so on a reused ParseContext every document
+            // after the first silently ran under document one's limits. Tightening or loosening
+            // EmbeddedLimits between documents had no effect at all.
+            //
+            // Only when the context actually carries EmbeddedLimits. EmbeddedLimits.get returns
+            // defaults for an empty context, so applying it unconditionally would wipe limits a
+            // caller had set imperatively through setMaxEmbeddedCount/setMaxEmbeddedDepth -- a
+            // public API -- on every document after the first. Caught by
+            // aDirectContainerCanDeclareItsOwnDocumentBoundary, which configures exactly that way.
+            EmbeddedLimits configured = context.get(EmbeddedLimits.class);
+            if (configured != null) {
+                record.applyLimits(configured);
+            }
         }
         record.claims++;
         return record;
