@@ -179,9 +179,12 @@ public class MultiThreadedTikaTest extends TikaTest {
             }
             if (!limits.isEmpty()) {
                 sb.append("; embedded limits tripped during the concurrent run: ").append(limits);
-            } else if (!missing.isEmpty()) {
-                sb.append("; no embedded limit was tripped, so the attachment was not refused -- "
-                        + "it went missing without a recorded reason");
+            } else if (!missing.isEmpty() && reasons.isEmpty()) {
+                // Only when NOTHING was recorded. If an embedded exception was printed above,
+                // that IS the recorded reason, and claiming otherwise in the same message would
+                // point the investigation at a race instead of at the exception.
+                sb.append("; no embedded limit was tripped and no exception was recorded, so the "
+                        + "attachment went missing without any reason being reported");
             }
             return sb.toString();
         } catch (Exception e) {

@@ -62,7 +62,7 @@ public class MultiThreadedDiagnosticTest {
 
         String msg = describe(truth, observed);
         assertTrue(msg.contains("/PDF.pdf"), "should name the lost attachment: " + msg);
-        assertTrue(msg.contains("no embedded limit was tripped"),
+        assertTrue(msg.contains("without any reason being reported"),
                 "a silent loss must say so explicitly, or the next investigator cannot tell it "
                         + "from a limit refusal: " + msg);
     }
@@ -82,5 +82,32 @@ public class MultiThreadedDiagnosticTest {
                 "a limit refusal must be reported as a refusal, not as a silent loss: " + msg);
         assertTrue(!msg.contains("no embedded limit was tripped"),
                 "must not also claim nothing was tripped: " + msg);
+    }
+
+    /**
+     * A loss WITH a recorded exception must not also be called unexplained.
+     *
+     * <p>The two clauses are assembled independently, so a missing attachment whose parse threw
+     * would print the exception and then contradict it -- pointing the investigation at a race
+     * when the cause was right there.
+     */
+    @Test
+    public void aLossWithARecordedExceptionIsNotCalledSilent() throws Exception {
+        List<Metadata> truth = new ArrayList<>();
+        truth.add(named("/PDF.pdf"));
+        truth.add(named("/TXT.txt"));
+        Metadata threw = named("/TXT.txt");
+        threw.add(TikaCoreProperties.EMBEDDED_EXCEPTION,
+                "java.io.IOException: boom\n\tat org.example.Parser.parse(Parser.java:1)");
+        List<Metadata> observed = new ArrayList<>();
+        observed.add(threw);
+
+        String msg = describe(truth, observed);
+        assertTrue(msg.contains("embedded exceptions recorded"),
+                "the recorded exception should still be surfaced: " + msg);
+        assertTrue(!msg.contains("without any reason being reported"),
+                "a loss with a recorded exception must not ALSO be reported as unexplained -- "
+                        + "that sends the investigation at a race instead of the exception: "
+                        + msg);
     }
 }
