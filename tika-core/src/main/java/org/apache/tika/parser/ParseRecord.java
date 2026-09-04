@@ -119,33 +119,12 @@ public class ParseRecord {
      */
     public static ParseRecord newInstance(ParseContext context) {
         ParseRecord record = new ParseRecord();
-        record.applyLimits(EmbeddedLimits.get(context));
+        EmbeddedLimits limits = EmbeddedLimits.get(context);
+        record.maxEmbeddedDepth = limits.getMaxDepth();
+        record.maxEmbeddedCount = limits.getMaxCount();
+        record.throwOnMaxDepth = limits.isThrowOnMaxDepth();
+        record.throwOnMaxCount = limits.isThrowOnMaxCount();
         return record;
-    }
-
-    /** Applies configured limits. Shared by {@link #newInstance} and the per-document reset. */
-    /** The limit VALUES last applied, so a caller's override can be told from a config change. */
-    private transient int appliedMaxDepth = Integer.MIN_VALUE;
-    private transient int appliedMaxCount = Integer.MIN_VALUE;
-    private transient boolean appliedThrowOnMaxDepth;
-    private transient boolean appliedThrowOnMaxCount;
-
-    /** True if the record's limits differ from what {@link #applyLimits} last wrote. */
-    private boolean wasOverriddenSinceLastApply() {
-        return maxEmbeddedDepth != appliedMaxDepth || maxEmbeddedCount != appliedMaxCount
-                || throwOnMaxDepth != appliedThrowOnMaxDepth
-                || throwOnMaxCount != appliedThrowOnMaxCount;
-    }
-
-    private void applyLimits(EmbeddedLimits limits) {
-        maxEmbeddedDepth = limits.getMaxDepth();
-        maxEmbeddedCount = limits.getMaxCount();
-        throwOnMaxDepth = limits.isThrowOnMaxDepth();
-        throwOnMaxCount = limits.isThrowOnMaxCount();
-        appliedMaxDepth = maxEmbeddedDepth;
-        appliedMaxCount = maxEmbeddedCount;
-        appliedThrowOnMaxDepth = throwOnMaxDepth;
-        appliedThrowOnMaxCount = throwOnMaxCount;
     }
 
     /**
@@ -189,34 +168,6 @@ public class ParseRecord {
             context.set(ParseRecord.class, record);
         } else if (record.getDepth() == 0 && record.embeddedNesting == 0 && record.claims == 0) {
             record.resetForNewDocument();
-            // Re-read the configured limits too. They were captured once, in newInstance, which
-            // only runs when the record is ABSENT -- so on a reused ParseContext every document
-            // after the first silently ran under document one's limits. Tightening or loosening
-            // EmbeddedLimits between documents had no effect at all.
-            //
-            // Only when the context actually carries EmbeddedLimits. EmbeddedLimits.get returns
-            // defaults for an empty context, so applying it unconditionally would wipe limits a
-            // caller had set imperatively through setMaxEmbeddedCount/setMaxEmbeddedDepth -- a
-            // public API -- on every document after the first. Caught by
-            // aDirectContainerCanDeclareItsOwnDocumentBoundary, which configures exactly that way.
-            // Reapply only when the CONFIGURED VALUES have moved since we last applied them,
-            // and only if nobody has overridden the record in the meantime.
-            //
-            // Two wrong signals were tried first, and each failed the other's case. Reapplying
-            // unconditionally overwrote values a caller had set through setMaxEmbeddedCount --
-            // public API -- between documents. Reapplying on object IDENTITY missed the mirror
-            // case: a caller who holds one EmbeddedLimits and retunes it in place, which is the
-            // natural way to use a configuration object, leaves identity unchanged.
-            //
-            // Comparing against the values last applied separates the two intents exactly. If
-            // the record still holds what we wrote, nobody overrode it, so configuration wins and
-            // any change to it -- swapped object or mutated in place -- takes effect. If the
-            // record differs from what we wrote, a caller overrode it deliberately and that
-            // stands.
-            EmbeddedLimits configured = context.get(EmbeddedLimits.class);
-            if (configured != null && !record.wasOverriddenSinceLastApply()) {
-                record.applyLimits(configured);
-            }
         }
         record.claims++;
         return record;

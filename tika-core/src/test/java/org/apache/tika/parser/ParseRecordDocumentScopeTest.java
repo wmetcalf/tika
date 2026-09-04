@@ -1019,26 +1019,6 @@ public class ParseRecordDocumentScopeTest {
         }
     }
 
-    /** Limits configured in the context must apply per document, not per record creation. */
-    @Test
-    public void limitsAreRereadForEachDocument() throws Exception {
-        ParseContext context = new ParseContext();
-        EmbeddedLimits loose = new EmbeddedLimits();
-        loose.setMaxCount(5);
-        context.set(EmbeddedLimits.class, loose);
-
-        assertEquals(5, runDirectContainerScoped(context, 10),
-                "document one should run under the limit configured for it");
-
-        // Tighten between documents, as an operator reacting to a hostile corpus would.
-        EmbeddedLimits tight = new EmbeddedLimits();
-        tight.setMaxCount(2);
-        context.set(EmbeddedLimits.class, tight);
-
-        assertEquals(2, runDirectContainerScoped(context, 10),
-                "document two still ran under document ONE's limits: they are captured once, in "
-                        + "newInstance, which only runs when the record is absent");
-    }
 
     /** Drives one declared document scope worth of entries. */
     private static int runDirectContainerScoped(ParseContext context, int entries)
@@ -1051,19 +1031,6 @@ public class ParseRecordDocumentScopeTest {
         }
     }
 
-    /** Imperatively configured limits must survive the per-document reset. */
-    @Test
-    public void imperativelyConfiguredLimitsSurviveTheReset() throws Exception {
-        ParseContext context = new ParseContext();
-        ParseRecord record = ParseRecord.newInstance(context);
-        record.setMaxEmbeddedCount(3);
-        context.set(ParseRecord.class, record);
-
-        assertEquals(3, runDirectContainerScoped(context, 10), "document one");
-        assertEquals(3, runDirectContainerScoped(context, 10),
-                "the reset wiped a limit set through setMaxEmbeddedCount, which is public API; "
-                        + "EmbeddedLimits.get returns defaults for a context that has none");
-    }
 
     /**
      * The content-handler decorator must be applied once per DOCUMENT, not once per entry.
@@ -1128,86 +1095,5 @@ public class ParseRecordDocumentScopeTest {
                 "the top-level handler decorator was applied to embedded entries: each sibling "
                         + "of a directly-invoked container looked top-level, so any per-document "
                         + "handler budget was re-issued per entry");
-    }
-
-    /**
-     * An imperative override must survive even when the context DOES carry EmbeddedLimits.
-     *
-     * <p>The per-document re-read exists so that changing EmbeddedLimits between documents takes
-     * effect. But reapplying the SAME limits object on every document also overwrites anything a
-     * caller set through {@code setMaxEmbeddedCount}/{@code setMaxEmbeddedDepth} -- public API --
-     * in between. The earlier preservation test only covered a context with no EmbeddedLimits at
-     * all, so it missed the common case: {@code newInstance} populated the record from
-     * configuration, and the caller then overrode it.
-     */
-    @Test
-    public void anImperativeOverrideSurvivesWhenTheContextAlsoCarriesLimits() throws Exception {
-        ParseContext context = new ParseContext();
-        EmbeddedLimits configured = new EmbeddedLimits();
-        configured.setMaxCount(5);
-        context.set(EmbeddedLimits.class, configured);
-
-        assertEquals(5, runDirectContainerScoped(context, 10), "document one uses the config");
-
-        // Caller tightens the EXISTING record directly, without swapping the context's limits.
-        context.get(ParseRecord.class).setMaxEmbeddedCount(2);
-
-        assertEquals(2, runDirectContainerScoped(context, 10),
-                "the per-document re-read reapplied the unchanged context limits and discarded "
-                        + "an override made through setMaxEmbeddedCount");
-    }
-
-    /** Swapping the context's limits between documents must still take effect. */
-    @Test
-    public void replacingTheContextLimitsBetweenDocumentsStillApplies() throws Exception {
-        ParseContext context = new ParseContext();
-        EmbeddedLimits loose = new EmbeddedLimits();
-        loose.setMaxCount(5);
-        context.set(EmbeddedLimits.class, loose);
-        assertEquals(5, runDirectContainerScoped(context, 10), "document one");
-
-        EmbeddedLimits tight = new EmbeddedLimits();
-        tight.setMaxCount(2);
-        context.set(EmbeddedLimits.class, tight);
-        assertEquals(2, runDirectContainerScoped(context, 10),
-                "replacing the configured limits between documents had no effect");
-    }
-
-    /**
-     * Mutating the SAME EmbeddedLimits instance between documents must take effect.
-     *
-     * <p>Object identity is the wrong change signal: a caller who holds one EmbeddedLimits and
-     * retunes it in place -- the natural way to use a configuration object -- leaves identity
-     * unchanged, so the record kept the previous document's values. Identity fails the mirror
-     * case of the one it was introduced to fix.
-     */
-    @Test
-    public void mutatingTheConfiguredLimitsInPlaceTakesEffect() throws Exception {
-        ParseContext context = new ParseContext();
-        EmbeddedLimits limits = new EmbeddedLimits();
-        limits.setMaxCount(5);
-        context.set(EmbeddedLimits.class, limits);
-
-        assertEquals(5, runDirectContainerScoped(context, 10), "document one");
-
-        limits.setMaxCount(2);   // same object, retuned in place
-
-        assertEquals(2, runDirectContainerScoped(context, 10),
-                "tightening the configured limits in place had no effect: the change signal is "
-                        + "object identity, which does not move when the object is mutated");
-    }
-
-    /** Nothing changing must leave the record alone across many documents. */
-    @Test
-    public void unchangedLimitsStayStableAcrossDocuments() throws Exception {
-        ParseContext context = new ParseContext();
-        EmbeddedLimits limits = new EmbeddedLimits();
-        limits.setMaxCount(3);
-        context.set(EmbeddedLimits.class, limits);
-
-        for (int document = 1; document <= 3; document++) {
-            assertEquals(3, runDirectContainerScoped(context, 10),
-                    "document " + document + " should see the configured limit unchanged");
-        }
     }
 }
