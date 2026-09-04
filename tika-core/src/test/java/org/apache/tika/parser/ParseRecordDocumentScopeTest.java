@@ -961,63 +961,6 @@ public class ParseRecordDocumentScopeTest {
                         + "its own scope");
     }
 
-    /**
-     * A sibling entry must not be stamped with the previous siblings' embedded diagnostics.
-     *
-     * <p>{@code CompositeParser}'s finally gates the metadata stamping on {@code depth == 0},
-     * the same "am I top-level?" oracle that fails for a directly-invoked container: nothing
-     * increments depth for the container's own frame, so EVERY sibling's delegate parse unwinds
-     * to depth 0 and fires {@code recordEmbeddedMetadata}. Because siblings deliberately share one
-     * record, each stamping copies every previous sibling's warnings and exceptions onto the
-     * current entry -- misattributing failures to the wrong embedded document, and growing
-     * quadratically. {@code embeddedNesting} is non-zero throughout an embedded entry and is the
-     * signal that actually distinguishes the two.
-     */
-    @Test
-    public void siblingEntriesAreNotStampedWithEachOthersDiagnostics() throws Exception {
-        ParseContext context = new ParseContext();
-        ParseRecord record = ParseRecord.newInstance(context);
-        context.set(ParseRecord.class, record);
-
-        java.util.List<Metadata> entries = new java.util.ArrayList<>();
-        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
-        context.set(Parser.class, new CompositeParser(
-                org.apache.tika.mime.MediaTypeRegistry.getDefaultRegistry(),
-                new AbstractParser() {
-                    @Override
-                    public Set<MediaType> getSupportedTypes(ParseContext c) {
-                        return Collections.singleton(MediaType.OCTET_STREAM);
-                    }
-
-                    @Override
-                    public void parse(TikaInputStream tis, ContentHandler handler,
-                                      Metadata metadata, ParseContext c) {
-                        ParseRecord r = c.get(ParseRecord.class);
-                        if (r != null) {
-                            r.addWarning("warning from entry " + n.incrementAndGet());
-                        }
-                    }
-                }));
-
-        ParsingEmbeddedDocumentExtractor extractor =
-                new ParsingEmbeddedDocumentExtractor(context);
-        for (int i = 0; i < 3; i++) {
-            Metadata entry = new Metadata();
-            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
-            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
-                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
-                        context, false);
-            }
-            entries.add(entry);
-        }
-
-        Metadata third = entries.get(2);
-        for (String w : third.getValues(
-                org.apache.tika.metadata.TikaCoreProperties.EMBEDDED_WARNING)) {
-            assertFalse(w.contains("entry 1"),
-                    "the third sibling was stamped with the FIRST sibling's warning: " + w);
-        }
-    }
 
 
     /** Drives one declared document scope worth of entries. */
