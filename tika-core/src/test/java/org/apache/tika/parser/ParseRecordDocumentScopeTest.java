@@ -898,4 +898,145 @@ public class ParseRecordDocumentScopeTest {
                         + "the record: each extract() is an independent document and must open "
                         + "its own scope");
     }
+
+    /**
+     * {@link RecursiveParserWrapper} is a document entry point and must open a scope.
+     *
+     * <p>Its sibling {@code ParserContainerExtractor} was fixed; this one was missed. It wraps an
+     * arbitrary Parser -- its constructor takes any -- so when the wrapped parser is a raw one
+     * that never claims, nothing resets the record between independent documents on a reused
+     * context. Today's callers happen to wrap an AutoDetectParser, which claims internally, so
+     * this is correct only by accident.
+     */
+    @Test
+    public void recursiveParserWrapperGivesEachDocumentItsOwnBudget() throws Exception {
+        ParseContext context = new ParseContext();
+        EmbeddedLimits limits = new EmbeddedLimits();
+        limits.setMaxCount(2);
+        context.set(EmbeddedLimits.class, limits);
+
+        java.util.List<Integer> countAtEntry = new java.util.ArrayList<>();
+        Parser raw = new AbstractParser() {
+            @Override
+            public Set<MediaType> getSupportedTypes(ParseContext c) {
+                return Collections.singleton(MediaType.OCTET_STREAM);
+            }
+
+            @Override
+            public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
+                              ParseContext c) throws IOException, SAXException {
+                ParseRecord r = c.get(ParseRecord.class);
+                countAtEntry.add(r == null ? 0 : r.getEmbeddedCount());
+                org.apache.tika.extractor.EmbeddedDocumentExtractor ex =
+                        org.apache.tika.extractor.EmbeddedDocumentUtil
+                                .getEmbeddedDocumentExtractor(c);
+                for (int i = 0; i < 5; i++) {
+                    Metadata entry = new Metadata();
+                    entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+                    try (TikaInputStream child = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                        ex.parseEmbedded(child, new org.xml.sax.helpers.DefaultHandler(), entry, c,
+                                false);
+                    }
+                }
+            }
+        };
+
+        RecursiveParserWrapper wrapper = new RecursiveParserWrapper(raw);
+        for (int document = 1; document <= 2; document++) {
+            org.apache.tika.sax.RecursiveParserWrapperHandler handler =
+                    new org.apache.tika.sax.RecursiveParserWrapperHandler(
+                            new org.apache.tika.sax.BasicContentHandlerFactory(
+                                    org.apache.tika.sax.BasicContentHandlerFactory.HANDLER_TYPE.TEXT,
+                                    -1));
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                wrapper.parse(tis, handler, new Metadata(), context);
+            }
+        }
+
+        assertEquals(java.util.Arrays.asList(0, 0),
+                java.util.Arrays.asList(countAtEntry.get(0),
+                        countAtEntry.get(countAtEntry.size() / 2)),
+                "the second document began with the first's embedded count still on the record: "
+                        + "RecursiveParserWrapper.parse is a document entry point and must open "
+                        + "its own scope");
+    }
+
+
+
+    /** Drives one declared document scope worth of entries. */
+    private static int runDirectContainerScoped(ParseContext context, int entries)
+            throws Exception {
+        ParseRecord.beginDocument(context);
+        try {
+            return runDirectContainer(context, entries);
+        } finally {
+            ParseRecord.endDocument(context);
+        }
+    }
+
+
+    /**
+     * The content-handler decorator must be applied once per DOCUMENT, not once per entry.
+     *
+     * <p>{@code AutoDetectParser.decorateHandler} used {@code depth == 0} as its "am I
+     * top-level?" test. For a directly-invoked container that never increments depth, every
+     * sibling entry looked top-level, so the configured
+     * {@code ContentHandlerDecoratorFactory} -- write limiting, XHTML validation, whatever an
+     * operator installed -- was re-applied per entry, re-issuing any per-document handler budget
+     * to each sibling.
+     *
+     * <p>Written because an audit showed reverting that gate left the whole tika-core suite
+     * green: the fix had no coverage anywhere.
+     */
+    @Test
+    public void theHandlerDecoratorIsAppliedOncePerDocumentNotPerEntry() throws Exception {
+        ParseContext context = new ParseContext();
+        ParseRecord record = ParseRecord.newInstance(context);
+        context.set(ParseRecord.class, record);
+
+        java.util.concurrent.atomic.AtomicInteger decorations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        // The factory is read from the parser's CONFIG, not the ParseContext. Setting it in the
+        // context does nothing -- an earlier version of this test did exactly that and was
+        // vacuous: it stayed green with the fix reverted.
+        AutoDetectParserConfig config = new AutoDetectParserConfig();
+        config.setContentHandlerDecoratorFactory((handler, metadata, ctx) -> {
+            decorations.incrementAndGet();
+            return handler;
+        });
+
+        // A directly-invoked container handing three entries to an AutoDetectParser.
+        AutoDetectParser embeddedParser = new AutoDetectParser(
+                (stream, metadata, ctx) -> MediaType.OCTET_STREAM,
+                new AbstractParser() {
+                    @Override
+                    public Set<MediaType> getSupportedTypes(ParseContext c) {
+                        return Collections.singleton(MediaType.OCTET_STREAM);
+                    }
+
+                    @Override
+                    public void parse(TikaInputStream tis, ContentHandler handler,
+                                      Metadata metadata, ParseContext c) {
+                        // leaf
+                    }
+                });
+        embeddedParser.setAutoDetectParserConfig(config);
+        context.set(Parser.class, embeddedParser);
+
+        ParsingEmbeddedDocumentExtractor extractor =
+                new ParsingEmbeddedDocumentExtractor(context);
+        for (int i = 0; i < 3; i++) {
+            Metadata entry = new Metadata();
+            entry.set(Metadata.CONTENT_TYPE, MediaType.OCTET_STREAM.toString());
+            try (TikaInputStream tis = TikaInputStream.get(new byte[] {1, 2, 3})) {
+                extractor.parseEmbedded(tis, new org.xml.sax.helpers.DefaultHandler(), entry,
+                        context, false);
+            }
+        }
+
+        assertEquals(0, decorations.get(),
+                "the top-level handler decorator was applied to embedded entries: each sibling "
+                        + "of a directly-invoked container looked top-level, so any per-document "
+                        + "handler budget was re-issued per entry");
+    }
 }

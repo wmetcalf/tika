@@ -138,47 +138,57 @@ public class RecursiveParserWrapper extends ParserDecorator {
             throw new IllegalStateException(
                     "ContentHandler must implement RecursiveParserWrapperHandler");
         }
-        EmbeddedParserDecorator decorator =
-                new EmbeddedParserDecorator(getWrappedParser(), "/", "/", parserState);
-        context.set(Parser.class, decorator);
-        ContentHandler localHandler =
-                parserState.recursiveParserWrapperHandler.createHandler();
-        long started = System.currentTimeMillis();
-        parserState.recursiveParserWrapperHandler.startDocument();
-        int writeLimit = -1;
-        boolean throwOnWriteLimitReached = true;
-
-        if (recursiveParserWrapperHandler instanceof AbstractRecursiveParserWrapperHandler) {
-            ContentHandlerFactory factory =
-                    ((AbstractRecursiveParserWrapperHandler)recursiveParserWrapperHandler).getContentHandlerFactory();
-            if (factory instanceof WriteLimiter) {
-                writeLimit = ((WriteLimiter)factory).getWriteLimit();
-                throwOnWriteLimitReached = ((WriteLimiter)factory).isThrowOnWriteLimitReached();
-            }
-        }
+        // Each parse() is an independent document. Claim one: this class wraps an ARBITRARY
+        // Parser -- its constructor takes any -- so when the wrapped parser is a raw one that
+        // never claims, nothing else establishes a boundary. Today's in-tree callers wrap an
+        // AutoDetectParser, which claims internally, so this was correct only by accident. Its
+        // sibling entry point ParserContainerExtractor already does this.
+        ParseRecord.beginDocument(context);
         try {
-            RecursivelySecureContentHandler secureContentHandler =
-                    new RecursivelySecureContentHandler(localHandler, tis, new SecureHandlerCounter(writeLimit),
-                            throwOnWriteLimitReached, context);
-            context.set(RecursivelySecureContentHandler.class, secureContentHandler);
-            getWrappedParser().parse(tis, secureContentHandler, metadata, context);
-        } catch (Throwable e) {
-            if (e instanceof EncryptedDocumentException) {
-                metadata.set(TikaCoreProperties.IS_ENCRYPTED, "true");
+            EmbeddedParserDecorator decorator =
+                    new EmbeddedParserDecorator(getWrappedParser(), "/", "/", parserState);
+            context.set(Parser.class, decorator);
+            ContentHandler localHandler =
+                    parserState.recursiveParserWrapperHandler.createHandler();
+            long started = System.currentTimeMillis();
+            parserState.recursiveParserWrapperHandler.startDocument();
+            int writeLimit = -1;
+            boolean throwOnWriteLimitReached = true;
+
+            if (recursiveParserWrapperHandler instanceof AbstractRecursiveParserWrapperHandler) {
+                ContentHandlerFactory factory =
+                        ((AbstractRecursiveParserWrapperHandler)recursiveParserWrapperHandler).getContentHandlerFactory();
+                if (factory instanceof WriteLimiter) {
+                    writeLimit = ((WriteLimiter)factory).getWriteLimit();
+                    throwOnWriteLimitReached = ((WriteLimiter)factory).isThrowOnWriteLimitReached();
+                }
             }
-            if (WriteLimitReachedException.isWriteLimitReached(e)) {
-                metadata.set(TikaCoreProperties.WRITE_LIMIT_REACHED, "true");
-            } else {
-                String stackTrace = ExceptionUtils.getFilteredStackTrace(e);
-                metadata.add(TikaCoreProperties.CONTAINER_EXCEPTION, stackTrace);
-                throw e;
+            try {
+                RecursivelySecureContentHandler secureContentHandler =
+                        new RecursivelySecureContentHandler(localHandler, tis, new SecureHandlerCounter(writeLimit),
+                                throwOnWriteLimitReached, context);
+                context.set(RecursivelySecureContentHandler.class, secureContentHandler);
+                getWrappedParser().parse(tis, secureContentHandler, metadata, context);
+            } catch (Throwable e) {
+                if (e instanceof EncryptedDocumentException) {
+                    metadata.set(TikaCoreProperties.IS_ENCRYPTED, "true");
+                }
+                if (WriteLimitReachedException.isWriteLimitReached(e)) {
+                    metadata.set(TikaCoreProperties.WRITE_LIMIT_REACHED, "true");
+                } else {
+                    String stackTrace = ExceptionUtils.getFilteredStackTrace(e);
+                    metadata.add(TikaCoreProperties.CONTAINER_EXCEPTION, stackTrace);
+                    throw e;
+                }
+            } finally {
+                long elapsedMillis = System.currentTimeMillis() - started;
+                metadata.set(TikaCoreProperties.PARSE_TIME_MILLIS, Long.toString(elapsedMillis));
+                parserState.recursiveParserWrapperHandler.endDocument(localHandler, metadata);
+                parserState.recursiveParserWrapperHandler.endDocument();
+                context.set(RecursivelySecureContentHandler.class, null);
             }
         } finally {
-            long elapsedMillis = System.currentTimeMillis() - started;
-            metadata.set(TikaCoreProperties.PARSE_TIME_MILLIS, Long.toString(elapsedMillis));
-            parserState.recursiveParserWrapperHandler.endDocument(localHandler, metadata);
-            parserState.recursiveParserWrapperHandler.endDocument();
-            context.set(RecursivelySecureContentHandler.class, null);
+            ParseRecord.endDocument(context);
         }
     }
 

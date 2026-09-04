@@ -353,6 +353,14 @@ public class CompositeParser implements Parser {
             // anything; the reset happens on the next beginDocument, after this block has read
             // what it needs.
             ParseRecord.endDocument(context);
+            // NOTE: depth == 0 is a known-imperfect oracle here. For a directly-invoked
+            // container it is true for every sibling entry, so each stamping copies the shared
+            // record's accumulated warnings and exceptions onto the current entry --
+            // misattribution, growing quadratically. Gating on embeddedNesting == 0 as well was
+            // tried and is WORSE: nothing then publishes diagnostics on that path at all, so an
+            // entry loses its OWN warnings too. The real fix is to publish each entry's DELTA
+            // against the shared record rather than its whole contents, which is a design change
+            // and belongs in its own PR.
             if (parserRecord.getDepth() == 0) {
                 metadata.set(TikaCoreProperties.TIKA_PARSED_BY_FULL_SET, parserRecord.getParsers());
                 recordEmbeddedMetadata(metadata, context);
