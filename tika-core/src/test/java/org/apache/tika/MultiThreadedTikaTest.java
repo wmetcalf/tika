@@ -163,6 +163,29 @@ public class MultiThreadedTikaTest extends TikaTest {
                 sb.append("; embedded exceptions recorded during the concurrent run: ")
                         .append(reasons);
             }
+            // Was the attachment REFUSED, or did it vanish silently? Those want different
+            // investigations, and the difference is invisible without this: a limit refusal
+            // leaves no exception behind, so the "exceptions recorded" line above stays empty
+            // either way. Every occurrence so far has been silent, which is what pointed at a
+            // race rather than a limit -- but that was inferred, not observed.
+            List<String> limits = new ArrayList<>();
+            for (Metadata m : observed.metadataList) {
+                if (m.get(TikaCoreProperties.EMBEDDED_RESOURCE_LIMIT_REACHED) != null) {
+                    limits.add("count-limit@" + m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
+                }
+                if (m.get(TikaCoreProperties.EMBEDDED_DEPTH_LIMIT_REACHED) != null) {
+                    limits.add("depth-limit@" + m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH));
+                }
+            }
+            if (!limits.isEmpty()) {
+                sb.append("; embedded limits tripped during the concurrent run: ").append(limits);
+            } else if (!missing.isEmpty() && reasons.isEmpty()) {
+                // Only when NOTHING was recorded. If an embedded exception was printed above,
+                // that IS the recorded reason, and claiming otherwise in the same message would
+                // point the investigation at a race instead of at the exception.
+                sb.append("; no embedded limit was tripped and no exception was recorded, so the "
+                        + "attachment went missing without any reason being reported");
+            }
             return sb.toString();
         } catch (Exception e) {
             return "; (could not diff attachments: " + e + ")";
