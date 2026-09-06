@@ -416,22 +416,50 @@ public class TesseractOCRResourceSafetyTest {
     public void testSubsamplingDoesNotCrushTheShortEdgeEither() {
         // The read is subsampled BEFORE anything is drawn, so a decode already
         // reduced to a few pixels tall cannot be recovered downstream.
-        int subsampling = TesseractOCRParser.calculateSourceSubsampling(
+        int[] subsampling = TesseractOCRParser.calculateSourceSubsampling(
                 20000, 60, 16_000_000L, 2000);
 
-        assertTrue(divideCeiling(60, subsampling) >= 32,
-                "decode short edge fell to " + divideCeiling(60, subsampling) + "px");
+        assertNotNull(subsampling);
+        assertTrue(divideCeiling(60, subsampling[1]) >= 32,
+                "decode short edge fell to " + divideCeiling(60, subsampling[1]) + "px");
     }
 
     @Test
     public void testSubsamplingKeepsIntermediateWithinPixelBudget() {
-        int subsampling =
+        int[] subsampling =
                 TesseractOCRParser.calculateSourceSubsampling(6000, 4000, 4_000_000, 1000);
 
-        assertTrue(subsampling > 1);
+        assertNotNull(subsampling);
+        assertTrue(subsampling[0] > 1 || subsampling[1] > 1);
         long decodedPixels =
-                (long) divideCeiling(6000, subsampling) * divideCeiling(4000, subsampling);
+                (long) divideCeiling(6000, subsampling[0]) * divideCeiling(4000, subsampling[1]);
         assertTrue(decodedPixels <= 4_000_000);
+    }
+
+    @Test
+    public void testPixelBudgetIsTakenFromTheLongAxisNotTheShortOne() {
+        // 100000x33 at 32 bytes/pixel: the budget forces one increment, and a single
+        // scalar factor of 2 decodes 17 rows -- which no amount of drawing at 32 rows
+        // brings back. The increment has to come off the long axis.
+        int[] subsampling =
+                TesseractOCRParser.calculateSourceSubsampling(100000, 33, 2_097_152L, 2000);
+
+        assertNotNull(subsampling, "an image this shape is decodable within the budget");
+        assertTrue(divideCeiling(33, subsampling[1]) >= 32,
+                "decode short edge fell to " + divideCeiling(33, subsampling[1]) + "px");
+        assertTrue((long) divideCeiling(100000, subsampling[0])
+                        * divideCeiling(33, subsampling[1]) <= 2_097_152L,
+                "decode exceeded the pixel budget");
+    }
+
+    @Test
+    public void testUndecodableWithinBudgetIsRejectedRatherThanCrushed() {
+        // A readable decode of anything needs 32x32 = 1024 pixels, so a budget below
+        // that cannot be met by any pair of factors. The answer is "reject", not a
+        // raster OCR would read noise from.
+        assertNull(TesseractOCRParser.calculateSourceSubsampling(100000, 100000, 1023L, 2000));
+        // And exactly 1024 IS reachable -- 32x32 -- so the boundary is not off by one.
+        assertNotNull(TesseractOCRParser.calculateSourceSubsampling(100000, 100000, 1024L, 2000));
     }
 
     @Test

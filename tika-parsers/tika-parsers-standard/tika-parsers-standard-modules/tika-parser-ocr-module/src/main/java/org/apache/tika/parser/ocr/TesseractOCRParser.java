@@ -661,10 +661,14 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
             long decodedPixelLimit = Math.min(MAX_OCR_DECODED_PIXELS,
                     MAX_OCR_RASTER_BYTES / decodedBytesPerPixel);
-            int subsampling =
+            int[] subsampling =
                     calculateSourceSubsampling(width, height, decodedPixelLimit, maxDim);
+            if (subsampling == null) {
+                return rejectUnsafeImage(metadata, width, height,
+                        "decode budget against a readable short edge");
+            }
             ImageReadParam readParam = reader.getDefaultReadParam();
-            readParam.setSourceSubsampling(subsampling, subsampling, 0, 0);
+            readParam.setSourceSubsampling(subsampling[0], subsampling[1], 0, 0);
             BufferedImage decoded = reader.read(0, readParam);
             if (decoded == null) {
                 return rejectUnsafeImage(metadata, width, height, "image decode");
@@ -784,17 +788,57 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         };
     }
 
-    static int calculateSourceSubsampling(int width, int height, long maxDecodedPixels,
-                                          int maxDim) {
+    /**
+     * Source subsampling as {@code {x, y}}, or null when the decode budget cannot be
+     * met without taking an edge below {@link #MIN_OCR_TARGET_DIM}.
+     *
+     * The factors are independent because a single one cannot separate the two jobs it
+     * is doing. Enforcing the budget by incrementing a scalar factor crushes BOTH edges,
+     * so an elongated image walks straight back into the defect the floor exists to
+     * prevent: 100000x33 at a 2,097,152px budget needs one increment, and a scalar
+     * factor of 2 decodes 17 rows -- which no amount of drawing at 32 rows brings back.
+     * Subsampling the LONG axis alone spends the budget where the redundancy is.
+     *
+     * Null rather than a best effort: an image whose budget cannot be met with a
+     * readable short edge is rejected up front, where the caller reports it, rather
+     * than decoded into a raster that OCR will read noise from.
+     */
+    static int[] calculateSourceSubsampling(int width, int height, long maxDecodedPixels,
+                                            int maxDim) {
         int longest = Math.max(width, height);
         // The floor applies HERE too: a decode already subsampled to a few pixels tall
         // cannot be recovered by whatever the caller draws it into.
-        int subsampling = Math.max(1, longest / effectiveMaxDim(width, height, maxDim));
-        while (checkedPixels(divideCeiling(width, subsampling),
-                divideCeiling(height, subsampling)) > maxDecodedPixels) {
-            subsampling = Math.incrementExact(subsampling);
+        int base = Math.max(1, longest / effectiveMaxDim(width, height, maxDim));
+        int xSub = capToFloor(width, base);
+        int ySub = capToFloor(height, base);
+        while (checkedPixels(divideCeiling(width, xSub),
+                divideCeiling(height, ySub)) > maxDecodedPixels) {
+            boolean canX = fitsFloor(width, xSub + 1);
+            boolean canY = fitsFloor(height, ySub + 1);
+            if (!canX && !canY) {
+                return null;
+            }
+            // Spend the increment on whichever axis still has the most pixels left,
+            // so the budget comes off the redundant direction first.
+            if (canX && (!canY || divideCeiling(width, xSub) >= divideCeiling(height, ySub))) {
+                xSub = Math.incrementExact(xSub);
+            } else {
+                ySub = Math.incrementExact(ySub);
+            }
         }
-        return subsampling;
+        return new int[] {xSub, ySub};
+    }
+
+    /** The largest factor at or below {@code factor} that keeps this edge readable. */
+    private static int capToFloor(int edge, int factor) {
+        while (factor > 1 && !fitsFloor(edge, factor)) {
+            factor--;
+        }
+        return factor;
+    }
+
+    private static boolean fitsFloor(int edge, int factor) {
+        return divideCeiling(edge, factor) >= Math.min(edge, MIN_OCR_TARGET_DIM);
     }
 
     private static int divideCeiling(int value, int divisor) {
