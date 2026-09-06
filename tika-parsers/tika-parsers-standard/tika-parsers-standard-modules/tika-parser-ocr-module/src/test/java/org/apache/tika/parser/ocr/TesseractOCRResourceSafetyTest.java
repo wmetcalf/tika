@@ -17,6 +17,7 @@
 package org.apache.tika.parser.ocr;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -381,6 +382,48 @@ public class TesseractOCRResourceSafetyTest {
     }
 
     @Test
+    public void testDownscalingKeepsTheShortEdgeReadable() {
+        // A sliced banner: 20000x60, the shape image-sliced phishing text takes.
+        // maxDim=2000 alone scales that to 2000x6, and Tesseract reads noise from it
+        // (14% of the words, measured) -- worse than reading nothing, because the
+        // caller cannot tell noise from an image that genuinely has no text.
+        int[] target = TesseractOCRParser.ocrTargetSize(20000, 60, 2000);
+
+        // 32 is written out rather than read from MIN_OCR_TARGET_DIM: the readable
+        // height is the requirement, and a test that reads the implementation's own
+        // floor passes for any floor. (Measured -- with the constant imported, a
+        // mutant that lowered it to 1 survived this test.)
+        assertTrue(target[1] >= 32, "short edge fell to " + target[1] + "px");
+        // Aspect preserved, not stretched to fit the cap: stretching measured worse
+        // than doing nothing at all.
+        assertEquals(20000d / 60d, (double) target[0] / target[1], 1.0);
+    }
+
+    @Test
+    public void testDownscalingIsUnchangedForOrdinaryImages() {
+        // The floor may not perturb the shapes that actually arrive: only images
+        // beyond MIN_OCR_TARGET_DIM:1 of aspect can reach it.
+        assertArrayEquals(new int[] {2000, 1333},
+                TesseractOCRParser.ocrTargetSize(6000, 4000, 2000));
+        assertArrayEquals(new int[] {2000, 1500},
+                TesseractOCRParser.ocrTargetSize(4000, 3000, 2000));
+        assertArrayEquals(new int[] {800, 600},
+                TesseractOCRParser.ocrTargetSize(800, 600, 2000));
+        assertEquals(2000, TesseractOCRParser.effectiveMaxDim(6000, 4000, 2000));
+    }
+
+    @Test
+    public void testSubsamplingDoesNotCrushTheShortEdgeEither() {
+        // The read is subsampled BEFORE anything is drawn, so a decode already
+        // reduced to a few pixels tall cannot be recovered downstream.
+        int subsampling = TesseractOCRParser.calculateSourceSubsampling(
+                20000, 60, 16_000_000L, 2000);
+
+        assertTrue(divideCeiling(60, subsampling) >= 32,
+                "decode short edge fell to " + divideCeiling(60, subsampling) + "px");
+    }
+
+    @Test
     public void testSubsamplingKeepsIntermediateWithinPixelBudget() {
         int subsampling =
                 TesseractOCRParser.calculateSourceSubsampling(6000, 4000, 4_000_000, 1000);
@@ -389,6 +432,29 @@ public class TesseractOCRResourceSafetyTest {
         long decodedPixels =
                 (long) divideCeiling(6000, subsampling) * divideCeiling(4000, subsampling);
         assertTrue(decodedPixels <= 4_000_000);
+    }
+
+    @Test
+    public void testPreparedInputForASlicedBannerStaysReadable() throws Exception {
+        // End to end through the real path -- decode, subsample, draw, re-encode --
+        // rather than the size arithmetic alone. Asserting the PRODUCED raster is
+        // what makes this independent of tesseract and of any font.
+        Path image = writeImage("sliced-banner.png", 20000, 60);
+        try (TemporaryResources tmp = new TemporaryResources();
+             TikaInputStream original = TikaInputStream.get(image)) {
+            TesseractOCRParser.PreparedOcrInput prepared =
+                    TesseractOCRParser.prepareOcrInput(original, tmp, 2000, new Metadata());
+            try {
+                BufferedImage produced = ImageIO.read(prepared.stream().getPath().toFile());
+                assertNotNull(produced, "prepared OCR input could not be read back");
+                assertTrue(produced.getHeight() >= 32,
+                        "OCR input was reduced to " + produced.getWidth() + "x"
+                                + produced.getHeight() + "; a banner sliced this thin "
+                                + "has no glyphs left and tesseract reads noise");
+            } finally {
+                prepared.close();
+            }
+        }
     }
 
     @Test
