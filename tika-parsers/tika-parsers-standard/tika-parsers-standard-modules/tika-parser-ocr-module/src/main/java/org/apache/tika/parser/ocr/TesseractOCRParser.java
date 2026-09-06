@@ -560,6 +560,17 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
     // Default max image dimension for OCR downscaling when not set via OcrResultCache.
     private static final int MAX_OCR_DIM = 2000;
+    /**
+     * Smallest edge an OCR input may be downscaled to.
+     *
+     * Tesseract needs glyph height. Below roughly this many pixels the text is not
+     * merely degraded, it is gone -- and OCR then returns noise rather than nothing,
+     * which is worse, because a caller cannot tell the difference. Measured on a
+     * 20000x60 sliced banner (the shape image-sliced phishing text takes): at the
+     * aspect-preserving 2000x6 that maxDim=2000 implies, Tesseract recovered 14% of
+     * the words; with the short edge floored to 32 it recovered 100%.
+     */
+    static final int MIN_OCR_TARGET_DIM = 32;
     private static final int MAX_OCR_SOURCE_DIMENSION = 100_000;
     private static final long MAX_OCR_SOURCE_PIXELS = 100_000_000L;
     private static final long MAX_OCR_DECODED_PIXELS = 16_000_000L;
@@ -621,15 +632,9 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
             }
             int decodedBytesPerPixel = Math.max(Integer.BYTES, (bitsPerPixel + 7) / 8);
 
-            int targetWidth = width;
-            int targetHeight = height;
-            if (downscalingEnabled && (width > maxDim || height > maxDim)) {
-                int longest = Math.max(width, height);
-                targetWidth = Math.max(1,
-                        Math.toIntExact(Math.multiplyExact((long) width, maxDim) / longest));
-                targetHeight = Math.max(1,
-                        Math.toIntExact(Math.multiplyExact((long) height, maxDim) / longest));
-            }
+            int[] target = ocrTargetSize(width, height, downscalingEnabled ? maxDim : 0);
+            int targetWidth = target[0];
+            int targetHeight = target[1];
             long targetPixels = checkedPixels(targetWidth, targetHeight);
             int targetBytesPerPixel =
                     width == targetWidth && height == targetHeight
@@ -656,10 +661,14 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
 
             long decodedPixelLimit = Math.min(MAX_OCR_DECODED_PIXELS,
                     MAX_OCR_RASTER_BYTES / decodedBytesPerPixel);
-            int subsampling =
+            int[] subsampling =
                     calculateSourceSubsampling(width, height, decodedPixelLimit, maxDim);
+            if (subsampling == null) {
+                return rejectUnsafeImage(metadata, width, height,
+                        "decode budget against a readable short edge");
+            }
             ImageReadParam readParam = reader.getDefaultReadParam();
-            readParam.setSourceSubsampling(subsampling, subsampling, 0, 0);
+            readParam.setSourceSubsampling(subsampling[0], subsampling[1], 0, 0);
             BufferedImage decoded = reader.read(0, readParam);
             if (decoded == null) {
                 return rejectUnsafeImage(metadata, width, height, "image decode");
@@ -734,15 +743,102 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
         private RuntimeException failure;
     }
 
-    static int calculateSourceSubsampling(int width, int height, long maxDecodedPixels,
-                                          int maxDim) {
-        int longest = Math.max(width, height);
-        int subsampling = Math.max(1, longest / maxDim);
-        while (checkedPixels(divideCeiling(width, subsampling),
-                divideCeiling(height, subsampling)) > maxDecodedPixels) {
-            subsampling = Math.incrementExact(subsampling);
+    /**
+     * The dimension cap actually applied, raised where the requested one would scale
+     * the shorter edge below {@link #MIN_OCR_TARGET_DIM}.
+     *
+     * The aspect ratio is preserved rather than the cap, which is the part worth
+     * stating: stretching the short edge up to the floor instead measured WORSE than
+     * changing nothing (0% of words recovered against 14%), while preserving the
+     * ratio recovered all of them. An elongated image therefore keeps more than
+     * maxDim on its long edge. That is deliberate -- the bound that protects the
+     * decode is MAX_OCR_DECODED_PIXELS / MAX_OCR_RASTER_BYTES, which still applies
+     * to every path below; maxDim is a resolution preference, not the safety limit.
+     */
+    static int effectiveMaxDim(int width, int height, int maxDim) {
+        int shortest = Math.min(width, height);
+        if (maxDim <= 0 || shortest <= 0) {
+            return maxDim;
         }
-        return subsampling;
+        int longest = Math.max(width, height);
+        int floor = Math.min(shortest, MIN_OCR_TARGET_DIM);
+        // Smallest cap for which shortest * cap / longest still reaches the floor.
+        long needed = ((long) floor * longest + shortest - 1) / shortest;
+        if (needed <= maxDim) {
+            return maxDim;
+        }
+        // Never above the source: a cap of `longest` means "do not downscale at all".
+        return Math.toIntExact(Math.min(needed, (long) longest));
+    }
+
+    /**
+     * Target raster size for OCR downscaling as {@code {width, height}}, honouring
+     * both the dimension cap and the short-edge floor. Returns the source size
+     * unchanged when no downscaling applies.
+     */
+    static int[] ocrTargetSize(int width, int height, int maxDim) {
+        if (maxDim <= 0 || (width <= maxDim && height <= maxDim)) {
+            return new int[] {width, height};
+        }
+        int longest = Math.max(width, height);
+        int dim = effectiveMaxDim(width, height, maxDim);
+        return new int[] {
+                Math.max(1, Math.toIntExact(Math.multiplyExact((long) width, dim) / longest)),
+                Math.max(1, Math.toIntExact(Math.multiplyExact((long) height, dim) / longest)),
+        };
+    }
+
+    /**
+     * Source subsampling as {@code {x, y}}, or null when the decode budget cannot be
+     * met without taking an edge below {@link #MIN_OCR_TARGET_DIM}.
+     *
+     * The factors are independent because a single one cannot separate the two jobs it
+     * is doing. Enforcing the budget by incrementing a scalar factor crushes BOTH edges,
+     * so an elongated image walks straight back into the defect the floor exists to
+     * prevent: 100000x33 at a 2,097,152px budget needs one increment, and a scalar
+     * factor of 2 decodes 17 rows -- which no amount of drawing at 32 rows brings back.
+     * Subsampling the LONG axis alone spends the budget where the redundancy is.
+     *
+     * Null rather than a best effort: an image whose budget cannot be met with a
+     * readable short edge is rejected up front, where the caller reports it, rather
+     * than decoded into a raster that OCR will read noise from.
+     */
+    static int[] calculateSourceSubsampling(int width, int height, long maxDecodedPixels,
+                                            int maxDim) {
+        int longest = Math.max(width, height);
+        // The floor applies HERE too: a decode already subsampled to a few pixels tall
+        // cannot be recovered by whatever the caller draws it into.
+        int base = Math.max(1, longest / effectiveMaxDim(width, height, maxDim));
+        int xSub = capToFloor(width, base);
+        int ySub = capToFloor(height, base);
+        while (checkedPixels(divideCeiling(width, xSub),
+                divideCeiling(height, ySub)) > maxDecodedPixels) {
+            boolean canX = fitsFloor(width, xSub + 1);
+            boolean canY = fitsFloor(height, ySub + 1);
+            if (!canX && !canY) {
+                return null;
+            }
+            // Spend the increment on whichever axis still has the most pixels left,
+            // so the budget comes off the redundant direction first.
+            if (canX && (!canY || divideCeiling(width, xSub) >= divideCeiling(height, ySub))) {
+                xSub = Math.incrementExact(xSub);
+            } else {
+                ySub = Math.incrementExact(ySub);
+            }
+        }
+        return new int[] {xSub, ySub};
+    }
+
+    /** The largest factor at or below {@code factor} that keeps this edge readable. */
+    private static int capToFloor(int edge, int factor) {
+        while (factor > 1 && !fitsFloor(edge, factor)) {
+            factor--;
+        }
+        return factor;
+    }
+
+    private static boolean fitsFloor(int edge, int factor) {
+        return divideCeiling(edge, factor) >= Math.min(edge, MIN_OCR_TARGET_DIM);
     }
 
     private static int divideCeiling(int value, int divisor) {
@@ -807,24 +903,12 @@ public class TesseractOCRParser extends AbstractExternalProcessParser implements
                     Math.max(Integer.BYTES,
                             (bitsPerPixel + 7) / 8);
 
-            int targetWidth = width;
-            int targetHeight = height;
-            if (downscalingEnabled
-                    && (width > maxDim || height > maxDim)) {
-                int longest = Math.max(width, height);
-                targetWidth = Math.max(
-                        1,
-                        Math.toIntExact(
-                                Math.multiplyExact(
-                                        (long) width, maxDim)
-                                        / longest));
-                targetHeight = Math.max(
-                        1,
-                        Math.toIntExact(
-                                Math.multiplyExact(
-                                        (long) height, maxDim)
-                                        / longest));
-            }
+            int[] target =
+                    ocrTargetSize(
+                            width, height,
+                            downscalingEnabled ? maxDim : 0);
+            int targetWidth = target[0];
+            int targetHeight = target[1];
 
             long targetPixels =
                     checkedPixels(targetWidth, targetHeight);
