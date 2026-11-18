@@ -101,17 +101,20 @@ public class IWorkPackageParser implements Parser {
             // content handlers set (it is written at the first element). Pass 2: every other
             // member, handed on. Both walks see the members in the same order, so the parsed
             // one is identified by name and occurrence.
+            // Pass 1 opens only content entries; a member it failed on (named in a warning
+            // already) is left alone by pass 2, so nothing is reported twice.
             java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
+            java.util.Set<String> done = new java.util.HashSet<>();
             String[] parsedName = {null};
-            int[] parsedOccurrence = {0};
             Exception ex = IWorkMembers.walk(tis,
                     entry -> seen1.merge(entry.getName(), 1, Integer::sum),
+                    entry -> parsedName[0] == null && !entry.isDirectory()
+                            && IWORK_CONTENT_ENTRIES.contains(entry.getName()),
                     (entry, data) -> {
-                        if (parsedName[0] == null
-                                && processMember(entry, data, false, true, xhtml, metadata,
-                                        context, extractor)) {
+                        if (processMember(entry, data, false, true, xhtml, metadata, context,
+                                extractor)) {
                             parsedName[0] = entry.getName();
-                            parsedOccurrence[0] = seen1.get(entry.getName());
+                            done.add(entry.getName() + '\u0000' + seen1.get(entry.getName()));
                         }
                     }, entry -> {
                         if (parsedName[0] == null
@@ -122,18 +125,16 @@ public class IWorkPackageParser implements Parser {
                             metadata.set(Metadata.CONTENT_TYPE,
                                     IWORKDocumentType.ENCRYPTED.getType().toString());
                         }
-                    }, metadata, caller);
+                    },
+                    entry -> done.add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    metadata, caller);
             java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
             Exception ex2 = IWorkMembers.walk(tis,
                     entry -> seen2.merge(entry.getName(), 1, Integer::sum),
-                    (entry, data) -> {
-                        if (entry.getName().equals(parsedName[0])
-                                && seen2.get(entry.getName()) == parsedOccurrence[0]) {
-                            return;
-                        }
-                        processMember(entry, data, true, false, xhtml, metadata, context,
-                                extractor);
-                    }, null, metadata, caller);
+                    entry -> !done.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    (entry, data) -> processMember(entry, data, true, false, xhtml, metadata,
+                            context, extractor),
+                    null, null, metadata, caller);
             ex = IWorkMembers.firstOf(ex, ex2);
             xhtml.endDocument();
             if (ex != null) {

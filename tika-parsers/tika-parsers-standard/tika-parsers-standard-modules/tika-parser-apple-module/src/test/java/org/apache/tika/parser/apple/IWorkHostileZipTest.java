@@ -612,4 +612,53 @@ class IWorkHostileZipTest {
         assertEquals("application/vnd.apple.pages", r.metadata.get(Metadata.CONTENT_TYPE),
                 r.toString());
     }
+
+    /**
+     * Hand-built zips (2026-11-18 review of this change): alias-* list the same names in two
+     * central directories (a shadow one, behind a skewed EOCD in the comment, which
+     * commons-compress takes) with different data; lfh* truncate commons-compress's view with a
+     * junk record while an entry the JDK refuses stops a local-header cross-check early.
+     * Neither may hide payload.exe ("MZ-HIDDEN-PAYLOAD") without a trace.
+     */
+    @Test
+    void readersThatDisagreeAreNeverSilent() throws Exception {
+        for (String kind : new String[]{"alias", "lfhbz2", "lfhenc"}) {
+            for (String d : new String[]{"09", "13", "18"}) {
+                String name = "iwork-hostile/" + kind + "-d" + d + ".zip";
+                byte[] bytes;
+                try (var in = getClass().getResourceAsStream("/test-documents/" + name)) {
+                    bytes = in.readAllBytes();
+                }
+                List<String> contents = new ArrayList<>();
+                Metadata metadata = new Metadata();
+                ParseContext context = new ParseContext();
+                context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+                    @Override
+                    public boolean shouldParseEmbedded(Metadata m) {
+                        return true;
+                    }
+
+                    @Override
+                    public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                              Metadata m, ParseContext ctx, boolean outputHtml)
+                            throws IOException {
+                        contents.add(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                });
+                try (TikaInputStream s = TikaInputStream.get(bytes)) {
+                    new AutoDetectParser().parse(s, new DefaultHandler(), metadata, context);
+                } catch (Exception e) {
+                    // a surfaced failure is fine; silence is not
+                }
+                String warnings = String.join("|",
+                        metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
+                boolean handedOn = contents.stream().anyMatch(c -> c.contains("MZ-HIDDEN-PAYLOAD"));
+                assertTrue(handedOn || warnings.contains("inconsistent")
+                        || warnings.contains("ended early"), name + ": " + warnings);
+                if (kind.equals("alias")) {
+                    assertTrue(handedOn, name + " (the JDK reads it, so it must be handed on)");
+                }
+            }
+        }
+    }
 }

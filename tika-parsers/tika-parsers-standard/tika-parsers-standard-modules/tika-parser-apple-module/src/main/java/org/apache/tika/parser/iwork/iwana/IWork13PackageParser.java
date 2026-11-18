@@ -93,23 +93,32 @@ public class IWork13PackageParser implements Parser {
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
             // Pass 1: the package metadata, read before any output so the XHTML <head> (written
             // at the first element) carries it. Pass 2: every member, those included, handed on.
-            Exception ex1 = IWorkMembers.walk(tis, (entry, data) -> {
-                if (isPackageMetadata(entry.getName())) {
-                    readPackageMetadata(entry.getName(), data, metadata);
-                }
-            }, metadata, caller);
+            // Pass 1 opens only the package metadata; a member it failed on (named in a warning
+            // already) is left alone by pass 2, so nothing is reported twice.
+            java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
+            java.util.Set<String> failed1 = new java.util.HashSet<>();
+            Exception ex1 = IWorkMembers.walk(tis,
+                    entry -> seen1.merge(entry.getName(), 1, Integer::sum),
+                    entry -> isPackageMetadata(entry.getName()),
+                    (entry, data) -> readPackageMetadata(entry.getName(), data, metadata),
+                    null,
+                    entry -> failed1.add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    metadata, caller);
             MediaType[] detected = {null};
+            java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
             Exception ex = IWorkMembers.walk(tis, entry -> {
+                seen2.merge(entry.getName(), 1, Integer::sum);
                 // by name, before the data is opened: an unreadable member still identifies
                 if (detected[0] == null) {
                     detected[0] = IWork13DocumentType.detectIfPossible(entry);
                 }
-            }, (entry, data) -> {
+            }, entry -> !failed1.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    (entry, data) -> {
                 try (TemporaryResources tmp = new TemporaryResources();
                         TikaInputStream member = TikaInputStream.get(data, tmp, new Metadata())) {
                     processZipEntry(entry, member, metadata, xhtml, context, extractor);
                 }
-            }, metadata, caller);
+            }, null, null, metadata, caller);
             MediaType type = detected[0] == null ? IWork13DocumentType.UNKNOWN13.getType()
                     : detected[0];
             if (type == IWork13DocumentType.UNKNOWN13.getType()) {
