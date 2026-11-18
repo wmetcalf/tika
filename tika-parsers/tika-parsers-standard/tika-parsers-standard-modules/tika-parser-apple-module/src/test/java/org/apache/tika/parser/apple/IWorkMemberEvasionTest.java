@@ -17,6 +17,7 @@
 package org.apache.tika.parser.apple;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.helpers.DefaultHandler;
 
+import org.apache.tika.exception.EmbeddedLimitReachedException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
@@ -157,6 +159,38 @@ class IWorkMemberEvasionTest {
         names = parseDirect(new IWorkPackageParser(), zip(iwork09));
         assertTrue(names.containsAll(List.of("buildVersionHistory.plist", "index.xml",
                 "payload.exe")), "iWork09 stream path: " + names);
+    }
+
+    @Test
+    void embeddedLimitAndHandlerFailuresStopTheWalkUnwrapped() throws Exception {
+        Map<String, String> entries = new LinkedHashMap<>();
+        entries.put("evil.key/Metadata/BuildVersionHistory.plist", PLIST);
+        entries.put("one.bin", PAYLOAD);
+        entries.put("two.bin", PAYLOAD);
+        byte[] bytes = zip(entries);
+        for (Parser parser : new Parser[]{new IWork18PackageParser(), new IWork13PackageParser(),
+                new IWorkPackageParser()}) {
+            List<String> asked = new ArrayList<>();
+            ParseContext context = new ParseContext();
+            context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+                @Override
+                public boolean shouldParseEmbedded(Metadata metadata) {
+                    asked.add(metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+                    throw new EmbeddedLimitReachedException(
+                            EmbeddedLimitReachedException.LimitType.MAX_COUNT, 0);
+                }
+
+                @Override
+                public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                          Metadata metadata, ParseContext ctx, boolean outputHtml) {
+                }
+            });
+            try (TikaInputStream s = TikaInputStream.get(bytes)) {
+                assertThrows(EmbeddedLimitReachedException.class, () -> parser.parse(s,
+                        new DefaultHandler(), new Metadata(), context), parser.toString());
+            }
+            assertEquals(1, asked.size(), parser + " kept walking after the limit: " + asked);
+        }
     }
 
     private static List<String> parseDirect(Parser parser, byte[] bytes) throws Exception {

@@ -106,9 +106,9 @@ public class IWork13ParserTest extends TikaTest {
         Metadata metadata = new Metadata();
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, "testNumbers2013.numbers");
         List<Metadata> metadataList = getRecursiveMetadata("testNumbers2013.numbers", metadata);
-        // the container plus every member that is not consumed as package metadata:
-        // 47 .iwa streams and 3 previews (Metadata/*.plist and DocumentIdentifier are read)
-        assertEquals(51, metadataList.size());
+        // the container plus every member: 47 .iwa streams, 3 previews and the 3 package
+        // metadata members (read as metadata AND handed on)
+        assertEquals(54, metadataList.size());
         assertEquals("application/vnd.apple.numbers.13",
                 metadataList.get(0).get(Metadata.CONTENT_TYPE));
         assertEquals("true", metadataList.get(0).get("iworks:isMultiPage"));
@@ -123,7 +123,7 @@ public class IWork13ParserTest extends TikaTest {
                         m.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE), name);
                 thumbnails++;
             } else {
-                assertTrue(name.endsWith(".iwa"), name);
+                assertTrue(name.endsWith(".iwa") || name.startsWith("Metadata/"), name);
             }
         }
         assertEquals(3, thumbnails);

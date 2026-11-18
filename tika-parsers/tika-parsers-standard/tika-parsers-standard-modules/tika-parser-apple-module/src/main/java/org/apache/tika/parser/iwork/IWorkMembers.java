@@ -18,18 +18,23 @@ package org.apache.tika.parser.iwork;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PushbackInputStream;
 
 import org.apache.commons.compress.archivers.zip.UnsupportedZipFeatureException;
 import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.SAXException;
 
+import org.apache.tika.exception.EmbeddedLimitReachedException;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -62,32 +67,67 @@ public final class IWorkMembers {
         if (!extractor.shouldParseEmbedded(embedded)) {
             return;
         }
-        try (TemporaryResources tmp = new TemporaryResources()) {
-            TikaInputStream tis = TikaInputStream.get(CloseShieldInputStream.wrap(member), tmp,
-                    embedded);
+        try (TemporaryResources tmp = new TemporaryResources();
+                TikaInputStream tis = TikaInputStream.get(CloseShieldInputStream.wrap(member),
+                        tmp, embedded)) {
             extractor.parseEmbedded(tis, xhtml, embedded, context, true);
         }
     }
 
     /**
-     * Folds one member's failure into the parse: a member that cannot be read at all
-     * (an encrypted or unsupported zip entry) is recorded as a warning on the container,
-     * anything else is kept as the first failure, rethrown once every other member has
-     * been extracted, so one bad member cannot hide the ones after it.
+     * As {@link #extract}, for a zip entry. A directory entry is skipped only when it really
+     * is empty: its name alone (a trailing '/') does not stop data it carries from being
+     * handed on.
+     */
+    public static void extractEntry(String name, boolean directory, InputStream member,
+                                    String resourceType, XHTMLContentHandler xhtml,
+                                    ParseContext context, EmbeddedDocumentExtractor extractor)
+            throws IOException, SAXException, TikaException {
+        if (directory) {
+            PushbackInputStream peek = new PushbackInputStream(member, 1);
+            int first = peek.read();
+            if (first < 0) {
+                return;
+            }
+            peek.unread(first);
+            member = peek;
+        }
+        extract(name, member, resourceType, xhtml, context, extractor);
+    }
+
+    /**
+     * Folds one member's failure into the parse so one bad member cannot hide the ones after
+     * it: a member that cannot be read at all (an encrypted or unsupported zip entry) is
+     * recorded as a warning on the container; any other member failure is kept (the first
+     * one) and rethrown once every other member has been extracted.
+     * <p>
+     * Failures that are not about the member stop the walk at once, unwrapped: anything the
+     * caller's own content handler threw (a write limit, an output error), and an embedded
+     * document limit.
      *
+     * @param caller the caller's handler, as wrapped by the parser's XHTML output
      * @return the failure to rethrow at the end, or null
      */
     public static Exception fold(Exception first, Exception failure, String name,
-                                 Metadata container) {
-        for (Throwable t = failure; t != null; t = t.getCause()) {
+                                 Metadata container, TaggedContentHandler caller)
+            throws SAXException {
+        caller.throwIfCauseOf(failure);
+        WriteLimitReachedException.throwIfWriteLimitReached(failure);
+        int depth = 0;
+        for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
+            if (t instanceof EmbeddedLimitReachedException) {
+                throw (EmbeddedLimitReachedException) t;
+            }
+        }
+        depth = 0;
+        for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
             if (t instanceof UnsupportedZipFeatureException) {
                 container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         "iWork member not extracted, unreadable: " + name + ": "
                                 + t.getMessage());
+                // the same signal ZipParser gives an unreadable (e.g. encrypted) member
+                EmbeddedDocumentUtil.recordEmbeddedStreamException(t, container);
                 return first;
-            }
-            if (t.getCause() == t) {
-                break;
             }
         }
         return first == null ? failure : first;

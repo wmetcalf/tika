@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 import javax.xml.namespace.QName;
@@ -42,9 +43,11 @@ import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -90,47 +93,103 @@ public class IWorkPackageParser implements Parser {
 
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        ZipArchiveInputStream zip = new ZipArchiveInputStream(tis);
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-        EmbeddedDocumentExtractor extractor =
-                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        Exception ex = null;
-        ZipArchiveEntry entry = zip.getNextEntry();
-
-        while (entry != null) {
-            if (entry.isDirectory()) {
-                entry = zip.getNextEntry();
-                continue;
-            }
-            // One marker entry routes an arbitrary zip here, so every member that is not
-            // the package's content entry goes to the embedded extractor rather than
-            // being skipped, and one bad member does not stop the ones after it.
-            try {
-                InputStream entryStream = new BufferedInputStream(CloseShieldInputStream.wrap(zip));
-                IWORKDocumentType type = null;
-                if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
-                    entryStream.mark(MARK_LIMIT);
-                    type = detectType(entryStream, MARK_LIMIT);
-                    entryStream.reset(); // 4096 fails on github
-                }
-                if (type != null) {
-                    parseContent(type, entryStream, xhtml, metadata, context);
-                } else {
-                    IWorkMembers.extract(entry.getName(), entryStream, null, xhtml, context,
-                            extractor);
-                }
-            } catch (SecurityException e) {
-                throw e;
-            } catch (Exception e) {
-                ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
-            }
-
-            entry = zip.getNextEntry();
+        // Walk the central directory when a file or the detector's open ZipFile is at hand,
+        // as the iWork 13/18 parsers do: the detector routed this zip by its central
+        // directory, and a local-header walk stops quietly at a stray signature (a leading
+        // EOCD, a fake central header), hiding every member listed after it.
+        ZipFile zipFile = null;
+        ZipFile ownedZip = null;
+        Object container = tis.getOpenContainer();
+        if (container instanceof ZipFile) {
+            zipFile = (ZipFile) container;
+        } else if (tis.hasFile()) {
+            zipFile = ZipFile.builder().setFile(tis.getFile()).get();
+            ownedZip = zipFile;
         }
-        xhtml.endDocument();
-        if (ex != null) {
-            throw new TikaException("problem processing iWork package", ex);
+        TaggedContentHandler caller = new TaggedContentHandler(handler);
+        try {
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
+            xhtml.startDocument();
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            Exception ex = null;
+            if (zipFile != null) {
+                Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
+                while (entries.hasMoreElements()) {
+                    ZipArchiveEntry entry = entries.nextElement();
+                    try (InputStream member = zipFile.getInputStream(entry)) {
+                        processMember(entry, member, xhtml, metadata, context, extractor);
+                    } catch (UnsupportedZipFeatureException e) {
+                        if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+                            // as on the stream path: an unreadable content entry is how a
+                            // password-protected iWork package looks
+                            metadata.set(Metadata.CONTENT_TYPE,
+                                    IWORKDocumentType.ENCRYPTED.getType().toString());
+                        }
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
+                    }
+                }
+            } else {
+                // stored entries with a data descriptor are readable, as in ZipParser
+                ZipArchiveInputStream zip =
+                        new ZipArchiveInputStream(tis, "UTF8", true, true);
+                ZipArchiveEntry entry = zip.getNextEntry();
+                while (entry != null) {
+                    try {
+                        processMember(entry, CloseShieldInputStream.wrap(zip), xhtml, metadata,
+                                context, extractor);
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
+                    }
+                    entry = zip.getNextEntry();
+                }
+            }
+            xhtml.endDocument();
+            if (ex != null) {
+                throw new TikaException("problem processing iWork package", ex);
+            }
+        } catch (SAXException e) {
+            // the caller's handler failed: hand back its own exception, not the tagged wrapper
+            caller.throwIfCauseOf(e);
+            throw e;
+        } finally {
+            if (ownedZip != null) {
+                ownedZip.close();
+            }
+        }
+    }
+
+    /**
+     * The package's content entry is parsed as the document; every other member (and a
+     * content entry that is not iWork XML) is handed to the embedded extractor, so one marker
+     * entry routing an arbitrary zip here cannot make its members vanish.
+     */
+    private void processMember(ZipArchiveEntry entry, InputStream raw, XHTMLContentHandler xhtml,
+                               Metadata metadata, ParseContext context,
+                               EmbeddedDocumentExtractor extractor)
+            throws IOException, SAXException, TikaException {
+        InputStream entryStream = new BufferedInputStream(raw);
+        IWORKDocumentType type = null;
+        if (!entry.isDirectory() && IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+            entryStream.mark(MARK_LIMIT);
+            type = detectType(entryStream, MARK_LIMIT);
+            entryStream.reset(); // 4096 fails on github
+        }
+        if (type == IWORKDocumentType.ENCRYPTED) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "iWork content entry not extracted, unreadable: " + entry.getName());
+        }
+        if (type != null) {
+            parseContent(type, entryStream, xhtml, metadata, context);
+        } else {
+            IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), entryStream, null,
+                    xhtml, context, extractor);
         }
         // Don't close the zip InputStream (TIKA-1117).
     }

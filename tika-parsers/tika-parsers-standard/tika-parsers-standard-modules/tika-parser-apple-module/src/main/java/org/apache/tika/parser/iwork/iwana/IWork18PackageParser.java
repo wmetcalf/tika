@@ -41,6 +41,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.iwork.IWorkMembers;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
@@ -77,9 +78,9 @@ public class IWork18PackageParser implements Parser {
         } else {
             zipStream = new ZipInputStream(tis);
         }
+        TaggedContentHandler caller = new TaggedContentHandler(handler);
         try {
-
-            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
             xhtml.startDocument();
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
@@ -95,15 +96,13 @@ public class IWork18PackageParser implements Parser {
                     if (type == null) {
                         type = IWork18DocumentType.detectIfPossible(entry);
                     }
-                    if (entry.isDirectory()) {
-                        continue;
-                    }
                     try (InputStream member = zipFile.getInputStream(entry)) {
-                        IWorkMembers.extract(entry.getName(), member, null, xhtml, context, extractor);
+                        IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), member,
+                                null, xhtml, context, extractor);
                     } catch (SecurityException e) {
                         throw e;
                     } catch (Exception e) {
-                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
                     }
                 }
             } else {
@@ -112,15 +111,13 @@ public class IWork18PackageParser implements Parser {
                     if (type == null) {
                         type = IWork18DocumentType.detectIfPossible(entry);
                     }
-                    if (!entry.isDirectory()) {
-                        try {
-                            IWorkMembers.extract(entry.getName(), zipStream, null, xhtml, context,
-                                    extractor);
-                        } catch (SecurityException e) {
-                            throw e;
-                        } catch (Exception e) {
-                            ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
-                        }
+                    try {
+                        IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), zipStream,
+                                null, xhtml, context, extractor);
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
                     }
                     entry = zipStream.getNextEntry();
                 }
@@ -132,6 +129,10 @@ public class IWork18PackageParser implements Parser {
             if (ex != null) {
                 throw new TikaException("problem processing iWork '18 package", ex);
             }
+        } catch (SAXException e) {
+            // the caller's handler failed: hand back its own exception, not the tagged wrapper
+            caller.throwIfCauseOf(e);
+            throw e;
         } finally {
             if (ownedZip != null) {
                 ownedZip.close();

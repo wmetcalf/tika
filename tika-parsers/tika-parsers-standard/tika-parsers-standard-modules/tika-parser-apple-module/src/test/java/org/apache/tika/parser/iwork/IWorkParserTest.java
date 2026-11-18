@@ -72,6 +72,23 @@ public class IWorkParserTest extends TikaTest {
         }
     }
 
+    /**
+     * A write limit reached while the content entry is parsed is the caller's truncation
+     * signal: it must reach the caller as the handler's exception, not be folded into a
+     * member failure (Tika.parseToString only treats it as truncation that way).
+     */
+    @Test
+    public void testWriteLimitPropagatesUnwrapped() throws Exception {
+        ParseContext context = new ParseContext();
+        try (TikaInputStream tis = getResourceAsStream("/test-documents/testKeynote.key")) {
+            Exception thrown = org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> iWorkParser.parse(tis, new BodyContentHandler(20), new Metadata(),
+                            context));
+            assertTrue(thrown instanceof org.apache.tika.exception.WriteLimitReachedException,
+                    "write limit was wrapped: " + thrown);
+        }
+    }
+
     @Test
     public void testParseKeynote() throws Exception {
         Metadata metadata = new Metadata();
