@@ -98,7 +98,7 @@ public class IWorkPackageParser implements Parser {
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
             boolean[] contentParsed = {false};
-            Exception ex = IWorkMembers.walk(tis, (entry, data) -> {
+            Exception ex = IWorkMembers.walk(tis, null, (entry, data) -> {
                 if (processMember(entry, data, contentParsed[0], xhtml, metadata, context,
                         extractor)) {
                     contentParsed[0] = true;

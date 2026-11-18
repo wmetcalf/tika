@@ -532,4 +532,18 @@ class IWorkHostileZipTest {
                 r.toString());
         assertTrue(r.names.size() > 10, r.toString());
     }
+
+    @Test
+    void anUnreadableMemberStillIdentifiesThePackage() throws Exception {
+        byte[] zip = new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("Index/Slide.iwa", PAYLOAD, 1, false, 0).finish();
+        Result r = new Result();
+        r.metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, "sample.pages");
+        try (TikaInputStream s = TikaInputStream.get(zip)) {
+            new IWork13PackageParser().parse(s, new DefaultHandler(), r.metadata,
+                    new ParseContext());
+        }
+        assertEquals(IWork13PackageParser.IWork13DocumentType.KEYNOTE13.getType().toString(),
+                r.metadata.get(Metadata.CONTENT_TYPE));
+    }
 }

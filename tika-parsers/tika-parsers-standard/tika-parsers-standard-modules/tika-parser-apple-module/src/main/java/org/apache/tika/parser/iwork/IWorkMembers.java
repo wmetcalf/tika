@@ -122,7 +122,20 @@ public final class IWorkMembers {
     public static Exception walk(TikaInputStream tis, MemberHandler handler, Metadata container,
                                  TaggedContentHandler caller)
             throws IOException, SAXException {
-        return walk(tis, handler, null, container, caller);
+        return walk(tis, null, handler, null, container, caller);
+    }
+
+    /**
+     * As {@link #walk(TikaInputStream, MemberHandler, Metadata, TaggedContentHandler)};
+     * {@code seen}, if given, is told about every member (by name) before its data is opened,
+     * so a member whose data cannot be read still counts for, e.g., type detection.
+     */
+    public static Exception walk(TikaInputStream tis,
+                                 java.util.function.Consumer<ZipArchiveEntry> seen,
+                                 MemberHandler handler, Metadata container,
+                                 TaggedContentHandler caller)
+            throws IOException, SAXException {
+        return walk(tis, seen, handler, null, container, caller);
     }
 
     /**
@@ -130,7 +143,9 @@ public final class IWorkMembers {
      * {@code unreadable}, if given, is told about each member whose data cannot be opened at
      * all (encrypted or an unsupported method) before that failure is folded.
      */
-    public static Exception walk(TikaInputStream tis, MemberHandler handler,
+    public static Exception walk(TikaInputStream tis,
+                                 java.util.function.Consumer<ZipArchiveEntry> seen,
+                                 MemberHandler handler,
                                  java.util.function.Consumer<ZipArchiveEntry> unreadable,
                                  Metadata container, TaggedContentHandler caller)
             throws IOException, SAXException {
@@ -146,7 +161,7 @@ public final class IWorkMembers {
                 Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
-                    member(entry, () -> zipFile.getInputStream(entry), handler, unreadable,
+                    member(entry, () -> zipFile.getInputStream(entry), seen, handler, unreadable,
                             first, container, caller);
                 }
             }
@@ -164,7 +179,7 @@ public final class IWorkMembers {
                 while (entries.hasMoreElements()) {
                     java.util.zip.ZipEntry jdkEntry = entries.nextElement();
                     member(new ZipArchiveEntry(jdkEntry.getName()),
-                            () -> zipFile.getInputStream(jdkEntry), handler, unreadable, first,
+                            () -> zipFile.getInputStream(jdkEntry), seen, handler, unreadable, first,
                             container, caller);
                 }
             }
@@ -180,7 +195,7 @@ public final class IWorkMembers {
             Enumeration<ZipArchiveEntry> entries = salvaged.getEntries();
             while (entries.hasMoreElements()) {
                 ZipArchiveEntry entry = entries.nextElement();
-                member(entry, () -> salvaged.getInputStream(entry), handler, unreadable, first,
+                member(entry, () -> salvaged.getInputStream(entry), seen, handler, unreadable, first,
                         container, caller);
             }
             return first[0];
@@ -201,7 +216,7 @@ public final class IWorkMembers {
                     break;
                 }
                 ZipArchiveEntry current = entry;
-                member(current, () -> CloseShieldInputStream.wrap(zip), handler, unreadable, first,
+                member(current, () -> CloseShieldInputStream.wrap(zip), seen, handler, unreadable, first,
                         container, caller);
             }
         }
@@ -213,10 +228,15 @@ public final class IWorkMembers {
         InputStream open() throws IOException;
     }
 
-    private static void member(ZipArchiveEntry entry, Opener opener, MemberHandler handler,
+    private static void member(ZipArchiveEntry entry, Opener opener,
+                               java.util.function.Consumer<ZipArchiveEntry> seen,
+                               MemberHandler handler,
                                java.util.function.Consumer<ZipArchiveEntry> unreadable,
                                Exception[] first, Metadata container,
                                TaggedContentHandler caller) throws SAXException {
+        if (seen != null) {
+            seen.accept(entry);
+        }
         try (InputStream data = opener.open()) {
             handler.handle(entry, data);
         } catch (UnsupportedZipFeatureException e) {

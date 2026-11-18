@@ -94,10 +94,12 @@ public class IWork13PackageParser implements Parser {
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
             MediaType[] detected = {null};
-            Exception ex = IWorkMembers.walk(tis, (entry, data) -> {
+            Exception ex = IWorkMembers.walk(tis, entry -> {
+                // by name, before the data is opened: an unreadable member still identifies
                 if (detected[0] == null) {
                     detected[0] = IWork13DocumentType.detectIfPossible(entry);
                 }
+            }, (entry, data) -> {
                 try (TemporaryResources tmp = new TemporaryResources();
                         TikaInputStream member = TikaInputStream.get(data, tmp, new Metadata())) {
                     processZipEntry(entry, member, metadata, xhtml, context, extractor);

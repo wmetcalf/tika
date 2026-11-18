@@ -71,10 +71,12 @@ public class IWork18PackageParser implements Parser {
             // member on. One marker entry routes an arbitrary zip here, so "only detect" would
             // let such a zip hide all of its members.
             MediaType[] type = {null};
-            Exception ex = IWorkMembers.walk(tis, (entry, data) -> {
+            Exception ex = IWorkMembers.walk(tis, entry -> {
+                // by name, before the data is opened: an unreadable member still identifies
                 if (type[0] == null) {
                     type[0] = IWork18DocumentType.detectIfPossible(entry);
                 }
+            }, (entry, data) -> {
                 IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), data, null, xhtml,
                         context, extractor);
             }, metadata, caller);
