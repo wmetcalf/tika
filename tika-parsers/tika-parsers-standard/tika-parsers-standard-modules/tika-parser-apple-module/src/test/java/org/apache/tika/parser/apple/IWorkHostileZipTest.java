@@ -665,4 +665,20 @@ class IWorkHostileZipTest {
             }
         }
     }
+
+    @Test
+    void aMalformedPackageMemberIsStillHandedOn() throws Exception {
+        // a member whose bytes are readable but whose parse failed must still reach the
+        // extractor: a malformed plist or document is a fine place to hide a payload
+        byte[] notAPlist = ("MZ" + new String(PAYLOAD, StandardCharsets.UTF_8))
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] badXml = "<sl:document xmlns:sl=\"http://developer.apple.com/namespaces/sl\"><"
+                .getBytes(StandardCharsets.UTF_8);
+        Result r13 = run(new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("Metadata/Properties.plist", notAPlist).finish());
+        assertTrue(r13.names.contains("Metadata/Properties.plist"), r13.toString());
+        Result r09 = run(new RawZip().entry("buildVersionHistory.plist", PLIST)
+                .entry("index.xml", badXml).finish());
+        assertTrue(r09.names.contains("index.xml"), r09.toString());
+    }
 }

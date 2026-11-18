@@ -157,8 +157,8 @@ public final class IWorkMembers {
     /**
      * The full walk. {@code want}, if given, picks the members whose data is opened and
      * handed to {@code handler} (the others are only {@code seen}); {@code failed}, if given,
-     * is told about each member whose failure was folded, so a later walk over the same
-     * package can leave it alone instead of reporting it twice.
+     * is told about each member whose data could not be read at all (its failure folded), so
+     * a later walk over the same package can leave it alone instead of reporting it twice.
      */
     public static Exception walk(TikaInputStream tis,
                                  java.util.function.Consumer<ZipArchiveEntry> seen,
@@ -344,9 +344,34 @@ public final class IWorkMembers {
         if (hooks.want() != null && !hooks.want().test(entry)) {
             return;
         }
-        try (InputStream data = opener.open()) {
-            handler.handle(entry, data);
+        // Only a member whose data cannot be opened is reported to `failed`: one whose data
+        // opened but whose handling failed (a malformed plist, document XML) still has bytes a
+        // later walk must hand on.
+        final InputStream opened;
+        try {
+            opened = opener.open();
         } catch (UnsupportedZipFeatureException e) {
+            if (hooks.unreadable() != null) {
+                hooks.unreadable().accept(entry);
+            }
+            first[0] = fold(first[0], e, entry.getName(), container, caller);
+            if (hooks.failed() != null) {
+                hooks.failed().accept(entry);
+            }
+            return;
+        } catch (SecurityException e) {
+            throw e;
+        } catch (Exception | LinkageError e) {
+            first[0] = fold(first[0], e, entry.getName(), container, caller);
+            if (hooks.failed() != null) {
+                hooks.failed().accept(entry);
+            }
+            return;
+        }
+        try {
+            handler.handle(entry, opened);
+        } catch (UnsupportedZipFeatureException e) {
+            // e.g. the local-header route reports an encrypted entry only when it is read
             if (hooks.unreadable() != null) {
                 hooks.unreadable().accept(entry);
             }
@@ -358,8 +383,11 @@ public final class IWorkMembers {
             throw e;
         } catch (Exception | LinkageError e) {
             first[0] = fold(first[0], e, entry.getName(), container, caller);
-            if (hooks.failed() != null) {
-                hooks.failed().accept(entry);
+        } finally {
+            try {
+                opened.close();
+            } catch (IOException e) {
+                // done with the member either way
             }
         }
     }
