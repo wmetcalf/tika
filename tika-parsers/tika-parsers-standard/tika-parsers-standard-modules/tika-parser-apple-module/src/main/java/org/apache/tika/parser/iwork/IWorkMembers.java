@@ -196,15 +196,22 @@ public final class IWorkMembers {
         // the same names for different data.
         java.util.Map<String, Integer> walked = new java.util.HashMap<>();
         java.util.Map<String, Integer> walkedNames = new java.util.HashMap<>();
-        long[] commonsCount = {0};
         boolean[] extra = {false};
+        // where commons-compress's members live: their local headers and their data
+        java.util.Set<Long> knownHeaders = new java.util.HashSet<>();
+        java.util.List<long[]> knownData = new java.util.ArrayList<>();
+        java.util.Set<String> jdkExtras = new java.util.HashSet<>();
         try {
             if (commons != null) {
                 ZipFile zipFile = commons;
                 Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
-                    commonsCount[0]++;
+                    knownHeaders.add(entry.getLocalHeaderOffset());
+                    if (entry.getDataOffset() >= 0 && entry.getCompressedSize() >= 0) {
+                        knownData.add(new long[]{entry.getDataOffset(),
+                                entry.getDataOffset() + entry.getCompressedSize()});
+                    }
                     walked.merge(identity(entry.getName(), entry.getCrc(),
                             entry.getCompressedSize(), entry.getSize()), 1, Integer::sum);
                     walkedNames.merge(entry.getName(), 1, Integer::sum);
@@ -226,6 +233,7 @@ public final class IWorkMembers {
                         continue;
                     }
                     extra[0] = true;
+                    jdkExtras.add(id);
                     walked.merge(id, 1, Integer::sum);
                     walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
                     member(new ZipArchiveEntry(jdkEntry.getName()),
@@ -233,33 +241,28 @@ public final class IWorkMembers {
                             first, container, caller);
                 }
             }
-            // The JDK often refuses legitimate packages (bzip2 members, commons-compress zip64
-            // output, password-protected iWork '09), and two readers can share a forged view.
-            // So the local headers are consulted only on evidence: no central directory either
-            // reader accepts, more than one plausible end-of-central-directory record (a shadow
-            // directory), or commons-compress reading fewer records than its EOCD declares (it
-            // stops at the first stray record). Every such walk is recorded.
-            long declared = commons == null ? -1 : declaredEntries(file);
-            boolean shortView = commons != null
-                    && (declared == -2 || declared >= 0 && declared != commonsCount[0]);
+            // Every local header in the file must belong to a member commons-compress listed,
+            // or lie inside one's data (a stored inner zip). One that does not is a member some
+            // other reader can see and commons-compress cannot (a shadow or truncated central
+            // directory, whatever its EOCD claims): it is read at its own offset and handed on,
+            // and recorded. This needs no trust in any directory's counts, CRCs or offsets.
             if (commons == null && jdk == null) {
                 warnOnce(container,
                         "iWork package central directory unreadable: members were walked "
                                 + "by local header and some may be missing");
-            } else if (shortView) {
-                warnOnce(container,
-                        declared == -2
-                                ? "iWork package central directory is inconsistent: "
-                                        + "several end-of-central-directory records; "
-                                        + "members were sought by local header"
-                                : "iWork package central directory is inconsistent: it "
-                                        + "declares " + declared + " entries, "
-                                        + "commons-compress read " + commonsCount[0]
-                                        + "; the rest were sought by local header");
-            }
-            if (commons == null && jdk == null || shortView) {
                 walkLocalHeaders(file, walked, walkedNames, extra, hooks, handler, first,
                         container, caller);
+            } else if (commons != null) {
+                java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, knownData);
+                if (!stray.isEmpty()) {
+                    warnOnce(container,
+                            "iWork package central directory is inconsistent: " + stray.size()
+                                    + " local header(s) outside it were read at their own offset");
+                    for (long offset : stray) {
+                        walkLocalHeaderAt(file, offset, jdkExtras, hooks, handler, first,
+                                container, caller);
+                    }
+                }
             }
             if (extra[0] && commons != null) {
                 warnOnce(container,
@@ -317,45 +320,97 @@ public final class IWorkMembers {
         }
     }
 
-    /**
-     * The total entry count the archive's last EOCD record declares (the record
-     * commons-compress uses), -1 if there is none or it defers to zip64, or -2 if more than
-     * one plausible EOCD record is present (a shadow central directory: readers that choose
-     * differently see different members).
-     */
-    private static long declaredEntries(java.nio.file.Path file) throws IOException {
+    /** Offsets of "PK\\3\\4" signatures that are neither a known member's local header nor
+     * inside a known member's data. */
+    private static java.util.List<Long> unaccountedLocalHeaders(java.nio.file.Path file,
+                                                                java.util.Set<Long> headers,
+                                                                java.util.List<long[]> data)
+            throws IOException {
+        long[][] ranges = data.toArray(new long[0][]);
+        java.util.Arrays.sort(ranges, (x, y) -> Long.compare(x[0], y[0]));
+        java.util.List<Long> stray = new java.util.ArrayList<>();
         try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
-            long size = ch.size();
-            int tail = (int) Math.min(size, 22 + 65535);
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(tail);
-            ch.position(size - tail);
-            while (buf.hasRemaining() && ch.read(buf) >= 0) {
-                // fill
-            }
-            byte[] b = buf.array();
-            long base = size - tail;
-            long last = -1;
-            int plausible = 0;
-            for (int i = tail - 22; i >= 0; i--) {
-                if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 5 && b[i + 3] == 6) {
-                    long cdSize = le32(b, i + 12);
-                    long cdOffset = le32(b, i + 16);
-                    if (cdOffset + cdSize <= base + i) {
-                        plausible++;
-                        if (last < 0 && plausible == 1) {
-                            int total = (b[i + 10] & 0xff) | (b[i + 11] & 0xff) << 8;
-                            last = total == 0xffff ? -1 : total;
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(1 << 20);
+            long base = 0;
+            int carry = 0;
+            while (true) {
+                int n = ch.read(buf);
+                if (n < 0) {
+                    break;
+                }
+                byte[] b = buf.array();
+                int len = buf.position();
+                for (int i = 0; i + 3 < len; i++) {
+                    if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 3 && b[i + 3] == 4) {
+                        long off = base + i;
+                        if (!headers.contains(off) && !inside(ranges, off)) {
+                            stray.add(off);
                         }
                     }
                 }
+                // keep the last 3 bytes: a signature may straddle the buffer boundary
+                carry = Math.min(3, len);
+                base += len - carry;
+                System.arraycopy(b, len - carry, b, 0, carry);
+                buf.position(carry);
+                buf.limit(buf.capacity());
             }
-            return plausible > 1 ? -2 : last;
         }
+        return stray;
     }
 
-    private static long le32(byte[] b, int i) {
-        return (b[i] & 0xffL) | (b[i + 1] & 0xffL) << 8 | (b[i + 2] & 0xffL) << 16
-                | (b[i + 3] & 0xffL) << 24;
+    private static boolean inside(long[][] ranges, long offset) {
+        int lo = 0;
+        int hi = ranges.length - 1;
+        int found = -1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            if (ranges[mid][0] <= offset) {
+                found = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        // ranges may overlap (a forged directory); check every range starting at or before
+        for (int i = found; i >= 0; i--) {
+            if (offset < ranges[i][1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Reads the one member whose local header starts at {@code offset} and hands it on,
+     * unless the JDK's reader already handed on a member with the same name and data. */
+    private static void walkLocalHeaderAt(java.nio.file.Path file, long offset,
+                                          java.util.Set<String> jdkExtras, Hooks hooks,
+                                          MemberHandler handler, Exception[] first,
+                                          Metadata container, TaggedContentHandler caller)
+            throws IOException, SAXException {
+        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+            ch.position(offset);
+            ZipArchiveInputStream zip = new ZipArchiveInputStream(
+                    java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
+            ZipArchiveEntry entry;
+            try {
+                entry = zip.getNextEntry();
+            } catch (IOException | LinkageError e) {
+                warnOnce(container, "iWork package local header at " + offset
+                        + " could not be read: " + e);
+                return;
+            }
+            if (entry == null) {
+                return;
+            }
+            if (entry.getCrc() >= 0 && entry.getSize() >= 0 && entry.getCompressedSize() >= 0
+                    && jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
+                            entry.getCompressedSize(), entry.getSize()))) {
+                return;
+            }
+            member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler, first,
+                    container, caller);
+        }
     }
 
     private static Exception foldUnlessQuiet(Exception first, Throwable failure,
@@ -363,14 +418,36 @@ public final class IWorkMembers {
                                              Metadata container, TaggedContentHandler caller)
             throws SAXException {
         if (hooks.quiet() != null && hooks.quiet().test(entry)) {
-            // already named by an earlier walk; the caller's own failures still propagate
-            if (failure instanceof Exception) {
-                caller.throwIfCauseOf((Exception) failure);
-                WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
-            }
+            // already named by an earlier walk; failures that are not about the member (the
+            // caller's own, an embedded-document limit) still propagate
+            rethrowIfNotAboutTheMember(failure, caller);
             return first;
         }
         return fold(first, failure, entry.getName(), container, caller);
+    }
+
+    /** The caller's own failures (exceptions or Errors its handler threw, a write limit) and
+     * an embedded-document limit stop the walk at once, unwrapped. */
+    private static void rethrowIfNotAboutTheMember(Throwable failure, TaggedContentHandler caller)
+            throws SAXException {
+        if (failure instanceof Exception) {
+            caller.throwIfCauseOf((Exception) failure);
+            WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
+        }
+        // an Error the caller's own handler threw (e.g. a LinkageError) is the caller's too
+        Throwable callers = caller.findUncheckedCause(failure);
+        if (callers instanceof Error) {
+            throw (Error) callers;
+        }
+        if (callers instanceof RuntimeException) {
+            throw (RuntimeException) callers;
+        }
+        int depth = 0;
+        for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
+            if (t instanceof EmbeddedLimitReachedException) {
+                throw (EmbeddedLimitReachedException) t;
+            }
+        }
     }
 
     /** Combines two walks' failures: the first, with the second suppressed onto it. */
@@ -518,25 +595,8 @@ public final class IWorkMembers {
     public static Exception fold(Exception first, Throwable failure, String name,
                                  Metadata container, TaggedContentHandler caller)
             throws SAXException {
-        if (failure instanceof Exception) {
-            caller.throwIfCauseOf((Exception) failure);
-            WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
-        }
-        // an Error the caller's own handler threw (e.g. a LinkageError) is the caller's too
-        Throwable callers = caller.findUncheckedCause(failure);
-        if (callers instanceof Error) {
-            throw (Error) callers;
-        }
-        if (callers instanceof RuntimeException) {
-            throw (RuntimeException) callers;
-        }
+        rethrowIfNotAboutTheMember(failure, caller);
         int depth = 0;
-        for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
-            if (t instanceof EmbeddedLimitReachedException) {
-                throw (EmbeddedLimitReachedException) t;
-            }
-        }
-        depth = 0;
         for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
             if (t instanceof UnsupportedZipFeatureException || t instanceof LinkageError) {
                 container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,

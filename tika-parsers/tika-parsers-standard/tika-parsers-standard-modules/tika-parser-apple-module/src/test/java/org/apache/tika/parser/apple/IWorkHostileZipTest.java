@@ -753,4 +753,102 @@ class IWorkHostileZipTest {
                 .filter(w -> w.contains("Metadata/Properties.plist")).count();
         assertEquals(1, reports, r.toString());
     }
+
+    private static List<String> resources(String dir) throws Exception {
+        java.net.URL url = IWorkHostileZipTest.class.getResource("/test-documents/" + dir);
+        try (var files = Files.list(Path.of(url.toURI()))) {
+            return files.map(p -> dir + "/" + p.getFileName()).sorted()
+                    .collect(java.util.stream.Collectors.toList());
+        }
+    }
+
+    private static String[] parseAuto(String name, List<String> contents) throws Exception {
+        byte[] bytes;
+        try (var in = IWorkHostileZipTest.class.getResourceAsStream("/test-documents/" + name)) {
+            bytes = in.readAllBytes();
+        }
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata m) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata m, ParseContext ctx, boolean outputHtml)
+                    throws IOException {
+                contents.add(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+            }
+        });
+        try (TikaInputStream s = TikaInputStream.get(bytes)) {
+            new AutoDetectParser().parse(s, new DefaultHandler(), metadata, context);
+        } catch (Exception e) {
+            // a surfaced failure is fine for these checks
+        }
+        return metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
+    }
+
+    /**
+     * The hostile fixtures again, with the EOCD's entry counts forged (to what commons-compress
+     * sees, or 0xFFFF) or the real directory deferring to zip64: no count, CRC or offset any
+     * directory claims may silence the check. Every local header outside commons-compress's
+     * members is read at its own offset.
+     */
+    @Test
+    void forgedDirectoryFieldsCannotSilenceTheCheck() throws Exception {
+        for (String name : resources("iwork-hostile/forged")) {
+            List<String> contents = new ArrayList<>();
+            String warnings = String.join("|", parseAuto(name, contents));
+            boolean handedOn = contents.stream().anyMatch(c -> c.contains("MZ-HIDDEN-PAYLOAD")
+                    || c.contains("MZ-pretend-payload"));
+            assertTrue(handedOn || warnings.contains("inconsistent"), name + ": " + warnings);
+        }
+    }
+
+    /** Legitimate packages (zip64, data descriptors, bzip2 members, stored inner zips such as a
+     * re-zipped Keynote bundle's Index.zip) carry no evasion warning. */
+    @Test
+    void legitimatePackagesCarryNoEvasionWarning() throws Exception {
+        for (String name : resources("iwork-legit")) {
+            String warnings = String.join("|", parseAuto(name, new ArrayList<>()));
+            assertTrue(!warnings.contains("inconsistent") && !warnings.contains("local header"),
+                    name + ": " + warnings);
+        }
+    }
+
+    @Test
+    void anEmbeddedLimitOnAnAlreadyNamedMemberStillStopsTheWalk() throws Exception {
+        // pass 1 names the malformed plist; pass 2 hands it on quietly, but a limit that lands on
+        // it is not about the member and must still propagate
+        byte[] zip = new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("Metadata/Properties.plist", "NOT-A-PLIST".getBytes(StandardCharsets.UTF_8))
+                .entry("payload.exe", PAYLOAD).finish();
+        List<String> asked = new ArrayList<>();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata m) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata m, ParseContext ctx, boolean outputHtml) {
+                String name = m.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                asked.add(name);
+                if (name.equals("Metadata/Properties.plist")) {
+                    throw new org.apache.tika.exception.EmbeddedLimitReachedException(
+                            org.apache.tika.exception.EmbeddedLimitReachedException.LimitType.MAX_COUNT, 1);
+                }
+            }
+        });
+        try (TikaInputStream s = TikaInputStream.get(zip)) {
+            assertThrows(org.apache.tika.exception.EmbeddedLimitReachedException.class,
+                    () -> new IWork13PackageParser().parse(s, new DefaultHandler(), new Metadata(),
+                            context));
+        }
+        assertTrue(!asked.contains("payload.exe"), asked.toString());
+    }
 }
