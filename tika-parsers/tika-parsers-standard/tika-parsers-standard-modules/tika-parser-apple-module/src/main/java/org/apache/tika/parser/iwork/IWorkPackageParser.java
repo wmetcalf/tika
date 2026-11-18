@@ -114,7 +114,8 @@ public class IWorkPackageParser implements Parser {
                             parsedOccurrence[0] = seen1.get(entry.getName());
                         }
                     }, entry -> {
-                        if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+                        if (parsedName[0] == null
+                                && IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
                             // an unreadable content entry is how a password-protected iWork
                             // package looks (the stream route's detectType reports ENCRYPTED
                             // the same way)

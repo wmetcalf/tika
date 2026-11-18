@@ -602,4 +602,14 @@ class IWorkHostileZipTest {
             assertTrue(head.contains("<title>" + title + "</title>"), fixture + ": " + head);
         }
     }
+
+    @Test
+    void anUnreadableLaterContentEntryDoesNotRelabelTheDocument() throws Exception {
+        byte[] pages = ("<sl:document xmlns:sl=\"http://developer.apple.com/namespaces/sl\">"
+                + "<sl:p>x</sl:p></sl:document>").getBytes(StandardCharsets.UTF_8);
+        Result r = run(new RawZip().entry("buildVersionHistory.plist", PLIST)
+                .entry("index.xml", pages).entry("index.apxl", PAYLOAD, 1, false, 0).finish());
+        assertEquals("application/vnd.apple.pages", r.metadata.get(Metadata.CONTENT_TYPE),
+                r.toString());
+    }
 }
