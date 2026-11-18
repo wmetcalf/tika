@@ -947,7 +947,7 @@ public class ZipParser extends AbstractArchiveParser {
                     TikaInputStream tis = TikaInputStream.get(entryStream, tmp, entryMetadata);
                     extractor.parseEmbedded(
                             tis, embeddedOutput, entryMetadata,
-                            new ParseContext(), true);
+                            context, true);
                     throwRecordedOutputFailure(taggedOutput);
                 } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
                     parserFailure = e;
@@ -1010,7 +1010,7 @@ public class ZipParser extends AbstractArchiveParser {
                     TikaInputStream tis = TikaInputStream.get(zis, tmp, entryMetadata);
                     extractor.parseEmbedded(
                             tis, embeddedOutput, entryMetadata,
-                            new ParseContext(), true);
+                            context, true);
                     throwRecordedOutputFailure(taggedOutput);
                 } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
                     parserFailure = e;
