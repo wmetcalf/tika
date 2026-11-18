@@ -42,7 +42,10 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.iwork.IWorkPackageParser;
 import org.apache.tika.parser.iwork.iwana.IWork13PackageParser;
+import org.apache.tika.parser.iwork.iwana.IWork18PackageParser;
 
 /**
  * Hand-built zips that a marker entry routes to an iWork parser. Every member the central
@@ -133,6 +136,11 @@ class IWorkHostileZipTest {
             return this;
         }
 
+        /** Local headers only: no central directory, no EOCD. */
+        byte[] finishWithoutCentralDirectory() {
+            return out.toByteArray();
+        }
+
         byte[] finish() {
             long cdOff = out.size();
             byte[] c = cd.toByteArray();
@@ -197,6 +205,55 @@ class IWorkHostileZipTest {
 
     private Result run(byte[] zip) throws Exception {
         return run(zip, false);
+    }
+
+    private static final String[] MARKERS = {"buildVersionHistory.plist",
+        "Metadata/BuildVersionHistory.plist", "x.pages/Metadata/BuildVersionHistory.plist"};
+
+    private static Parser parserFor(String marker) {
+        if (marker.startsWith("x.pages")) {
+            return new IWork18PackageParser();
+        }
+        return marker.startsWith("Metadata") ? new IWork13PackageParser()
+                : new IWorkPackageParser();
+    }
+
+    /** Calls the routed parser directly: on raw bytes (no file, no container) or a file. */
+    private Result direct(String marker, byte[] zip, boolean fromFile) throws Exception {
+        Result r = new Result();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext ctx, boolean outputHtml)
+                    throws IOException {
+                r.names.add(metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+                stream.transferTo(OutputStream.nullOutputStream());
+            }
+        });
+        TikaInputStream s = fromFile
+                ? TikaInputStream.get(Files.write(Files.createTempFile(tmp, "d", ".zip"), zip))
+                : TikaInputStream.get(zip);
+        try (TikaInputStream t = s) {
+            parserFor(marker).parse(t, new DefaultHandler(), r.metadata, context);
+        } catch (Exception e) {
+            r.thrown = e;
+        }
+        return r;
+    }
+
+    private static byte[] eocd() {
+        byte[] b = new byte[22];
+        b[0] = 'P';
+        b[1] = 'K';
+        b[2] = 5;
+        b[3] = 6;
+        return b;
     }
 
     @Test
@@ -286,5 +343,85 @@ class IWorkHostileZipTest {
             assertNotNull(r.thrown, "the malformed plist's failure was dropped: direct="
                     + direct + " " + r);
         }
+    }
+
+    @Test
+    void everyRouteWalksTheCentralDirectoryWhateverTheInput() throws Exception {
+        // a raw (non-file) stream too: a local-header walk would stop at the stray EOCD
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().raw(eocd()).entry(marker, PLIST)
+                    .entry("payload.exe", PAYLOAD).finish();
+            Result r = direct(marker, zip, false);
+            assertTrue(r.names.contains("payload.exe"), marker + ": " + r);
+        }
+    }
+
+    @Test
+    void unreadableMemberOnARawStreamIsWarnedAboutNotFatal() throws Exception {
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("enc.bin", PAYLOAD, 1, false, 0)
+                    .entry("payload.exe", PAYLOAD).finish();
+            Result r = direct(marker, zip, false);
+            assertTrue(r.names.contains("payload.exe"), marker + ": " + r);
+            assertTrue(r.warnings().contains("enc.bin"), marker + ": " + r);
+        }
+    }
+
+    @Test
+    void memberWhoseDecoderIsMissingDoesNotHideTheRest() throws Exception {
+        // method 93 = ZSTD; without zstd-jni on the classpath its stream cannot even open
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("decoy.zst", PAYLOAD, 0, false, 93)
+                    .entry("payload.exe", PAYLOAD).finish();
+            Result r = run(zip);
+            assertTrue(r.names.contains("payload.exe"), marker + ": " + r);
+            assertTrue(r.names.contains("decoy.zst") || r.warnings().contains("decoy.zst"),
+                    marker + ": " + r);
+        }
+    }
+
+    @Test
+    void unreadableCentralDirectoryFallsBackToTheLocalHeaders() throws Exception {
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("stub.bin", PAYLOAD, 0, true, 0)
+                    .entry("payload.exe", PAYLOAD).finishWithoutCentralDirectory();
+            Result r = direct(marker, zip, true);
+            assertTrue(r.names.contains("stub.bin"), marker + ": " + r);
+            assertTrue(r.names.contains("payload.exe"), marker + ": " + r);
+        }
+    }
+
+    @Test
+    void repeatedIWork09ContentEntriesAreHandedOn() throws Exception {
+        byte[] pages = ("<sl:document xmlns:sl=\"http://developer.apple.com/namespaces/sl\">"
+                + "<sl:stash>x</sl:stash></sl:document>").getBytes(StandardCharsets.UTF_8);
+        Result r = run(new RawZip().entry("buildVersionHistory.plist", PLIST)
+                .entry("index.xml", pages).entry("index.xml", pages).entry("index.apxl", pages)
+                .finish());
+        assertEquals(2, r.names.stream().filter(n -> n.startsWith("index.")).count(),
+                r.toString());
+    }
+
+    @Test
+    void everyFailedMemberIsNamed() throws Exception {
+        // method 12 = bzip2, data that is not bzip2: each member fails on its own
+        Result r = run(new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("decoy.bin", PAYLOAD, 0, false, 12).entry("real.bin", PAYLOAD, 0, false, 12)
+                .entry("visible.txt", PAYLOAD).finish());
+        assertNotNull(r.thrown, r.toString());
+        assertTrue(r.warnings().contains("decoy.bin") && r.warnings().contains("real.bin"),
+                r.toString());
+        assertTrue(r.names.contains("visible.txt"), r.toString());
+    }
+
+    @Test
+    void protectedIWork09PackageKeepsItsTypeOnTheFileRoute() throws Exception {
+        byte[] bytes;
+        try (var in = getClass().getResourceAsStream("/test-documents/testPagesPwdProtected.pages")) {
+            bytes = in.readAllBytes();
+        }
+        Result r = run(bytes);
+        assertEquals("application/x-tika-iworks-protected", r.metadata.get(Metadata.CONTENT_TYPE),
+                r.toString());
     }
 }

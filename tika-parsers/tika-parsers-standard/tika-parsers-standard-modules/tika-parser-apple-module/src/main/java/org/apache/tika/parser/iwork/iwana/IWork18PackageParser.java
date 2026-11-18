@@ -17,16 +17,13 @@
 package org.apache.tika.parser.iwork.iwana;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -64,20 +61,6 @@ public class IWork18PackageParser implements Parser {
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        // Open the Zip stream
-        // Use a File if we can, and an already open zip is even better
-        ZipFile zipFile = null;
-        ZipFile ownedZip = null;
-        ZipInputStream zipStream = null;
-        Object container = tis.getOpenContainer();
-        if (container instanceof ZipFile) {
-            zipFile = (ZipFile) container;
-        } else if (tis.hasFile()) {
-            zipFile = ZipFile.builder().setFile(tis.getFile()).get();
-            ownedZip = zipFile;
-        } else {
-            zipStream = new ZipInputStream(tis);
-        }
         TaggedContentHandler caller = new TaggedContentHandler(handler);
         try {
             XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
@@ -87,43 +70,16 @@ public class IWork18PackageParser implements Parser {
             // Tika cannot decode the iWork '18 content yet, so detect the type and hand every
             // member on. One marker entry routes an arbitrary zip here, so "only detect" would
             // let such a zip hide all of its members.
-            MediaType type = null;
-            Exception ex = null;
-            if (zipFile != null) {
-                Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
-                while (entries.hasMoreElements()) {
-                    ZipArchiveEntry entry = entries.nextElement();
-                    if (type == null) {
-                        type = IWork18DocumentType.detectIfPossible(entry);
-                    }
-                    try (InputStream member = zipFile.getInputStream(entry)) {
-                        IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), member,
-                                null, xhtml, context, extractor);
-                    } catch (SecurityException e) {
-                        throw e;
-                    } catch (Exception e) {
-                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
-                    }
+            MediaType[] type = {null};
+            Exception ex = IWorkMembers.walk(tis, (entry, data) -> {
+                if (type[0] == null) {
+                    type[0] = IWork18DocumentType.detectIfPossible(entry);
                 }
-            } else {
-                ZipEntry entry = zipStream.getNextEntry();
-                while (entry != null) {
-                    if (type == null) {
-                        type = IWork18DocumentType.detectIfPossible(entry);
-                    }
-                    try {
-                        IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), zipStream,
-                                null, xhtml, context, extractor);
-                    } catch (SecurityException e) {
-                        throw e;
-                    } catch (Exception e) {
-                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
-                    }
-                    entry = zipStream.getNextEntry();
-                }
-            }
-            if (type != null) {
-                metadata.set(Metadata.CONTENT_TYPE, type.toString());
+                IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), data, null, xhtml,
+                        context, extractor);
+            }, metadata, caller);
+            if (type[0] != null) {
+                metadata.set(Metadata.CONTENT_TYPE, type[0].toString());
             }
             xhtml.endDocument();
             if (ex != null) {
@@ -133,10 +89,6 @@ public class IWork18PackageParser implements Parser {
             // the caller's handler failed: hand back its own exception, not the tagged wrapper
             caller.throwIfCauseOf(e);
             throw e;
-        } finally {
-            if (ownedZip != null) {
-                ownedZip.close();
-            }
         }
     }
 

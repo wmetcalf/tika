@@ -28,13 +28,11 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import com.dd.plist.NSArray;
 import com.dd.plist.NSDictionary;
 import com.dd.plist.NSObject;
 import com.dd.plist.PropertyListParser;
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.io.IOUtils;
 import org.xml.sax.ContentHandler;
@@ -89,114 +87,37 @@ public class IWork13PackageParser implements Parser {
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        // Open the Zip stream
-        // Use a File if we can, and an already open zip is even better
-        ZipFile zipFile = null;
-        ZipFile ownedZip = null;
-        ZipInputStream zipStream = null;
-        Object container = tis.getOpenContainer();
-        if (container instanceof ZipFile) {
-            zipFile = (ZipFile) container;
-        } else if (tis.hasFile()) {
-            zipFile = ZipFile.builder().setFile(tis.getFile()).get();
-            ownedZip = zipFile;
-        } else {
-            zipStream = new ZipInputStream(tis);
-        }
         TaggedContentHandler caller = new TaggedContentHandler(handler);
         try {
             XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
             xhtml.startDocument();
-
-            MediaType type = null;
-            if (zipFile != null) {
-                type = processZipFile(zipFile, metadata, xhtml, caller, context);
-            } else if (zipStream != null) {
-                type = processZipStream(zipStream, metadata, xhtml, caller, context);
-            }
-            if (type != null) {
-                if (type == IWork13DocumentType.UNKNOWN13.getType()) {
-                    type = guessTypeByExtension(metadata);
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            MediaType[] detected = {null};
+            Exception ex = IWorkMembers.walk(tis, (entry, data) -> {
+                if (detected[0] == null) {
+                    detected[0] = IWork13DocumentType.detectIfPossible(entry);
                 }
-                metadata.set(Metadata.CONTENT_TYPE, type.toString());
+                try (TemporaryResources tmp = new TemporaryResources();
+                        TikaInputStream member = TikaInputStream.get(data, tmp, new Metadata())) {
+                    processZipEntry(entry, member, metadata, xhtml, context, extractor);
+                }
+            }, metadata, caller);
+            MediaType type = detected[0] == null ? IWork13DocumentType.UNKNOWN13.getType()
+                    : detected[0];
+            if (type == IWork13DocumentType.UNKNOWN13.getType()) {
+                type = guessTypeByExtension(metadata);
             }
+            metadata.set(Metadata.CONTENT_TYPE, type.toString());
             xhtml.endDocument();
+            if (ex != null) {
+                throw new TikaException("problem processing iWork '13 package", ex);
+            }
         } catch (SAXException e) {
             // the caller's handler failed: hand back its own exception, not the tagged wrapper
             caller.throwIfCauseOf(e);
             throw e;
-        } finally {
-            if (ownedZip != null) {
-                ownedZip.close();
-            }
         }
-    }
-
-    private MediaType processZipStream(ZipInputStream zipStream, Metadata metadata,
-                                       XHTMLContentHandler xhtml, TaggedContentHandler caller,
-                                       ParseContext parseContext)
-            throws TikaException, IOException, SAXException {
-        MediaType type = null;
-        ZipEntry entry = zipStream.getNextEntry();
-        Exception ex = null;
-        EmbeddedDocumentExtractor embeddedDocumentExtractor =
-                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(parseContext);
-        while (entry != null) {
-            if (type == null) {
-                type = IWork13DocumentType.detectIfPossible(entry);
-            }
-
-            try (TemporaryResources tmp = new TemporaryResources()) {
-                TikaInputStream tis = TikaInputStream.get(zipStream, tmp, new Metadata());
-                processZipEntry(entry, tis, metadata, xhtml, parseContext, embeddedDocumentExtractor);
-            } catch (SecurityException e) {
-                throw e;
-            } catch (Exception e) {
-                // keep going: one malformed member must not hide the members after it
-                ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
-            }
-            entry = zipStream.getNextEntry();
-        }
-        if (type == null) {
-            type = IWork13DocumentType.UNKNOWN13.getType();
-        }
-        if (ex != null) {
-            throw new TikaException("problem processing zip stream", ex);
-        }
-        return type;
-    }
-
-    private MediaType processZipFile(ZipFile zipFile, Metadata metadata,
-                                     XHTMLContentHandler xhtml, TaggedContentHandler caller,
-                                     ParseContext parseContext)
-            throws TikaException, SAXException {
-        MediaType type = null;
-        EmbeddedDocumentExtractor embeddedDocumentExtractor =
-                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(parseContext);
-
-        Enumeration<? extends ZipArchiveEntry> entries = zipFile.getEntries();
-        Exception ex = null;
-        while (entries.hasMoreElements()) {
-            ZipArchiveEntry entry = entries.nextElement();
-
-            if (type == null) {
-                type = IWork13DocumentType.detectIfPossible(entry);
-            }
-            try (TikaInputStream tis = TikaInputStream.get(zipFile.getInputStream(entry))) {
-                processZipEntry(entry, tis, metadata, xhtml, parseContext, embeddedDocumentExtractor);
-            } catch (SecurityException e) {
-                throw e;
-            } catch (Exception e) {
-                ex = IWorkMembers.fold(ex, e, entry.getName(), metadata, caller);
-            }
-        }
-        if (type == null) {
-            type = IWork13DocumentType.UNKNOWN13.getType();
-        }
-        if (ex != null) {
-            throw new TikaException("problem processing zip file", ex);
-        }
-        return type;
     }
 
     private void processZipEntry(ZipEntry entry,

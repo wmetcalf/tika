@@ -1,10 +1,10 @@
 {
-  "scanned_at": "2026-11-18T18:49:36.717451+00:00",
+  "scanned_at": "2026-11-18T19:43:01.902127+00:00",
   "tika_root": "/home/coz/Downloads/tika-iwork",
   "extra_roots": [],
   "summary": {
     "property_declarations": 740,
-    "parsers_emitting_fields": 164,
+    "parsers_emitting_fields": 165,
     "undeclared_string_fields": 278,
     "templated_patterns": 115
   },
@@ -4394,6 +4394,7 @@
         "org.apache.tika.parser.html.JSoupParser",
         "org.apache.tika.parser.image.AbstractImageParser",
         "org.apache.tika.parser.image.BarcodeMetadataUtil",
+        "org.apache.tika.parser.iwork.IWorkPackageParser",
         "org.apache.tika.parser.microsoft.ICalParser",
         "org.apache.tika.parser.microsoft.OfficeLinkMetadataUtil",
         "org.apache.tika.parser.microsoft.OfficeParser",
@@ -10699,6 +10700,11 @@
       "emits": [
         "DATE",
         "source"
+      ]
+    },
+    "org.apache.tika.parser.iwork.IWorkPackageParser": {
+      "emits": [
+        "tk:exception:warn"
       ]
     },
     "org.apache.tika.parser.iwork.KeynoteContentHandler": {

@@ -19,8 +19,13 @@ package org.apache.tika.parser.iwork;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PushbackInputStream;
+import java.nio.file.Files;
+import java.util.Enumeration;
 
 import org.apache.commons.compress.archivers.zip.UnsupportedZipFeatureException;
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
+import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.io.input.CloseShieldInputStream;
 import org.xml.sax.SAXException;
 
@@ -74,6 +79,96 @@ public final class IWorkMembers {
         }
     }
 
+    /** Handles one zip member; the stream is the member's data and may be closed. */
+    @FunctionalInterface
+    public interface MemberHandler {
+        void handle(ZipArchiveEntry entry, InputStream data) throws Exception;
+    }
+
+    /**
+     * Walks every member of the package, whatever the input: the central directory of the
+     * detector's open ZipFile, else of a ZipFile on the input's file (spooled if need be, as
+     * ZipParser does); only when no central directory can be read, the local headers (with
+     * STORED + data-descriptor entries readable). A local-header walk ends quietly at a stray
+     * EOCD or central-header signature, so it is never the first choice.
+     * <p>
+     * Each member's failure is folded (see {@link #fold}); a member whose decoder is missing
+     * from the classpath (a LinkageError, e.g. ZSTD without zstd-jni) is unreadable, not fatal.
+     *
+     * @return the first member failure to rethrow once the walk is done, or null
+     */
+    public static Exception walk(TikaInputStream tis, MemberHandler handler, Metadata container,
+                                 TaggedContentHandler caller)
+            throws IOException, SAXException {
+        return walk(tis, handler, null, container, caller);
+    }
+
+    /**
+     * As {@link #walk(TikaInputStream, MemberHandler, Metadata, TaggedContentHandler)};
+     * {@code unreadable}, if given, is told about each member whose data cannot be opened at
+     * all (encrypted or an unsupported method) before that failure is folded.
+     */
+    public static Exception walk(TikaInputStream tis, MemberHandler handler,
+                                 java.util.function.Consumer<ZipArchiveEntry> unreadable,
+                                 Metadata container, TaggedContentHandler caller)
+            throws IOException, SAXException {
+        ZipFile zipFile = null;
+        ZipFile owned = null;
+        Object open = tis.getOpenContainer();
+        if (open instanceof ZipFile) {
+            zipFile = (ZipFile) open;
+        } else {
+            try {
+                owned = ZipFile.builder().setFile(tis.getFile()).get();
+                zipFile = owned;
+            } catch (IOException e) {
+                // no readable central directory: fall back to the local headers below
+            }
+        }
+        Exception first = null;
+        try {
+            if (zipFile != null) {
+                Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
+                while (entries.hasMoreElements()) {
+                    ZipArchiveEntry entry = entries.nextElement();
+                    try (InputStream data = zipFile.getInputStream(entry)) {
+                        handler.handle(entry, data);
+                    } catch (UnsupportedZipFeatureException e) {
+                        if (unreadable != null) {
+                            unreadable.accept(entry);
+                        }
+                        first = fold(first, e, entry.getName(), container, caller);
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (Exception | LinkageError e) {
+                        first = fold(first, e, entry.getName(), container, caller);
+                    }
+                }
+            } else {
+                try (InputStream raw = Files.newInputStream(tis.getPath());
+                        ZipArchiveInputStream zip =
+                                new ZipArchiveInputStream(raw, "UTF8", true, true)) {
+                    ZipArchiveEntry entry = zip.getNextEntry();
+                    while (entry != null) {
+                        try {
+                            handler.handle(entry, CloseShieldInputStream.wrap(zip));
+                        } catch (SecurityException e) {
+                            throw e;
+                        } catch (Exception | LinkageError e) {
+                            first = fold(first, e, entry.getName(), container, caller);
+                        }
+                        entry = zip.getNextEntry();
+                    }
+                }
+            }
+        } finally {
+            if (owned != null) {
+                owned.close();
+            }
+        }
+        return first;
+    }
+
     /**
      * As {@link #extract}, for a zip entry. A directory entry is skipped only when it really
      * is empty: its name alone (a trailing '/') does not stop data it carries from being
@@ -108,11 +203,13 @@ public final class IWorkMembers {
      * @param caller the caller's handler, as wrapped by the parser's XHTML output
      * @return the failure to rethrow at the end, or null
      */
-    public static Exception fold(Exception first, Exception failure, String name,
+    public static Exception fold(Exception first, Throwable failure, String name,
                                  Metadata container, TaggedContentHandler caller)
             throws SAXException {
-        caller.throwIfCauseOf(failure);
-        WriteLimitReachedException.throwIfWriteLimitReached(failure);
+        if (failure instanceof Exception) {
+            caller.throwIfCauseOf((Exception) failure);
+            WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
+        }
         int depth = 0;
         for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
             if (t instanceof EmbeddedLimitReachedException) {
@@ -121,15 +218,23 @@ public final class IWorkMembers {
         }
         depth = 0;
         for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
-            if (t instanceof UnsupportedZipFeatureException) {
+            if (t instanceof UnsupportedZipFeatureException || t instanceof LinkageError) {
                 container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                        "iWork member not extracted, unreadable: " + name + ": "
-                                + t.getMessage());
+                        "iWork member not extracted, unreadable: " + name + ": " + t);
                 // the same signal ZipParser gives an unreadable (e.g. encrypted) member
                 EmbeddedDocumentUtil.recordEmbeddedStreamException(t, container);
                 return first;
             }
         }
-        return first == null ? failure : first;
+        // every failed member is named, not only the first (which is rethrown at the end)
+        container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "iWork member failed: " + name + ": " + failure);
+        Exception asException = failure instanceof Exception ? (Exception) failure
+                : new TikaException("iWork member failed: " + name, failure);
+        if (first == null) {
+            return asException;
+        }
+        first.addSuppressed(asException);
+        return first;
     }
 }
