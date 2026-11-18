@@ -128,6 +128,44 @@ class IWorkHostileZipTest {
             return this;
         }
 
+        /** An entry whose stored bytes are given as-is (e.g. a cut deflate stream). */
+        RawZip entryRaw(String name, byte[] stored, int size, int method) {
+            byte[] n = name.getBytes(StandardCharsets.UTF_8);
+            long off = out.size();
+            le32(out, 0x04034b50L);
+            le16(out, 20);
+            le16(out, 0);
+            le16(out, method);
+            le16(out, 0);
+            le16(out, 0x21);
+            le32(out, 0x12345678L);
+            le32(out, stored.length);
+            le32(out, size);
+            le16(out, n.length);
+            le16(out, 0);
+            out.writeBytes(n);
+            out.writeBytes(stored);
+            le32(cd, 0x02014b50L);
+            le16(cd, 20);
+            le16(cd, 20);
+            le16(cd, 0);
+            le16(cd, method);
+            le16(cd, 0);
+            le16(cd, 0x21);
+            le32(cd, 0x12345678L);
+            le32(cd, stored.length);
+            le32(cd, size);
+            le16(cd, n.length);
+            for (int i = 0; i < 4; i++) {
+                le16(cd, 0);
+            }
+            le32(cd, 0);
+            le32(cd, off);
+            cd.writeBytes(n);
+            cdCount++;
+            return this;
+        }
+
         RawZip entry(String name, byte[] data) {
             return entry(name, data, 0, false, 0);
         }
@@ -618,14 +656,15 @@ class IWorkHostileZipTest {
      * central directories (a shadow one, behind a skewed EOCD in the comment, which
      * commons-compress takes) with different data; lfh* truncate commons-compress's view with a
      * junk record while an entry the JDK refuses stops a local-header cross-check early.
+     * crcalias forges the real CRC and sizes in the shadow directory's records;
      * dd* hide a same-named data-descriptor entry behind a decoy; cfh* put a stray central
      * header in the local headers. None may hide payload.exe ("MZ-HIDDEN-PAYLOAD") without a
      * trace.
      */
     @Test
     void readersThatDisagreeAreNeverSilent() throws Exception {
-        for (String kind : new String[]{"alias", "lfhbz2", "lfhenc", "ddalias", "ddaliasdefl",
-                "ddaliasrev", "cfhstop", "cfhshadow"}) {
+        for (String kind : new String[]{"alias", "crcalias", "lfhbz2", "lfhenc", "ddalias",
+                "ddaliasdefl", "ddaliasrev", "ddaliasrev2defl", "cfhstop", "cfhshadow"}) {
             for (String d : new String[]{"09", "13", "18"}) {
                 String name = "iwork-hostile/" + kind + "-d" + d + ".zip";
                 byte[] bytes;
@@ -657,8 +696,7 @@ class IWorkHostileZipTest {
                         metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
                 boolean handedOn = contents.stream().anyMatch(c -> c.contains("MZ-HIDDEN-PAYLOAD"));
                 assertTrue(handedOn || warnings.contains("inconsistent")
-                        || warnings.contains("ended early") || warnings.contains("cross-checked"),
-                        name + ": " + warnings);
+                        || warnings.contains("ended early"), name + ": " + warnings);
                 if (kind.equals("alias")) {
                     assertTrue(handedOn, name + " (the JDK reads it, so it must be handed on)");
                 }
@@ -680,5 +718,39 @@ class IWorkHostileZipTest {
         Result r09 = run(new RawZip().entry("buildVersionHistory.plist", PLIST)
                 .entry("index.xml", badXml).finish());
         assertTrue(r09.names.contains("index.xml"), r09.toString());
+    }
+
+    @Test
+    void legitimatePackagesTheJdkRefusesCarryNoEvasionWarning() throws Exception {
+        // password-protected iWork '09 uses compression methods the JDK refuses; a bzip2 member
+        // does the same. Neither is evidence of a hidden member.
+        byte[] bytes;
+        try (var in = getClass().getResourceAsStream("/test-documents/testPagesPwdProtected.pages")) {
+            bytes = in.readAllBytes();
+        }
+        Result r = run(bytes);
+        assertTrue(!r.warnings().contains("inconsistent") && !r.warnings().contains("cross-check")
+                && !r.warnings().contains("local header"), r.toString());
+        r = run(new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("b.bin", PAYLOAD, 0, false, 12).entry("visible.txt", PAYLOAD).finish());
+        assertTrue(!r.warnings().contains("inconsistent") && !r.warnings().contains("local header"),
+                r.toString());
+    }
+
+    @Test
+    void aMemberThatFailsMidReadIsReportedOnce() throws Exception {
+        // a deflate stream that ends early fails in pass 1 and again when pass 2 hands it on
+        java.io.ByteArrayOutputStream deflated = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.DeflaterOutputStream d = new java.util.zip.DeflaterOutputStream(deflated,
+                new java.util.zip.Deflater(9, true))) {
+            d.write(PLIST);
+        }
+        byte[] truncated = java.util.Arrays.copyOf(deflated.toByteArray(), deflated.size() / 2);
+        Result r = run(new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entryRaw("Metadata/Properties.plist", truncated, PLIST.length, 8).finish());
+        long reports = java.util.Arrays.stream(
+                r.metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .filter(w -> w.contains("Metadata/Properties.plist")).count();
+        assertEquals(1, reports, r.toString());
     }
 }

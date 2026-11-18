@@ -124,7 +124,7 @@ public final class IWorkMembers {
     public static Exception walk(TikaInputStream tis, MemberHandler handler, Metadata container,
                                  TaggedContentHandler caller)
             throws IOException, SAXException {
-        return walk(tis, null, null, handler, null, null, container, caller);
+        return walk(tis, null, null, handler, null, null, null, container, caller);
     }
 
     /**
@@ -137,7 +137,7 @@ public final class IWorkMembers {
                                  MemberHandler handler, Metadata container,
                                  TaggedContentHandler caller)
             throws IOException, SAXException {
-        return walk(tis, seen, null, handler, null, null, container, caller);
+        return walk(tis, seen, null, handler, null, null, null, container, caller);
     }
 
     /**
@@ -151,24 +151,26 @@ public final class IWorkMembers {
                                  java.util.function.Consumer<ZipArchiveEntry> unreadable,
                                  Metadata container, TaggedContentHandler caller)
             throws IOException, SAXException {
-        return walk(tis, seen, null, handler, unreadable, null, container, caller);
+        return walk(tis, seen, null, handler, unreadable, null, null, container, caller);
     }
 
     /**
      * The full walk. {@code want}, if given, picks the members whose data is opened and
      * handed to {@code handler} (the others are only {@code seen}); {@code failed}, if given,
-     * is told about each member whose data could not be read at all (its failure folded), so
-     * a later walk over the same package can leave it alone instead of reporting it twice.
+     * is told about each member whose failure was folded, and whether its data had opened
+     * (false: unreadable, a later walk can leave it alone); a member {@code quiet} accepts is
+     * walked but its failure is not folded again (an earlier walk already named it).
      */
     public static Exception walk(TikaInputStream tis,
                                  java.util.function.Consumer<ZipArchiveEntry> seen,
                                  java.util.function.Predicate<ZipArchiveEntry> want,
                                  MemberHandler handler,
                                  java.util.function.Consumer<ZipArchiveEntry> unreadable,
-                                 java.util.function.Consumer<ZipArchiveEntry> failed,
+                                 java.util.function.BiConsumer<ZipArchiveEntry, Boolean> failed,
+                                 java.util.function.Predicate<ZipArchiveEntry> quiet,
                                  Metadata container, TaggedContentHandler caller)
             throws IOException, SAXException {
-        Hooks hooks = new Hooks(seen, want, unreadable, failed);
+        Hooks hooks = new Hooks(seen, want, unreadable, failed, quiet);
         Exception[] first = {null};
         java.nio.file.Path file = tis.getPath();
         // Open the channel here so a refused open cannot leak it (commons-compress closes only
@@ -194,12 +196,15 @@ public final class IWorkMembers {
         // the same names for different data.
         java.util.Map<String, Integer> walked = new java.util.HashMap<>();
         java.util.Map<String, Integer> walkedNames = new java.util.HashMap<>();
+        long[] commonsCount = {0};
+        boolean[] extra = {false};
         try {
             if (commons != null) {
                 ZipFile zipFile = commons;
                 Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
+                    commonsCount[0]++;
                     walked.merge(identity(entry.getName(), entry.getCrc(),
                             entry.getCompressedSize(), entry.getSize()), 1, Integer::sum);
                     walkedNames.merge(entry.getName(), 1, Integer::sum);
@@ -207,70 +212,54 @@ public final class IWorkMembers {
                             first, container, caller);
                 }
             }
-            boolean[] extra = {false};
             if (jdk != null) {
+                // matched against its own copy of commons-compress's view; members only the JDK
+                // lists join that view, so a later local-header pass will not walk them again
+                java.util.Map<String, Integer> jdkBudget = new java.util.HashMap<>(walked);
                 java.util.zip.ZipFile zipFile = jdk;
                 Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
                 while (entries.hasMoreElements()) {
                     java.util.zip.ZipEntry jdkEntry = entries.nextElement();
-                    if (alreadyWalked(walked, identity(jdkEntry.getName(), jdkEntry.getCrc(),
-                            jdkEntry.getCompressedSize(), jdkEntry.getSize()))) {
-                        alreadyWalked(walkedNames, jdkEntry.getName());
+                    String id = identity(jdkEntry.getName(), jdkEntry.getCrc(),
+                            jdkEntry.getCompressedSize(), jdkEntry.getSize());
+                    if (alreadyWalked(jdkBudget, id)) {
                         continue;
                     }
                     extra[0] = true;
+                    walked.merge(id, 1, Integer::sum);
+                    walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
                     member(new ZipArchiveEntry(jdkEntry.getName()),
                             () -> zipFile.getInputStream(jdkEntry), hooks, handler,
                             first, container, caller);
                 }
-            } else {
-                if (commons != null) {
-                    // nothing independent confirms commons-compress's view; the local headers
-                    // are a best effort that a stray signature can end quietly
-                    warnOnce(container,
-                            "iWork package central directory could not be cross-checked (the "
-                                    + "JDK refused it): members may be missing");
-                }
-                if (commons == null) {
-                    warnOnce(container,
-                            "iWork package central directory unreadable: members were walked "
-                                    + "by local header and some may be missing");
-                }
-                try (InputStream raw = Files.newInputStream(file);
-                        ZipArchiveInputStream zip =
-                                new ZipArchiveInputStream(raw, "UTF8", true, true)) {
-                    while (true) {
-                        ZipArchiveEntry entry;
-                        try {
-                            entry = zip.getNextEntry();
-                        } catch (IOException | LinkageError e) {
-                            // a damaged tail ("Truncated ZIP file") ends the walk, not the
-                            // parse; when it stood in for a refused JDK cross-check, members
-                            // beyond commons-compress's view may be missing
-                            warnOnce(container,
-                                    "iWork package local-header walk ended early: " + e);
-                            break;
-                        }
-                        if (entry == null) {
-                            break;
-                        }
-                        boolean known = entry.getCrc() >= 0 && entry.getSize() >= 0
-                                && entry.getCompressedSize() >= 0;
-                        // one listing covers one local entry: spend the name budget either way, so
-                        // a same-named data-descriptor entry is not covered a second time
-                        boolean covered = known
-                                ? alreadyWalked(walked, identity(entry.getName(), entry.getCrc(),
-                                        entry.getCompressedSize(), entry.getSize()))
-                                        && alreadyWalked(walkedNames, entry.getName())
-                                : alreadyWalked(walkedNames, entry.getName());
-                        if (covered) {
-                            continue;
-                        }
-                        extra[0] = true;
-                        member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler,
-                                first, container, caller);
-                    }
-                }
+            }
+            // The JDK often refuses legitimate packages (bzip2 members, commons-compress zip64
+            // output, password-protected iWork '09), and two readers can share a forged view.
+            // So the local headers are consulted only on evidence: no central directory either
+            // reader accepts, more than one plausible end-of-central-directory record (a shadow
+            // directory), or commons-compress reading fewer records than its EOCD declares (it
+            // stops at the first stray record). Every such walk is recorded.
+            long declared = commons == null ? -1 : declaredEntries(file);
+            boolean shortView = commons != null
+                    && (declared == -2 || declared >= 0 && declared != commonsCount[0]);
+            if (commons == null && jdk == null) {
+                warnOnce(container,
+                        "iWork package central directory unreadable: members were walked "
+                                + "by local header and some may be missing");
+            } else if (shortView) {
+                warnOnce(container,
+                        declared == -2
+                                ? "iWork package central directory is inconsistent: "
+                                        + "several end-of-central-directory records; "
+                                        + "members were sought by local header"
+                                : "iWork package central directory is inconsistent: it "
+                                        + "declares " + declared + " entries, "
+                                        + "commons-compress read " + commonsCount[0]
+                                        + "; the rest were sought by local header");
+            }
+            if (commons == null && jdk == null || shortView) {
+                walkLocalHeaders(file, walked, walkedNames, extra, hooks, handler, first,
+                        container, caller);
             }
             if (extra[0] && commons != null) {
                 warnOnce(container,
@@ -286,6 +275,102 @@ public final class IWorkMembers {
             }
         }
         return first[0];
+    }
+
+    private static void walkLocalHeaders(java.nio.file.Path file,
+                                         java.util.Map<String, Integer> walked,
+                                         java.util.Map<String, Integer> walkedNames,
+                                         boolean[] extra, Hooks hooks, MemberHandler handler,
+                                         Exception[] first, Metadata container,
+                                         TaggedContentHandler caller)
+            throws IOException, SAXException {
+        try (InputStream raw = Files.newInputStream(file);
+                ZipArchiveInputStream zip = new ZipArchiveInputStream(raw, "UTF8", true, true)) {
+            while (true) {
+                ZipArchiveEntry entry;
+                try {
+                    entry = zip.getNextEntry();
+                } catch (IOException | LinkageError e) {
+                    // a damaged tail ("Truncated ZIP file") ends the walk, not the parse
+                    warnOnce(container, "iWork package local-header walk ended early: " + e);
+                    break;
+                }
+                if (entry == null) {
+                    break;
+                }
+                boolean known = entry.getCrc() >= 0 && entry.getSize() >= 0
+                        && entry.getCompressedSize() >= 0;
+                // one listing covers one local entry: spend the name budget either way, so a
+                // same-named data-descriptor entry is not covered a second time
+                boolean covered = known
+                        ? alreadyWalked(walked, identity(entry.getName(), entry.getCrc(),
+                                entry.getCompressedSize(), entry.getSize()))
+                                && alreadyWalked(walkedNames, entry.getName())
+                        : alreadyWalked(walkedNames, entry.getName());
+                if (covered) {
+                    continue;
+                }
+                extra[0] = true;
+                member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler, first,
+                        container, caller);
+            }
+        }
+    }
+
+    /**
+     * The total entry count the archive's last EOCD record declares (the record
+     * commons-compress uses), -1 if there is none or it defers to zip64, or -2 if more than
+     * one plausible EOCD record is present (a shadow central directory: readers that choose
+     * differently see different members).
+     */
+    private static long declaredEntries(java.nio.file.Path file) throws IOException {
+        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+            long size = ch.size();
+            int tail = (int) Math.min(size, 22 + 65535);
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(tail);
+            ch.position(size - tail);
+            while (buf.hasRemaining() && ch.read(buf) >= 0) {
+                // fill
+            }
+            byte[] b = buf.array();
+            long base = size - tail;
+            long last = -1;
+            int plausible = 0;
+            for (int i = tail - 22; i >= 0; i--) {
+                if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 5 && b[i + 3] == 6) {
+                    long cdSize = le32(b, i + 12);
+                    long cdOffset = le32(b, i + 16);
+                    if (cdOffset + cdSize <= base + i) {
+                        plausible++;
+                        if (last < 0 && plausible == 1) {
+                            int total = (b[i + 10] & 0xff) | (b[i + 11] & 0xff) << 8;
+                            last = total == 0xffff ? -1 : total;
+                        }
+                    }
+                }
+            }
+            return plausible > 1 ? -2 : last;
+        }
+    }
+
+    private static long le32(byte[] b, int i) {
+        return (b[i] & 0xffL) | (b[i + 1] & 0xffL) << 8 | (b[i + 2] & 0xffL) << 16
+                | (b[i + 3] & 0xffL) << 24;
+    }
+
+    private static Exception foldUnlessQuiet(Exception first, Throwable failure,
+                                             ZipArchiveEntry entry, Hooks hooks,
+                                             Metadata container, TaggedContentHandler caller)
+            throws SAXException {
+        if (hooks.quiet() != null && hooks.quiet().test(entry)) {
+            // already named by an earlier walk; the caller's own failures still propagate
+            if (failure instanceof Exception) {
+                caller.throwIfCauseOf((Exception) failure);
+                WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
+            }
+            return first;
+        }
+        return fold(first, failure, entry.getName(), container, caller);
     }
 
     /** Combines two walks' failures: the first, with the second suppressed onto it. */
@@ -332,7 +417,8 @@ public final class IWorkMembers {
     private record Hooks(java.util.function.Consumer<ZipArchiveEntry> seen,
                          java.util.function.Predicate<ZipArchiveEntry> want,
                          java.util.function.Consumer<ZipArchiveEntry> unreadable,
-                         java.util.function.Consumer<ZipArchiveEntry> failed) {
+                         java.util.function.BiConsumer<ZipArchiveEntry, Boolean> failed,
+                         java.util.function.Predicate<ZipArchiveEntry> quiet) {
     }
 
     private static void member(ZipArchiveEntry entry, Opener opener, Hooks hooks,
@@ -356,7 +442,7 @@ public final class IWorkMembers {
             }
             first[0] = fold(first[0], e, entry.getName(), container, caller);
             if (hooks.failed() != null) {
-                hooks.failed().accept(entry);
+                hooks.failed().accept(entry, false);
             }
             return;
         } catch (SecurityException e) {
@@ -364,7 +450,7 @@ public final class IWorkMembers {
         } catch (Exception | LinkageError e) {
             first[0] = fold(first[0], e, entry.getName(), container, caller);
             if (hooks.failed() != null) {
-                hooks.failed().accept(entry);
+                hooks.failed().accept(entry, false);
             }
             return;
         }
@@ -375,14 +461,17 @@ public final class IWorkMembers {
             if (hooks.unreadable() != null) {
                 hooks.unreadable().accept(entry);
             }
-            first[0] = fold(first[0], e, entry.getName(), container, caller);
+            first[0] = foldUnlessQuiet(first[0], e, entry, hooks, container, caller);
             if (hooks.failed() != null) {
-                hooks.failed().accept(entry);
+                hooks.failed().accept(entry, false);
             }
         } catch (SecurityException e) {
             throw e;
         } catch (Exception | LinkageError e) {
-            first[0] = fold(first[0], e, entry.getName(), container, caller);
+            first[0] = foldUnlessQuiet(first[0], e, entry, hooks, container, caller);
+            if (hooks.failed() != null) {
+                hooks.failed().accept(entry, true);
+            }
         } finally {
             try {
                 opened.close();

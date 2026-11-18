@@ -101,10 +101,12 @@ public class IWorkPackageParser implements Parser {
             // content handlers set (it is written at the first element). Pass 2: every other
             // member, handed on. Both walks see the members in the same order, so the parsed
             // one is identified by name and occurrence.
-            // Pass 1 opens only content entries; a member it failed on (named in a warning
-            // already) is left alone by pass 2, so nothing is reported twice.
+            // Pass 1 opens only content entries. A member it could not read at all is left
+            // alone by pass 2; one whose parse failed is still handed on by pass 2, but its
+            // failure (named already) is not reported again.
             java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
             java.util.Set<String> done = new java.util.HashSet<>();
+            java.util.Set<String> named = new java.util.HashSet<>();
             String[] parsedName = {null};
             Exception ex = IWorkMembers.walk(tis,
                     entry -> seen1.merge(entry.getName(), 1, Integer::sum),
@@ -126,15 +128,18 @@ public class IWorkPackageParser implements Parser {
                                     IWORKDocumentType.ENCRYPTED.getType().toString());
                         }
                     },
-                    entry -> done.add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
-                    metadata, caller);
+                    (entry, opened) -> (opened ? named : done)
+                            .add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    null, metadata, caller);
             java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
             Exception ex2 = IWorkMembers.walk(tis,
                     entry -> seen2.merge(entry.getName(), 1, Integer::sum),
                     entry -> !done.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
                     (entry, data) -> processMember(entry, data, true, false, xhtml, metadata,
                             context, extractor),
-                    null, null, metadata, caller);
+                    null, null,
+                    entry -> named.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    metadata, caller);
             ex = IWorkMembers.firstOf(ex, ex2);
             xhtml.endDocument();
             if (ex != null) {

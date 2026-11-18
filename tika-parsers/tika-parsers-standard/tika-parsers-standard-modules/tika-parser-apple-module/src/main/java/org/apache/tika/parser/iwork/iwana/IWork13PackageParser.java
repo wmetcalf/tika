@@ -93,17 +93,20 @@ public class IWork13PackageParser implements Parser {
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
             // Pass 1: the package metadata, read before any output so the XHTML <head> (written
             // at the first element) carries it. Pass 2: every member, those included, handed on.
-            // Pass 1 opens only the package metadata; a member it failed on (named in a warning
-            // already) is left alone by pass 2, so nothing is reported twice.
+            // Pass 1 opens only the package metadata. A member it could not read at all is left
+            // alone by pass 2; one whose parse failed is still handed on by pass 2, but its
+            // failure (named already) is not reported again.
             java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
             java.util.Set<String> failed1 = new java.util.HashSet<>();
+            java.util.Set<String> named1 = new java.util.HashSet<>();
             Exception ex1 = IWorkMembers.walk(tis,
                     entry -> seen1.merge(entry.getName(), 1, Integer::sum),
                     entry -> isPackageMetadata(entry.getName()),
                     (entry, data) -> readPackageMetadata(entry.getName(), data, metadata),
                     null,
-                    entry -> failed1.add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
-                    metadata, caller);
+                    (entry, opened) -> (opened ? named1 : failed1)
+                            .add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    null, metadata, caller);
             MediaType[] detected = {null};
             java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
             Exception ex = IWorkMembers.walk(tis, entry -> {
@@ -118,7 +121,9 @@ public class IWork13PackageParser implements Parser {
                         TikaInputStream member = TikaInputStream.get(data, tmp, new Metadata())) {
                     processZipEntry(entry, member, metadata, xhtml, context, extractor);
                 }
-            }, null, null, metadata, caller);
+            }, null, null,
+                    entry -> named1.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    metadata, caller);
             MediaType type = detected[0] == null ? IWork13DocumentType.UNKNOWN13.getType()
                     : detected[0];
             if (type == IWork13DocumentType.UNKNOWN13.getType()) {
