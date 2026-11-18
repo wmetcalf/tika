@@ -18,6 +18,7 @@ package org.apache.tika.parser.apple;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -129,6 +130,30 @@ class IWorkHostileZipTest {
 
         RawZip entry(String name, byte[] data) {
             return entry(name, data, 0, false, 0);
+        }
+
+        /** A central-directory record with no local entry behind it. */
+        RawZip centralOnly(String name, long offset) {
+            byte[] n = name.getBytes(StandardCharsets.UTF_8);
+            le32(cd, 0x02014b50L);
+            le16(cd, 20);
+            le16(cd, 20);
+            le16(cd, 0);
+            le16(cd, 0);
+            le16(cd, 0);
+            le16(cd, 0x21);
+            le32(cd, 0);
+            le32(cd, 4);
+            le32(cd, 4);
+            le16(cd, n.length);
+            for (int i = 0; i < 4; i++) {
+                le16(cd, 0);
+            }
+            le32(cd, 0);
+            le32(cd, offset);
+            cd.writeBytes(n);
+            cdCount++;
+            return this;
         }
 
         RawZip raw(byte[] b) {
@@ -449,5 +474,62 @@ class IWorkHostileZipTest {
         }
         assertEquals(UUID, metadata.get(IWork13PackageParser.IWORKS_DOC_ID));
         assertEquals("x", metadata.get(IWork13PackageParser.IWORKS_BUILD_VERSION_HISTORY));
+    }
+
+    @Test
+    void oneBadCentralDirectoryRecordCannotHideTheOthers() throws Exception {
+        // commons-compress refuses the whole archive over one inconsistent record; the
+        // members the central directory lists must still be walked by it, not by local header
+        byte[] fakeCentralHeader = new byte[46];
+        fakeCentralHeader[0] = 'P';
+        fakeCentralHeader[1] = 'K';
+        fakeCentralHeader[2] = 1;
+        fakeCentralHeader[3] = 2;
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("visible.txt", PAYLOAD)
+                    .raw(fakeCentralHeader).entry("payload.exe", PAYLOAD)
+                    .centralOnly("bogus.bin", 0xFFFFFF00L).finish();
+            for (boolean fromFile : new boolean[]{false, true}) {
+                Result r = direct(marker, zip, fromFile);
+                assertTrue(r.names.contains("payload.exe"), marker + " file=" + fromFile + " " + r);
+                assertTrue(r.warnings().contains("bogus.bin"), marker + " file=" + fromFile + " " + r);
+            }
+            Result r = run(zip);
+            assertTrue(r.names.contains("payload.exe"), marker + " autodetect " + r);
+        }
+    }
+
+    @Test
+    void anErrorFromTheCallersHandlerIsTheCallers() throws Exception {
+        for (String fixture : new String[]{"testKeynote.key", "testKeynote2013.key"}) {
+            byte[] bytes;
+            try (var in = getClass().getResourceAsStream("/test-documents/" + fixture)) {
+                bytes = in.readAllBytes();
+            }
+            DefaultHandler failing = new DefaultHandler() {
+                @Override
+                public void characters(char[] ch, int start, int length) {
+                    throw new ExceptionInInitializerError("caller's own failure");
+                }
+            };
+            try (TikaInputStream s = TikaInputStream.get(bytes)) {
+                assertThrows(ExceptionInInitializerError.class, () -> new AutoDetectParser()
+                        .parse(s, failing, new Metadata(), new ParseContext()), fixture);
+            }
+        }
+    }
+
+    @Test
+    void aDamagedTailEndsTheWalkNotTheParse() throws Exception {
+        byte[] bytes;
+        try (var in = getClass().getResourceAsStream("/test-documents/testKeynote2013.key")) {
+            bytes = in.readAllBytes();
+        }
+        byte[] noEocd = java.util.Arrays.copyOf(bytes, bytes.length - 22);
+        Result r = direct("Metadata/BuildVersionHistory.plist", noEocd, false);
+        assertEquals(null, r.thrown, r.toString());
+        assertEquals("application/vnd.apple.keynote.13", r.metadata.get(Metadata.CONTENT_TYPE),
+                r.toString());
+        assertTrue(r.names.size() > 10, r.toString());
     }
 }

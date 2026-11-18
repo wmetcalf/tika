@@ -105,11 +105,14 @@ public final class IWorkMembers {
     }
 
     /**
-     * Walks every member of the package, whatever the input: the central directory of the
-     * detector's open ZipFile, else of a ZipFile on the input's file (spooled if need be, as
-     * ZipParser does); only when no central directory can be read, the local headers (with
-     * STORED + data-descriptor entries readable). A local-header walk ends quietly at a stray
-     * EOCD or central-header signature, so it is never the first choice.
+     * Walks every member of the package, whatever the input, by its central directory:
+     * commons-compress's ZipFile on the input's file (spooled if need be, as ZipParser does),
+     * else java.util.zip's ZipFile (which opens archives one inconsistent central-directory
+     * record makes commons-compress refuse whole), else the detector's open ZipFile. Only when
+     * none can be read are the local headers walked (STORED + data-descriptor entries
+     * readable); that walk ends quietly at a stray EOCD or central-header signature, and a
+     * container the detector salvaged was built the same way, so either is recorded as a
+     * warning: members may be missing.
      * <p>
      * Each member's failure is folded (see {@link #fold}); a member whose decoder is missing
      * from the classpath (a LinkageError, e.g. ZSTD without zstd-jni) is unreadable, not fatal.
@@ -131,61 +134,101 @@ public final class IWorkMembers {
                                  java.util.function.Consumer<ZipArchiveEntry> unreadable,
                                  Metadata container, TaggedContentHandler caller)
             throws IOException, SAXException {
-        ZipFile zipFile = null;
-        ZipFile owned = null;
-        Object open = tis.getOpenContainer();
-        if (open instanceof ZipFile) {
-            zipFile = (ZipFile) open;
-        } else {
-            try {
-                owned = ZipFile.builder().setFile(tis.getFile()).get();
-                zipFile = owned;
-            } catch (IOException e) {
-                // no readable central directory: fall back to the local headers below
-            }
-        }
-        Exception first = null;
+        Exception[] first = {null};
+        ZipFile commons = null;
         try {
-            if (zipFile != null) {
+            commons = ZipFile.builder().setFile(tis.getFile()).get();
+        } catch (IOException e) {
+            // commons-compress refused the central directory; try the JDK's reader below
+        }
+        if (commons != null) {
+            try (ZipFile zipFile = commons) {
                 Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
-                    try (InputStream data = zipFile.getInputStream(entry)) {
-                        handler.handle(entry, data);
-                    } catch (UnsupportedZipFeatureException e) {
-                        if (unreadable != null) {
-                            unreadable.accept(entry);
-                        }
-                        first = fold(first, e, entry.getName(), container, caller);
-                    } catch (SecurityException e) {
-                        throw e;
-                    } catch (Exception | LinkageError e) {
-                        first = fold(first, e, entry.getName(), container, caller);
-                    }
-                }
-            } else {
-                try (InputStream raw = Files.newInputStream(tis.getPath());
-                        ZipArchiveInputStream zip =
-                                new ZipArchiveInputStream(raw, "UTF8", true, true)) {
-                    ZipArchiveEntry entry = zip.getNextEntry();
-                    while (entry != null) {
-                        try {
-                            handler.handle(entry, CloseShieldInputStream.wrap(zip));
-                        } catch (SecurityException e) {
-                            throw e;
-                        } catch (Exception | LinkageError e) {
-                            first = fold(first, e, entry.getName(), container, caller);
-                        }
-                        entry = zip.getNextEntry();
-                    }
+                    member(entry, () -> zipFile.getInputStream(entry), handler, unreadable,
+                            first, container, caller);
                 }
             }
-        } finally {
-            if (owned != null) {
-                owned.close();
+            return first[0];
+        }
+        java.util.zip.ZipFile jdk = null;
+        try {
+            jdk = new java.util.zip.ZipFile(tis.getFile());
+        } catch (IOException e) {
+            // no central-directory reader accepts it
+        }
+        if (jdk != null) {
+            try (java.util.zip.ZipFile zipFile = jdk) {
+                Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
+                while (entries.hasMoreElements()) {
+                    java.util.zip.ZipEntry jdkEntry = entries.nextElement();
+                    member(new ZipArchiveEntry(jdkEntry.getName()),
+                            () -> zipFile.getInputStream(jdkEntry), handler, unreadable, first,
+                            container, caller);
+                }
+            }
+            return first[0];
+        }
+        container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                "iWork package central directory unreadable: members were walked by local "
+                        + "header and some may be missing");
+        Object open = tis.getOpenContainer();
+        if (open instanceof ZipFile) {
+            // the detector's (salvaged) container: never ours to close
+            ZipFile salvaged = (ZipFile) open;
+            Enumeration<ZipArchiveEntry> entries = salvaged.getEntries();
+            while (entries.hasMoreElements()) {
+                ZipArchiveEntry entry = entries.nextElement();
+                member(entry, () -> salvaged.getInputStream(entry), handler, unreadable, first,
+                        container, caller);
+            }
+            return first[0];
+        }
+        try (InputStream raw = Files.newInputStream(tis.getPath());
+                ZipArchiveInputStream zip = new ZipArchiveInputStream(raw, "UTF8", true, true)) {
+            while (true) {
+                ZipArchiveEntry entry;
+                try {
+                    entry = zip.getNextEntry();
+                } catch (IOException e) {
+                    // a damaged tail ("Truncated ZIP file") ends the walk, not the parse
+                    container.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            "iWork package local-header walk ended early: " + e);
+                    break;
+                }
+                if (entry == null) {
+                    break;
+                }
+                ZipArchiveEntry current = entry;
+                member(current, () -> CloseShieldInputStream.wrap(zip), handler, unreadable, first,
+                        container, caller);
             }
         }
-        return first;
+        return first[0];
+    }
+
+    @FunctionalInterface
+    private interface Opener {
+        InputStream open() throws IOException;
+    }
+
+    private static void member(ZipArchiveEntry entry, Opener opener, MemberHandler handler,
+                               java.util.function.Consumer<ZipArchiveEntry> unreadable,
+                               Exception[] first, Metadata container,
+                               TaggedContentHandler caller) throws SAXException {
+        try (InputStream data = opener.open()) {
+            handler.handle(entry, data);
+        } catch (UnsupportedZipFeatureException e) {
+            if (unreadable != null) {
+                unreadable.accept(entry);
+            }
+            first[0] = fold(first[0], e, entry.getName(), container, caller);
+        } catch (SecurityException e) {
+            throw e;
+        } catch (Exception | LinkageError e) {
+            first[0] = fold(first[0], e, entry.getName(), container, caller);
+        }
     }
 
     /**
@@ -228,6 +271,14 @@ public final class IWorkMembers {
         if (failure instanceof Exception) {
             caller.throwIfCauseOf((Exception) failure);
             WriteLimitReachedException.throwIfWriteLimitReached((Exception) failure);
+        }
+        // an Error the caller's own handler threw (e.g. a LinkageError) is the caller's too
+        Throwable callers = caller.findUncheckedCause(failure);
+        if (callers instanceof Error) {
+            throw (Error) callers;
+        }
+        if (callers instanceof RuntimeException) {
+            throw (RuntimeException) callers;
         }
         int depth = 0;
         for (Throwable t = failure; t != null && depth < 64; t = t.getCause(), depth++) {
