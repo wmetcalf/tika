@@ -201,6 +201,7 @@ public final class IWorkMembers {
         java.util.Set<Long> knownHeaders = new java.util.HashSet<>();
         java.util.List<long[]> knownData = new java.util.ArrayList<>();
         java.util.Set<String> jdkExtras = new java.util.HashSet<>();
+        boolean[] sizeMismatch = {false};
         try {
             if (commons != null) {
                 ZipFile zipFile = commons;
@@ -208,9 +209,13 @@ public final class IWorkMembers {
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
                     knownHeaders.add(entry.getLocalHeaderOffset());
-                    if (entry.getDataOffset() >= 0 && entry.getCompressedSize() >= 0) {
-                        knownData.add(new long[]{entry.getDataOffset(),
-                                entry.getDataOffset() + entry.getCompressedSize()});
+                    long end = dataEnd(file, zipFile, entry);
+                    if (end < 0) {
+                        sizeMismatch[0] = true;
+                        end = -end;
+                    }
+                    if (entry.getDataOffset() >= 0) {
+                        knownData.add(new long[]{entry.getDataOffset(), end});
                     }
                     walked.merge(identity(entry.getName(), entry.getCrc(),
                             entry.getCompressedSize(), entry.getSize()), 1, Integer::sum);
@@ -250,18 +255,30 @@ public final class IWorkMembers {
                 warnOnce(container,
                         "iWork package central directory unreadable: members were walked "
                                 + "by local header and some may be missing");
-                walkLocalHeaders(file, walked, walkedNames, extra, hooks, handler, first,
-                        container, caller);
-            } else if (commons != null) {
+                walkLocalHeaders(file, walked, walkedNames, hooks, handler, first, container,
+                        caller);
+            } else if (commons == null) {
+                // commons-compress refused what the JDK accepts (e.g. one record's data running
+                // into the directory): account for the local headers against the JDK's view
+                if (walkLocalHeaders(file, walked, walkedNames, hooks, handler, first, container,
+                        caller) > 0) {
+                    warnOnce(container,
+                            "iWork package central directory is inconsistent: commons-compress "
+                                    + "refused it and local headers outside the JDK's view "
+                                    + "were walked");
+                }
+            } else {
+                if (sizeMismatch[0]) {
+                    warnOnce(container,
+                            "iWork package central directory is inconsistent: a member's "
+                                    + "compressed size differs from its local header's");
+                }
                 java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, knownData);
                 if (!stray.isEmpty()) {
                     warnOnce(container,
                             "iWork package central directory is inconsistent: " + stray.size()
-                                    + " local header(s) outside it were read at their own offset");
-                    for (long offset : stray) {
-                        walkLocalHeaderAt(file, offset, jdkExtras, hooks, handler, first,
-                                container, caller);
-                    }
+                                    + " local header signature(s) outside it");
+                    walkStrays(file, stray, jdkExtras, hooks, handler, first, container, caller);
                 }
             }
             if (extra[0] && commons != null) {
@@ -280,13 +297,15 @@ public final class IWorkMembers {
         return first[0];
     }
 
-    private static void walkLocalHeaders(java.nio.file.Path file,
-                                         java.util.Map<String, Integer> walked,
-                                         java.util.Map<String, Integer> walkedNames,
-                                         boolean[] extra, Hooks hooks, MemberHandler handler,
-                                         Exception[] first, Metadata container,
-                                         TaggedContentHandler caller)
+    /** @return how many local entries were not covered by {@code walked} and were handed on */
+    private static int walkLocalHeaders(java.nio.file.Path file,
+                                        java.util.Map<String, Integer> walked,
+                                        java.util.Map<String, Integer> walkedNames,
+                                        Hooks hooks, MemberHandler handler,
+                                        Exception[] first, Metadata container,
+                                        TaggedContentHandler caller)
             throws IOException, SAXException {
+        int extras = 0;
         try (InputStream raw = Files.newInputStream(file);
                 ZipArchiveInputStream zip = new ZipArchiveInputStream(raw, "UTF8", true, true)) {
             while (true) {
@@ -313,11 +332,12 @@ public final class IWorkMembers {
                 if (covered) {
                     continue;
                 }
-                extra[0] = true;
+                extras++;
                 member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler, first,
                         container, caller);
             }
         }
+        return extras;
     }
 
     /** Offsets of "PK\\3\\4" signatures that are neither a known member's local header nor
@@ -381,36 +401,170 @@ public final class IWorkMembers {
         return false;
     }
 
-    /** Reads the one member whose local header starts at {@code offset} and hands it on,
-     * unless the JDK's reader already handed on a member with the same name and data. */
-    private static void walkLocalHeaderAt(java.nio.file.Path file, long offset,
-                                          java.util.Set<String> jdkExtras, Hooks hooks,
-                                          MemberHandler handler, Exception[] first,
-                                          Metadata container, TaggedContentHandler caller)
+    /** At most this many stray local headers are read; the rest are only counted. */
+    private static final int MAX_STRAYS = 256;
+
+    /**
+     * Reads each stray local header at its own offset and hands its member on, skipping
+     * signatures inside a stray already read (its header, name, extra field and data), and
+     * a member the JDK's reader already handed on with the same name and data. A data-descriptor
+     * member's identity is only known once its data is read, so it is spooled first.
+     */
+    private static void walkStrays(java.nio.file.Path file, java.util.List<Long> stray,
+                                   java.util.Set<String> jdkExtras, Hooks hooks,
+                                   MemberHandler handler, Exception[] first, Metadata container,
+                                   TaggedContentHandler caller)
             throws IOException, SAXException {
-        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
-            ch.position(offset);
-            ZipArchiveInputStream zip = new ZipArchiveInputStream(
-                    java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
-            ZipArchiveEntry entry;
-            try {
-                entry = zip.getNextEntry();
-            } catch (IOException | LinkageError e) {
-                warnOnce(container, "iWork package local header at " + offset
-                        + " could not be read: " + e);
-                return;
+        long skipUntil = -1;
+        int read = 0;
+        int unreadable = 0;
+        int skipped = 0;
+        for (long offset : stray) {
+            if (offset < skipUntil) {
+                continue;
             }
-            if (entry == null) {
-                return;
+            if (read >= MAX_STRAYS) {
+                skipped++;
+                continue;
             }
-            if (entry.getCrc() >= 0 && entry.getSize() >= 0 && entry.getCompressedSize() >= 0
-                    && jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
-                            entry.getCompressedSize(), entry.getSize()))) {
-                return;
+            read++;
+            try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file);
+                    TemporaryResources tmp = new TemporaryResources()) {
+                ch.position(offset);
+                ZipArchiveInputStream zip = new ZipArchiveInputStream(
+                        java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
+                try (zip) {
+                    ZipArchiveEntry entry;
+                    try {
+                        entry = zip.getNextEntry();
+                    } catch (IOException | LinkageError e) {
+                        unreadable++;
+                        continue;
+                    }
+                    if (entry == null) {
+                        unreadable++;
+                        continue;
+                    }
+                    byte[] header = new byte[30];
+                    ch.position(offset);
+                    java.nio.ByteBuffer hb = java.nio.ByteBuffer.wrap(header);
+                    while (hb.hasRemaining() && ch.read(hb) >= 0) {
+                        // fill
+                    }
+                    long extent = 30L + u16(header, 26) + u16(header, 28);
+                    boolean descriptor = (u16(header, 6) & 8) != 0;
+                    if (!descriptor) {
+                        extent += le32(header, 18);
+                        skipUntil = Math.max(skipUntil, offset + extent);
+                        if (jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
+                                entry.getCompressedSize(), entry.getSize()))) {
+                            continue;
+                        }
+                        member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler,
+                                first, container, caller);
+                    } else {
+                        // spool, so the descriptor's CRC and sizes are known before deciding
+                        java.nio.file.Path spool = tmp.createTempFile();
+                        try {
+                            Files.copy(CloseShieldInputStream.wrap(zip), spool,
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        } catch (IOException e) {
+                            unreadable++;
+                            skipUntil = Math.max(skipUntil, offset + extent);
+                            continue;
+                        }
+                        skipUntil = Math.max(skipUntil, offset + extent
+                                + Math.max(0, entry.getCompressedSize()));
+                        if (jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
+                                entry.getCompressedSize(), entry.getSize()))) {
+                            continue;
+                        }
+                        member(entry, () -> Files.newInputStream(spool), hooks, handler, first,
+                                container, caller);
+                    }
+                }
             }
-            member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler, first,
-                    container, caller);
         }
+        if (unreadable > 0 || skipped > 0) {
+            warnOnce(container, "iWork package: " + unreadable + " stray local header(s) "
+                    + "could not be read" + (skipped > 0 ? ", " + skipped + " more not read" : ""));
+        }
+    }
+
+    /**
+     * Where a commons-compress member's data really ends: the central directory's compressed
+     * size is the attacker's to stretch over another member's local header, so it is checked
+     * against the local header's own size (or, for a deflated data-descriptor member, the bytes
+     * its deflate stream actually uses). Negative (the absolute value is the end) when the
+     * claims disagree.
+     */
+    private static long dataEnd(java.nio.file.Path file, ZipFile zipFile, ZipArchiveEntry entry)
+            throws IOException {
+        long start = entry.getDataOffset();
+        long claimed = entry.getCompressedSize();
+        if (start < 0 || claimed < 0) {
+            return Math.max(start, 0);
+        }
+        byte[] header = new byte[30];
+        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+            ch.position(entry.getLocalHeaderOffset());
+            java.nio.ByteBuffer hb = java.nio.ByteBuffer.wrap(header);
+            while (hb.hasRemaining() && ch.read(hb) >= 0) {
+                // fill
+            }
+        }
+        boolean descriptor = (u16(header, 6) & 8) != 0;
+        long local = le32(header, 18);
+        if (!descriptor && local != 0xFFFFFFFFL) {
+            return local == claimed ? start + claimed : -(start + Math.min(local, claimed));
+        }
+        if (entry.getMethod() == ZipArchiveEntry.DEFLATED) {
+            long used = deflateLength(zipFile, entry, claimed);
+            if (used >= 0) {
+                return used == claimed ? start + claimed : -(start + used);
+            }
+        }
+        return start + claimed;
+    }
+
+    /** Compressed bytes a member's deflate stream uses, or -1 if it does not end in time. */
+    private static long deflateLength(ZipFile zipFile, ZipArchiveEntry entry, long claimed) {
+        java.util.zip.Inflater inflater = new java.util.zip.Inflater(true);
+        try (InputStream raw = zipFile.getRawInputStream(entry)) {
+            if (raw == null) {
+                return -1;
+            }
+            byte[] in = new byte[64 * 1024];
+            byte[] out = new byte[64 * 1024];
+            long fed = 0;
+            while (!inflater.finished()) {
+                if (inflater.needsInput()) {
+                    int n = raw.read(in);
+                    if (n < 0) {
+                        return -1;
+                    }
+                    fed += n;
+                    inflater.setInput(in, 0, n);
+                }
+                if (inflater.inflate(out) == 0 && inflater.needsDictionary()) {
+                    return -1;
+                }
+            }
+            return fed - inflater.getRemaining();
+        } catch (IOException | java.util.zip.DataFormatException e) {
+            return -1;
+        } finally {
+            inflater.end();
+        }
+    }
+
+    private static int u16(byte[] b, int i) {
+        return (b[i] & 0xff) | (b[i + 1] & 0xff) << 8;
+    }
+
+    private static long le32(byte[] b, int i) {
+        return (b[i] & 0xffL) | (b[i + 1] & 0xffL) << 8 | (b[i + 2] & 0xffL) << 16
+                | (b[i + 3] & 0xffL) << 24;
     }
 
     private static Exception foldUnlessQuiet(Exception first, Throwable failure,

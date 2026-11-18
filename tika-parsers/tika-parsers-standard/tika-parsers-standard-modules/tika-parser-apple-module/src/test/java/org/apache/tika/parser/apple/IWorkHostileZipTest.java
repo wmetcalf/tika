@@ -851,4 +851,38 @@ class IWorkHostileZipTest {
         }
         assertTrue(!asked.contains("payload.exe"), asked.toString());
     }
+
+    @Test
+    void aMemberSeenByTwoRoutesIsHandedOnOnce() throws Exception {
+        // shadow directory: only the JDK lists payload.exe; the scan also finds its local header
+        // (with a data descriptor, its identity is known only after its data is read)
+        for (String name : resources("iwork-hostile/dup")) {
+            List<String> contents = new ArrayList<>();
+            parseAuto(name, contents);
+            assertEquals(1, contents.stream().filter(c -> c.contains("MZ-HIDDEN-PAYLOAD")).count(),
+                    name);
+        }
+    }
+
+    @Test
+    void strayLocalHeaderSignaturesAreBounded() throws Exception {
+        // 64k back-to-back "PK\3\4" before the central directory of a valid package
+        byte[] spam = new byte[256 * 1024];
+        for (int i = 0; i < spam.length; i += 4) {
+            spam[i] = 'P';
+            spam[i + 1] = 'K';
+            spam[i + 2] = 3;
+            spam[i + 3] = 4;
+        }
+        byte[] zip = new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("visible.txt", PAYLOAD).raw(spam).finish();
+        long start = System.nanoTime();
+        Result r = run(zip);
+        long millis = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(millis < 15_000, millis + " ms");
+        assertTrue(r.names.size() < 300, r.names.size() + " members");
+        assertTrue(r.metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length < 300,
+                r.warnings().length() + " chars of warnings");
+        assertTrue(r.warnings().contains("inconsistent"), r.warnings());
+    }
 }
