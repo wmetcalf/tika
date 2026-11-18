@@ -215,7 +215,8 @@ public final class IWorkMembers {
                         end = -end;
                     }
                     if (entry.getDataOffset() >= 0) {
-                        knownData.add(new long[]{entry.getDataOffset(), end});
+                        // its local header (name, extra field) and its data
+                        knownData.add(new long[]{entry.getLocalHeaderOffset(), end});
                     }
                     walked.merge(identity(entry.getName(), entry.getCrc(),
                             entry.getCompressedSize(), entry.getSize()), 1, Integer::sum);
@@ -238,11 +239,11 @@ public final class IWorkMembers {
                         continue;
                     }
                     extra[0] = true;
-                    jdkExtras.add(id);
                     walked.merge(id, 1, Integer::sum);
                     walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
                     member(new ZipArchiveEntry(jdkEntry.getName()),
-                            () -> zipFile.getInputStream(jdkEntry), hooks, handler,
+                            () -> new Digesting(zipFile.getInputStream(jdkEntry),
+                                    jdkEntry.getName(), jdkExtras), hooks, handler,
                             first, container, caller);
                 }
             }
@@ -275,9 +276,6 @@ public final class IWorkMembers {
                 }
                 java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, knownData);
                 if (!stray.isEmpty()) {
-                    warnOnce(container,
-                            "iWork package central directory is inconsistent: " + stray.size()
-                                    + " local header signature(s) outside it");
                     walkStrays(file, stray, jdkExtras, hooks, handler, first, container, caller);
                 }
             }
@@ -346,8 +344,20 @@ public final class IWorkMembers {
                                                                 java.util.Set<Long> headers,
                                                                 java.util.List<long[]> data)
             throws IOException {
-        long[][] ranges = data.toArray(new long[0][]);
-        java.util.Arrays.sort(ranges, (x, y) -> Long.compare(x[0], y[0]));
+        long[][] sorted = data.toArray(new long[0][]);
+        java.util.Arrays.sort(sorted, (x, y) -> Long.compare(x[0], y[0]));
+        // merged into disjoint ranges, so a lookup is one binary search however many
+        // (possibly forged, overlapping) ranges there are
+        java.util.List<long[]> merged = new java.util.ArrayList<>();
+        for (long[] r : sorted) {
+            long[] last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
+            if (last != null && r[0] <= last[1]) {
+                last[1] = Math.max(last[1], r[1]);
+            } else {
+                merged.add(new long[]{r[0], r[1]});
+            }
+        }
+        long[][] ranges = merged.toArray(new long[0][]);
         java.util.List<Long> stray = new java.util.ArrayList<>();
         try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
             java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(1 << 20);
@@ -382,19 +392,13 @@ public final class IWorkMembers {
     private static boolean inside(long[][] ranges, long offset) {
         int lo = 0;
         int hi = ranges.length - 1;
-        int found = -1;
         while (lo <= hi) {
             int mid = (lo + hi) >>> 1;
-            if (ranges[mid][0] <= offset) {
-                found = mid;
+            if (ranges[mid][1] <= offset) {
                 lo = mid + 1;
-            } else {
+            } else if (ranges[mid][0] > offset) {
                 hi = mid - 1;
-            }
-        }
-        // ranges may overlap (a forged directory); check every range starting at or before
-        for (int i = found; i >= 0; i--) {
-            if (offset < ranges[i][1]) {
+            } else {
                 return true;
             }
         }
@@ -417,6 +421,7 @@ public final class IWorkMembers {
             throws IOException, SAXException {
         long skipUntil = -1;
         int read = 0;
+        int members = 0;
         int unreadable = 0;
         int skipped = 0;
         for (long offset : stray) {
@@ -430,64 +435,123 @@ public final class IWorkMembers {
             read++;
             try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file);
                     TemporaryResources tmp = new TemporaryResources()) {
+                byte[] header = new byte[30];
+                ch.position(offset);
+                java.nio.ByteBuffer hb = java.nio.ByteBuffer.wrap(header);
+                while (hb.hasRemaining() && ch.read(hb) >= 0) {
+                    // fill
+                }
+                long extent = 30L + u16(header, 26) + u16(header, 28);
                 ch.position(offset);
                 ZipArchiveInputStream zip = new ZipArchiveInputStream(
                         java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
                 try (zip) {
                     ZipArchiveEntry entry;
+                    java.nio.file.Path spool = tmp.createTempFile();
+                    java.security.MessageDigest sha;
                     try {
                         entry = zip.getNextEntry();
-                    } catch (IOException | LinkageError e) {
-                        unreadable++;
-                        continue;
-                    }
-                    if (entry == null) {
-                        unreadable++;
-                        continue;
-                    }
-                    byte[] header = new byte[30];
-                    ch.position(offset);
-                    java.nio.ByteBuffer hb = java.nio.ByteBuffer.wrap(header);
-                    while (hb.hasRemaining() && ch.read(hb) >= 0) {
-                        // fill
-                    }
-                    long extent = 30L + u16(header, 26) + u16(header, 28);
-                    boolean descriptor = (u16(header, 6) & 8) != 0;
-                    if (!descriptor) {
-                        extent += le32(header, 18);
-                        skipUntil = Math.max(skipUntil, offset + extent);
-                        if (jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
-                                entry.getCompressedSize(), entry.getSize()))) {
-                            continue;
-                        }
-                        member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler,
-                                first, container, caller);
-                    } else {
-                        // spool, so the descriptor's CRC and sizes are known before deciding
-                        java.nio.file.Path spool = tmp.createTempFile();
-                        try {
-                            Files.copy(CloseShieldInputStream.wrap(zip), spool,
-                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                        } catch (IOException e) {
+                        if (entry == null) {
                             unreadable++;
-                            skipUntil = Math.max(skipUntil, offset + extent);
                             continue;
                         }
-                        skipUntil = Math.max(skipUntil, offset + extent
-                                + Math.max(0, entry.getCompressedSize()));
-                        if (jdkExtras.contains(identity(entry.getName(), entry.getCrc(),
-                                entry.getCompressedSize(), entry.getSize()))) {
-                            continue;
+                        // spooled and hashed first: a data-descriptor member's CRC and sizes,
+                        // and whether the JDK's reader already handed on these very bytes, are
+                        // known only once its data is read
+                        sha = java.security.MessageDigest.getInstance("SHA-256");
+                        try (InputStream in = new java.security.DigestInputStream(
+                                CloseShieldInputStream.wrap(zip), sha)) {
+                            Files.copy(in, spool, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         }
-                        member(entry, () -> Files.newInputStream(spool), hooks, handler, first,
-                                container, caller);
+                    } catch (IOException | LinkageError | java.security.NoSuchAlgorithmException e) {
+                        unreadable++;
+                        skipUntil = Math.max(skipUntil, offset + extent);
+                        continue;
                     }
+                    skipUntil = Math.max(skipUntil, offset + extent
+                            + Math.max(0, entry.getCompressedSize()));
+                    if (jdkExtras.contains(entry.getName() + '\u0000'
+                            + java.util.HexFormat.of().formatHex(sha.digest()))) {
+                        continue;
+                    }
+                    members++;
+                    member(entry, () -> Files.newInputStream(spool), hooks, handler, first,
+                            container, caller);
                 }
             }
         }
+        if (members > 0) {
+            warnOnce(container, "iWork package central directory is inconsistent: " + members
+                    + " member(s) outside it were read at their own local header");
+        }
         if (unreadable > 0 || skipped > 0) {
-            warnOnce(container, "iWork package: " + unreadable + " stray local header(s) "
-                    + "could not be read" + (skipped > 0 ? ", " + skipped + " more not read" : ""));
+            warnOnce(container, "iWork package: " + unreadable + " local header signature(s) "
+                    + "outside the central directory do not parse"
+                    + (skipped > 0 ? ", " + skipped + " more not read" : ""));
+        }
+    }
+
+    /** Records name + SHA-256 of a member's bytes once it is closed (draining what the
+     * handler did not read), so the stray scan can recognise the very same bytes. */
+    private static final class Digesting extends java.io.FilterInputStream {
+        private final String name;
+        private final java.util.Set<String> into;
+        private final java.security.MessageDigest sha;
+
+        Digesting(InputStream in, String name, java.util.Set<String> into) {
+            super(in);
+            this.name = name;
+            this.into = into;
+            try {
+                this.sha = java.security.MessageDigest.getInstance("SHA-256");
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = in.read();
+            if (b >= 0) {
+                sha.update((byte) b);
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int n = in.read(b, off, len);
+            if (n > 0) {
+                sha.update(b, off, n);
+            }
+            return n;
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            byte[] buf = new byte[8192];
+            long done = 0;
+            while (done < n) {
+                int r = read(buf, 0, (int) Math.min(buf.length, n - done));
+                if (r < 0) {
+                    break;
+                }
+                done += r;
+            }
+            return done;
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                byte[] buf = new byte[8192];
+                while (read(buf, 0, buf.length) >= 0) {
+                    // drain, so the digest covers the whole member
+                }
+                into.add(name + '\u0000' + java.util.HexFormat.of().formatHex(sha.digest()));
+            } finally {
+                in.close();
+            }
         }
     }
 

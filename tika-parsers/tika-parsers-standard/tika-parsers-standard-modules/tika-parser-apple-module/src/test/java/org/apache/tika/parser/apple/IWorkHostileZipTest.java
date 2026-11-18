@@ -883,6 +883,6 @@ class IWorkHostileZipTest {
         assertTrue(r.names.size() < 300, r.names.size() + " members");
         assertTrue(r.metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING).length < 300,
                 r.warnings().length() + " chars of warnings");
-        assertTrue(r.warnings().contains("inconsistent"), r.warnings());
+        assertTrue(r.warnings().contains("do not parse"), r.warnings());
     }
 }
