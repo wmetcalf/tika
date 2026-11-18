@@ -16,11 +16,19 @@
  */
 package org.apache.tika.parser.pkg;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.junit.jupiter.api.Test;
 import org.xml.sax.ContentHandler;
@@ -51,6 +59,66 @@ class ArchiveEmbeddedContextTest {
     @Test
     void tarRetainsCallerContext() throws Exception {
         customExtractorReceivesCallerContext("test-nested-tarball.tar");
+    }
+
+    @Test
+    void streamingZipRetainsCallerContext() throws Exception {
+        // The AutoDetectParser fixtures above all open (or salvage) a ZipFile, so they only
+        // reach parseZipFileEntry. A zip with local headers but no central directory cannot be
+        // opened as a ZipFile, which forces ZipParser onto parseStreamEntry.
+        byte[] content = "hello streaming path".getBytes(StandardCharsets.UTF_8);
+        CRC32 crc = new CRC32();
+        crc.update(content);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+            ZipEntry entry = new ZipEntry("a.txt");
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(content.length);
+            entry.setCompressedSize(content.length);
+            entry.setCrc(crc.getValue());
+            zos.putNextEntry(entry);
+            zos.write(content);
+            zos.closeEntry();
+        }
+        byte[] full = baos.toByteArray();
+        byte[] noCentralDirectory = Arrays.copyOf(full, indexOf(full, new byte[]{'P', 'K', 1, 2}));
+
+        ParseContext context = new ParseContext();
+        AtomicInteger same = new AtomicInteger();
+        AtomicInteger fresh = new AtomicInteger();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata metadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata metadata, ParseContext supplied, boolean outputHtml)
+                    throws IOException {
+                (supplied == context ? same : fresh).incrementAndGet();
+                stream.transferTo(java.io.OutputStream.nullOutputStream());
+            }
+        });
+        try (TikaInputStream tis = TikaInputStream.get(noCentralDirectory)) {
+            new ZipParser().parse(tis, new DefaultHandler(), new Metadata(), context);
+            assertNull(tis.getOpenContainer(), "fixture must take the streaming ZIP path");
+        }
+        assertEquals(0, fresh.get(), "streaming entry was handed a fresh ParseContext");
+        assertEquals(1, same.get());
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle) {
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        throw new IllegalStateException("signature not found");
     }
 
     private void customExtractorReceivesCallerContext(String fixture) throws Exception {
