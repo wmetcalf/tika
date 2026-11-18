@@ -132,6 +132,12 @@ class IWorkHostileZipTest {
             return entry(name, data, 0, false, 0);
         }
 
+        /** Junk bytes inside the central directory (counted in its size). */
+        RawZip centralJunk(byte[] junk) {
+            cd.writeBytes(junk);
+            return this;
+        }
+
         /** A central-directory record with no local entry behind it. */
         RawZip centralOnly(String name, long offset) {
             byte[] n = name.getBytes(StandardCharsets.UTF_8);
@@ -545,5 +551,55 @@ class IWorkHostileZipTest {
         }
         assertEquals(IWork13PackageParser.IWork13DocumentType.KEYNOTE13.getType().toString(),
                 r.metadata.get(Metadata.CONTENT_TYPE));
+    }
+
+    @Test
+    void aStrayRecordInsideTheCentralDirectoryCannotHideLaterMembers() throws Exception {
+        // commons-compress stops reading the central directory at the junk; the members after
+        // it must still be walked (from another reader) and the inconsistency recorded
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("visible.txt", PAYLOAD)
+                    .centralJunk(new byte[]{'J', 'U', 'N', 'K'}).entry("payload.exe", PAYLOAD)
+                    .finish();
+            for (boolean fromFile : new boolean[]{false, true}) {
+                Result r = direct(marker, zip, fromFile);
+                assertTrue(r.names.contains("payload.exe"), marker + " file=" + fromFile + " " + r);
+                assertTrue(r.warnings().contains("inconsistent"), marker + " " + r);
+            }
+            assertTrue(run(zip).names.contains("payload.exe"), marker);
+        }
+    }
+
+    @Test
+    void autoDetectDoesNotTrustTheDetectorsSalvagedCopy() throws Exception {
+        // no central directory: the detector salvages a copy that silently drops unreadable
+        // and directory-named members; the parser walks the local headers itself
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("enc.bin", PAYLOAD, 1, false, 0)
+                    .entry("payload/", PAYLOAD).entry("visible.txt", PAYLOAD)
+                    .finishWithoutCentralDirectory();
+            Result r = run(zip);
+            assertTrue(r.names.contains("payload/"), marker + " " + r);
+            assertTrue(r.warnings().contains("enc.bin"), marker + " " + r);
+        }
+    }
+
+    @Test
+    void theDocumentsHeadKeepsItsMetadata() throws Exception {
+        for (String fixture : new String[]{"testPages.pages", "testPagesComments.pages"}) {
+            byte[] bytes;
+            try (var in = getClass().getResourceAsStream("/test-documents/" + fixture)) {
+                bytes = in.readAllBytes();
+            }
+            Metadata metadata = new Metadata();
+            org.apache.tika.sax.ToXMLContentHandler xml = new org.apache.tika.sax.ToXMLContentHandler();
+            try (TikaInputStream s = TikaInputStream.get(bytes)) {
+                new AutoDetectParser().parse(s, xml, metadata, new ParseContext());
+            }
+            String head = xml.toString().substring(0, xml.toString().indexOf("</head>"));
+            String title = metadata.get(TikaCoreProperties.TITLE);
+            assertNotNull(title, fixture);
+            assertTrue(head.contains("<title>" + title + "</title>"), fixture + ": " + head);
+        }
     }
 }

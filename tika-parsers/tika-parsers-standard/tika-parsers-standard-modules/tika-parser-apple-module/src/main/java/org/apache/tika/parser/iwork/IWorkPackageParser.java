@@ -97,20 +97,43 @@ public class IWorkPackageParser implements Parser {
             xhtml.startDocument();
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-            boolean[] contentParsed = {false};
-            Exception ex = IWorkMembers.walk(tis, null, (entry, data) -> {
-                if (processMember(entry, data, contentParsed[0], xhtml, metadata, context,
-                        extractor)) {
-                    contentParsed[0] = true;
-                }
-            }, entry -> {
-                if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
-                    // an unreadable content entry is how a password-protected iWork package
-                    // looks (the stream route's detectType reports ENCRYPTED the same way)
-                    metadata.set(Metadata.CONTENT_TYPE,
-                            IWORKDocumentType.ENCRYPTED.getType().toString());
-                }
-            }, metadata, caller);
+            // Pass 1: the document itself, first, so the XHTML <head> carries the metadata the
+            // content handlers set (it is written at the first element). Pass 2: every other
+            // member, handed on. Both walks see the members in the same order, so the parsed
+            // one is identified by name and occurrence.
+            java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
+            String[] parsedName = {null};
+            int[] parsedOccurrence = {0};
+            Exception ex = IWorkMembers.walk(tis,
+                    entry -> seen1.merge(entry.getName(), 1, Integer::sum),
+                    (entry, data) -> {
+                        if (parsedName[0] == null
+                                && processMember(entry, data, false, true, xhtml, metadata,
+                                        context, extractor)) {
+                            parsedName[0] = entry.getName();
+                            parsedOccurrence[0] = seen1.get(entry.getName());
+                        }
+                    }, entry -> {
+                        if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+                            // an unreadable content entry is how a password-protected iWork
+                            // package looks (the stream route's detectType reports ENCRYPTED
+                            // the same way)
+                            metadata.set(Metadata.CONTENT_TYPE,
+                                    IWORKDocumentType.ENCRYPTED.getType().toString());
+                        }
+                    }, metadata, caller);
+            java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
+            Exception ex2 = IWorkMembers.walk(tis,
+                    entry -> seen2.merge(entry.getName(), 1, Integer::sum),
+                    (entry, data) -> {
+                        if (entry.getName().equals(parsedName[0])
+                                && seen2.get(entry.getName()) == parsedOccurrence[0]) {
+                            return;
+                        }
+                        processMember(entry, data, true, false, xhtml, metadata, context,
+                                extractor);
+                    }, null, metadata, caller);
+            ex = IWorkMembers.firstOf(ex, ex2);
             xhtml.endDocument();
             if (ex != null) {
                 throw new TikaException("problem processing iWork package", ex);
@@ -132,8 +155,9 @@ public class IWorkPackageParser implements Parser {
      * @return true if this member was parsed as the document
      */
     private boolean processMember(ZipArchiveEntry entry, InputStream raw, boolean contentParsed,
-                                  XHTMLContentHandler xhtml, Metadata metadata,
-                                  ParseContext context, EmbeddedDocumentExtractor extractor)
+                                  boolean documentOnly, XHTMLContentHandler xhtml,
+                                  Metadata metadata, ParseContext context,
+                                  EmbeddedDocumentExtractor extractor)
             throws IOException, SAXException, TikaException {
         InputStream entryStream = new BufferedInputStream(raw);
         IWORKDocumentType type = null;
@@ -150,6 +174,9 @@ public class IWorkPackageParser implements Parser {
         if (type != null) {
             parseContent(type, entryStream, xhtml, metadata, context);
             return true;
+        }
+        if (documentOnly) {
+            return false;
         }
         IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), entryStream, null,
                 xhtml, context, extractor);

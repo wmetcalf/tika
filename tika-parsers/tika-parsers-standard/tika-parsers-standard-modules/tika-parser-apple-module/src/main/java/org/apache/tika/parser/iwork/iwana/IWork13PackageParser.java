@@ -19,8 +19,6 @@ package org.apache.tika.parser.iwork.iwana;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -93,6 +91,13 @@ public class IWork13PackageParser implements Parser {
             xhtml.startDocument();
             EmbeddedDocumentExtractor extractor =
                     EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            // Pass 1: the package metadata, read before any output so the XHTML <head> (written
+            // at the first element) carries it. Pass 2: every member, those included, handed on.
+            Exception ex1 = IWorkMembers.walk(tis, (entry, data) -> {
+                if (isPackageMetadata(entry.getName())) {
+                    readPackageMetadata(entry.getName(), data, metadata);
+                }
+            }, metadata, caller);
             MediaType[] detected = {null};
             Exception ex = IWorkMembers.walk(tis, entry -> {
                 // by name, before the data is opened: an unreadable member still identifies
@@ -112,6 +117,7 @@ public class IWork13PackageParser implements Parser {
             }
             metadata.set(Metadata.CONTENT_TYPE, type.toString());
             xhtml.endDocument();
+            ex = IWorkMembers.firstOf(ex1, ex);
             if (ex != null) {
                 throw new TikaException("problem processing iWork '13 package", ex);
             }
@@ -132,28 +138,12 @@ public class IWork13PackageParser implements Parser {
         if (streamName == null) {
             return;
         }
-        boolean packageMetadata = "Metadata/Properties.plist".equals(streamName)
-                || "Metadata/BuildVersionHistory.plist".equals(streamName)
-                || "Metadata/DocumentIdentifier".equals(streamName);
-        if (packageMetadata) {
-            // Read as package metadata AND handed on: these fixed names (repeatable in a zip)
-            // must not become a place to hide bytes the metadata readers ignore. Only a member
-            // the extractor wants is spooled so it can be read twice.
-            // (these exact names have no trailing '/', so none is a directory entry)
-            Metadata embedded = IWorkMembers.approve(streamName, null, parseContext,
-                    embeddedDocumentExtractor);
-            if (embedded == null) {
-                readPackageMetadata(streamName, tis, metadata);
-                return;
-            }
-            Path member = tis.getPath();
-            try (InputStream copy = Files.newInputStream(member)) {
-                IWorkMembers.extractApproved(embedded, copy, xhtml, parseContext,
-                        embeddedDocumentExtractor);
-            }
-            try (InputStream copy = Files.newInputStream(member)) {
-                readPackageMetadata(streamName, copy, metadata);
-            }
+        if (isPackageMetadata(streamName)) {
+            // read as package metadata in pass 1 AND handed on here: these fixed names
+            // (repeatable in a zip) must not become a place to hide bytes the metadata readers
+            // ignore
+            IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis, null, xhtml,
+                    parseContext, embeddedDocumentExtractor);
         } else if ("preview.jpg".equals(streamName) || "preview-micro.jpg".equals(streamName)
                 || "preview-web.jpg".equals(streamName)) {
             IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis,
@@ -166,6 +156,12 @@ public class IWork13PackageParser implements Parser {
             IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis, null, xhtml,
                     parseContext, embeddedDocumentExtractor);
         }
+    }
+
+    private static boolean isPackageMetadata(String name) {
+        return "Metadata/Properties.plist".equals(name)
+                || "Metadata/BuildVersionHistory.plist".equals(name)
+                || "Metadata/DocumentIdentifier".equals(name);
     }
 
     private void readPackageMetadata(String name, InputStream in, Metadata metadata)
