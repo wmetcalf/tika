@@ -17,6 +17,7 @@
 package org.apache.tika.parser.iwork.iwana;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -25,17 +26,22 @@ import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.iwork.IWorkMembers;
+import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
  * For now, this parser isn't even registered.  It contains
@@ -60,37 +66,76 @@ public class IWork18PackageParser implements Parser {
         // Open the Zip stream
         // Use a File if we can, and an already open zip is even better
         ZipFile zipFile = null;
+        ZipFile ownedZip = null;
         ZipInputStream zipStream = null;
         Object container = tis.getOpenContainer();
         if (container instanceof ZipFile) {
             zipFile = (ZipFile) container;
         } else if (tis.hasFile()) {
             zipFile = ZipFile.builder().setFile(tis.getFile()).get();
+            ownedZip = zipFile;
         } else {
             zipStream = new ZipInputStream(tis);
         }
+        try {
 
-        // For now, just detect
-        MediaType type = null;
-        if (zipFile != null) {
-            Enumeration<? extends ZipEntry> entries = zipFile.getEntries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                if (type == null) {
-                    type = IWork18DocumentType.detectIfPossible(entry);
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+            xhtml.startDocument();
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            // Tika cannot decode the iWork '18 content yet, so detect the type and hand every
+            // member on. One marker entry routes an arbitrary zip here, so "only detect" would
+            // let such a zip hide all of its members.
+            MediaType type = null;
+            Exception ex = null;
+            if (zipFile != null) {
+                Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
+                while (entries.hasMoreElements()) {
+                    ZipArchiveEntry entry = entries.nextElement();
+                    if (type == null) {
+                        type = IWork18DocumentType.detectIfPossible(entry);
+                    }
+                    if (entry.isDirectory()) {
+                        continue;
+                    }
+                    try (InputStream member = zipFile.getInputStream(entry)) {
+                        IWorkMembers.extract(entry.getName(), member, null, xhtml, context, extractor);
+                    } catch (SecurityException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
+                    }
+                }
+            } else {
+                ZipEntry entry = zipStream.getNextEntry();
+                while (entry != null) {
+                    if (type == null) {
+                        type = IWork18DocumentType.detectIfPossible(entry);
+                    }
+                    if (!entry.isDirectory()) {
+                        try {
+                            IWorkMembers.extract(entry.getName(), zipStream, null, xhtml, context,
+                                    extractor);
+                        } catch (SecurityException e) {
+                            throw e;
+                        } catch (Exception e) {
+                            ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
+                        }
+                    }
+                    entry = zipStream.getNextEntry();
                 }
             }
-        } else {
-            ZipEntry entry = zipStream.getNextEntry();
-            while (entry != null) {
-                if (type == null) {
-                    type = IWork18DocumentType.detectIfPossible(entry);
-                }
-                entry = zipStream.getNextEntry();
+            if (type != null) {
+                metadata.set(Metadata.CONTENT_TYPE, type.toString());
             }
-        }
-        if (type != null) {
-            metadata.set(Metadata.CONTENT_TYPE, type.toString());
+            xhtml.endDocument();
+            if (ex != null) {
+                throw new TikaException("problem processing iWork '18 package", ex);
+            }
+        } finally {
+            if (ownedZip != null) {
+                ownedZip.close();
+            }
         }
     }
 

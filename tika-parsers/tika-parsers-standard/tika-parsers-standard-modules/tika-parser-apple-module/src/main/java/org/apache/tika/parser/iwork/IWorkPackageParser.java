@@ -38,6 +38,8 @@ import org.xml.sax.SAXException;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.XmlRootExtractor;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
@@ -89,53 +91,76 @@ public class IWorkPackageParser implements Parser {
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         ZipArchiveInputStream zip = new ZipArchiveInputStream(tis);
+        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
+        xhtml.startDocument();
+        EmbeddedDocumentExtractor extractor =
+                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+        Exception ex = null;
         ZipArchiveEntry entry = zip.getNextEntry();
 
         while (entry != null) {
-            if (!IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+            if (entry.isDirectory()) {
                 entry = zip.getNextEntry();
                 continue;
             }
-
-            InputStream entryStream = new BufferedInputStream(zip);
-            entryStream.mark(MARK_LIMIT);
-            IWORKDocumentType type = detectType(entryStream, MARK_LIMIT);
-            entryStream.reset(); // 4096 fails on github
-
-            if (type != null) {
-                XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-                ContentHandler contentHandler;
-
-                switch (type) {
-                    case KEYNOTE:
-                        contentHandler = new KeynoteContentHandler(xhtml, metadata);
-                        break;
-                    case NUMBERS:
-                        contentHandler = new NumbersContentHandler(xhtml, metadata);
-                        break;
-                    case PAGES:
-                        contentHandler = new PagesContentHandler(xhtml, metadata);
-                        break;
-                    case ENCRYPTED:
-                        // We can't do anything for the file right now
-                        contentHandler = null;
-                        break;
-                    default:
-                        throw new TikaException("Unhandled iWorks file " + type);
+            // One marker entry routes an arbitrary zip here, so every member that is not
+            // the package's content entry goes to the embedded extractor rather than
+            // being skipped, and one bad member does not stop the ones after it.
+            try {
+                InputStream entryStream = new BufferedInputStream(CloseShieldInputStream.wrap(zip));
+                IWORKDocumentType type = null;
+                if (IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+                    entryStream.mark(MARK_LIMIT);
+                    type = detectType(entryStream, MARK_LIMIT);
+                    entryStream.reset(); // 4096 fails on github
                 }
-
-                metadata.set(Metadata.CONTENT_TYPE, type.getType().toString());
-                xhtml.startDocument();
-                if (contentHandler != null) {
-                    XMLReaderUtils.parseSAX(CloseShieldInputStream.wrap(entryStream),
-                            contentHandler, context);
+                if (type != null) {
+                    parseContent(type, entryStream, xhtml, metadata, context);
+                } else {
+                    IWorkMembers.extract(entry.getName(), entryStream, null, xhtml, context,
+                            extractor);
                 }
-                xhtml.endDocument();
+            } catch (SecurityException e) {
+                throw e;
+            } catch (Exception e) {
+                ex = IWorkMembers.fold(ex, e, entry.getName(), metadata);
             }
 
             entry = zip.getNextEntry();
         }
+        xhtml.endDocument();
+        if (ex != null) {
+            throw new TikaException("problem processing iWork package", ex);
+        }
         // Don't close the zip InputStream (TIKA-1117).
+    }
+
+    private void parseContent(IWORKDocumentType type, InputStream entryStream,
+                              XHTMLContentHandler xhtml, Metadata metadata, ParseContext context)
+            throws IOException, SAXException, TikaException {
+        ContentHandler contentHandler;
+        switch (type) {
+            case KEYNOTE:
+                contentHandler = new KeynoteContentHandler(xhtml, metadata);
+                break;
+            case NUMBERS:
+                contentHandler = new NumbersContentHandler(xhtml, metadata);
+                break;
+            case PAGES:
+                contentHandler = new PagesContentHandler(xhtml, metadata);
+                break;
+            case ENCRYPTED:
+                // We can't do anything for the file right now
+                contentHandler = null;
+                break;
+            default:
+                throw new TikaException("Unhandled iWorks file " + type);
+        }
+
+        metadata.set(Metadata.CONTENT_TYPE, type.getType().toString());
+        if (contentHandler != null) {
+            XMLReaderUtils.parseSAX(entryStream, contentHandler, context);
+        }
     }
 
     private IWORKDocumentType detectType(InputStream entryStream, int markLimit) throws IOException {

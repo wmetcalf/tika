@@ -281,10 +281,15 @@ public class IWorkParserTest extends TikaTest {
         // Document password is "tika", but we can't use that yet...
         Metadata metadata = new Metadata();
         String content = getText("testPagesPwdProtected.pages", iWorkParser, metadata);
-        assertEquals("", content);
+        // no document text; only the name of the (unreadable) member that was handed on
+        assertEquals("buildVersionHistory.plist", content.trim());
 
         // Will have been identified as encrypted
         assertEquals("application/x-tika-iworks-protected", metadata.get(Metadata.CONTENT_TYPE));
+        // the encrypted member cannot be extracted, so it is warned about rather than
+        // vanishing (and does not fail the parse)
+        assertContains("buildVersionHistory.plist",
+                String.join("\n", metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING)));
     }
 
     /**
