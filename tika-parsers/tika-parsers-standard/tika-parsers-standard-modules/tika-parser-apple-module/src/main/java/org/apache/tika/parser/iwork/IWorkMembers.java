@@ -64,14 +64,33 @@ public final class IWorkMembers {
                                XHTMLContentHandler xhtml, ParseContext context,
                                EmbeddedDocumentExtractor extractor)
             throws IOException, SAXException, TikaException {
+        Metadata embedded = approve(name, resourceType, context, extractor);
+        if (embedded != null) {
+            extractApproved(embedded, member, xhtml, context, extractor);
+        }
+    }
+
+    /**
+     * Asks the extractor whether it wants this member.
+     *
+     * @return the member's metadata to hand to {@link #extractApproved}, or null if declined
+     */
+    public static Metadata approve(String name, String resourceType, ParseContext context,
+                                   EmbeddedDocumentExtractor extractor) {
         Metadata embedded = Metadata.newInstance(context);
         embedded.set(TikaCoreProperties.RESOURCE_NAME_KEY, name);
         if (resourceType != null) {
             embedded.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE, resourceType);
         }
-        if (!extractor.shouldParseEmbedded(embedded)) {
-            return;
-        }
+        return extractor.shouldParseEmbedded(embedded) ? embedded : null;
+    }
+
+    /** Hands an approved member (see {@link #approve}) to the extractor; {@code member} is
+     * not closed. */
+    public static void extractApproved(Metadata embedded, InputStream member,
+                                       XHTMLContentHandler xhtml, ParseContext context,
+                                       EmbeddedDocumentExtractor extractor)
+            throws IOException, SAXException, TikaException {
         try (TemporaryResources tmp = new TemporaryResources();
                 TikaInputStream tis = TikaInputStream.get(CloseShieldInputStream.wrap(member),
                         tmp, embedded)) {

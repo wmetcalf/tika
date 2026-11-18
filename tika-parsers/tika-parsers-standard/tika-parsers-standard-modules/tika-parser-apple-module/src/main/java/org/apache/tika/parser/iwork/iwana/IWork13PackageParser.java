@@ -135,20 +135,22 @@ public class IWork13PackageParser implements Parser {
                 || "Metadata/DocumentIdentifier".equals(streamName);
         if (packageMetadata) {
             // Read as package metadata AND handed on: these fixed names (repeatable in a zip)
-            // must not become a place to hide bytes the metadata readers ignore.
+            // must not become a place to hide bytes the metadata readers ignore. Only a member
+            // the extractor wants is spooled so it can be read twice.
+            // (these exact names have no trailing '/', so none is a directory entry)
+            Metadata embedded = IWorkMembers.approve(streamName, null, parseContext,
+                    embeddedDocumentExtractor);
+            if (embedded == null) {
+                readPackageMetadata(streamName, tis, metadata);
+                return;
+            }
             Path member = tis.getPath();
             try (InputStream copy = Files.newInputStream(member)) {
-                IWorkMembers.extractEntry(streamName, entry.isDirectory(), copy, null, xhtml,
-                        parseContext, embeddedDocumentExtractor);
+                IWorkMembers.extractApproved(embedded, copy, xhtml, parseContext,
+                        embeddedDocumentExtractor);
             }
             try (InputStream copy = Files.newInputStream(member)) {
-                if ("Metadata/Properties.plist".equals(streamName)) {
-                    extractProperties(copy, metadata);
-                } else if ("Metadata/BuildVersionHistory.plist".equals(streamName)) {
-                    extractVersionHistory(copy, metadata);
-                } else {
-                    extractDocumentIdentifier(copy, metadata);
-                }
+                readPackageMetadata(streamName, copy, metadata);
             }
         } else if ("preview.jpg".equals(streamName) || "preview-micro.jpg".equals(streamName)
                 || "preview-web.jpg".equals(streamName)) {
@@ -161,6 +163,17 @@ public class IWork13PackageParser implements Parser {
             // hide whatever it likes behind that name.
             IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis, null, xhtml,
                     parseContext, embeddedDocumentExtractor);
+        }
+    }
+
+    private void readPackageMetadata(String name, InputStream in, Metadata metadata)
+            throws IOException, TikaException {
+        if ("Metadata/Properties.plist".equals(name)) {
+            extractProperties(in, metadata);
+        } else if ("Metadata/BuildVersionHistory.plist".equals(name)) {
+            extractVersionHistory(in, metadata);
+        } else {
+            extractDocumentIdentifier(in, metadata);
         }
     }
 

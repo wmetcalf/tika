@@ -424,4 +424,30 @@ class IWorkHostileZipTest {
         assertEquals("application/x-tika-iworks-protected", r.metadata.get(Metadata.CONTENT_TYPE),
                 r.toString());
     }
+
+    @Test
+    void declinedPackageMetadataIsStillReadAsMetadata() throws Exception {
+        byte[] zip = new RawZip().entry("Metadata/BuildVersionHistory.plist", PLIST)
+                .entry("Metadata/DocumentIdentifier", UUID.getBytes(StandardCharsets.UTF_8))
+                .finish();
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+        context.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata m) {
+                return false;
+            }
+
+            @Override
+            public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                      Metadata m, ParseContext ctx, boolean outputHtml) {
+                throw new AssertionError("declined member parsed");
+            }
+        });
+        try (TikaInputStream s = TikaInputStream.get(zip)) {
+            new IWork13PackageParser().parse(s, new DefaultHandler(), metadata, context);
+        }
+        assertEquals(UUID, metadata.get(IWork13PackageParser.IWORKS_DOC_ID));
+        assertEquals("x", metadata.get(IWork13PackageParser.IWORKS_BUILD_VERSION_HISTORY));
+    }
 }
