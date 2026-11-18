@@ -618,11 +618,14 @@ class IWorkHostileZipTest {
      * central directories (a shadow one, behind a skewed EOCD in the comment, which
      * commons-compress takes) with different data; lfh* truncate commons-compress's view with a
      * junk record while an entry the JDK refuses stops a local-header cross-check early.
-     * Neither may hide payload.exe ("MZ-HIDDEN-PAYLOAD") without a trace.
+     * dd* hide a same-named data-descriptor entry behind a decoy; cfh* put a stray central
+     * header in the local headers. None may hide payload.exe ("MZ-HIDDEN-PAYLOAD") without a
+     * trace.
      */
     @Test
     void readersThatDisagreeAreNeverSilent() throws Exception {
-        for (String kind : new String[]{"alias", "lfhbz2", "lfhenc"}) {
+        for (String kind : new String[]{"alias", "lfhbz2", "lfhenc", "ddalias", "ddaliasdefl",
+                "ddaliasrev", "cfhstop", "cfhshadow"}) {
             for (String d : new String[]{"09", "13", "18"}) {
                 String name = "iwork-hostile/" + kind + "-d" + d + ".zip";
                 byte[] bytes;
@@ -654,7 +657,8 @@ class IWorkHostileZipTest {
                         metadata.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING));
                 boolean handedOn = contents.stream().anyMatch(c -> c.contains("MZ-HIDDEN-PAYLOAD"));
                 assertTrue(handedOn || warnings.contains("inconsistent")
-                        || warnings.contains("ended early"), name + ": " + warnings);
+                        || warnings.contains("ended early") || warnings.contains("cross-checked"),
+                        name + ": " + warnings);
                 if (kind.equals("alias")) {
                     assertTrue(handedOn, name + " (the JDK reads it, so it must be handed on)");
                 }

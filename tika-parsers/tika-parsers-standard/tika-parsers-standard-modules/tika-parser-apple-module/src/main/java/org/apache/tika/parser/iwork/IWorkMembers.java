@@ -215,6 +215,7 @@ public final class IWorkMembers {
                     java.util.zip.ZipEntry jdkEntry = entries.nextElement();
                     if (alreadyWalked(walked, identity(jdkEntry.getName(), jdkEntry.getCrc(),
                             jdkEntry.getCompressedSize(), jdkEntry.getSize()))) {
+                        alreadyWalked(walkedNames, jdkEntry.getName());
                         continue;
                     }
                     extra[0] = true;
@@ -223,6 +224,13 @@ public final class IWorkMembers {
                             first, container, caller);
                 }
             } else {
+                if (commons != null) {
+                    // nothing independent confirms commons-compress's view; the local headers
+                    // are a best effort that a stray signature can end quietly
+                    warnOnce(container,
+                            "iWork package central directory could not be cross-checked (the "
+                                    + "JDK refused it): members may be missing");
+                }
                 if (commons == null) {
                     warnOnce(container,
                             "iWork package central directory unreadable: members were walked "
@@ -248,9 +256,14 @@ public final class IWorkMembers {
                         }
                         boolean known = entry.getCrc() >= 0 && entry.getSize() >= 0
                                 && entry.getCompressedSize() >= 0;
-                        if (known ? alreadyWalked(walked, identity(entry.getName(),
-                                entry.getCrc(), entry.getCompressedSize(), entry.getSize()))
-                                : alreadyWalked(walkedNames, entry.getName())) {
+                        // one listing covers one local entry: spend the name budget either way, so
+                        // a same-named data-descriptor entry is not covered a second time
+                        boolean covered = known
+                                ? alreadyWalked(walked, identity(entry.getName(), entry.getCrc(),
+                                        entry.getCompressedSize(), entry.getSize()))
+                                        && alreadyWalked(walkedNames, entry.getName())
+                                : alreadyWalked(walkedNames, entry.getName());
+                        if (covered) {
                             continue;
                         }
                         extra[0] = true;
