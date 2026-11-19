@@ -23,7 +23,6 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.xml.sax.ContentHandler;
@@ -31,11 +30,16 @@ import org.xml.sax.SAXException;
 
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.iwork.IWorkMembers;
+import org.apache.tika.sax.TaggedContentHandler;
+import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
  * For now, this parser isn't even registered.  It contains
@@ -57,40 +61,36 @@ public class IWork18PackageParser implements Parser {
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        // Open the Zip stream
-        // Use a File if we can, and an already open zip is even better
-        ZipFile zipFile = null;
-        ZipInputStream zipStream = null;
-        Object container = tis.getOpenContainer();
-        if (container instanceof ZipFile) {
-            zipFile = (ZipFile) container;
-        } else if (tis.hasFile()) {
-            zipFile = ZipFile.builder().setFile(tis.getFile()).get();
-        } else {
-            zipStream = new ZipInputStream(tis);
-        }
-
-        // For now, just detect
-        MediaType type = null;
-        if (zipFile != null) {
-            Enumeration<? extends ZipEntry> entries = zipFile.getEntries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                if (type == null) {
-                    type = IWork18DocumentType.detectIfPossible(entry);
+        TaggedContentHandler caller = new TaggedContentHandler(handler);
+        try {
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
+            xhtml.startDocument();
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            // Tika cannot decode the iWork '18 content yet, so detect the type and hand every
+            // member on. One marker entry routes an arbitrary zip here, so "only detect" would
+            // let such a zip hide all of its members.
+            MediaType[] type = {null};
+            Exception ex = IWorkMembers.walk(tis, entry -> {
+                // by name, before the data is opened: an unreadable member still identifies
+                if (type[0] == null) {
+                    type[0] = IWork18DocumentType.detectIfPossible(entry);
                 }
+            }, (entry, data) -> {
+                IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), data, null, xhtml,
+                        context, extractor);
+            }, metadata, caller);
+            if (type[0] != null) {
+                metadata.set(Metadata.CONTENT_TYPE, type[0].toString());
             }
-        } else {
-            ZipEntry entry = zipStream.getNextEntry();
-            while (entry != null) {
-                if (type == null) {
-                    type = IWork18DocumentType.detectIfPossible(entry);
-                }
-                entry = zipStream.getNextEntry();
+            xhtml.endDocument();
+            if (ex != null) {
+                throw new TikaException("problem processing iWork '18 package", ex);
             }
-        }
-        if (type != null) {
-            metadata.set(Metadata.CONTENT_TYPE, type.toString());
+        } catch (SAXException e) {
+            // the caller's handler failed: hand back its own exception, not the tagged wrapper
+            caller.throwIfCauseOf(e);
+            throw e;
         }
     }
 

@@ -15,8 +15,11 @@
 version: '3.7'
 services:
   minio-service:
-    image: quay.io/minio/minio
-    command: minio server /data
+    # quay.io/minio/minio and docker.io/minio/minio no longer serve public pulls.
+    # Pin the Bitnami legacy build by digest; running `minio server` directly skips
+    # Bitnami's setup script, which starts and restarts the server in the background.
+    image: docker.io/bitnamilegacy/minio:2025.7.23@sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7
+    command: minio server /bitnami/minio/data
     ports:
       - "9000:9000"
     environment:

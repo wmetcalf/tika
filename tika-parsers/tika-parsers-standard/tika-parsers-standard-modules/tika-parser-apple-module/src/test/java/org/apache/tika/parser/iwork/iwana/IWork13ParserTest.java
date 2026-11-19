@@ -17,6 +17,7 @@
 package org.apache.tika.parser.iwork.iwana;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
@@ -76,7 +77,9 @@ public class IWork13ParserTest extends TikaTest {
         assertEquals(
                 IWork13PackageParser.IWork13DocumentType.UNKNOWN13.getType().toString(),
                 metadata.get(Metadata.CONTENT_TYPE));
-        assertEquals("preview.jpg", handler.toString().trim());
+        // every member is handed on, the .iwa streams included
+        assertContains("preview.jpg", handler.toString());
+        assertContains("Index/Document.iwa", handler.toString());
     }
 
     @Test
@@ -93,7 +96,9 @@ public class IWork13ParserTest extends TikaTest {
         assertEquals(
                 IWork13PackageParser.IWork13DocumentType.UNKNOWN13.getType().toString(),
                 metadata.get(Metadata.CONTENT_TYPE));
-        assertEquals("preview.jpg", handler.toString().trim());
+        // every member is handed on, the .iwa streams included
+        assertContains("preview.jpg", handler.toString());
+        assertContains("Index/Document.iwa", handler.toString());
     }
 
     @Test
@@ -101,14 +106,26 @@ public class IWork13ParserTest extends TikaTest {
         Metadata metadata = new Metadata();
         metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, "testNumbers2013.numbers");
         List<Metadata> metadataList = getRecursiveMetadata("testNumbers2013.numbers", metadata);
-        assertEquals(2, metadataList.size());
+        // the container plus every member: 47 .iwa streams, 3 previews and the 3 package
+        // metadata members (read as metadata AND handed on)
+        assertEquals(54, metadataList.size());
         assertEquals("application/vnd.apple.numbers.13",
                 metadataList.get(0).get(Metadata.CONTENT_TYPE));
         assertEquals("true", metadataList.get(0).get("iworks:isMultiPage"));
         assertEquals("C5ED6463-575C-43B9-8FDA-1957B186C422",
                 metadataList.get(0).get("iworks:versionUUID"));
-        assertEquals("image/jpeg", metadataList.get(1).get(Metadata.CONTENT_TYPE));
-        assertEquals(TikaCoreProperties.EmbeddedResourceType.THUMBNAIL.toString(),
-                metadataList.get(1).get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE));
+        int thumbnails = 0;
+        for (Metadata m : metadataList.subList(1, metadataList.size())) {
+            String name = m.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            if (name.startsWith("preview")) {
+                assertEquals("image/jpeg", m.get(Metadata.CONTENT_TYPE), name);
+                assertEquals(TikaCoreProperties.EmbeddedResourceType.THUMBNAIL.toString(),
+                        m.get(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE), name);
+                thumbnails++;
+            } else {
+                assertTrue(name.endsWith(".iwa") || name.startsWith("Metadata/"), name);
+            }
+        }
+        assertEquals(3, thumbnails);
     }
 }

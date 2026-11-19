@@ -30,7 +30,6 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.io.input.CloseShieldInputStream;
 import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
@@ -38,11 +37,15 @@ import org.xml.sax.SAXException;
 import org.apache.tika.annotation.TikaComponent;
 import org.apache.tika.detect.XmlRootExtractor;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentUtil;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.tika.utils.XMLReaderUtils;
 
@@ -88,54 +91,131 @@ public class IWorkPackageParser implements Parser {
 
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        ZipArchiveInputStream zip = new ZipArchiveInputStream(tis);
-        ZipArchiveEntry entry = zip.getNextEntry();
-
-        while (entry != null) {
-            if (!IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
-                entry = zip.getNextEntry();
-                continue;
+        TaggedContentHandler caller = new TaggedContentHandler(handler);
+        try {
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
+            xhtml.startDocument();
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            // Pass 1: the document itself, first, so the XHTML <head> carries the metadata the
+            // content handlers set (it is written at the first element). Pass 2: every other
+            // member, handed on. Both walks see the members in the same order, so the parsed
+            // one is identified by name and occurrence.
+            // Pass 1 opens only content entries. A member it could not read at all is left
+            // alone by pass 2; one whose parse failed is still handed on by pass 2, but its
+            // failure (named already) is not reported again.
+            java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
+            java.util.Set<String> done = new java.util.HashSet<>();
+            java.util.Set<String> named = new java.util.HashSet<>();
+            String[] parsedName = {null};
+            Exception ex = IWorkMembers.walk(tis,
+                    entry -> seen1.merge(entry.getName(), 1, Integer::sum),
+                    entry -> parsedName[0] == null && !entry.isDirectory()
+                            && IWORK_CONTENT_ENTRIES.contains(entry.getName()),
+                    (entry, data) -> {
+                        if (processMember(entry, data, false, true, xhtml, metadata, context,
+                                extractor)) {
+                            parsedName[0] = entry.getName();
+                            done.add(entry.getName() + '\u0000' + seen1.get(entry.getName()));
+                        }
+                    }, entry -> {
+                        if (parsedName[0] == null
+                                && IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+                            // an unreadable content entry is how a password-protected iWork
+                            // package looks (the stream route's detectType reports ENCRYPTED
+                            // the same way)
+                            metadata.set(Metadata.CONTENT_TYPE,
+                                    IWORKDocumentType.ENCRYPTED.getType().toString());
+                        }
+                    },
+                    (entry, opened) -> (opened ? named : done)
+                            .add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    null, metadata, caller);
+            java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
+            Exception ex2 = IWorkMembers.walk(tis,
+                    entry -> seen2.merge(entry.getName(), 1, Integer::sum),
+                    entry -> !done.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    (entry, data) -> processMember(entry, data, true, false, xhtml, metadata,
+                            context, extractor),
+                    null, null,
+                    entry -> named.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    metadata, caller);
+            ex = IWorkMembers.firstOf(ex, ex2);
+            xhtml.endDocument();
+            if (ex != null) {
+                throw new TikaException("problem processing iWork package", ex);
             }
-
-            InputStream entryStream = new BufferedInputStream(zip);
-            entryStream.mark(MARK_LIMIT);
-            IWORKDocumentType type = detectType(entryStream, MARK_LIMIT);
-            entryStream.reset(); // 4096 fails on github
-
-            if (type != null) {
-                XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-                ContentHandler contentHandler;
-
-                switch (type) {
-                    case KEYNOTE:
-                        contentHandler = new KeynoteContentHandler(xhtml, metadata);
-                        break;
-                    case NUMBERS:
-                        contentHandler = new NumbersContentHandler(xhtml, metadata);
-                        break;
-                    case PAGES:
-                        contentHandler = new PagesContentHandler(xhtml, metadata);
-                        break;
-                    case ENCRYPTED:
-                        // We can't do anything for the file right now
-                        contentHandler = null;
-                        break;
-                    default:
-                        throw new TikaException("Unhandled iWorks file " + type);
-                }
-
-                metadata.set(Metadata.CONTENT_TYPE, type.getType().toString());
-                xhtml.startDocument();
-                if (contentHandler != null) {
-                    XMLReaderUtils.parseSAX(CloseShieldInputStream.wrap(entryStream),
-                            contentHandler, context);
-                }
-                xhtml.endDocument();
-            }
-
-            entry = zip.getNextEntry();
+        } catch (SAXException e) {
+            // the caller's handler failed: hand back its own exception, not the tagged wrapper
+            caller.throwIfCauseOf(e);
+            throw e;
         }
         // Don't close the zip InputStream (TIKA-1117).
+    }
+
+    /**
+     * The package's first iWork content entry is parsed as the document; every other member
+     * (a later content entry included: the names repeat in a zip, and only one is the
+     * document) is handed to the embedded extractor, so one marker entry routing an arbitrary
+     * zip here cannot make its members vanish.
+     *
+     * @return true if this member was parsed as the document
+     */
+    private boolean processMember(ZipArchiveEntry entry, InputStream raw, boolean contentParsed,
+                                  boolean documentOnly, XHTMLContentHandler xhtml,
+                                  Metadata metadata, ParseContext context,
+                                  EmbeddedDocumentExtractor extractor)
+            throws IOException, SAXException, TikaException {
+        InputStream entryStream = new BufferedInputStream(raw);
+        IWORKDocumentType type = null;
+        if (!contentParsed && !entry.isDirectory()
+                && IWORK_CONTENT_ENTRIES.contains(entry.getName())) {
+            entryStream.mark(MARK_LIMIT);
+            type = detectType(entryStream, MARK_LIMIT);
+            entryStream.reset(); // 4096 fails on github
+        }
+        if (type == IWORKDocumentType.ENCRYPTED) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    "iWork content entry not extracted, unreadable: " + entry.getName());
+        }
+        if (type != null) {
+            parseContent(type, entryStream, xhtml, metadata, context);
+            return true;
+        }
+        if (documentOnly) {
+            return false;
+        }
+        IWorkMembers.extractEntry(entry.getName(), entry.isDirectory(), entryStream, null,
+                xhtml, context, extractor);
+        return false;
+    }
+
+    private void parseContent(IWORKDocumentType type, InputStream entryStream,
+                              XHTMLContentHandler xhtml, Metadata metadata, ParseContext context)
+            throws IOException, SAXException, TikaException {
+        ContentHandler contentHandler;
+        switch (type) {
+            case KEYNOTE:
+                contentHandler = new KeynoteContentHandler(xhtml, metadata);
+                break;
+            case NUMBERS:
+                contentHandler = new NumbersContentHandler(xhtml, metadata);
+                break;
+            case PAGES:
+                contentHandler = new PagesContentHandler(xhtml, metadata);
+                break;
+            case ENCRYPTED:
+                // We can't do anything for the file right now
+                contentHandler = null;
+                break;
+            default:
+                throw new TikaException("Unhandled iWorks file " + type);
+        }
+
+        metadata.set(Metadata.CONTENT_TYPE, type.getType().toString());
+        if (contentHandler != null) {
+            XMLReaderUtils.parseSAX(entryStream, contentHandler, context);
+        }
     }
 
     private IWORKDocumentType detectType(InputStream entryStream, int markLimit) throws IOException {

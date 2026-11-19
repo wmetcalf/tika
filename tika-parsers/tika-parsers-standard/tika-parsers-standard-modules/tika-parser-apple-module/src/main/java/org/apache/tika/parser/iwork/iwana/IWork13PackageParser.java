@@ -26,13 +26,11 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import com.dd.plist.NSArray;
 import com.dd.plist.NSDictionary;
 import com.dd.plist.NSObject;
 import com.dd.plist.PropertyListParser;
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.io.IOUtils;
 import org.xml.sax.ContentHandler;
@@ -51,6 +49,8 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.iwork.IWorkMembers;
+import org.apache.tika.sax.TaggedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 @TikaComponent
@@ -85,90 +85,61 @@ public class IWork13PackageParser implements Parser {
     @Override
     public void parse(TikaInputStream tis, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        // Open the Zip stream
-        // Use a File if we can, and an already open zip is even better
-        ZipFile zipFile = null;
-        ZipInputStream zipStream = null;
-        Object container = tis.getOpenContainer();
-        if (container instanceof ZipFile) {
-            zipFile = (ZipFile) container;
-        } else if (tis.hasFile()) {
-            zipFile = ZipFile.builder().setFile(tis.getFile()).get();
-        } else {
-            zipStream = new ZipInputStream(tis);
-        }
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
-        xhtml.startDocument();
-
-        MediaType type = null;
-        if (zipFile != null) {
-            type = processZipFile(zipFile, metadata, xhtml, context);
-        } else if (zipStream != null) {
-            type = processZipStream(zipStream, metadata, xhtml, context);
-        }
-        if (type != null) {
+        TaggedContentHandler caller = new TaggedContentHandler(handler);
+        try {
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(caller, metadata, context);
+            xhtml.startDocument();
+            EmbeddedDocumentExtractor extractor =
+                    EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
+            // Pass 1: the package metadata, read before any output so the XHTML <head> (written
+            // at the first element) carries it. Pass 2: every member, those included, handed on.
+            // Pass 1 opens only the package metadata. A member it could not read at all is left
+            // alone by pass 2; one whose parse failed is still handed on by pass 2, but its
+            // failure (named already) is not reported again.
+            java.util.Map<String, Integer> seen1 = new java.util.HashMap<>();
+            java.util.Set<String> failed1 = new java.util.HashSet<>();
+            java.util.Set<String> named1 = new java.util.HashSet<>();
+            Exception ex1 = IWorkMembers.walk(tis,
+                    entry -> seen1.merge(entry.getName(), 1, Integer::sum),
+                    entry -> isPackageMetadata(entry.getName()),
+                    (entry, data) -> readPackageMetadata(entry.getName(), data, metadata),
+                    null,
+                    (entry, opened) -> (opened ? named1 : failed1)
+                            .add(entry.getName() + '\u0000' + seen1.get(entry.getName())),
+                    null, metadata, caller);
+            MediaType[] detected = {null};
+            java.util.Map<String, Integer> seen2 = new java.util.HashMap<>();
+            Exception ex = IWorkMembers.walk(tis, entry -> {
+                seen2.merge(entry.getName(), 1, Integer::sum);
+                // by name, before the data is opened: an unreadable member still identifies
+                if (detected[0] == null) {
+                    detected[0] = IWork13DocumentType.detectIfPossible(entry);
+                }
+            }, entry -> !failed1.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    (entry, data) -> {
+                try (TemporaryResources tmp = new TemporaryResources();
+                        TikaInputStream member = TikaInputStream.get(data, tmp, new Metadata())) {
+                    processZipEntry(entry, member, metadata, xhtml, context, extractor);
+                }
+            }, null, null,
+                    entry -> named1.contains(entry.getName() + '\u0000' + seen2.get(entry.getName())),
+                    metadata, caller);
+            MediaType type = detected[0] == null ? IWork13DocumentType.UNKNOWN13.getType()
+                    : detected[0];
             if (type == IWork13DocumentType.UNKNOWN13.getType()) {
                 type = guessTypeByExtension(metadata);
             }
             metadata.set(Metadata.CONTENT_TYPE, type.toString());
-        }
-        xhtml.endDocument();
-
-    }
-
-    private MediaType processZipStream(ZipInputStream zipStream, Metadata metadata,
-                                       XHTMLContentHandler xhtml, ParseContext parseContext)
-            throws TikaException, IOException, SAXException {
-        MediaType type = null;
-        ZipEntry entry = zipStream.getNextEntry();
-        EmbeddedDocumentExtractor embeddedDocumentExtractor =
-                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(parseContext);
-        while (entry != null) {
-            if (type == null) {
-                type = IWork13DocumentType.detectIfPossible(entry);
+            xhtml.endDocument();
+            ex = IWorkMembers.firstOf(ex1, ex);
+            if (ex != null) {
+                throw new TikaException("problem processing iWork '13 package", ex);
             }
-
-            try (TemporaryResources tmp = new TemporaryResources()) {
-                TikaInputStream tis = TikaInputStream.get(zipStream, tmp, new Metadata());
-                processZipEntry(entry, tis, metadata, xhtml, parseContext, embeddedDocumentExtractor);
-            }
-            entry = zipStream.getNextEntry();
+        } catch (SAXException e) {
+            // the caller's handler failed: hand back its own exception, not the tagged wrapper
+            caller.throwIfCauseOf(e);
+            throw e;
         }
-        if (type == null) {
-            type = IWork13DocumentType.UNKNOWN13.getType();
-        }
-        return type;
-    }
-
-    private MediaType processZipFile(ZipFile zipFile, Metadata metadata,
-                                     XHTMLContentHandler xhtml, ParseContext parseContext) throws TikaException {
-        MediaType type = null;
-        EmbeddedDocumentExtractor embeddedDocumentExtractor =
-                EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(parseContext);
-
-        Enumeration<? extends ZipArchiveEntry> entries = zipFile.getEntries();
-        Exception ex = null;
-        while (entries.hasMoreElements()) {
-            ZipArchiveEntry entry = entries.nextElement();
-
-            if (type == null) {
-                type = IWork13DocumentType.detectIfPossible(entry);
-            }
-            try (TikaInputStream tis = TikaInputStream.get(zipFile.getInputStream(entry))) {
-                processZipEntry(entry, tis, metadata, xhtml, parseContext, embeddedDocumentExtractor);
-            } catch (SecurityException e) {
-                throw e;
-            } catch (Exception e) {
-                ex = e;
-            }
-        }
-        if (type == null) {
-            type = IWork13DocumentType.UNKNOWN13.getType();
-        }
-        if (ex != null) {
-            throw new TikaException("problem processing zip file", ex);
-        }
-        return type;
     }
 
     private void processZipEntry(ZipEntry entry,
@@ -181,38 +152,40 @@ public class IWork13PackageParser implements Parser {
         if (streamName == null) {
             return;
         }
-        if ("Metadata/Properties.plist".equals(streamName)) {
-            extractProperties(tis, metadata);
-        } else if ("Metadata/BuildVersionHistory.plist".equals(streamName)) {
-            extractVersionHistory(tis, metadata);
-        } else if ("Metadata/DocumentIdentifier".equals(streamName)) {
-            extractDocumentIdentifier(tis, metadata);
-        } else if ("preview.jpg".equals(streamName)) {
-            //process thumbnail
-            Metadata embeddedMetadata = Metadata.newInstance(parseContext);
-            embeddedMetadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_TYPE,
-                    TikaCoreProperties.EmbeddedResourceType.THUMBNAIL.toString());
-            embeddedMetadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, streamName);
-            handleEmbedded(tis, embeddedMetadata, xhtml, parseContext, embeddedDocumentExtractor);
-        } else if (streamName.equals("preview-micro.jpg") ||
-                streamName.equals("preview-web.jpg")
-                || streamName.endsWith(".iwa")) {
-            //do nothing
+        if (isPackageMetadata(streamName)) {
+            // read as package metadata in pass 1 AND handed on here: these fixed names
+            // (repeatable in a zip) must not become a place to hide bytes the metadata readers
+            // ignore
+            IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis, null, xhtml,
+                    parseContext, embeddedDocumentExtractor);
+        } else if ("preview.jpg".equals(streamName) || "preview-micro.jpg".equals(streamName)
+                || "preview-web.jpg".equals(streamName)) {
+            IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis,
+                    TikaCoreProperties.EmbeddedResourceType.THUMBNAIL.toString(), xhtml,
+                    parseContext, embeddedDocumentExtractor);
         } else {
-            Metadata embeddedMetadata = Metadata.newInstance(parseContext);
-            embeddedMetadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, streamName);
-            handleEmbedded(tis, embeddedMetadata, xhtml, parseContext, embeddedDocumentExtractor);
+            // Everything else, *.iwa included, is handed on. Tika cannot decode IWA, but
+            // skipping members by name would let a zip routed here by one marker entry
+            // hide whatever it likes behind that name.
+            IWorkMembers.extractEntry(streamName, entry.isDirectory(), tis, null, xhtml,
+                    parseContext, embeddedDocumentExtractor);
         }
     }
 
+    private static boolean isPackageMetadata(String name) {
+        return "Metadata/Properties.plist".equals(name)
+                || "Metadata/BuildVersionHistory.plist".equals(name)
+                || "Metadata/DocumentIdentifier".equals(name);
+    }
 
-
-    private void handleEmbedded(TikaInputStream tis, Metadata embeddedMetadata,
-                                XHTMLContentHandler xhtml, ParseContext parseContext,
-                                EmbeddedDocumentExtractor embeddedDocumentExtractor)
-            throws IOException, SAXException, TikaException {
-        if (embeddedDocumentExtractor.shouldParseEmbedded(embeddedMetadata)) {
-            embeddedDocumentExtractor.parseEmbedded(tis, xhtml, embeddedMetadata, parseContext, true);
+    private void readPackageMetadata(String name, InputStream in, Metadata metadata)
+            throws IOException, TikaException {
+        if ("Metadata/Properties.plist".equals(name)) {
+            extractProperties(in, metadata);
+        } else if ("Metadata/BuildVersionHistory.plist".equals(name)) {
+            extractVersionHistory(in, metadata);
+        } else {
+            extractDocumentIdentifier(in, metadata);
         }
     }
 
