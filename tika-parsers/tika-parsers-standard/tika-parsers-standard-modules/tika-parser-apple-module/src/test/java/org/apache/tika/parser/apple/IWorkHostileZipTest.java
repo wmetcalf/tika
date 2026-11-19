@@ -891,6 +891,8 @@ class IWorkHostileZipTest {
                 r.warnings().length() + " chars of warnings");
         assertTrue(r.warnings().contains("do not parse") || r.warnings().contains("inconsistent"),
                 r.warnings());
+        // offsets kept for the walk are bounded too; the excess is counted, not stored
+        assertTrue(r.warnings().contains("were not examined"), r.warnings());
     }
 
     @Test

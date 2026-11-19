@@ -288,8 +288,13 @@ public final class IWorkMembers {
                                     + "compressed size differs from its local header's");
                 }
                 java.util.List<Long> central = new java.util.ArrayList<>();
-                java.util.List<Long> stray = unaccountedLocalHeaders(central, file, knownHeaders, extents,
+                long[] overflow = {0};
+                java.util.List<Long> stray = unaccountedLocalHeaders(central, overflow, file, knownHeaders, extents,
                         commons);
+                if (overflow[0] > 0) {
+                    warnOnce(container, "iWork package: " + overflow[0] + " more local header "
+                            + "signature(s) outside the central directory were not examined");
+                }
                 if (!stray.isEmpty() || !central.isEmpty()) {
                     walkStrays(central, file, stray, jdk, jdkExtras, jdkDigests, hooks, handler, first,
                             container, caller);
@@ -586,6 +591,7 @@ public final class IWorkMembers {
     /** Offsets of "PK\\3\\4" signatures that are neither a known member's local header nor
      * inside a known member's (verified or measured) extent. */
     private static java.util.List<Long> unaccountedLocalHeaders(java.util.List<Long> central,
+                                                                long[] overflow,
                                                                 java.nio.file.Path file,
                                                                 java.util.Set<Long> headers,
                                                                 java.util.List<Extent> extents,
@@ -643,7 +649,11 @@ public final class IWorkMembers {
                             continue;
                         }
                         if (cdStart >= 0 && off >= cdStart) {
-                            central.add(off);
+                            if (central.size() < MAX_RETAINED) {
+                                central.add(off);
+                            } else {
+                                overflow[0]++;
+                            }
                             continue;
                         }
                         boolean covered = false;
@@ -666,7 +676,11 @@ public final class IWorkMembers {
                             }
                         }
                         if (!covered) {
-                            stray.add(off);
+                            if (stray.size() < MAX_RETAINED) {
+                                stray.add(off);
+                            } else {
+                                overflow[0]++;
+                            }
                         }
                     }
                 }
@@ -724,6 +738,9 @@ public final class IWorkMembers {
 
     /** A member found inside the central directory is read in full only up to this size. */
     private static final long CENTRAL_MEMBER_CAP = 64L << 20;
+
+    /** At most this many signature offsets are retained per scan; the rest are only counted. */
+    private static final int MAX_RETAINED = 4096;
 
     /** At most this many stray local headers are read; the rest are only counted. */
     private static final int MAX_STRAYS = 256;
@@ -806,9 +823,21 @@ public final class IWorkMembers {
                         // and whether the JDK's reader already handed on these very bytes, are
                         // known only once its data is read
                         sha = java.security.MessageDigest.getInstance("SHA-256");
+                        long copied;
                         try (InputStream in = new java.security.DigestInputStream(
-                                CloseShieldInputStream.wrap(zip), sha)) {
-                            Files.copy(in, spool, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                org.apache.commons.io.input.BoundedInputStream.builder()
+                                        .setInputStream(CloseShieldInputStream.wrap(zip))
+                                        .setMaxCount(CENTRAL_MEMBER_CAP + 1).get(), sha)) {
+                            copied = Files.copy(in, spool,
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        if (copied > CENTRAL_MEMBER_CAP) {
+                            // too large to hold for deduplication: hand it on as it is read
+                            // (at worst a duplicate of the JDK's copy), never inflate it to disk
+                            skipUntil = Math.max(skipUntil, offset + extent);
+                            members++;
+                            handOnAt(file, offset, hooks, handler, first, container, caller);
+                            continue;
                         }
                     } catch (IOException | LinkageError | java.security.NoSuchAlgorithmException e) {
                         unreadable++;
@@ -914,6 +943,24 @@ public final class IWorkMembers {
             warnOnce(container, "iWork package: " + unreadable + " local header signature(s) "
                     + "outside the central directory do not parse"
                     + (skipped > 0 ? ", " + skipped + " more not read" : ""));
+        }
+    }
+
+    /** Reads the member at {@code offset} afresh and hands it on as it is read. */
+    private static void handOnAt(java.nio.file.Path file, long offset, Hooks hooks,
+                                 MemberHandler handler, Exception[] first, Metadata container,
+                                 TaggedContentHandler caller) throws IOException, SAXException {
+        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+            ch.position(offset);
+            ZipArchiveInputStream zip = new ZipArchiveInputStream(
+                    java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
+            try (zip) {
+                ZipArchiveEntry entry = zip.getNextEntry();
+                if (entry != null) {
+                    member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler, first,
+                            container, caller);
+                }
+            }
         }
     }
 
