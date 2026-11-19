@@ -493,7 +493,9 @@ public final class IWorkMembers {
             return -1;
         }
         long claimed = x.entry.getCompressedSize();
-        long maxOut = claimed * 1032L + (1L << 20);
+        // deflate's maximum expansion, but never more than an absolute budget: past it the
+        // extent is unmeasurable and a signature inside it is read as a stray
+        long maxOut = Math.min(claimed * 1032L + (1L << 20), CENTRAL_MEMBER_CAP);
         java.util.zip.Inflater inflater = new java.util.zip.Inflater(true);
         try (InputStream raw = zipFile.getRawInputStream(x.entry)) {
             if (raw == null) {
