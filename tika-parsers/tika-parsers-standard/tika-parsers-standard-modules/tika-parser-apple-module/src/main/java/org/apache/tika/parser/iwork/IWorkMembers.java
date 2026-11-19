@@ -722,6 +722,9 @@ public final class IWorkMembers {
         return false;
     }
 
+    /** A member found inside the central directory is read in full only up to this size. */
+    private static final long CENTRAL_MEMBER_CAP = 64L << 20;
+
     /** At most this many stray local headers are read; the rest are only counted. */
     private static final int MAX_STRAYS = 256;
 
@@ -858,9 +861,18 @@ public final class IWorkMembers {
                     java.nio.file.Path spool = tmp.createTempFile();
                     java.security.MessageDigest sha =
                             java.security.MessageDigest.getInstance("SHA-256");
+                    // read whole (it counts only if it does), but never more than the cap: a
+                    // larger one is recorded as unreadable rather than inflated without limit
                     try (InputStream in = new java.security.DigestInputStream(
-                            CloseShieldInputStream.wrap(zip), sha)) {
-                        Files.copy(in, spool, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                            org.apache.commons.io.input.BoundedInputStream.builder()
+                                    .setInputStream(CloseShieldInputStream.wrap(zip))
+                                    .setMaxCount(CENTRAL_MEMBER_CAP + 1).get(), sha)) {
+                        if (Files.copy(in, spool,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                                > CENTRAL_MEMBER_CAP) {
+                            throw new IOException("member in the central directory over "
+                                    + CENTRAL_MEMBER_CAP + " bytes");
+                        }
                     }
                     String strayDigest = java.util.HexFormat.of().formatHex(sha.digest());
                     boolean same = false;
