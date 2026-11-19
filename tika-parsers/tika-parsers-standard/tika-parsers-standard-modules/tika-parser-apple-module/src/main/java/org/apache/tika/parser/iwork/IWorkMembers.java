@@ -18,6 +18,7 @@ package org.apache.tika.parser.iwork;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PushbackInputStream;
 import java.nio.file.Files;
 import java.util.Enumeration;
@@ -199,7 +200,7 @@ public final class IWorkMembers {
         boolean[] extra = {false};
         // where commons-compress's members live: their local headers and their data
         java.util.Set<Long> knownHeaders = new java.util.HashSet<>();
-        java.util.List<long[]> knownData = new java.util.ArrayList<>();
+        java.util.List<Extent> extents = new java.util.ArrayList<>();
         java.util.Set<String> jdkExtras = new java.util.HashSet<>();
         boolean[] sizeMismatch = {false};
         try {
@@ -209,14 +210,10 @@ public final class IWorkMembers {
                 while (entries.hasMoreElements()) {
                     ZipArchiveEntry entry = entries.nextElement();
                     knownHeaders.add(entry.getLocalHeaderOffset());
-                    long end = dataEnd(file, zipFile, entry);
-                    if (end < 0) {
-                        sizeMismatch[0] = true;
-                        end = -end;
-                    }
-                    if (entry.getDataOffset() >= 0) {
-                        // its local header (name, extra field) and its data
-                        knownData.add(new long[]{entry.getLocalHeaderOffset(), end});
+                    Extent extent = Extent.of(file, zipFile, entry);
+                    if (extent != null) {
+                        sizeMismatch[0] |= extent.mismatch;
+                        extents.add(extent);
                     }
                     walked.merge(identity(entry.getName(), entry.getCrc(),
                             entry.getCompressedSize(), entry.getSize()), 1, Integer::sum);
@@ -241,10 +238,21 @@ public final class IWorkMembers {
                     extra[0] = true;
                     walked.merge(id, 1, Integer::sum);
                     walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
+                    int before = jdkExtras.size();
                     member(new ZipArchiveEntry(jdkEntry.getName()),
                             () -> new Digesting(zipFile.getInputStream(jdkEntry),
                                     jdkEntry.getName(), jdkExtras), hooks, handler,
                             first, container, caller);
+                    if (jdkExtras.size() == before) {
+                        // not opened (e.g. a later pass skips the document it already parsed):
+                        // still learn its digest, so the stray scan does not hand it on again
+                        try (InputStream in = new Digesting(zipFile.getInputStream(jdkEntry),
+                                jdkEntry.getName(), jdkExtras)) {
+                            in.transferTo(OutputStream.nullOutputStream());
+                        } catch (IOException e) {
+                            // unreadable: nothing to dedupe against
+                        }
+                    }
                 }
             }
             // Every local header in the file must belong to a member commons-compress listed,
@@ -274,7 +282,8 @@ public final class IWorkMembers {
                             "iWork package central directory is inconsistent: a member's "
                                     + "compressed size differs from its local header's");
                 }
-                java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, knownData);
+                java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, extents,
+                        commons);
                 if (!stray.isEmpty()) {
                     walkStrays(file, stray, jdkExtras, hooks, handler, first, container, caller);
                 }
@@ -338,16 +347,212 @@ public final class IWorkMembers {
         return extras;
     }
 
+    /**
+     * Where a commons-compress member lives: its local header (name, extra field) and its data.
+     * The data's end is the central directory's claim, which an attacker can stretch over
+     * another member's local header, so it is {@code verified} only when the local header's
+     * own size (32-bit or zip64 extra) agrees; otherwise (a data descriptor) it is measured
+     * lazily, and only if a stray signature actually falls inside it.
+     */
+    private static final class Extent {
+        final ZipArchiveEntry entry;
+        final long start;
+        long end;
+        boolean verified;
+        boolean mismatch;
+        boolean measured;
+
+        Extent(ZipArchiveEntry entry, long start, long end) {
+            this.entry = entry;
+            this.start = start;
+            this.end = end;
+        }
+
+        static Extent of(java.nio.file.Path file, ZipFile zipFile, ZipArchiveEntry entry)
+                throws IOException {
+            long data = entry.getDataOffset();
+            long claimed = entry.getCompressedSize();
+            if (data < 0 || claimed < 0) {
+                return null;
+            }
+            Extent x = new Extent(entry, entry.getLocalHeaderOffset(), data + claimed);
+            byte[] h = new byte[30];
+            try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+                ch.position(entry.getLocalHeaderOffset());
+                readFully(ch, h);
+                if ((u16(h, 6) & 8) != 0) {
+                    return x;                       // data descriptor: measured lazily
+                }
+                long local = le32(h, 18);
+                if (local == 0xFFFFFFFFL) {
+                    local = zip64CompressedSize(ch, h);
+                    if (local < 0) {
+                        return x;
+                    }
+                }
+                x.verified = true;
+                if (local != claimed) {
+                    x.mismatch = true;
+                    x.end = data + Math.min(local, claimed);
+                }
+                return x;
+            }
+        }
+
+        /** True if {@code offset} lies inside this member; measures an unverified extent. */
+        boolean covers(long offset, ZipFile zipFile) {
+            if (offset < start || offset >= end) {
+                return false;
+            }
+            if (verified || offset < entry.getDataOffset()) {
+                return true;
+            }
+            if (!measured) {
+                measured = true;
+                long used = measure(zipFile, entry);
+                if (used >= 0) {
+                    end = entry.getDataOffset() + used;
+                    verified = true;
+                }
+            }
+            // an extent nobody can measure (stored or encrypted with a data descriptor) does
+            // not account for a signature inside it: the signature is read as a stray
+            return verified && offset < end;
+        }
+    }
+
+    private static void readFully(java.nio.channels.SeekableByteChannel ch, byte[] b)
+            throws IOException {
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(b);
+        while (buf.hasRemaining() && ch.read(buf) >= 0) {
+            // fill
+        }
+    }
+
+    /** The compressed size in a local header's zip64 extra field (channel positioned after
+     * the fixed header), or -1. */
+    private static long zip64CompressedSize(java.nio.channels.SeekableByteChannel ch, byte[] h)
+            throws IOException {
+        int nameLen = u16(h, 26);
+        int extraLen = u16(h, 28);
+        byte[] extra = new byte[extraLen];
+        ch.position(ch.position() + nameLen);
+        readFully(ch, extra);
+        for (int i = 0; i + 4 <= extraLen; ) {
+            int id = u16(extra, i);
+            int len = u16(extra, i + 2);
+            if (id == 0x0001) {
+                int p = i + 4;
+                if (le32(h, 22) == 0xFFFFFFFFL) {
+                    p += 8;                         // uncompressed size comes first
+                }
+                if (p + 8 > i + 4 + len || p + 8 > extraLen) {
+                    return -1;
+                }
+                return le32(extra, p) | le32(extra, p + 4) << 32;
+            }
+            i += 4 + len;
+        }
+        return -1;
+    }
+
+    /** Compressed bytes a data-descriptor member really uses, or -1 when that cannot be told
+     * (encrypted, another method, or a deflate stream whose output exceeds a bomb ratio). */
+    private static long measure(ZipFile zipFile, ZipArchiveEntry entry) {
+        if (entry.getGeneralPurposeBit().usesEncryption()) {
+            return -1;
+        }
+        if (entry.getMethod() == ZipArchiveEntry.STORED) {
+            return measureStored(zipFile, entry);
+        }
+        if (entry.getMethod() != ZipArchiveEntry.DEFLATED) {
+            return -1;
+        }
+        long claimed = entry.getCompressedSize();
+        long maxOut = claimed * 1032L + (1L << 20);   // deflate's maximum expansion
+        java.util.zip.Inflater inflater = new java.util.zip.Inflater(true);
+        try (InputStream raw = zipFile.getRawInputStream(entry)) {
+            if (raw == null) {
+                return -1;
+            }
+            byte[] in = new byte[64 * 1024];
+            byte[] out = new byte[64 * 1024];
+            long fed = 0;
+            long produced = 0;
+            while (!inflater.finished()) {
+                if (inflater.needsInput()) {
+                    int n = raw.read(in);
+                    if (n < 0) {
+                        return -1;
+                    }
+                    fed += n;
+                    inflater.setInput(in, 0, n);
+                }
+                int got = inflater.inflate(out);
+                produced += got;
+                if (produced > maxOut || got == 0 && inflater.needsDictionary()) {
+                    return -1;
+                }
+            }
+            return fed - inflater.getRemaining();
+        } catch (IOException | java.util.zip.DataFormatException e) {
+            return -1;
+        } finally {
+            inflater.end();
+        }
+    }
+
+    /**
+     * A STORED data-descriptor member ends where its descriptor is: the first "PK\\7\\8" whose
+     * compressed-size field (32- or 64-bit) equals the bytes before it, as ZipArchiveInputStream
+     * finds it. -1 if there is none within the claimed size.
+     */
+    private static long measureStored(ZipFile zipFile, ZipArchiveEntry entry) {
+        long claimed = entry.getCompressedSize();
+        try (InputStream raw = zipFile.getRawInputStream(entry)) {
+            if (raw == null) {
+                return -1;
+            }
+            // the claimed range plus room for the descriptor that should follow it
+            byte[] window = new byte[(int) Math.min(claimed, 64L << 20) + 24];
+            int n = raw.readNBytes(window, 0, (int) Math.min(claimed, window.length));
+            if (n < claimed) {
+                return -1;
+            }
+            for (int d = 0; d + 16 <= n; d++) {
+                if (window[d] == 'P' && window[d + 1] == 'K' && window[d + 2] == 7
+                        && window[d + 3] == 8
+                        && (le32(window, d + 8) == d
+                                || d + 24 <= n && (le32(window, d + 8)
+                                | le32(window, d + 12) << 32) == d)) {
+                    return d;
+                }
+            }
+            return claimed > window.length - 24 ? -1 : claimed;
+        } catch (IOException e) {
+            return -1;
+        }
+    }
+
     /** Offsets of "PK\\3\\4" signatures that are neither a known member's local header nor
-     * inside a known member's data. */
+     * inside a known member's (verified or measured) extent. */
     private static java.util.List<Long> unaccountedLocalHeaders(java.nio.file.Path file,
                                                                 java.util.Set<Long> headers,
-                                                                java.util.List<long[]> data)
+                                                                java.util.List<Extent> extents,
+                                                                ZipFile zipFile)
             throws IOException {
-        long[][] sorted = data.toArray(new long[0][]);
-        java.util.Arrays.sort(sorted, (x, y) -> Long.compare(x[0], y[0]));
-        // merged into disjoint ranges, so a lookup is one binary search however many
-        // (possibly forged, overlapping) ranges there are
+        // verified extents merged into disjoint ranges: one binary search per signature
+        java.util.List<long[]> sorted = new java.util.ArrayList<>();
+        java.util.List<Extent> unverified = new java.util.ArrayList<>();
+        for (Extent x : extents) {
+            if (x.verified) {
+                sorted.add(new long[]{x.start, x.end});
+            } else {
+                sorted.add(new long[]{x.start, x.entry.getDataOffset()});   // its header
+                unverified.add(x);
+            }
+        }
+        sorted.sort((x, y) -> Long.compare(x[0], y[0]));
         java.util.List<long[]> merged = new java.util.ArrayList<>();
         for (long[] r : sorted) {
             long[] last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
@@ -362,7 +567,6 @@ public final class IWorkMembers {
         try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
             java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(1 << 20);
             long base = 0;
-            int carry = 0;
             while (true) {
                 int n = ch.read(buf);
                 if (n < 0) {
@@ -373,13 +577,23 @@ public final class IWorkMembers {
                 for (int i = 0; i + 3 < len; i++) {
                     if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 3 && b[i + 3] == 4) {
                         long off = base + i;
-                        if (!headers.contains(off) && !inside(ranges, off)) {
+                        if (headers.contains(off) || inside(ranges, off)) {
+                            continue;
+                        }
+                        boolean covered = false;
+                        for (Extent x : unverified) {
+                            if (x.covers(off, zipFile)) {
+                                covered = true;
+                                break;
+                            }
+                        }
+                        if (!covered) {
                             stray.add(off);
                         }
                     }
                 }
                 // keep the last 3 bytes: a signature may straddle the buffer boundary
-                carry = Math.min(3, len);
+                int carry = Math.min(3, len);
                 base += len - carry;
                 System.arraycopy(b, len - carry, b, 0, carry);
                 buf.position(carry);
@@ -447,14 +661,32 @@ public final class IWorkMembers {
                         java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
                 try (zip) {
                     ZipArchiveEntry entry;
+                    try {
+                        entry = zip.getNextEntry();
+                    } catch (IOException | LinkageError e) {
+                        unreadable++;
+                        skipUntil = Math.max(skipUntil, offset + extent);
+                        continue;
+                    }
+                    if (entry == null) {
+                        unreadable++;
+                        continue;
+                    }
+                    if (jdkExtras.isEmpty()) {
+                        // nothing to dedupe against: hand it on as it is read, unspooled
+                        if ((u16(header, 6) & 8) == 0) {
+                            skipUntil = Math.max(skipUntil, offset + extent + le32(header, 18));
+                        } else {
+                            skipUntil = Math.max(skipUntil, offset + extent);
+                        }
+                        members++;
+                        member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler,
+                                first, container, caller);
+                        continue;
+                    }
                     java.nio.file.Path spool = tmp.createTempFile();
                     java.security.MessageDigest sha;
                     try {
-                        entry = zip.getNextEntry();
-                        if (entry == null) {
-                            unreadable++;
-                            continue;
-                        }
                         // spooled and hashed first: a data-descriptor member's CRC and sizes,
                         // and whether the JDK's reader already handed on these very bytes, are
                         // known only once its data is read
@@ -552,73 +784,6 @@ public final class IWorkMembers {
             } finally {
                 in.close();
             }
-        }
-    }
-
-    /**
-     * Where a commons-compress member's data really ends: the central directory's compressed
-     * size is the attacker's to stretch over another member's local header, so it is checked
-     * against the local header's own size (or, for a deflated data-descriptor member, the bytes
-     * its deflate stream actually uses). Negative (the absolute value is the end) when the
-     * claims disagree.
-     */
-    private static long dataEnd(java.nio.file.Path file, ZipFile zipFile, ZipArchiveEntry entry)
-            throws IOException {
-        long start = entry.getDataOffset();
-        long claimed = entry.getCompressedSize();
-        if (start < 0 || claimed < 0) {
-            return Math.max(start, 0);
-        }
-        byte[] header = new byte[30];
-        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
-            ch.position(entry.getLocalHeaderOffset());
-            java.nio.ByteBuffer hb = java.nio.ByteBuffer.wrap(header);
-            while (hb.hasRemaining() && ch.read(hb) >= 0) {
-                // fill
-            }
-        }
-        boolean descriptor = (u16(header, 6) & 8) != 0;
-        long local = le32(header, 18);
-        if (!descriptor && local != 0xFFFFFFFFL) {
-            return local == claimed ? start + claimed : -(start + Math.min(local, claimed));
-        }
-        if (entry.getMethod() == ZipArchiveEntry.DEFLATED) {
-            long used = deflateLength(zipFile, entry, claimed);
-            if (used >= 0) {
-                return used == claimed ? start + claimed : -(start + used);
-            }
-        }
-        return start + claimed;
-    }
-
-    /** Compressed bytes a member's deflate stream uses, or -1 if it does not end in time. */
-    private static long deflateLength(ZipFile zipFile, ZipArchiveEntry entry, long claimed) {
-        java.util.zip.Inflater inflater = new java.util.zip.Inflater(true);
-        try (InputStream raw = zipFile.getRawInputStream(entry)) {
-            if (raw == null) {
-                return -1;
-            }
-            byte[] in = new byte[64 * 1024];
-            byte[] out = new byte[64 * 1024];
-            long fed = 0;
-            while (!inflater.finished()) {
-                if (inflater.needsInput()) {
-                    int n = raw.read(in);
-                    if (n < 0) {
-                        return -1;
-                    }
-                    fed += n;
-                    inflater.setInput(in, 0, n);
-                }
-                if (inflater.inflate(out) == 0 && inflater.needsDictionary()) {
-                    return -1;
-                }
-            }
-            return fed - inflater.getRemaining();
-        } catch (IOException | java.util.zip.DataFormatException e) {
-            return -1;
-        } finally {
-            inflater.end();
         }
     }
 
