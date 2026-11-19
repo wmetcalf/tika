@@ -18,7 +18,6 @@ package org.apache.tika.parser.iwork;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.PushbackInputStream;
 import java.nio.file.Files;
 import java.util.Enumeration;
@@ -201,7 +200,10 @@ public final class IWorkMembers {
         // where commons-compress's members live: their local headers and their data
         java.util.Set<Long> knownHeaders = new java.util.HashSet<>();
         java.util.List<Extent> extents = new java.util.ArrayList<>();
-        java.util.Set<String> jdkExtras = new java.util.HashSet<>();
+        // members only the JDK lists, by name: a stray with the same name and the same bytes is
+        // the same member (digests are computed only then, lazily)
+        java.util.Map<String, java.util.List<java.util.zip.ZipEntry>> jdkExtras =
+                new java.util.HashMap<>();
         boolean[] sizeMismatch = {false};
         try {
             if (commons != null) {
@@ -226,7 +228,6 @@ public final class IWorkMembers {
                 // matched against its own copy of commons-compress's view; members only the JDK
                 // lists join that view, so a later local-header pass will not walk them again
                 java.util.Map<String, Integer> jdkBudget = new java.util.HashMap<>(walked);
-                java.util.Set<String> digestedIds = new java.util.HashSet<>();
                 java.util.zip.ZipFile zipFile = jdk;
                 Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
                 while (entries.hasMoreElements()) {
@@ -239,22 +240,11 @@ public final class IWorkMembers {
                     extra[0] = true;
                     walked.merge(id, 1, Integer::sum);
                     walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
-                    int before = jdkExtras.size();
+                    jdkExtras.computeIfAbsent(jdkEntry.getName(), k -> new java.util.ArrayList<>())
+                            .add(jdkEntry);
                     member(new ZipArchiveEntry(jdkEntry.getName()),
-                            () -> new Digesting(zipFile.getInputStream(jdkEntry),
-                                    jdkEntry.getName(), jdkExtras), hooks, handler,
+                            () -> zipFile.getInputStream(jdkEntry), hooks, handler,
                             first, container, caller);
-                    if (jdkExtras.size() == before && digestedIds.add(id)) {
-                        // not opened (e.g. a later pass skips the document it already parsed):
-                        // still learn its digest, so the stray scan does not hand it on again;
-                        // once per (name, CRC, sizes), however many records repeat it
-                        try (InputStream in = new Digesting(zipFile.getInputStream(jdkEntry),
-                                jdkEntry.getName(), jdkExtras)) {
-                            in.transferTo(OutputStream.nullOutputStream());
-                        } catch (IOException e) {
-                            // unreadable: nothing to dedupe against
-                        }
-                    }
                 }
             }
             // Every local header in the file must belong to a member commons-compress listed,
@@ -287,7 +277,8 @@ public final class IWorkMembers {
                 java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, extents,
                         commons);
                 if (!stray.isEmpty()) {
-                    walkStrays(file, stray, jdkExtras, hooks, handler, first, container, caller);
+                    walkStrays(file, stray, jdk, jdkExtras, hooks, handler, first, container,
+                            caller);
                 }
             }
             if (extra[0] && commons != null) {
@@ -667,10 +658,14 @@ public final class IWorkMembers {
      * member's identity is only known once its data is read, so it is spooled first.
      */
     private static void walkStrays(java.nio.file.Path file, java.util.List<Long> stray,
-                                   java.util.Set<String> jdkExtras, Hooks hooks,
+                                   java.util.zip.ZipFile jdk,
+                                   java.util.Map<String, java.util.List<java.util.zip.ZipEntry>>
+                                           jdkExtras,
+                                   Hooks hooks,
                                    MemberHandler handler, Exception[] first, Metadata container,
                                    TaggedContentHandler caller)
             throws IOException, SAXException {
+        java.util.Map<java.util.zip.ZipEntry, String> digests = new java.util.IdentityHashMap<>();
         long skipUntil = -1;
         int read = 0;
         int members = 0;
@@ -710,7 +705,9 @@ public final class IWorkMembers {
                         unreadable++;
                         continue;
                     }
-                    if (jdkExtras.isEmpty()) {
+                    java.util.List<java.util.zip.ZipEntry> sameName =
+                            jdkExtras.getOrDefault(entry.getName(), java.util.List.of());
+                    if (sameName.isEmpty()) {
                         // nothing to dedupe against: hand it on as it is read, unspooled
                         if ((u16(header, 6) & 8) == 0) {
                             skipUntil = Math.max(skipUntil, offset + extent + le32(header, 18));
@@ -740,8 +737,16 @@ public final class IWorkMembers {
                     }
                     skipUntil = Math.max(skipUntil, offset + extent
                             + Math.max(0, entry.getCompressedSize()));
-                    if (jdkExtras.contains(entry.getName() + '\u0000'
-                            + java.util.HexFormat.of().formatHex(sha.digest()))) {
+                    String strayDigest = java.util.HexFormat.of().formatHex(sha.digest());
+                    boolean same = false;
+                    for (java.util.zip.ZipEntry candidate : sameName) {
+                        String d = digests.computeIfAbsent(candidate, c -> digestOf(jdk, c));
+                        if (strayDigest.equals(d)) {
+                            same = true;
+                            break;
+                        }
+                    }
+                    if (same) {
                         continue;
                     }
                     members++;
@@ -761,67 +766,18 @@ public final class IWorkMembers {
         }
     }
 
-    /** Records name + SHA-256 of a member's bytes once it is closed (draining what the
-     * handler did not read), so the stray scan can recognise the very same bytes. */
-    private static final class Digesting extends java.io.FilterInputStream {
-        private final String name;
-        private final java.util.Set<String> into;
-        private final java.security.MessageDigest sha;
-
-        Digesting(InputStream in, String name, java.util.Set<String> into) {
-            super(in);
-            this.name = name;
-            this.into = into;
-            try {
-                this.sha = java.security.MessageDigest.getInstance("SHA-256");
-            } catch (java.security.NoSuchAlgorithmException e) {
-                throw new IllegalStateException(e);
+    /** SHA-256 of a JDK-listed member's bytes, or "" if they cannot be read. */
+    private static String digestOf(java.util.zip.ZipFile jdk, java.util.zip.ZipEntry entry) {
+        try (InputStream in = jdk.getInputStream(entry)) {
+            java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                sha.update(buf, 0, n);
             }
-        }
-
-        @Override
-        public int read() throws IOException {
-            int b = in.read();
-            if (b >= 0) {
-                sha.update((byte) b);
-            }
-            return b;
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            int n = in.read(b, off, len);
-            if (n > 0) {
-                sha.update(b, off, n);
-            }
-            return n;
-        }
-
-        @Override
-        public long skip(long n) throws IOException {
-            byte[] buf = new byte[8192];
-            long done = 0;
-            while (done < n) {
-                int r = read(buf, 0, (int) Math.min(buf.length, n - done));
-                if (r < 0) {
-                    break;
-                }
-                done += r;
-            }
-            return done;
-        }
-
-        @Override
-        public void close() throws IOException {
-            try {
-                byte[] buf = new byte[8192];
-                while (read(buf, 0, buf.length) >= 0) {
-                    // drain, so the digest covers the whole member
-                }
-                into.add(name + '\u0000' + java.util.HexFormat.of().formatHex(sha.digest()));
-            } finally {
-                in.close();
-            }
+            return java.util.HexFormat.of().formatHex(sha.digest());
+        } catch (IOException | java.security.NoSuchAlgorithmException e) {
+            return "";
         }
     }
 
