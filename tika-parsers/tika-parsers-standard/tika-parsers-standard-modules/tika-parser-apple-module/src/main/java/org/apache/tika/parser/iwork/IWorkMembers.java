@@ -976,13 +976,19 @@ public final class IWorkMembers {
         return name.chars().allMatch(c -> c >= 0x20 && c != 0x7f && c != 0xfffd);
     }
 
-    /** SHA-256 of a JDK-listed member's bytes, or "" if they cannot be read. */
+    /** SHA-256 of a JDK-listed member's bytes, or "" if they cannot be read or exceed the
+     * 64 MiB budget (a stray is then handed on rather than deduplicated). */
     private static String digestOf(java.util.zip.ZipFile jdk, java.util.zip.ZipEntry entry) {
         try (InputStream in = jdk.getInputStream(entry)) {
             java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-256");
             byte[] buf = new byte[64 * 1024];
+            long total = 0;
             int n;
             while ((n = in.read(buf)) >= 0) {
+                total += n;
+                if (total > CENTRAL_MEMBER_CAP) {
+                    return "";                      // over budget: no digest, so no dedupe
+                }
                 sha.update(buf, 0, n);
             }
             return java.util.HexFormat.of().formatHex(sha.digest());
