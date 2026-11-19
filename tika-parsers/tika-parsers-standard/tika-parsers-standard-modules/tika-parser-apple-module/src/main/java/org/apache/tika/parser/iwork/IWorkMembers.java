@@ -287,10 +287,11 @@ public final class IWorkMembers {
                             "iWork package central directory is inconsistent: a member's "
                                     + "compressed size differs from its local header's");
                 }
-                java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, extents,
+                java.util.List<Long> central = new java.util.ArrayList<>();
+                java.util.List<Long> stray = unaccountedLocalHeaders(central, file, knownHeaders, extents,
                         commons);
-                if (!stray.isEmpty()) {
-                    walkStrays(file, stray, jdk, jdkExtras, jdkDigests, hooks, handler, first,
+                if (!stray.isEmpty() || !central.isEmpty()) {
+                    walkStrays(central, file, stray, jdk, jdkExtras, jdkDigests, hooks, handler, first,
                             container, caller);
                 }
             }
@@ -455,8 +456,15 @@ public final class IWorkMembers {
             int id = u16(extra, i);
             int len = u16(extra, i + 2);
             if (id == 0x0001) {
-                int p = i + 4 + 8;
-                if (len < 16 || p + 8 > extraLen) {
+                int p;
+                if (len >= 16) {
+                    p = i + 4 + 8;                  // both sizes, original first
+                } else if (len >= 8 && le32(h, 22) != 0xFFFFFFFFL) {
+                    p = i + 4;                      // only the compressed size is deferred
+                } else {
+                    return -1;
+                }
+                if (p + 8 > extraLen) {
                     return -1;
                 }
                 return le32(extra, p) | le32(extra, p + 4) << 32;
@@ -577,7 +585,8 @@ public final class IWorkMembers {
 
     /** Offsets of "PK\\3\\4" signatures that are neither a known member's local header nor
      * inside a known member's (verified or measured) extent. */
-    private static java.util.List<Long> unaccountedLocalHeaders(java.nio.file.Path file,
+    private static java.util.List<Long> unaccountedLocalHeaders(java.util.List<Long> central,
+                                                                java.nio.file.Path file,
                                                                 java.util.Set<Long> headers,
                                                                 java.util.List<Extent> extents,
                                                                 ZipFile zipFile)
@@ -611,8 +620,9 @@ public final class IWorkMembers {
         for (int i = 0; i < maxEnd.length; i++) {
             maxEnd[i] = Math.max(i == 0 ? 0 : maxEnd[i - 1], unverified.get(i).end);
         }
-        // the central directory itself (from commons-compress's EOCD on) is not scanned: its
-        // records hold arbitrary bytes (dates, CRCs, offsets) that can spell "PK\\3\\4"
+        // inside the central directory (from commons-compress's EOCD on) records hold arbitrary
+        // bytes (dates, CRCs, offsets) that can spell "PK\\3\\4": such signatures are kept
+        // apart and only count if a whole member really parses there
         long cdStart = centralDirectoryStart(file);
         java.util.List<Long> stray = new java.util.ArrayList<>();
         java.util.Map<Long, Long> measuredByHeader = new java.util.HashMap<>();
@@ -629,8 +639,11 @@ public final class IWorkMembers {
                 for (int i = 0; i + 3 < len; i++) {
                     if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 3 && b[i + 3] == 4) {
                         long off = base + i;
-                        if (headers.contains(off) || inside(ranges, off)
-                                || cdStart >= 0 && off >= cdStart) {
+                        if (headers.contains(off) || inside(ranges, off)) {
+                            continue;
+                        }
+                        if (cdStart >= 0 && off >= cdStart) {
+                            central.add(off);
                             continue;
                         }
                         boolean covered = false;
@@ -718,7 +731,8 @@ public final class IWorkMembers {
      * a member the JDK's reader already handed on with the same name and data. A data-descriptor
      * member's identity is only known once its data is read, so it is spooled first.
      */
-    private static void walkStrays(java.nio.file.Path file, java.util.List<Long> stray,
+    private static void walkStrays(java.util.List<Long> central, java.nio.file.Path file,
+                                   java.util.List<Long> stray,
                                    java.util.zip.ZipFile jdk,
                                    java.util.Map<String, java.util.List<java.util.zip.ZipEntry>>
                                            jdkExtras,
@@ -816,6 +830,52 @@ public final class IWorkMembers {
                     member(entry, () -> Files.newInputStream(spool), hooks, handler, first,
                             container, caller);
                 }
+            }
+        }
+        // Signatures inside the central directory count only if a whole member parses and reads
+        // there (an embedded member no directory lists); anything else is just directory bytes.
+        int centralRead = 0;
+        for (long offset : central) {
+            if (centralRead >= MAX_STRAYS) {
+                break;
+            }
+            centralRead++;
+            try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file);
+                    TemporaryResources tmp = new TemporaryResources()) {
+                ch.position(offset);
+                ZipArchiveInputStream zip = new ZipArchiveInputStream(
+                        java.nio.channels.Channels.newInputStream(ch), "UTF8", true, true);
+                try (zip) {
+                    ZipArchiveEntry entry = zip.getNextEntry();
+                    if (entry == null) {
+                        continue;
+                    }
+                    java.nio.file.Path spool = tmp.createTempFile();
+                    java.security.MessageDigest sha =
+                            java.security.MessageDigest.getInstance("SHA-256");
+                    try (InputStream in = new java.security.DigestInputStream(
+                            CloseShieldInputStream.wrap(zip), sha)) {
+                        Files.copy(in, spool, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    String strayDigest = java.util.HexFormat.of().formatHex(sha.digest());
+                    boolean same = false;
+                    for (java.util.zip.ZipEntry candidate
+                            : jdkExtras.getOrDefault(entry.getName(), java.util.List.of())) {
+                        if (strayDigest.equals(digests.computeIfAbsent(candidate,
+                                c -> digestOf(jdk, c)))) {
+                            same = true;
+                            break;
+                        }
+                    }
+                    if (same) {
+                        continue;
+                    }
+                    members++;
+                    member(entry, () -> Files.newInputStream(spool), hooks, handler, first,
+                            container, caller);
+                }
+            } catch (IOException | LinkageError | java.security.NoSuchAlgorithmException e) {
+                // not a member: directory bytes that happen to spell a signature
             }
         }
         if (members > 0) {

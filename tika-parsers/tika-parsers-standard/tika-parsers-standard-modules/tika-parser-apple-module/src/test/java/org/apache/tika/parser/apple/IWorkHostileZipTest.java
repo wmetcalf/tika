@@ -891,4 +891,19 @@ class IWorkHostileZipTest {
         assertTrue(r.warnings().contains("do not parse") || r.warnings().contains("inconsistent"),
                 r.warnings());
     }
+
+    @Test
+    void aMemberEmbeddedInTheCentralDirectoryIsNotHidden() throws Exception {
+        // a complete local member placed after the last central record, inside the directory's
+        // byte range: no directory lists it, and the scan must not skip the region blindly
+        RawZip hidden = new RawZip().entry("payload.exe",
+                "MZ-HIDDEN-PAYLOAD".getBytes(StandardCharsets.UTF_8));
+        for (String marker : MARKERS) {
+            byte[] zip = new RawZip().entry(marker, PLIST).entry("visible.txt", PAYLOAD)
+                    .centralJunk(hidden.out.toByteArray()).finish();
+            Result r = run(zip);
+            assertTrue(r.names.contains("payload.exe") || r.warnings().contains("inconsistent"),
+                    marker + ": " + r);
+        }
+    }
 }
