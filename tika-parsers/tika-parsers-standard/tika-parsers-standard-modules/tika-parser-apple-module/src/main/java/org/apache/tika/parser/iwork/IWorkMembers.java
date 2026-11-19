@@ -835,11 +835,15 @@ public final class IWorkMembers {
         // Signatures inside the central directory count only if a whole member parses and reads
         // there (an embedded member no directory lists); anything else is just directory bytes.
         int centralRead = 0;
+        int centralSkipped = 0;
+        int centralUnreadable = 0;
         for (long offset : central) {
             if (centralRead >= MAX_STRAYS) {
-                break;
+                centralSkipped++;
+                continue;
             }
             centralRead++;
+            ZipArchiveEntry parsed = null;
             try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file);
                     TemporaryResources tmp = new TemporaryResources()) {
                 ch.position(offset);
@@ -850,6 +854,7 @@ public final class IWorkMembers {
                     if (entry == null) {
                         continue;
                     }
+                    parsed = entry;
                     java.nio.file.Path spool = tmp.createTempFile();
                     java.security.MessageDigest sha =
                             java.security.MessageDigest.getInstance("SHA-256");
@@ -875,8 +880,19 @@ public final class IWorkMembers {
                             container, caller);
                 }
             } catch (IOException | LinkageError | java.security.NoSuchAlgorithmException e) {
-                // not a member: directory bytes that happen to spell a signature
+                // directory bytes that happen to spell a signature, unless they parsed as a
+                // plausible member header (a short printable name, stored or deflated) whose
+                // data then failed: that is a member someone placed there
+                if (parsed != null && plausibleHeader(parsed)) {
+                    centralUnreadable++;
+                }
             }
+        }
+        if (centralUnreadable > 0 || centralSkipped > 0) {
+            warnOnce(container, "iWork package: " + centralUnreadable + " member(s) embedded in "
+                    + "the central directory could not be read"
+                    + (centralSkipped > 0 ? ", " + centralSkipped + " more signature(s) not read"
+                            : ""));
         }
         if (members > 0) {
             warnOnce(container, "iWork package central directory is inconsistent: " + members
@@ -887,6 +903,18 @@ public final class IWorkMembers {
                     + "outside the central directory do not parse"
                     + (skipped > 0 ? ", " + skipped + " more not read" : ""));
         }
+    }
+
+    private static boolean plausibleHeader(ZipArchiveEntry entry) {
+        String name = entry.getName();
+        if (name == null || name.isEmpty() || name.length() > 1024) {
+            return false;
+        }
+        int method = entry.getMethod();
+        if (method != ZipArchiveEntry.STORED && method != ZipArchiveEntry.DEFLATED) {
+            return false;
+        }
+        return name.chars().allMatch(c -> c >= 0x20 && c != 0x7f && c != 0xfffd);
     }
 
     /** SHA-256 of a JDK-listed member's bytes, or "" if they cannot be read. */

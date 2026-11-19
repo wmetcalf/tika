@@ -818,7 +818,8 @@ class IWorkHostileZipTest {
     void legitimatePackagesCarryNoEvasionWarning() throws Exception {
         for (String name : resources("iwork-legit")) {
             String warnings = String.join("|", parseAuto(name, new ArrayList<>()));
-            assertTrue(!warnings.contains("inconsistent") && !warnings.contains("local header"),
+            assertTrue(!warnings.contains("inconsistent") && !warnings.contains("local header")
+                    && !warnings.contains("embedded in the central directory"),
                     name + ": " + warnings);
         }
     }
