@@ -204,6 +204,7 @@ public final class IWorkMembers {
         // the same member (digests are computed only then, lazily)
         java.util.Map<String, java.util.List<java.util.zip.ZipEntry>> jdkExtras =
                 new java.util.HashMap<>();
+        java.util.Map<java.util.zip.ZipEntry, String> jdkDigests = new java.util.IdentityHashMap<>();
         boolean[] sizeMismatch = {false};
         try {
             if (commons != null) {
@@ -229,11 +230,20 @@ public final class IWorkMembers {
                 // lists join that view, so a later local-header pass will not walk them again
                 java.util.Map<String, Integer> jdkBudget = new java.util.HashMap<>(walked);
                 java.util.zip.ZipFile zipFile = jdk;
+                // java.util.zip resolves getInputStream(entry) by name once the enumeration has
+                // moved on, so a name the JDK lists more than once is digested right here, while
+                // the entry is the current one; unique names are digested lazily, by name
+                java.util.Map<String, Integer> jdkNames = new java.util.HashMap<>();
+                for (Enumeration<? extends java.util.zip.ZipEntry> e = zipFile.entries();
+                        e.hasMoreElements(); ) {
+                    jdkNames.merge(e.nextElement().getName(), 1, Integer::sum);
+                }
                 Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
                 while (entries.hasMoreElements()) {
                     java.util.zip.ZipEntry jdkEntry = entries.nextElement();
                     String id = identity(jdkEntry.getName(), jdkEntry.getCrc(),
                             jdkEntry.getCompressedSize(), jdkEntry.getSize());
+                    boolean ambiguousName = jdkNames.get(jdkEntry.getName()) > 1;
                     if (alreadyWalked(jdkBudget, id)) {
                         continue;
                     }
@@ -242,6 +252,9 @@ public final class IWorkMembers {
                     walkedNames.merge(jdkEntry.getName(), 1, Integer::sum);
                     jdkExtras.computeIfAbsent(jdkEntry.getName(), k -> new java.util.ArrayList<>())
                             .add(jdkEntry);
+                    if (ambiguousName) {
+                        jdkDigests.put(jdkEntry, digestOf(zipFile, jdkEntry));
+                    }
                     member(new ZipArchiveEntry(jdkEntry.getName()),
                             () -> zipFile.getInputStream(jdkEntry), hooks, handler,
                             first, container, caller);
@@ -277,8 +290,8 @@ public final class IWorkMembers {
                 java.util.List<Long> stray = unaccountedLocalHeaders(file, knownHeaders, extents,
                         commons);
                 if (!stray.isEmpty()) {
-                    walkStrays(file, stray, jdk, jdkExtras, hooks, handler, first, container,
-                            caller);
+                    walkStrays(file, stray, jdk, jdkExtras, jdkDigests, hooks, handler, first,
+                            container, caller);
                 }
             }
             if (extra[0] && commons != null) {
@@ -591,6 +604,16 @@ public final class IWorkMembers {
             }
         }
         long[][] ranges = merged.toArray(new long[0][]);
+        // unverified extents by start, with a running maximum end: a lookup walks back only
+        // over extents that can still reach the offset (none or one for non-overlapping ones)
+        unverified.sort((x, y) -> Long.compare(x.start, y.start));
+        long[] maxEnd = new long[unverified.size()];
+        for (int i = 0; i < maxEnd.length; i++) {
+            maxEnd[i] = Math.max(i == 0 ? 0 : maxEnd[i - 1], unverified.get(i).end);
+        }
+        // the central directory itself (from commons-compress's EOCD on) is not scanned: its
+        // records hold arbitrary bytes (dates, CRCs, offsets) that can spell "PK\\3\\4"
+        long cdStart = centralDirectoryStart(file);
         java.util.List<Long> stray = new java.util.ArrayList<>();
         java.util.Map<Long, Long> measuredByHeader = new java.util.HashMap<>();
         try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
@@ -606,12 +629,25 @@ public final class IWorkMembers {
                 for (int i = 0; i + 3 < len; i++) {
                     if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 3 && b[i + 3] == 4) {
                         long off = base + i;
-                        if (headers.contains(off) || inside(ranges, off)) {
+                        if (headers.contains(off) || inside(ranges, off)
+                                || cdStart >= 0 && off >= cdStart) {
                             continue;
                         }
                         boolean covered = false;
-                        for (Extent x : unverified) {
-                            if (x.covers(off, file, zipFile, measuredByHeader)) {
+                        int lo = 0;
+                        int hi = unverified.size() - 1;
+                        int at = -1;
+                        while (lo <= hi) {
+                            int mid = (lo + hi) >>> 1;
+                            if (unverified.get(mid).start <= off) {
+                                at = mid;
+                                lo = mid + 1;
+                            } else {
+                                hi = mid - 1;
+                            }
+                        }
+                        for (int k = at; k >= 0 && maxEnd[k] > off; k--) {
+                            if (unverified.get(k).covers(off, file, zipFile, measuredByHeader)) {
                                 covered = true;
                                 break;
                             }
@@ -630,6 +666,31 @@ public final class IWorkMembers {
             }
         }
         return stray;
+    }
+
+    /** Where commons-compress's central directory starts (the last EOCD's offset, if a
+     * central header is there), or -1. */
+    private static long centralDirectoryStart(java.nio.file.Path file) throws IOException {
+        try (java.nio.channels.SeekableByteChannel ch = Files.newByteChannel(file)) {
+            long size = ch.size();
+            int tail = (int) Math.min(size, 22 + 65535);
+            byte[] b = new byte[tail];
+            ch.position(size - tail);
+            readFully(ch, b);
+            for (int i = tail - 22; i >= 0; i--) {
+                if (b[i] == 'P' && b[i + 1] == 'K' && b[i + 2] == 5 && b[i + 3] == 6) {
+                    long cd = le32(b, i + 16);
+                    if (cd == 0xFFFFFFFFL || cd + 4 > size) {
+                        return -1;
+                    }
+                    byte[] sig = new byte[4];
+                    ch.position(cd);
+                    readFully(ch, sig);
+                    return sig[0] == 'P' && sig[1] == 'K' && sig[2] == 1 && sig[3] == 2 ? cd : -1;
+                }
+            }
+            return -1;
+        }
     }
 
     private static boolean inside(long[][] ranges, long offset) {
@@ -661,11 +722,11 @@ public final class IWorkMembers {
                                    java.util.zip.ZipFile jdk,
                                    java.util.Map<String, java.util.List<java.util.zip.ZipEntry>>
                                            jdkExtras,
+                                   java.util.Map<java.util.zip.ZipEntry, String> digests,
                                    Hooks hooks,
                                    MemberHandler handler, Exception[] first, Metadata container,
                                    TaggedContentHandler caller)
             throws IOException, SAXException {
-        java.util.Map<java.util.zip.ZipEntry, String> digests = new java.util.IdentityHashMap<>();
         long skipUntil = -1;
         int read = 0;
         int members = 0;
@@ -709,11 +770,13 @@ public final class IWorkMembers {
                             jdkExtras.getOrDefault(entry.getName(), java.util.List.of());
                     if (sameName.isEmpty()) {
                         // nothing to dedupe against: hand it on as it is read, unspooled
-                        if ((u16(header, 6) & 8) == 0) {
-                            skipUntil = Math.max(skipUntil, offset + extent + le32(header, 18));
-                        } else {
-                            skipUntil = Math.max(skipUntil, offset + extent);
+                        long size = (u16(header, 6) & 8) != 0 ? 0 : le32(header, 18);
+                        if (size == 0xFFFFFFFFL) {
+                            // the real size is in the zip64 extra, as the reader uses it
+                            ch.position(offset + 30);
+                            size = Math.max(0, zip64CompressedSize(ch, header));
                         }
+                        skipUntil = Math.max(skipUntil, offset + extent + size);
                         members++;
                         member(entry, () -> CloseShieldInputStream.wrap(zip), hooks, handler,
                                 first, container, caller);

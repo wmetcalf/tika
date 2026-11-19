@@ -804,6 +804,11 @@ class IWorkHostileZipTest {
             boolean handedOn = contents.stream().anyMatch(c -> c.contains("MZ-HIDDEN-PAYLOAD")
                     || c.contains("MZ-pretend-payload"));
             assertTrue(handedOn || warnings.contains("inconsistent"), name + ": " + warnings);
+            if (name.contains("dupname-") || name.contains("z64skip-") || name.contains("/p1")
+                    || name.contains("/p2") || name.contains("/s1-")) {
+                // readers other than commons-compress see this payload: it must be handed on
+                assertTrue(handedOn, name + " (payload not handed on): " + warnings);
+            }
         }
     }
 
